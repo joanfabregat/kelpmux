@@ -41,7 +41,8 @@ jobs:
           TARGET: ${{ matrix.target }}
         run: |
           mkdir -p dist/package
-          cp target/release/kelpmux LICENSE NOTICE README.md dist/package/
+          cp target/release/kelpmux LICENSE NOTICE README.md CONTRIBUTING.md dist/package/
+          cp -R assets docs examples dist/package/
           tar -C dist/package -czf "dist/kelpmux-$TARGET.tar.gz" .
           (cd dist && sha256sum "kelpmux-$TARGET.tar.gz" > "kelpmux-$TARGET.tar.gz.sha256")
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4

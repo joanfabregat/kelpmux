@@ -1,4 +1,18 @@
-# Kelpmux
+<h1 align="center">Kelpmux</h1>
+
+<p align="center">
+  <img src="assets/kelpmux-logo.png" alt="Kelpmux logo: terminal panes intertwined with kelp" width="320">
+</p>
+
+<p align="center">
+  <a href="https://github.com/joanfabregat/kelpmux/actions/workflows/ci.yml"><img src="https://github.com/joanfabregat/kelpmux/actions/workflows/ci.yml/badge.svg?branch=main" alt="CI status"></a>
+  <a href="https://github.com/joanfabregat/kelpmux/actions/workflows/release-build.yml"><img src="https://github.com/joanfabregat/kelpmux/actions/workflows/release-build.yml/badge.svg?branch=main" alt="Release build status"></a>
+  <a href="https://github.com/joanfabregat/kelpmux/blob/main/Cargo.toml"><img src="https://img.shields.io/badge/version-0.1.0--beta.1-blue" alt="Version 0.1.0-beta.1"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/github/license/joanfabregat/kelpmux" alt="License: Apache-2.0"></a>
+  <a href="#build-and-validate"><img src="https://img.shields.io/badge/Rust-1.85%2B-orange?logo=rust" alt="Rust 1.85 or newer"></a>
+  <a href="#first-beta-scope"><img src="https://img.shields.io/badge/tmux-3.3%2B-green" alt="tmux 3.3 or newer"></a>
+  <a href="docs/releases.md"><img src="https://img.shields.io/badge/Linux-x86__64%20%7C%20ARM64-blue?logo=linux" alt="Linux x86-64 and ARM64"></a>
+</p>
 
 An agent-aware Rust controller for tmux, inspired by Monterey's kelp forests. Apache-2.0 licensed.
 
