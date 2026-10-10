@@ -109,6 +109,6 @@ pub fn idle(tree: &BTreeMap<u32, Process>, pid: u32, allow_stopped: bool) -> boo
         && p.tty != 0
         && p.group > 0
         && p.group == p.foreground
-        && (!matches!(p.state, 'T' | 't' | 'Z' | 'X') || (allow_stopped && p.state == 'T'))
+        && (p.state == 'S' || (allow_stopped && p.state == 'T'))
         && descendants(tree, pid).len() == 1
 }
