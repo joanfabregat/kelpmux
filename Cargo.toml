@@ -1,0 +1,19 @@
+[package]
+name = "kelpmux"
+version = "0.1.0-beta.1"
+edition = "2024"
+rust-version = "1.85"
+license = "Apache-2.0"
+description = "An agent-aware workspace controller for tmux"
+repository = "https://github.com/joanfabregat/kelpmux"
+keywords = ["tmux", "terminal", "agents", "claude", "codex"]
+categories = ["command-line-utilities"]
+
+[dependencies]
+libc = "0.2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+[profile.release]
+lto = "thin"
+strip = true
