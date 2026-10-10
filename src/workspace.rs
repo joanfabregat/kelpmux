@@ -110,6 +110,9 @@ pub fn resize(tmux: &Tmux, root: &Path, window: &str, grid: Grid, dry: bool) -> 
     }
     private_dir(root)?;
     let _lock = Lock::acquire(&root.join("workspace.lock"), false)?;
+    if valid_id(&tmux.format(window, "#{@kelpmux-origin}")?, '@') {
+        return Err("return to grid before changing layout".into());
+    }
     if modal_path(root, window).exists() {
         return Err("return to grid before changing layout".into());
     }
@@ -504,10 +507,15 @@ pub fn zoom(
             } else {
                 width.min(max_width + 2)
             };
+            if height < 5 || width < 5 {
+                return Err("terminal too small for reading view".into());
+            }
+            // Percentages are resolved by tmux at execution time, avoiding a race
+            // with a terminal resize between our dimension query and popup creation.
             let popup_height = if modal.full || width <= max_width + 2 {
-                height
+                "100%"
             } else {
-                (height * 95 / 100).max(5)
+                "95%"
             };
             let attach = format!(
                 "env -u TMUX tmux -S {} attach-session -t {}",
@@ -525,14 +533,23 @@ pub fn zoom(
                 "C",
                 "-w",
             ];
-            let w = popup_width.to_string();
-            let h = popup_height.to_string();
-            args.extend([&w, "-h", &h]);
+            let w = if modal.full || width <= max_width + 2 {
+                "100%".into()
+            } else {
+                popup_width.to_string()
+            };
+            args.extend([&w, "-h", popup_height]);
             if modal.full || width <= max_width + 2 {
                 args.push("-B");
             }
             args.push(&attach);
-            tmux.run(&args)?;
+            if let Err(error) = tmux.run(&args) {
+                if error.to_string().contains("too large") {
+                    std::thread::sleep(std::time::Duration::from_millis(10));
+                    continue;
+                }
+                return Err(error);
+            }
             let _action_lock = Lock::acquire(&root.join("modal-action.lock"), true)?;
             let updated = modal_read(root, &origin)?;
             let Some(action) = updated.action else {

@@ -22,7 +22,7 @@ Restore swaps the original pane back and deletes only the expected temporary ses
 
 Custom tmux layout strings include tmux's checksum and equally distributed row/column sizes. Growing splits a wide pane and then applies the requested final grid. Shrinking computes the complete removal set, checks `/proc` for foreground/background/stopped jobs, revalidates pane and process identity, and uses a tmux-side foreground-shell check. Operations take a workspace lock and refuse native zoom or an open reading view.
 
-These checks are conservative, but tmux does not offer transactional process deletion. Concurrent user input or native tmux mutations can race the check. Applications that detach entirely from their pane shell and controlling terminal are outside pane occupancy tracking. No shell process is frozen: tmux automatically resumes most stopped pane shells, which would make a SIGSTOP-based guard misleading.
+These checks are conservative, but tmux does not offer transactional process deletion. Concurrent user input or native tmux mutations can race the check. Applications that detach entirely from their pane shell and controlling terminal are outside pane occupancy tracking. Runnable shells are treated as occupied to protect CPU-bound shell built-ins. A shell built-in blocked on terminal input can still resemble an idle prompt in `/proc`; reliable identification of that case needs shell cooperation and is outside the beta. No shell process is frozen: tmux automatically resumes most stopped pane shells, which would make a SIGSTOP-based guard misleading.
 
 ## Boundaries
 

@@ -111,6 +111,8 @@ fn idle_shell_excludes_foreground_background_and_stopped_jobs() {
     tree.get_mut(&100).unwrap().foreground = 101;
     assert!(!process::idle(&tree, 100, false));
     tree.get_mut(&100).unwrap().foreground = 100;
+    tree.get_mut(&100).unwrap().state = 'R';
+    assert!(!process::idle(&tree, 100, false));
     tree.get_mut(&100).unwrap().state = 'T';
     assert!(!process::idle(&tree, 100, false));
     assert!(process::idle(&tree, 100, true));
