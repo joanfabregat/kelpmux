@@ -21,7 +21,7 @@ Kelpmux keeps tmux in charge of terminals and processes. It adds a comfortable r
 ## First beta scope
 
 - Centered reading popup capped at 120 content columns, with fullscreen and restore controls. Smaller terminals use their available width. Other panes keep running and modern tmux redraws the visible background.
-- Switch directly to panes 1–9 from the grid or reading popup. Keyboard and clickable status controls are provided.
+- Switch directly to panes 1–9 from the grid or reading popup. Keyboard controls and clickable shortcut help are provided.
 - Colored headers distinguish working, input needed, turn finished, idle, failed, and unknown states.
 - Grids: `1x1`, `2x1`, `2x2`, `3x2`, `2x3`, `3x3` (columns × rows). Growing creates shells. Shrinking requires enough unused shells and refuses busy panes, including background and stopped jobs.
 - Journal agent type, session ID when identifiable, name, directory, pane/window IDs, process identity, and lifecycle changes. Resume sessions using the agent's own TUI.
@@ -60,7 +60,7 @@ Generate the optional tmux fragment, review it, then merge the bindings you want
 kelpmux tmux-config > kelpmux.tmux.conf
 ```
 
-The fragment uses the absolute binary/state paths, sets pane numbering to 1, replaces the listed bindings, and adds top pane headers and status controls. It does not enable mouse mode or start the daemon. For touch controls, enable tmux mouse handling in your own configuration. Existing complex configurations should merge the fragment instead of sourcing it wholesale. Re-generate it after moving the binary.
+The fragment uses the absolute binary/state paths, sets pane numbering to 1, replaces the listed bindings, and adds top pane headers with a solid status-colored background and a distinct number badge. Reading mode retains the original grid number. Pane styles are reset to preserve application foreground and background colors. A single `?` opens shortcut help; workspace actions use keyboard shortcuts. It does not enable mouse mode or start the daemon. For touch controls, enable tmux mouse handling in your own configuration. Existing complex configurations should merge the fragment instead of sourcing it wholesale. Re-generate it after moving the binary.
 
 | Control | Action |
 | --- | --- |
@@ -68,10 +68,13 @@ The fragment uses the absolute binary/state paths, sets pane numbering to 1, rep
 | Option/Alt+1…9 | Open that numbered pane; switch agents inside the popup |
 | Option/Alt+F | Fullscreen |
 | Option/Alt+R inside popup | Restore capped reading width |
-| Prefix then G (lowercase `g`) | Grid size menu |
-| Status controls | Click/tap READ/GRID, FULL, GRID SIZE; popup has GRID and FULL/RESTORE |
+| Prefix then `z` | Toggle reading view / return to grid |
+| Prefix then `p`, number, Enter | Read a numbered pane |
+| Prefix then `f` / uppercase `R` | Fullscreen / restore reading width |
+| Prefix then `g` | Grid size menu (from grid) |
+| Prefix then `?`, or click/tap `?` | Shortcut help |
 
-Option must send Meta/Alt sequences in your terminal. Popup bindings use a dedicated tmux key table. Applications otherwise keep their normal input. Escape can close tmux's popup and restores the grid; an agent TUI may also use Escape, so prefer the explicit GRID control.
+Option must send Meta/Alt sequences in your terminal. Popup bindings use a dedicated tmux key table. Applications otherwise keep their normal input. Escape can close tmux's popup and restores the grid; an agent TUI may also use Escape, so prefer Prefix then `z`.
 
 CLI examples with stable tmux IDs:
 

@@ -230,6 +230,19 @@ fn dry_run_is_read_only_and_generated_config_parses() {
             .unwrap()
             .contains("select 1")
     );
+    assert_eq!(
+        server
+            .tmux
+            .run(&["show-options", "-gwv", "window-style"])
+            .unwrap(),
+        "default"
+    );
+    let status = server
+        .tmux
+        .run(&["show-options", "-gv", "status-left"])
+        .unwrap();
+    assert!(status.contains("kelpmux-help"));
+    assert!(!status.contains("READ/GRID"));
 }
 #[test]
 #[ignore = "requires tmux; CI explicitly runs this suite"]
@@ -398,6 +411,14 @@ fn reading_fullscreen_restore_and_agent_switch_keep_processes() {
     .unwrap();
     server.wait_idle();
     let originals = server.tmux.panes().unwrap();
+    let config = server.cli(&["tmux-config"]);
+    assert!(config.status.success());
+    let config_path = server.root.join("integration.conf");
+    fs::write(&config_path, config.stdout).unwrap();
+    server
+        .tmux
+        .run(&["source-file", config_path.to_str().unwrap()])
+        .unwrap();
     let client = Client::attach(&server, 240, 60);
     let name = server
         .tmux
@@ -450,13 +471,29 @@ fn reading_fullscreen_restore_and_agent_switch_keep_processes() {
             .format(&originals[0].id, "#{pane_width}")
             .is_ok_and(|s| s == "120")
     });
-    client.keys(b"\x1b2");
+    client.keys(b"\x02p");
+    std::thread::sleep(Duration::from_millis(100));
+    client.keys(b"2\r");
     wait(|| {
         server
             .tmux
             .format(&originals[1].id, "#{pane_width}")
             .is_ok_and(|s| s == "120")
     });
+    assert_eq!(
+        server
+            .tmux
+            .option(&originals[1].id, "@kelpmux-number")
+            .unwrap(),
+        "2"
+    );
+    assert_eq!(
+        server
+            .tmux
+            .format(&originals[1].id, "#{pane_index}")
+            .unwrap(),
+        "1"
+    );
     client.resize(90, 40);
     wait(|| {
         server
@@ -464,7 +501,7 @@ fn reading_fullscreen_restore_and_agent_switch_keep_processes() {
             .format(&originals[1].id, "#{pane_width}")
             .is_ok_and(|s| s.parse::<u32>().is_ok_and(|w| w <= 90))
     });
-    client.keys(b"\x1b0");
+    client.keys(b"\x02z");
     wait(|| child.try_wait().unwrap().is_some());
     let output = child.wait_with_output().unwrap();
     assert!(
@@ -482,6 +519,13 @@ fn reading_fullscreen_restore_and_agent_switch_keep_processes() {
         );
     }
     assert!(!path.exists());
+    assert_eq!(
+        server
+            .tmux
+            .option(&remaining[1].id, "@kelpmux-number")
+            .unwrap(),
+        ""
+    );
 }
 
 #[test]
