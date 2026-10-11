@@ -110,4 +110,4 @@ CI checks formatting, Clippy, unit tests, private-server tmux integration on x86
 
 Tags matching `v*`, published releases, and manual dispatch run the same validation and produce native Linux x86-64/ARM64 archives with the binary, license, notice, README, and SHA-256 checksums. Tag/release names must match the package version, currently `v0.1.0-beta.1`. Workflow artifacts remain available for 14 days. Published-release builds also attach archives/checksums to that release. The workflow never creates a tag or publishes a release itself.
 
-See [release procedure](docs/releases.md). The first beta has not been tagged or installed yet.
+The first beta is available as [v0.1.0-beta.1](https://github.com/joanfabregat/kelpmux/releases/tag/v0.1.0-beta.1). Installation and startup remain explicit. See the [release procedure](docs/releases.md).
