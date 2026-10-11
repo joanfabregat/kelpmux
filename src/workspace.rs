@@ -342,6 +342,7 @@ fn restore(tmux: &Tmux, root: &Path, modal: &Modal) -> Result<()> {
         tmux.run(&["kill-session", "-t", &modal.session])?;
     }
     if selected.is_some() {
+        tmux.run(&["set-option", "-pu", "-t", &modal.pane, "@kelpmux-number"])?;
         tmux.run(&["select-pane", "-t", &modal.pane])?;
     }
     fs::remove_file(modal_path(root, &modal.origin))?;
@@ -369,6 +370,22 @@ pub fn zoom(
             &inner_origin,
             if full { "full" } else { "grid" },
         );
+    }
+    if modal_path(root, &origin).exists() {
+        let existing = modal_read(root, &origin)?;
+        if !tmux
+            .run(&[
+                "list-clients",
+                "-t",
+                &existing.session,
+                "-F",
+                "#{client_name}",
+            ])?
+            .is_empty()
+        {
+            return modal_action(tmux, root, &origin, if full { "full" } else { "grid" });
+        }
+        return Err("stale modal state: use recover-modal before zooming".into());
     }
     let _lock = Lock::acquire(
         &root.join(format!("zoom-{}.lock", origin.trim_start_matches('@'))),
@@ -411,6 +428,11 @@ pub fn zoom(
     atomic(&modal_path(root, &origin), &modal)?;
     drop(setup_lock);
     let result = (|| -> Result<()> {
+        tmux.set(
+            &modal.pane,
+            "@kelpmux-number",
+            &tmux.format(&modal.pane, "#{pane_index}")?,
+        )?;
         tmux.run(&["swap-pane", "-s", &modal.pane, "-t", &modal.placeholder])?;
         tmux.run(&[
             "set-option",
@@ -420,6 +442,14 @@ pub fn zoom(
             &origin,
         ])?;
         tmux.run(&["set-option", "-t", &modal.session, "status", "on"])?;
+        tmux.run(&["set-option", "-t", &modal.session, "status-position", "top"])?;
+        tmux.run(&[
+            "set-option",
+            "-t",
+            &modal.session,
+            "status-style",
+            crate::tmux::HEADER_STYLE,
+        ])?;
         tmux.run(&["set-option", "-t", &modal.session, "status-right", ""])?;
         tmux.run(&[
             "set-option",
@@ -449,6 +479,21 @@ pub fn zoom(
             "destroy-unattached",
             "off",
         ])?;
+        // A custom default key table must explicitly enter the prefix table.
+        for option in ["prefix", "prefix2"] {
+            let prefix = tmux.run(&["show-options", "-Av", "-t", &modal.session, option])?;
+            if prefix != "None" {
+                tmux.run(&[
+                    "bind-key",
+                    "-T",
+                    "kelpmux-modal",
+                    &prefix,
+                    "switch-client",
+                    "-T",
+                    "prefix",
+                ])?;
+            }
+        }
         for (key, action) in [
             ("M-Tab", "grid"),
             ("M-0", "grid"),
@@ -481,17 +526,19 @@ pub fn zoom(
             "-T",
             "kelpmux-modal",
             "MouseDown1Status",
-            "run-shell",
-            "-b",
+            "if-shell",
+            "-F",
+            "#{==:#{mouse_status_range},kelpmux-help}",
             &format!(
-                "{command} modal-action '#{{mouse_status_range}}' --origin '#{{@kelpmux-origin}}'"
+                "run-shell -b {}",
+                shell_quote(&format!("{command} help-menu --client '#{{client_name}}'"))
             ),
+            "",
         ])?;
         loop {
             let toolbar = format!(
-                "#[range=user|grid] GRID #[norange] #[range=user|{}] {} #[norange]",
-                if modal.full { "restore" } else { "full" },
-                if modal.full { "RESTORE" } else { "FULL" }
+                "{} #[range=user|kelpmux-help] ? #[norange]",
+                crate::tmux::HEADER_FORMAT
             );
             tmux.run(&["set-option", "-t", &modal.session, "status-left", &toolbar])?;
             let dims = tmux.run(&[
@@ -570,7 +617,9 @@ pub fn zoom(
                     }
                     // Return the old pane, then move the newly selected pane into the same temporary session.
                     tmux.run(&["swap-pane", "-s", &modal.pane, "-t", &modal.placeholder])?;
+                    tmux.run(&["set-option", "-pu", "-t", &modal.pane, "@kelpmux-number"])?;
                     modal.pane = target.id.clone();
+                    tmux.set(&modal.pane, "@kelpmux-number", &target.index.to_string())?;
                     tmux.run(&["swap-pane", "-s", &modal.pane, "-t", &modal.placeholder])?;
                 }
             } else {

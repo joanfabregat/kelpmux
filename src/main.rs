@@ -185,6 +185,27 @@ fn run() -> Result<()> {
                 return Err("select requires a pane number".into());
             }
             let index: usize = args[0].parse()?;
+            let origin = opts.tmux.format(&window, "#{@kelpmux-origin}")?;
+            if origin.starts_with('@') {
+                return workspace::modal_action(
+                    &opts.tmux,
+                    &opts.root,
+                    &origin,
+                    &format!("select:{index}"),
+                );
+            }
+            if opts
+                .root
+                .join(format!("modal-{}.json", window.trim_start_matches('@')))
+                .exists()
+            {
+                return workspace::modal_action(
+                    &opts.tmux,
+                    &opts.root,
+                    &window,
+                    &format!("select:{index}"),
+                );
+            }
             let pane = opts
                 .tmux
                 .panes()?
@@ -192,6 +213,34 @@ fn run() -> Result<()> {
                 .find(|p| p.window == window && p.index == index)
                 .ok_or("no pane with that number")?;
             workspace::zoom(&opts.tmux, &opts.root, &pane.id, &client, 120, false)?;
+        }
+        "help-menu" => {
+            let client = required(&mut args, "--client")?;
+            clean(&args)?;
+            let mut arguments = vec![
+                "display-menu",
+                "-c",
+                &client,
+                "-T",
+                "Kelpmux shortcuts",
+                "-x",
+                "C",
+                "-y",
+                "C",
+            ];
+            for description in [
+                "-Read / grid: Ctrl+b z or Alt+Tab / Alt+0",
+                "-Read numbered pane: Ctrl+b p, number, Enter",
+                "-Switch reading pane: Alt+1 through Alt+9",
+                "-Fullscreen: Ctrl+b f or Alt+f",
+                "-Restore reading width: Ctrl+b R or Alt+r",
+                "-Grid size (from grid): Ctrl+b g",
+                "-Rows / columns (from grid): Ctrl+b v / h",
+                "-Help: Ctrl+b ? or click ?",
+            ] {
+                arguments.extend([description, "", ""]);
+            }
+            opts.tmux.run(&arguments)?;
         }
         "layout-menu" => {
             let window = required(&mut args, "--window")?;
@@ -309,8 +358,10 @@ fn base_command(exe: &Path, opts: &Options) -> String {
 }
 fn print_config(exe: &Path, opts: &Options) -> Result<()> {
     let base = base_command(exe, opts);
+    let header = kelpmux::tmux::HEADER_FORMAT;
+    let style = kelpmux::tmux::HEADER_STYLE;
     println!(
-        "# Optional Kelpmux integration. Review before sourcing; it replaces the listed bindings.\nset -g pane-base-index 1\nset -g pane-border-status top\nset -g pane-border-format '#[fg=#{{?@kelpmux-color,#{{@kelpmux-color}},colour245}}] #{{pane_index}} #{{@kelpmux-name}} #{{@kelpmux-status}} #[default]'\nset -g pane-active-border-style 'fg=colour39,bold'\nset -g status-left '#[range=user|kelpmux-zoom] READ/GRID #[norange] #[range=user|kelpmux-full] FULL #[norange] #[range=user|kelpmux-layout] GRID SIZE #[norange]'\nset -g status-left-length 80"
+        "# Optional Kelpmux integration. Review before sourcing; it replaces the listed bindings.\nset -g pane-base-index 1\nset -g window-style default\nset -g window-active-style default\nset -g pane-border-status top\nset -g pane-border-format '{header}'\nset -g pane-border-style '{style}'\nset -g pane-active-border-style '{style},bold'\nset -g status-left '#[range=user|kelpmux-help] ? #[norange]'\nset -g status-left-length 5"
     );
     let zoom = tmux_quote(&format!(
         "{base} zoom --pane '#{{pane_id}}' --client '#{{client_name}}'"
@@ -325,6 +376,23 @@ fn print_config(exe: &Path, opts: &Options) -> Result<()> {
         println!("bind -n {key} run-shell -b {zoom}");
     }
     println!("bind -n M-f run-shell -b {full}");
+    println!("bind z run-shell -b {zoom}");
+    println!("bind f run-shell -b {full}");
+    println!(
+        "bind R run-shell -b {}",
+        tmux_quote(&format!(
+            "{base} modal-action restore --origin '#{{?@kelpmux-origin,#{{@kelpmux-origin}},#{{window_id}}}}'"
+        ))
+    );
+    println!(
+        "bind p command-prompt -p 'Read pane:' {}",
+        tmux_quote(&format!(
+            "run-shell -b {}",
+            tmux_quote(&format!(
+                "{base} select %1 --window '#{{window_id}}' --client '#{{client_name}}'"
+            ))
+        ))
+    );
     for n in 1..=9 {
         println!(
             "bind -n M-{n} run-shell -b {}",
@@ -334,8 +402,10 @@ fn print_config(exe: &Path, opts: &Options) -> Result<()> {
         );
     }
     println!("bind g run-shell -b {menu}");
+    let help = tmux_quote(&format!("{base} help-menu --client '#{{client_name}}'"));
+    println!("bind ? run-shell -b {help}");
     println!(
-        "bind -n MouseDown1Status if-shell -F '#{{==:#{{mouse_status_range}},kelpmux-zoom}}' {{ run-shell -b {zoom} }} {{ if-shell -F '#{{==:#{{mouse_status_range}},kelpmux-full}}' {{ run-shell -b {full} }} {{ if-shell -F '#{{==:#{{mouse_status_range}},kelpmux-layout}}' {{ run-shell -b {menu} }} {{ select-window -t = }} }} }}"
+        "bind -n MouseDown1Status if-shell -F '#{{==:#{{mouse_status_range}},kelpmux-help}}' {{ run-shell -b {help} }} {{ select-window -t = }}"
     );
     Ok(())
 }

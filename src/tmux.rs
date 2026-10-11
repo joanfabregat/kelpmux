@@ -2,6 +2,9 @@ use crate::{Result, label, model::Agent};
 use serde::{Deserialize, Serialize};
 use std::{collections::BTreeMap, path::PathBuf, process::Command};
 
+pub const HEADER_FORMAT: &str = "#[fg=colour231,bg=colour24,bold] #{?@kelpmux-number,#{@kelpmux-number},#{pane_index}} #[fg=colour16,bg=#{?@kelpmux-color,#{@kelpmux-color},colour245},nobold] #{?@kelpmux-name,#{@kelpmux-name},#{b:pane_current_path}} #{@kelpmux-status} ";
+pub const HEADER_STYLE: &str = "fg=colour16,bg=#{?@kelpmux-color,#{@kelpmux-color},colour245}";
+
 #[derive(Debug, Clone, Default)]
 pub struct Tmux {
     pub socket: Option<PathBuf>,
