@@ -60,7 +60,7 @@ Generate the optional tmux fragment, review it, then merge the bindings you want
 kelpmux tmux-config > kelpmux.tmux.conf
 ```
 
-The fragment uses the absolute binary/state paths, sets pane numbering to 1, replaces the listed bindings, and adds top pane headers with a solid status-colored background and a distinct number badge. Reading mode retains the original grid number. Pane styles are reset to preserve application foreground and background colors. A single `?` opens shortcut help; workspace actions use keyboard shortcuts. It does not enable mouse mode or start the daemon. For touch controls, enable tmux mouse handling in your own configuration. Existing complex configurations should merge the fragment instead of sourcing it wholesale. Re-generate it after moving the binary.
+The fragment uses the absolute binary/state paths, sets pane numbering to 1, replaces the listed bindings, and adds top pane headers with a solid status-colored background and a distinct number badge. Border lines are blank; the focused pane has a bright number badge and arrow. Reading mode retains the original grid number. Default text is white in the focused pane and gray in others, preserving application-defined colors and backgrounds. A single `?` opens shortcut help; workspace actions use keyboard shortcuts. It does not enable mouse mode or start the daemon. For touch controls, enable tmux mouse handling in your own configuration. Existing complex configurations should merge the fragment instead of sourcing it wholesale. Re-generate it after moving the binary.
 
 | Control | Action |
 | --- | --- |
