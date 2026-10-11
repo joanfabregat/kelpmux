@@ -361,7 +361,7 @@ fn print_config(exe: &Path, opts: &Options) -> Result<()> {
     let header = kelpmux::tmux::HEADER_FORMAT;
     let style = kelpmux::tmux::HEADER_STYLE;
     println!(
-        "# Optional Kelpmux integration. Review before sourcing; it replaces the listed bindings.\nset -g pane-base-index 1\nset -g window-style default\nset -g window-active-style default\nset -g pane-border-status top\nset -g pane-border-format '{header}'\nset -g pane-border-style '{style}'\nset -g pane-active-border-style '{style},bold'\nset -g status-left '#[range=user|kelpmux-help] ? #[norange]'\nset -g status-left-length 5"
+        "# Optional Kelpmux integration. Review before sourcing; it replaces the listed bindings.\nset -g pane-base-index 1\nset -g window-style 'fg=colour248,bg=default'\nset -g window-active-style 'fg=colour255,bg=default'\nset -g pane-border-lines spaces\nset -g pane-border-status top\nset -g pane-border-format '{header}'\nset -g pane-border-style '{style}'\nset -g pane-active-border-style '{style},bold'\nset -g status-left '#[range=user|kelpmux-help] ? #[norange]'\nset -g status-left-length 5"
     );
     let zoom = tmux_quote(&format!(
         "{base} zoom --pane '#{{pane_id}}' --client '#{{client_name}}'"

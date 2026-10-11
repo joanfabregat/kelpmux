@@ -235,7 +235,7 @@ fn dry_run_is_read_only_and_generated_config_parses() {
             .tmux
             .run(&["show-options", "-gwv", "window-style"])
             .unwrap(),
-        "default"
+        "fg=colour248,bg=default"
     );
     let status = server
         .tmux
