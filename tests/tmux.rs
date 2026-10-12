@@ -504,6 +504,7 @@ fn status_titles_use_bright_and_muted_colors_with_native_floating_headers() {
             status.muted_color().trim_start_matches("colour")
         ));
         assert!(!client.output_contains("#{?pane_active"));
+        assert!(!client.output_contains("bg=colour88]"));
         let expanded = server
             .tmux
             .format(&panes[0].id, &kelpmux::tmux::header_format())
@@ -613,11 +614,13 @@ fn graphical_grid_picker_selects_on_large_and_small_terminals_and_blocks_busy_sh
     });
     let client = Client::attach(&server, 100, 28);
     client.keys(b"\x02g");
+    client.wait_output("Kelpmux grid");
+    client.keys(b"1");
     client.wait_output("Needs 3 unused; 2 available");
     assert!(client.output_contains("□"));
     client.keys(b"1");
     std::thread::sleep(Duration::from_millis(150));
-    assert_eq!(server.tmux.panes().unwrap().len(), 4);
+    assert_eq!(server.tmux.panes().unwrap().len(), 5);
     client.keys(b"\x1b");
     // Let the terminal's default escape-time expire before sending a prefix.
     std::thread::sleep(Duration::from_millis(600));
@@ -641,15 +644,38 @@ fn graphical_grid_picker_selects_on_large_and_small_terminals_and_blocks_busy_sh
     client.output.lock().unwrap().clear();
     client.click(9, 27);
     client.wait_output("Kelpmux grid");
-    // On this 28-row terminal the compact menu starts at row 3. Its first
-    // choice is blocked; the next choice has exactly enough room for both jobs.
-    client.click(50, 4);
+    let dialog = server
+        .tmux
+        .panes()
+        .unwrap()
+        .into_iter()
+        .find(|p| p.floating)
+        .unwrap();
+    let position = server
+        .tmux
+        .format(&dialog.id, "#{pane_left} #{pane_top}")
+        .unwrap();
+    let position: Vec<usize> = position
+        .split_whitespace()
+        .map(|s| s.parse().unwrap())
+        .collect();
+    client.click(position[0] + 4, position[1] + 4);
     std::thread::sleep(Duration::from_millis(100));
-    assert_eq!(server.tmux.panes().unwrap().len(), 4);
-    client.output.lock().unwrap().clear();
-    client.click(9, 27);
-    client.wait_output("Kelpmux grid");
-    client.click(50, 6);
+    assert_eq!(server.tmux.panes().unwrap().len(), 5); // Four shells + picker.
+    // Second card retains both occupied panes and removes the two idle shells.
+    client.keys(format!("\x1b[<35;{};{}M", position[0] + 27, position[1] + 5).as_bytes());
+    wait(|| {
+        server
+            .tmux
+            .run(&["capture-pane", "-p", "-e", "-t", &dialog.id])
+            .is_ok_and(|s| {
+                s.lines()
+                    .skip(2)
+                    .take(6)
+                    .all(|line| line.contains("48;5;39"))
+            })
+    });
+    client.click(position[0] + 26, position[1] + 4);
     wait(|| server.tmux.panes().unwrap().len() == 2);
     let remaining = server.tmux.panes().unwrap();
     for pane in busy {
@@ -851,12 +877,12 @@ fn mouse_controls_sticky_help_and_word_navigation_preserve_agent_panes() {
     client.output.lock().unwrap().clear();
     client.click(2, 59);
     client.wait_output("Kelpmux shortcuts");
-    let menu_width = "Fullscreen / reading width: Ctrl+b f or [Full / Window]"
+    let menu_width = "Fullscreen / reading width: Ctrl+b f or Full / Window"
         .chars()
         .count()
         + 4;
     let menu_x = (240 - 1) / 2 - menu_width / 2;
-    let menu_y = (59 - 1) / 2 + 9 / 2 - 9;
+    let menu_y = (59 - 1) / 2 + 10 / 2 - 10;
     client.click(menu_x + menu_width - 4, menu_y);
     client.keys(b"\x1b[24~");
     wait(|| probe() == "hit");
@@ -906,7 +932,7 @@ fn mouse_controls_sticky_help_and_word_navigation_preserve_agent_panes() {
         .map(|v| v.parse().unwrap())
         .collect();
     client.output.lock().unwrap().clear();
-    client.click(coords[0] + coords[2] - 10, coords[1] - 1);
+    client.click(coords[0] + coords[2] - 7, coords[1] - 1);
     wait(|| {
         server
             .tmux
@@ -915,7 +941,7 @@ fn mouse_controls_sticky_help_and_word_navigation_preserve_agent_panes() {
             == "1"
     });
     // Fullscreen hides the tiled header; equivalent controls remain in the status bar.
-    client.wait_output("[ Window ]");
+    client.wait_output("Window");
     client.output.lock().unwrap().clear();
     client.click(30, 59);
     wait(|| {
@@ -925,7 +951,7 @@ fn mouse_controls_sticky_help_and_word_navigation_preserve_agent_panes() {
             .unwrap()
             == "0"
     });
-    client.wait_output("[ Full ]");
+    client.wait_output("Full");
     let coords = server
         .tmux
         .format(&original.id, "#{pane_left} #{pane_top} #{pane_width}")
@@ -934,7 +960,7 @@ fn mouse_controls_sticky_help_and_word_navigation_preserve_agent_panes() {
         .split_whitespace()
         .map(|v| v.parse().unwrap())
         .collect();
-    client.click(coords[0] + coords[2] - 2, coords[1] - 1);
+    client.click(coords[0] + coords[2] - 1, coords[1] - 1);
     wait(|| {
         server
             .tmux
@@ -956,6 +982,68 @@ fn mouse_controls_sticky_help_and_word_navigation_preserve_agent_panes() {
             .unwrap(),
         "0"
     );
+}
+
+#[test]
+#[ignore = "requires tmux 3.8; CI explicitly runs this suite"]
+fn native_swap_map_captures_digits_and_cancellation_without_losing_processes() {
+    let server = Server::new();
+    let window = server.window();
+    workspace::resize(
+        &server.tmux,
+        &server.state(),
+        &window,
+        Grid::parse("2x2").unwrap(),
+        false,
+    )
+    .unwrap();
+    server.wait_idle();
+    let original = server.tmux.panes().unwrap();
+    let source = &original[0];
+    let destination = &original[1];
+    let position = |pane: &str| {
+        server
+            .tmux
+            .format(pane, "#{pane_left} #{pane_top}")
+            .unwrap()
+    };
+    let config = server.cli(&["tmux-config"]);
+    assert!(config.status.success());
+    let path = server.root.join("swap.conf");
+    fs::write(&path, config.stdout).unwrap();
+    server
+        .tmux
+        .run(&["source-file", path.to_str().unwrap()])
+        .unwrap();
+    let client = Client::attach(&server, 240, 60);
+    let before_source = position(&source.id);
+    let before_destination = position(&destination.id);
+    server.tmux.run(&["select-pane", "-t", &source.id]).unwrap();
+    client.keys(b"\x02s");
+    wait(|| server.tmux.format(&source.id, "#{pane_in_mode}").unwrap() == "1");
+    client.keys(destination.index.to_string().as_bytes());
+    wait(|| {
+        position(&source.id) == before_destination && position(&destination.id) == before_source
+    });
+    assert_eq!(
+        server.tmux.format(&window, "#{pane_id}").unwrap(),
+        source.id
+    );
+    client.keys(b"\x02s");
+    wait(|| server.tmux.format(&source.id, "#{pane_in_mode}").unwrap() == "1");
+    client.keys(b"\x1b");
+    wait(|| server.tmux.format(&source.id, "#{pane_in_mode}").unwrap() == "0");
+    assert_eq!(position(&source.id), before_destination);
+    for pane in original {
+        assert!(
+            server
+                .tmux
+                .panes()
+                .unwrap()
+                .iter()
+                .any(|p| p.id == pane.id && p.pid == pane.pid)
+        );
+    }
 }
 
 #[test]

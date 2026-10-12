@@ -6,7 +6,7 @@ use crate::{
 };
 use std::path::Path;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Grid {
     pub cols: usize,
     pub rows: usize,
@@ -28,6 +28,7 @@ impl Grid {
     }
 }
 
+#[derive(serde::Serialize, serde::Deserialize)]
 pub struct GridChoice {
     pub grid: Grid,
     pub current: bool,
