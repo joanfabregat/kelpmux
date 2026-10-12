@@ -2,8 +2,18 @@ use crate::{Result, label, model::Agent};
 use serde::{Deserialize, Serialize};
 use std::{collections::BTreeMap, path::PathBuf, process::Command};
 
-pub const HEADER_FORMAT: &str = "#[fg=#{?pane_active,colour16,colour231},bg=#{?pane_active,colour39,colour24},bold] #{?pane_active,▶, } #{pane_index} #[fg=colour16,bg=#{?@kelpmux-color,#{@kelpmux-color},colour245},nobold] #{?@kelpmux-name,#{@kelpmux-name},#{b:pane_current_path}} #{@kelpmux-status} ";
-pub const HEADER_STYLE: &str = "fg=colour16,bg=#{?@kelpmux-color,#{@kelpmux-color},colour245}";
+pub const HEADER_BACKGROUND: &str = "#{?pane_active,#{?@kelpmux-color,#{@kelpmux-color},colour245},#{?@kelpmux-color-muted,#{@kelpmux-color-muted},colour239}}";
+pub const BORDER_STYLE: &str = "fg=colour238,bg=colour234";
+
+pub fn header_format() -> String {
+    let badge = "#[fg=#{?pane_active,colour16,colour231},bg=#{?pane_active,colour39,colour24},bold] #{?pane_active,▶, } #{pane_index} ";
+    let foreground = "#{?pane_active,colour16,colour252}";
+    let text = " #{?@kelpmux-name,#{@kelpmux-name},#{b:pane_current_path}} #{@kelpmux-status} ";
+    // Fill the entire title independently of the quiet one-column borders.
+    format!(
+        "#[fill={HEADER_BACKGROUND}]{badge}#[fg={foreground},bg={HEADER_BACKGROUND},nobold]{text}"
+    )
+}
 
 #[derive(Debug, Clone, Default)]
 pub struct Tmux {
@@ -81,6 +91,11 @@ impl Tmux {
         self.set(&agent.pane, "@kelpmux-name", &label(&agent.name))?;
         self.set(&agent.pane, "@kelpmux-status", agent.status.text())?;
         self.set(&agent.pane, "@kelpmux-color", agent.status.color())?;
+        self.set(
+            &agent.pane,
+            "@kelpmux-color-muted",
+            agent.status.muted_color(),
+        )?;
         self.set(
             &agent.pane,
             "@kelpmux-session",

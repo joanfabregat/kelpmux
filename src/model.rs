@@ -50,6 +50,15 @@ impl Status {
             _ => "colour245",
         }
     }
+    pub fn muted_color(self) -> &'static str {
+        match self {
+            Self::Working => "colour24",
+            Self::InputNeeded => "colour94",
+            Self::TurnFinished => "colour29",
+            Self::Failed => "colour88",
+            _ => "colour239",
+        }
+    }
     pub fn from_live(value: &str) -> Self {
         match value {
             "working" | "running" | "busy" | "active" => Self::Working,

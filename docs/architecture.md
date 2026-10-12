@@ -6,7 +6,7 @@ Kelpmux is a small Rust helper beside unmodified tmux 3.8+. tmux owns PTYs, term
 
 A scan deduplicates linked tmux panes, snapshots Linux processes, and walks descendants from each pane shell. The outermost interactive Claude/Codex process is the pane's agent; headless jobs and shared app/MCP servers are excluded. PID plus process birth ticks prevents PID reuse confusion. Metadata adapters produce session ID, name and lifecycle evidence; unfamiliar or missing evidence is unknown.
 
-The daemon writes native pane options: `@kelpmux-name`, `@kelpmux-status`, `@kelpmux-color` and `@kelpmux-session`. tmux renders these in the user's chosen header format. Optional hooks supply stronger identity/lifecycle evidence without launching agents through Kelpmux.
+The daemon writes native pane options: `@kelpmux-name`, `@kelpmux-status`, `@kelpmux-color`, `@kelpmux-color-muted` and `@kelpmux-session`. tmux chooses the bright or muted title background on focus changes without waiting for a daemon scan; the full title fill is independent of neutral one-column borders. Optional hooks supply stronger identity/lifecycle evidence without launching agents through Kelpmux.
 
 Registry replacement is private, atomic and file-locked. The JSONL journal records metadata changes and prunes after seven days. It stores no transcript or hook payload. Current live records remain even for longer-running agents. Corrupt registry data fails visibly. Discovery fixtures never use actual user credentials or transcripts.
 

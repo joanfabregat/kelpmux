@@ -22,7 +22,7 @@ Agent metadata and safe workspace helpers for tmux, inspired by Monterey's kelp 
 
 - Native floating reading view capped at 120 content columns. Other panes remain visible and keep running. Small windows use native fullscreen zoom automatically; larger windows restore the width cap. Explicit fullscreen stays fullscreen until restored.
 - The same pane, process, index, and scrollback remain in the same window. Returning restores its grid position. No nested client, temporary session, sleeping placeholder, separate key table, or reading controller stays running.
-- Agent status, session name and identifiable session ID are written to native pane options. The optional appearance example uses a status-colored title background, a distinct number badge, a focus arrow, and white/gray default text while preserving application colors.
+- Agent status, session name and identifiable session ID are written to native pane options. The optional appearance example uses a bright status-colored title background for the selected pane and a darker shade of the same color for other panes. A distinct number badge and focus arrow identify selection; subdued one-column separators and white/gray default text preserve application colors.
 - Guarded grids: `1x1`, `2x1`, `2x2`, `3x2`, `2x3`, `3x3` (columns × rows). Growing adds shells; shrinking removes only enough unused shells. Foreground, background and stopped jobs all make a pane occupied.
 - Seven-day metadata journal: agent type, session ID when identifiable, name, directory, pane/window IDs, process identity, and lifecycle changes. Resume using the agent's own TUI.
 
