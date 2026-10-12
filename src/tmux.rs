@@ -9,7 +9,11 @@ pub fn header_format() -> String {
     let badge = "#[fg=#{?pane_active,colour16,colour231},bg=#{?pane_active,colour39,colour24},bold] #{?pane_active,▶, } #{pane_index} ";
     let foreground = "#{?pane_active,colour16,colour252}";
     let text = " #{?@kelpmux-name,#{@kelpmux-name},#{b:pane_current_path}} #{@kelpmux-status} ";
-    let controls = "#{?@kelpmux-reading-width,#[align=right]#[fg=colour16#,bg=colour39]#[range=control|8] #{?@kelpmux-reading-full,Window,Full} #[norange]#[bg=default] #[fg=colour231#,bg=colour88]#[range=control|9] × #[norange],}";
+    let controls = concat!(
+        "#[align=right]#[fg=colour231,bg=colour24]#[range=control|7] #{?@kelpmux-reading-width,↙,↗} #[norange]#[bg=default] ",
+        "#[fg=colour16,bg=colour39]#[range=control|8] #{?@kelpmux-reading-full,▣,⛶} #[norange]",
+        "#{?@kelpmux-reading-width,#[bg=default] #[fg=colour231#,bg=colour88]#[range=control|9] × #[norange],}",
+    );
     // Fill the entire title independently of the quiet one-column borders.
     format!(
         "#[fill={HEADER_BACKGROUND}]{badge}#[fg={foreground},bg={HEADER_BACKGROUND},nobold]{text}{controls}"
