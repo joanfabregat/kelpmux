@@ -1,6 +1,6 @@
 # Architecture
 
-Kelpmux is a small Rust helper beside unmodified tmux 3.8+. tmux owns PTYs, terminal emulation, drawing, focus, mouse input, native layouts, floating panes, zoom, clients and application processes. User-owned tmux configuration owns the interface. Kelpmux owns agent metadata, guarded grid operations, optional journal retention and reading geometry commands. The foreground discovery daemon is a metadata poller, not a terminal server or agent launcher.
+Kelpmux is a small Rust helper beside unmodified tmux 3.8+. tmux owns PTYs, terminal emulation, agent rendering, focus, mouse input, native layouts, floating panes, zoom, clients and application processes. User-owned tmux configuration owns the interface. Kelpmux owns agent metadata, guarded grid operations, optional journal retention, reading geometry commands, and the short-lived grid-card dialog. The foreground discovery daemon is a metadata poller, not a terminal server or agent launcher.
 
 ## Discovery and journal
 
@@ -11,6 +11,8 @@ The daemon writes native pane options: `@kelpmux-name`, `@kelpmux-status`, `@kel
 Registry replacement is private, atomic and file-locked. The JSONL journal records metadata changes and prunes after seven days. It stores no transcript or hook payload. Current live records remain even for longer-running agents. Corrupt registry data fails visibly. Discovery fixtures never use actual user credentials or transcripts.
 
 ## Native reading view
+
+The grid chooser uses a temporary native modal pane with close-on-outside-click and Escape cancellation. Its Rust renderer draws only six preset cards and handles keyboard/mouse input on its own PTY; it never proxies agent output. A private window-option request joins the dialog to its invoking helper. The preset is applied only after that dialog pane disappears, so it cannot count as an occupied agent or be removed as a shrink candidate. Request options are cleared and occupancy is validated again on apply. Pane movement uses native `display-panes` previews and digit/click selection with stable source/destination IDs; no text command prompt is involved.
 
 `break-pane -W` lifts the existing pane out of its tile while retaining its native window, pane ID, index, PID and scrollback. `resize-pane` sets the width cap and height, and `move-pane -P centre` centers it. Native zoom gives explicit fullscreen and automatically uses all columns when the window is smaller than the cap. A native `window-resized` hook calls a short-lived geometry helper to restore the cap when the screen grows; explicit fullscreen remains fullscreen.
 

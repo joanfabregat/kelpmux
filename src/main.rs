@@ -232,7 +232,7 @@ fn run() -> Result<()> {
                 "-c",
                 &client,
                 "-T",
-                "Kelpmux shortcuts#[align=right][×]",
+                "Kelpmux shortcuts#[align=right]#[fg=colour231,bg=colour88] × ",
                 "-x",
                 "C",
                 "-y",
@@ -242,11 +242,12 @@ fn run() -> Result<()> {
             for description in [
                 "-Read / grid: Ctrl+b z or Alt+Tab / Alt+0",
                 "-Switch reading pane: Alt+1 through Alt+9",
-                "-Fullscreen / reading width: Ctrl+b f or [Full / Window]",
-                "-Return to grid: [×] in reading header",
-                "-Grid picker: Ctrl+b g or [Grid]",
+                "-Fullscreen / reading width: Ctrl+b f or Full / Window",
+                "-Return to grid: × in reading header",
+                "-Grid picker: Ctrl+b g or Grid",
+                "-Swap pane: Ctrl+b s, number / click",
                 "-Rows / columns (from grid): Ctrl+b v / h",
-                "-Help: click ? again / outside / [×] to close",
+                "-Help: click ? again / outside / × to close",
             ] {
                 arguments.extend([description, "", ""]);
             }
@@ -259,86 +260,140 @@ fn run() -> Result<()> {
             // The grid control also returns managed reading panes to their tiles.
             workspace::grid(&opts.tmux, &opts.root, &window)?;
             let base = base_command(&env::current_exe()?, &opts);
-            let height: usize = opts
-                .tmux
-                .run(&["display-message", "-p", "-c", &client, "#{client_height}"])?
-                .parse()?;
             let choices = workspace::grid_choices(&opts.tmux, &window)?;
-            let mut arguments: Vec<String> = [
-                "display-menu",
-                "-M",
+            let client_geometry = opts.tmux.run(&[
+                "display-message",
+                "-p",
                 "-c",
                 &client,
-                "-t",
-                &window,
-                "-T",
-                "Kelpmux grid#[align=right][×]",
-                "-x",
-                "C",
-                "-y",
-                "C",
-                "--",
-            ]
-            .into_iter()
-            .map(str::to_owned)
-            .collect();
-            for (index, choice) in choices.iter().enumerate() {
-                let grid = format!("{}x{}", choice.grid.cols, choice.grid.rows);
-                let command = format!(
-                    "run-shell -b {}",
-                    tmux_quote(&format!(
-                        "{base} layout {grid} --window {} >/dev/null",
-                        kelpmux::shell_quote(&window)
-                    ))
-                );
-                let mut drawing = choice.drawing(height < 40);
-                if height < 22 {
-                    drawing = vec![drawing.join(" / ")];
-                }
-                for (row, line) in drawing.iter().enumerate() {
-                    let mut name = format!("{line:<13}");
-                    if row == 0 {
-                        name.push_str(&format!(
-                            "  {} cols x {} rows",
-                            choice.grid.cols, choice.grid.rows
-                        ));
-                        if choice.current {
-                            name.push_str("  ● current");
-                        }
-                        if let Some(reason) = &choice.blocked {
-                            name.push_str(&format!("  {reason}"));
-                        }
-                    }
-                    if choice.blocked.is_some() {
-                        name.insert(0, '-');
-                    } else if choice.current {
-                        name = format!("#[fg=colour39,bold]{name}#[default]");
-                    }
-                    arguments.extend([
-                        name,
-                        if row == 0 && choice.blocked.is_none() {
-                            (index + 1).to_string()
-                        } else {
-                            String::new()
-                        },
-                        if choice.blocked.is_none() {
-                            command.clone()
-                        } else {
-                            String::new()
-                        },
-                    ]);
-                }
-                if index + 1 < choices.len() && height >= 22 {
-                    arguments.push(String::new());
-                }
+                "#{client_width} #{client_height}",
+            ])?;
+            let client_dims: Vec<usize> = client_geometry
+                .split_whitespace()
+                .map(str::parse)
+                .collect::<std::result::Result<_, _>>()?;
+            let geometry = opts
+                .tmux
+                .format(&window, "#{window_width} #{window_height}")?;
+            let dims: Vec<usize> = geometry
+                .split_whitespace()
+                .map(str::parse)
+                .collect::<std::result::Result<_, _>>()?;
+            if dims[0] < kelpmux::picker::WIDTH
+                || dims[1] < 17
+                || client_dims[0] < 68
+                || client_dims[1] < 18
+            {
+                return Err("grid cards need at least 68 columns and 17 rows".into());
             }
-            arguments.extend([
-                "-Number / arrows + Enter / click · Esc closes".into(),
-                String::new(),
-                String::new(),
-            ]);
+            let source = opts.tmux.format(&window, "#{pane_id}")?;
+            let request = format!("@kelpmux-picker-{}", std::process::id());
             opts.tmux
-                .run(&arguments.iter().map(String::as_str).collect::<Vec<_>>())?;
+                .run(&["set-option", "-w", "-t", &window, &request, ""])?;
+            let command = format!(
+                "exec {base} grid-dialog --window {} --request {} --choices {}",
+                kelpmux::shell_quote(&window),
+                kelpmux::shell_quote(&request),
+                kelpmux::shell_quote(&serde_json::to_string(&choices)?)
+            );
+            let result = (|| -> Result<()> {
+                let pane = opts.tmux.run(&[
+                    "new-pane",
+                    "-O",
+                    "-K",
+                    "-C",
+                    "-D",
+                    "-P",
+                    "-F",
+                    "#{pane_id}",
+                    "-B",
+                    "none",
+                    "-t",
+                    &window,
+                    "-x",
+                    "68",
+                    "-y",
+                    "17",
+                    "-X",
+                    &((dims[0] - 68) / 2).to_string(),
+                    "-Y",
+                    &((dims[1] - 17) / 2).to_string(),
+                    &command,
+                ])?;
+                let start = std::time::Instant::now();
+                while opts.tmux.panes()?.iter().any(|p| p.id == pane) {
+                    if start.elapsed() > Duration::from_secs(180) {
+                        return Err("grid dialog did not close".into());
+                    }
+                    std::thread::sleep(Duration::from_millis(80));
+                }
+                let shape = opts
+                    .tmux
+                    .run(&["show-options", "-wqv", "-t", &window, &request])?;
+                if !shape.is_empty() {
+                    workspace::resize(
+                        &opts.tmux,
+                        &opts.root,
+                        &window,
+                        Grid::parse(&shape)?,
+                        false,
+                    )?;
+                }
+                if opts.tmux.panes()?.iter().any(|p| p.id == source) {
+                    opts.tmux.run(&["select-pane", "-t", &source])?;
+                }
+                Ok(())
+            })();
+            let _ = opts
+                .tmux
+                .run(&["set-option", "-wu", "-t", &window, &request]);
+            result?;
+        }
+        "grid-dialog" => {
+            let window = required(&mut args, "--window")?;
+            let request = required(&mut args, "--request")?;
+            let choices: Vec<workspace::GridChoice> =
+                serde_json::from_str(&required(&mut args, "--choices")?)?;
+            clean(&args)?;
+            if !request
+                .strip_prefix("@kelpmux-picker-")
+                .is_some_and(|s| !s.is_empty() && s.bytes().all(|b| b.is_ascii_digit()))
+            {
+                return Err("invalid picker request".into());
+            }
+            let pane = env::var("TMUX_PANE")?;
+            opts.tmux
+                .run(&["set-option", "-p", "-t", &pane, "pane-border-status", "off"])?;
+            opts.tmux
+                .run(&["set-option", "-p", "-t", &pane, "remain-on-exit", "off"])?;
+            if let Some(index) = kelpmux::picker::choose(&choices)? {
+                let grid = choices[index].grid;
+                opts.tmux.run(&[
+                    "set-option",
+                    "-w",
+                    "-t",
+                    &window,
+                    &request,
+                    &format!("{}x{}", grid.cols, grid.rows),
+                ])?;
+            }
+        }
+        "swap-picker" => {
+            let pane = required(&mut args, "--pane")?;
+            clean(&args)?;
+            if !workspace::valid_id(&pane, '%') {
+                return Err("swap picker needs a pane ID".into());
+            }
+            let window = opts.tmux.format(&pane, "#{window_id}")?;
+            workspace::grid(&opts.tmux, &opts.root, &window)?;
+            opts.tmux.run(&[
+                "display-panes",
+                "-d",
+                "0",
+                "-t",
+                &pane,
+                &format!("swap-pane -d -s {pane} -t '%%'; select-pane -t {pane}"),
+            ])?;
         }
         "close" => {
             let pane = required(&mut args, "--pane")?;
@@ -438,12 +493,12 @@ fn print_config(exe: &Path, opts: &Options, appearance: bool) -> Result<()> {
     let header = kelpmux::tmux::header_format();
     let style = kelpmux::tmux::BORDER_STYLE;
     let status_left = concat!(
-        "#[default]#[range=user|kelpmux-help][ ? ]#[norange] ",
-        "#[range=user|kelpmux-grid][ Grid ]#[norange] ",
+        "#[fg=colour255,bg=colour24]#[range=user|kelpmux-help] ? #[norange]#[default] ",
+        "#[fg=colour16,bg=colour39]#[range=user|kelpmux-grid] Grid #[norange]#[default] ",
         "#{pane_index}: #{=/24/...:#{?@kelpmux-name,#{@kelpmux-name},#{b:pane_current_path}}} ",
         "#{?#{&&:#{@kelpmux-reading-width},#{window_zoomed_flag}},",
-        "#[range=user|kelpmux-full][ #{?@kelpmux-reading-full,Window,Full} ]#[norange] ",
-        "#[range=user|kelpmux-close][ × ]#[norange],}",
+        "#[fg=colour16#,bg=colour39]#[range=user|kelpmux-full] #{?@kelpmux-reading-full,Window,Full} #[norange]#[default] ",
+        "#[fg=colour231#,bg=colour88]#[range=user|kelpmux-close] × #[norange]#[default],}",
     );
     println!("# Optional tmux 3.8+ example. Your tmux configuration owns appearance and bindings.");
     if appearance {
@@ -468,6 +523,10 @@ fn print_config(exe: &Path, opts: &Options, appearance: bool) -> Result<()> {
     let restore = tmux_quote(&format!("{base} restore --pane '#{{pane_id}}'"));
     println!("bind R run-shell -b {restore}");
     println!("bind p previous-window");
+    println!(
+        "bind s run-shell -b {}",
+        tmux_quote(&format!("{base} swap-picker --pane '#{{pane_id}}'"))
+    );
     for press in ["MouseDown1", "DoubleClick1", "TripleClick1"] {
         println!(
             "bind -n {press}Control8 if-shell -F -t = '#{{@kelpmux-reading-width}}' {{ run-shell -b -t = {full} }}"

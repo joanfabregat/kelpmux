@@ -16,7 +16,7 @@
 
 Agent metadata and safe workspace helpers for tmux, inspired by Monterey's kelp forests. Apache-2.0 licensed.
 
-**tmux owns the terminals and the interface.** Kelpmux supplies agent metadata, guarded grid changes, a seven-day session journal, and small commands for native floating-pane geometry. Your tmux configuration owns appearance, focus, mouse handling, shortcuts, and help. Agents launch normally; discovery is the default and lifecycle hooks are optional.
+**tmux owns agent terminals and windowing.** Kelpmux supplies agent metadata, guarded grid changes, a seven-day session journal, a small grid-card dialog, and commands for native floating-pane geometry. Your tmux configuration owns appearance, focus, mouse handling, shortcuts, and help. Agents launch normally; discovery is the default and lifecycle hooks are optional.
 
 ## Native tmux scope
 
@@ -75,7 +75,7 @@ kelpmux tmux-config > kelpmux-example.tmux.conf
 kelpmux tmux-config --bindings-only > kelpmux-bindings.tmux.conf
 ```
 
-The full example includes optional header appearance, `[Full / Window]` and `[×]` controls on reading headers, and neutral `[?]` and `[Grid]` buttons in the status bar. Closing a reading view returns its pane to the grid without terminating it. When native fullscreen hides the header, the equivalent reading controls appear in the status bar. `--bindings-only` leaves appearance, pane numbering, mouse settings, status line and text styles under your existing configuration. Both variants explicitly replace the documented keyboard and control-click bindings and install a `window-resized[80]` hook to refit native reading panes. Regenerate after moving the helper or changing the binary/socket/state paths. Nothing enables mouse handling or starts discovery; retain `set -g mouse on` in your own configuration if desired.
+The full example includes optional header appearance, colored Full / Window and × controls on reading headers, and colored ? and Grid buttons in the status bar. Closing a reading view returns its pane to the grid without terminating it. When native fullscreen hides the header, the equivalent reading controls appear in the status bar. `--bindings-only` leaves appearance, pane numbering, mouse settings, status line and text styles under your existing configuration. Both variants explicitly replace the documented keyboard and control-click bindings and install a `window-resized[80]` hook to refit native reading panes. Regenerate after moving the helper or changing the binary/socket/state paths. Nothing enables mouse handling or starts discovery; retain `set -g mouse on` in your own configuration if desired.
 
 The example assumes the default `Ctrl+B` prefix:
 
@@ -83,15 +83,16 @@ The example assumes the default `Ctrl+B` prefix:
 | --- | --- |
 | Prefix then `z`, or Option/Alt+Tab / Option/Alt+0 | Toggle reading view / return to grid |
 | Option/Alt+1…9 | Read a numbered pane |
-| Prefix then `f`, or header `[Full / Window]` | Toggle native fullscreen / capped reading width |
-| Header `[×]` | Return the reading pane to its grid tile |
+| Prefix then `f`, or header Full / Window | Toggle native fullscreen / capped reading width |
+| Header × | Return the reading pane to its grid tile |
 | Prefix then uppercase `R` | Explicitly restore capped reading width |
-| Prefix then `g`, or click/tap `[Grid]` | Graphical grid picker; returns managed reading panes first |
+| Prefix then `g`, or click/tap Grid | Grid-card picker; returns managed reading panes first |
+| Prefix then `s`, then number or click | Native pane map: swap with the destination, keeping focus on the moved pane |
 | Prefix then `?`, or click/tap `?` | Shortcut help |
 
 Normal tmux keyboard and mouse behavior remain in charge. Outside menus, Escape goes to the application. The old numbered prompt on prefix `p` is removed; it resumes tmux's standard previous-window action. Alt+f and Alt+r are unbound so application editing shortcuts pass through; Option+Right often sends Alt+f for forward-word. Modified arrow keys pass to the application. Existing `h`/`v`, pane swap, balance, copy mode, and other bindings can stay in your own configuration. Option must send Meta/Alt sequences for the remaining shortcuts to work.
 
-The grid picker labels each drawing as columns x rows, marks the current shape, and disables unsafe choices with an explanation such as “Needs 3 unused; 1 available”. Every occupied pane, including background and stopped jobs, requires a retained slot. Press its number, use arrows and Enter, or click/tap any row of the drawing. Help and grid menus remain open after mouse release; click their status button again, outside the menu, or the top-right `[×]` to close them. Escape also closes a menu. Tall terminals show connected boxes; shorter terminals show compact pane squares, with a single-line preview on very short screens. Applying a choice checks pane occupancy again.
+The grid picker shows six cards in three columns and two rows, with a full-card blue highlight on hover or keyboard selection. Each card labels its diagram as columns x rows. The current shape is marked; unavailable cards remain gray and explain why when selected, for example “Needs 3 unused; 1 available”. Every occupied pane, including background and stopped jobs, requires a retained slot. Choose by number, arrows and Enter, or click/tap. Click outside, the Grid button again, the red ×, or press Escape to cancel. The dialog needs 68 columns and 18 terminal rows, including the status line, and cancels after two minutes without input. Applying a choice waits for the dialog to close and checks pane occupancy again. Help retains its sticky native menu and closes on a second ? click, outside click, or its colored ×.
 
 CLI commands use stable native IDs:
 
