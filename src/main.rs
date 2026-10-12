@@ -28,6 +28,8 @@ Commands:
                                    Expand or safely shrink a grid
   read --pane %ID [--width COLS]    Toggle native floating reading view (default 120)
   fullscreen --pane %ID             Full-width native zoom of reading pane
+  fullscreen-toggle --pane %ID      Toggle fullscreen / capped reading width
+  close --pane %ID                  Return reading pane to grid; never kill it
   restore --pane %ID                Restore capped reading width
   grid --window @ID                 Return reading panes to their saved grid tiles
   select N --window @ID             Read a numbered pane without changing its index
@@ -225,10 +227,12 @@ fn run() -> Result<()> {
             clean(&args)?;
             let mut arguments = vec![
                 "display-menu",
+                "-O",
+                "-M",
                 "-c",
                 &client,
                 "-T",
-                "Kelpmux shortcuts",
+                "Kelpmux shortcuts#[align=right][×]",
                 "-x",
                 "C",
                 "-y",
@@ -237,13 +241,12 @@ fn run() -> Result<()> {
             ];
             for description in [
                 "-Read / grid: Ctrl+b z or Alt+Tab / Alt+0",
-                "-Read numbered pane: Ctrl+b p, number, Enter",
                 "-Switch reading pane: Alt+1 through Alt+9",
-                "-Fullscreen: Ctrl+b f or Alt+f",
-                "-Restore reading width: Ctrl+b R or Alt+r",
-                "-Grid size (from grid): Ctrl+b g",
+                "-Fullscreen / reading width: Ctrl+b f or [Full / Window]",
+                "-Return to grid: [×] in reading header",
+                "-Grid picker: Ctrl+b g or [Grid]",
                 "-Rows / columns (from grid): Ctrl+b v / h",
-                "-Help: Ctrl+b ? or click ?",
+                "-Help: click ? again / outside / [×] to close",
             ] {
                 arguments.extend([description, "", ""]);
             }
@@ -253,6 +256,8 @@ fn run() -> Result<()> {
             let window = required(&mut args, "--window")?;
             let client = required(&mut args, "--client")?;
             clean(&args)?;
+            // The grid control also returns managed reading panes to their tiles.
+            workspace::grid(&opts.tmux, &opts.root, &window)?;
             let base = base_command(&env::current_exe()?, &opts);
             let height: usize = opts
                 .tmux
@@ -261,12 +266,13 @@ fn run() -> Result<()> {
             let choices = workspace::grid_choices(&opts.tmux, &window)?;
             let mut arguments: Vec<String> = [
                 "display-menu",
+                "-M",
                 "-c",
                 &client,
                 "-t",
                 &window,
                 "-T",
-                "Kelpmux grid",
+                "Kelpmux grid#[align=right][×]",
                 "-x",
                 "C",
                 "-y",
@@ -293,7 +299,7 @@ fn run() -> Result<()> {
                     let mut name = format!("{line:<13}");
                     if row == 0 {
                         name.push_str(&format!(
-                            "  {} cols × {} rows",
+                            "  {} cols x {} rows",
                             choice.grid.cols, choice.grid.rows
                         ));
                         if choice.current {
@@ -334,7 +340,12 @@ fn run() -> Result<()> {
             opts.tmux
                 .run(&arguments.iter().map(String::as_str).collect::<Vec<_>>())?;
         }
-        "read" | "zoom" | "fullscreen" | "restore" => {
+        "close" => {
+            let pane = required(&mut args, "--pane")?;
+            clean(&args)?;
+            workspace::close_reading(&opts.tmux, &opts.root, &pane)?;
+        }
+        "read" | "zoom" | "fullscreen" | "fullscreen-toggle" | "restore" => {
             let pane = required(&mut args, "--pane")?;
             option(&mut args, "--client")?;
             let width = option(&mut args, "--width")?
@@ -348,6 +359,7 @@ fn run() -> Result<()> {
                 width,
                 match command.as_str() {
                     "fullscreen" => Reading::Fullscreen,
+                    "fullscreen-toggle" => Reading::ToggleFullscreen,
                     "restore" => Reading::Restore,
                     _ => Reading::Toggle,
                 },
@@ -425,35 +437,45 @@ fn print_config(exe: &Path, opts: &Options, appearance: bool) -> Result<()> {
     let base = base_command(exe, opts);
     let header = kelpmux::tmux::header_format();
     let style = kelpmux::tmux::BORDER_STYLE;
+    let status_left = concat!(
+        "#[default]#[range=user|kelpmux-help][ ? ]#[norange] ",
+        "#[range=user|kelpmux-grid][ Grid ]#[norange] ",
+        "#{pane_index}: #{=/24/...:#{?@kelpmux-name,#{@kelpmux-name},#{b:pane_current_path}}} ",
+        "#{?#{&&:#{@kelpmux-reading-width},#{window_zoomed_flag}},",
+        "#[range=user|kelpmux-full][ #{?@kelpmux-reading-full,Window,Full} ]#[norange] ",
+        "#[range=user|kelpmux-close][ × ]#[norange],}",
+    );
     println!("# Optional tmux 3.8+ example. Your tmux configuration owns appearance and bindings.");
     if appearance {
         println!(
-            "set -g pane-base-index 1\nset -g window-style 'fg=colour248,bg=default'\nset -g window-active-style 'fg=colour255,bg=default'\nset -g pane-border-lines spaces\nset -g pane-border-status top\nset -g pane-border-format '{header}'\nset -g pane-border-style '{style}'\nset -g pane-active-border-style '{style},bold'\nset -g status-left '#[range=user|kelpmux-help] ? #[norange] {header}'\nset -g status-left-length 100"
+            "set -g pane-base-index 1\nset -g window-style 'fg=colour248,bg=default'\nset -g window-active-style 'fg=colour255,bg=default'\nset -g pane-border-lines spaces\nset -g pane-border-status top\nset -g pane-border-format '{header}'\nset -g pane-border-style '{style}'\nset -g pane-active-border-style '{style},bold'\nset -g status-left '{status_left}'\nset -g status-left-length 100"
         );
     }
     let zoom = tmux_quote(&format!("{base} read --pane '#{{pane_id}}'"));
-    let full = tmux_quote(&format!("{base} fullscreen --pane '#{{pane_id}}'"));
+    let full = tmux_quote(&format!("{base} fullscreen-toggle --pane '#{{pane_id}}'"));
+    let close = tmux_quote(&format!("{base} close --pane '#{{pane_id}}'"));
     let menu = tmux_quote(&format!(
         "{base} layout-menu --window '#{{window_id}}' --client '#{{client_name}}'"
     ));
     for key in ["M-Tab", "M-0"] {
         println!("bind -n {key} run-shell -b {zoom}");
     }
-    println!("bind -n M-f run-shell -b {full}");
+    // Terminals often encode Option+Right as M-f: leave word editing alone.
+    println!("unbind -n M-f\nunbind -n M-r");
+    println!("bind -n M-Left send-keys M-Left\nbind -n M-Right send-keys M-Right");
     println!("bind z run-shell -b {zoom}");
     println!("bind f run-shell -b {full}");
     let restore = tmux_quote(&format!("{base} restore --pane '#{{pane_id}}'"));
     println!("bind R run-shell -b {restore}");
-    println!(
-        "bind -n M-r if-shell -F '#{{@kelpmux-reading-width}}' {{ run-shell -b {restore} }} {{ send-keys M-r }}"
-    );
-    println!(
-        "bind p command-prompt -p 'Read pane:' {}",
-        tmux_quote(&format!(
-            "run-shell -b {}",
-            tmux_quote(&format!("{base} select %1 --window '#{{window_id}}'"))
-        ))
-    );
+    println!("bind p previous-window");
+    for press in ["MouseDown1", "DoubleClick1", "TripleClick1"] {
+        println!(
+            "bind -n {press}Control8 if-shell -F -t = '#{{@kelpmux-reading-width}}' {{ run-shell -b -t = {full} }}"
+        );
+        println!(
+            "bind -n {press}Control9 if-shell -F -t = '#{{@kelpmux-reading-width}}' {{ run-shell -b -t = {close} }}"
+        );
+    }
     for n in 1..=9 {
         println!(
             "bind -n M-{n} run-shell -b {}",
@@ -470,8 +492,15 @@ fn print_config(exe: &Path, opts: &Options, appearance: bool) -> Result<()> {
     );
     let help = tmux_quote(&format!("{base} help-menu --client '#{{client_name}}'"));
     println!("bind ? run-shell -b {help}");
+    for press in ["MouseDown1", "DoubleClick1", "TripleClick1"] {
+        println!(
+            "bind -n {press}Status if-shell -F '#{{==:#{{mouse_status_range}},kelpmux-help}}' {{ run-shell -b {help} }} {{ if-shell -F '#{{==:#{{mouse_status_range}},kelpmux-grid}}' {{ }} {{ if-shell -F '#{{==:#{{mouse_status_range}},kelpmux-full}}' {{ run-shell -b {full} }} {{ if-shell -F '#{{==:#{{mouse_status_range}},kelpmux-close}}' {{ run-shell -b {close} }} {{ select-window -t = }} }} }} }}"
+        );
+    }
+    // Open on release so the opening tap cannot immediately dismiss the picker.
+    // Regular menu press/release selection works on touch without pointer hover.
     println!(
-        "bind -n MouseDown1Status if-shell -F '#{{==:#{{mouse_status_range}},kelpmux-help}}' {{ run-shell -b {help} }} {{ select-window -t = }}"
+        "bind -n MouseUp1Status if-shell -F '#{{==:#{{mouse_status_range}},kelpmux-grid}}' {{ run-shell -b {menu} }}"
     );
     Ok(())
 }

@@ -367,6 +367,9 @@ impl Client {
         let mut file = fs::File::from(self.master.try_clone().unwrap());
         file.write_all(bytes).unwrap();
     }
+    fn click(&self, x: usize, y: usize) {
+        self.keys(format!("\x1b[<0;{};{}M\x1b[<0;{};{}m", x + 1, y + 1, x + 1, y + 1).as_bytes());
+    }
 }
 impl Drop for Client {
     fn drop(&mut self) {
@@ -555,6 +558,10 @@ fn graphical_grid_picker_selects_on_large_and_small_terminals_and_blocks_busy_sh
         .tmux
         .run(&["source-file", path.to_str().unwrap()])
         .unwrap();
+    server
+        .tmux
+        .run(&["set-option", "-g", "mouse", "on"])
+        .unwrap();
     for (height, key, shape) in [(60, b'4', "3x2"), (28, b'5', "2x3"), (18, b'3', "2x2")] {
         server.wait_idle();
         let client = Client::attach(&server, 100, height);
@@ -616,7 +623,7 @@ fn graphical_grid_picker_selects_on_large_and_small_terminals_and_blocks_busy_sh
     std::thread::sleep(Duration::from_millis(600));
     client.keys(b"\x02?");
     client.wait_output("Kelpmux shortcuts");
-    client.keys(b"\x1b");
+    client.keys(b"q");
     // A stale menu cannot bypass the applying command's occupancy checks.
     assert!(
         !server
@@ -624,6 +631,34 @@ fn graphical_grid_picker_selects_on_large_and_small_terminals_and_blocks_busy_sh
             .status
             .success()
     );
+    let busy: Vec<_> = server
+        .tmux
+        .panes()
+        .unwrap()
+        .into_iter()
+        .filter(|p| p.id == pane.id || p.id == other.id)
+        .collect();
+    client.output.lock().unwrap().clear();
+    client.click(9, 27);
+    client.wait_output("Kelpmux grid");
+    // On this 28-row terminal the compact menu starts at row 3. Its first
+    // choice is blocked; the next choice has exactly enough room for both jobs.
+    client.click(50, 4);
+    std::thread::sleep(Duration::from_millis(100));
+    assert_eq!(server.tmux.panes().unwrap().len(), 4);
+    client.output.lock().unwrap().clear();
+    client.click(9, 27);
+    client.wait_output("Kelpmux grid");
+    client.click(50, 6);
+    wait(|| server.tmux.panes().unwrap().len() == 2);
+    let remaining = server.tmux.panes().unwrap();
+    for pane in busy {
+        assert!(
+            remaining
+                .iter()
+                .any(|p| p.id == pane.id && p.pid == pane.pid)
+        );
+    }
 }
 
 #[test]
@@ -755,6 +790,176 @@ fn native_reading_preserves_panes_indices_and_grid_slots() {
 
 #[test]
 #[ignore = "requires tmux 3.8; CI explicitly runs this suite"]
+fn mouse_controls_sticky_help_and_word_navigation_preserve_agent_panes() {
+    let server = Server::new();
+    let window = server.window();
+    workspace::resize(
+        &server.tmux,
+        &server.state(),
+        &window,
+        Grid::parse("2x1").unwrap(),
+        false,
+    )
+    .unwrap();
+    server.wait_idle();
+    let original = server.tmux.panes().unwrap()[0].clone();
+    let config = server.cli(&["tmux-config"]);
+    assert!(config.status.success());
+    let path = server.root.join("controls.conf");
+    fs::write(&path, config.stdout).unwrap();
+    server
+        .tmux
+        .run(&["source-file", path.to_str().unwrap()])
+        .unwrap();
+    server
+        .tmux
+        .run(&["set-option", "-g", "mouse", "on"])
+        .unwrap();
+    server
+        .tmux
+        .run(&["bind-key", "-n", "F12", "set-option", "-w", "@probe", "hit"])
+        .unwrap();
+    let client = Client::attach(&server, 240, 60);
+    let probe = || {
+        server
+            .tmux
+            .run(&["show-options", "-wqv", "-t", &window, "@probe"])
+            .unwrap()
+    };
+    let clear_probe = || {
+        server
+            .tmux
+            .run(&["set-option", "-wu", "-t", &window, "@probe"])
+            .unwrap();
+    };
+    client.click(2, 59);
+    client.wait_output("Kelpmux shortcuts");
+    client.keys(b"\x1b[24~");
+    std::thread::sleep(Duration::from_millis(100));
+    assert_eq!(probe(), "", "help must stay open after mouse release");
+    client.click(2, 59);
+    client.keys(b"\x1b[24~");
+    wait(|| probe() == "hit");
+    clear_probe();
+    client.output.lock().unwrap().clear();
+    client.click(2, 59);
+    client.wait_output("Kelpmux shortcuts");
+    client.click(1, 1);
+    client.keys(b"\x1b[24~");
+    wait(|| probe() == "hit");
+    clear_probe();
+    client.output.lock().unwrap().clear();
+    client.click(2, 59);
+    client.wait_output("Kelpmux shortcuts");
+    let menu_width = "Fullscreen / reading width: Ctrl+b f or [Full / Window]"
+        .chars()
+        .count()
+        + 4;
+    let menu_x = (240 - 1) / 2 - menu_width / 2;
+    let menu_y = (59 - 1) / 2 + 9 / 2 - 9;
+    client.click(menu_x + menu_width - 4, menu_y);
+    client.keys(b"\x1b[24~");
+    wait(|| probe() == "hit");
+
+    // Option arrows may arrive as either word keys or modified arrow sequences.
+    let input = server.root.join("word-keys");
+    server
+        .tmux
+        .run(&[
+            "send-keys",
+            "-t",
+            &original.id,
+            &format!(
+                "stty -icanon -echo; head -c 16 > {}; stty sane",
+                input.display()
+            ),
+            "Enter",
+        ])
+        .unwrap();
+    wait(|| input.exists());
+    client.keys(b"\x1bf\x1bb\x1b[1;3D\x1b[1;3C");
+    wait(|| fs::read(&input).is_ok_and(|bytes| bytes.len() == 16));
+    let input = fs::read(&input).unwrap();
+    assert_eq!(&input[..4], b"\x1bf\x1bb");
+    assert_eq!(
+        server
+            .tmux
+            .format(&original.id, "#{pane_floating_flag} #{window_zoomed_flag}")
+            .unwrap(),
+        "0 0"
+    );
+    server.wait_idle();
+    client.keys(b"\x02z");
+    wait(|| {
+        server
+            .tmux
+            .format(&original.id, "#{pane_floating_flag}")
+            .unwrap()
+            == "1"
+    });
+    let coords = server
+        .tmux
+        .format(&original.id, "#{pane_left} #{pane_top} #{pane_width}")
+        .unwrap();
+    let coords: Vec<usize> = coords
+        .split_whitespace()
+        .map(|v| v.parse().unwrap())
+        .collect();
+    client.output.lock().unwrap().clear();
+    client.click(coords[0] + coords[2] - 10, coords[1] - 1);
+    wait(|| {
+        server
+            .tmux
+            .format(&original.id, "#{window_zoomed_flag}")
+            .unwrap()
+            == "1"
+    });
+    // Fullscreen hides the tiled header; equivalent controls remain in the status bar.
+    client.wait_output("[ Window ]");
+    client.output.lock().unwrap().clear();
+    client.click(30, 59);
+    wait(|| {
+        server
+            .tmux
+            .format(&original.id, "#{window_zoomed_flag}")
+            .unwrap()
+            == "0"
+    });
+    client.wait_output("[ Full ]");
+    let coords = server
+        .tmux
+        .format(&original.id, "#{pane_left} #{pane_top} #{pane_width}")
+        .unwrap();
+    let coords: Vec<usize> = coords
+        .split_whitespace()
+        .map(|v| v.parse().unwrap())
+        .collect();
+    client.click(coords[0] + coords[2] - 2, coords[1] - 1);
+    wait(|| {
+        server
+            .tmux
+            .format(&original.id, "#{pane_floating_flag}")
+            .unwrap()
+            == "0"
+    });
+    assert_eq!(server.tmux.panes().unwrap()[0].pid, original.pid);
+    assert!(
+        server
+            .cli(&["close", "--pane", &original.id])
+            .status
+            .success()
+    );
+    assert_eq!(
+        server
+            .tmux
+            .format(&original.id, "#{pane_floating_flag}")
+            .unwrap(),
+        "0"
+    );
+}
+
+#[test]
+#[ignore = "requires tmux 3.8; CI explicitly runs this suite"]
 fn native_reading_keyboard_resize_and_single_pane_work() {
     let server = Server::new();
     let window = server.window();
@@ -811,9 +1016,7 @@ fn native_reading_keyboard_resize_and_single_pane_work() {
             .format(&original.id, "#{pane_floating_flag} #{pane_width}")
             .is_ok_and(|s| s == "1 120")
     });
-    client.keys(b"\x02p");
-    std::thread::sleep(Duration::from_millis(100));
-    client.keys(b"2\r");
+    client.keys(b"\x1b2");
     let second = server
         .tmux
         .panes()
