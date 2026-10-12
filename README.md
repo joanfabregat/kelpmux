@@ -85,10 +85,12 @@ The example assumes the default `Ctrl+B` prefix:
 | Prefix then `p`, number, Enter; or Option/Alt+1…9 | Read a numbered pane |
 | Prefix then `f`, or Option/Alt+F | Native fullscreen |
 | Prefix then uppercase `R`, or Option/Alt+R in reading view | Restore capped reading width |
-| Prefix then `g` | Guarded grid-size menu; return to grid first |
+| Prefix then `g` | Graphical grid picker; return to grid first |
 | Prefix then `?`, or click/tap `?` | Shortcut help |
 
 Normal tmux keyboard and mouse behavior remain in charge. Escape goes to the application; it does not close a separate popup. Alt+R passes through outside reading mode. Existing `h`/`v`, pane swap, balance, copy mode, and other bindings can stay in your own configuration. Option must send Meta/Alt sequences for those shortcuts to work.
+
+The grid picker draws each preset, marks the current shape, and disables unsafe choices with an explanation such as “Needs 3 unused; 1 available”. Press its number, use arrows and Enter, or click/tap any row of the drawing. Escape closes the picker. Tall terminals show connected boxes; shorter terminals show compact pane squares, with a single-line preview on very short screens. Applying a choice checks pane occupancy again.
 
 CLI commands use stable native IDs:
 
