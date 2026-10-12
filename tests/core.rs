@@ -56,6 +56,7 @@ fn pane(index: usize, pid: u32) -> Pane {
         index,
         cwd: "/project".into(),
         dead: false,
+        floating: false,
     }
 }
 fn stat(pid: u32, parent: u32, comm: &str, state: char, start: u64) -> String {
@@ -150,6 +151,15 @@ fn layouts_cover_all_presets_and_reject_small_terminals() {
         )
         .is_err()
     );
+}
+#[test]
+fn native_reading_requires_supported_server_version() {
+    for version in ["3.8", "3.8a", "3.10", "4.0"] {
+        assert!(kelpmux::workspace::native_floating_supported(version));
+    }
+    for version in ["3.3a", "3.6a", "3.7", "bad", "next-3.8"] {
+        assert!(!kelpmux::workspace::native_floating_supported(version));
+    }
 }
 #[test]
 fn safe_labels_and_shell_arguments() {

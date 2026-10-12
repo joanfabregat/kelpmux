@@ -1,6 +1,6 @@
 //! Real tmux tests always use a private socket, empty config, and disposable state.
 use kelpmux::{
-    journal, process,
+    process,
     tmux::Tmux,
     workspace::{self, Grid},
 };
@@ -51,6 +51,7 @@ impl Server {
         );
         let tmux = Tmux {
             socket: Some(socket),
+            binary: None,
         };
         tmux.run(&["set-option", "-g", "pane-base-index", "1"])
             .unwrap();
@@ -244,57 +245,6 @@ fn dry_run_is_read_only_and_generated_config_parses() {
     assert!(status.contains("kelpmux-help"));
     assert!(!status.contains("READ/GRID"));
 }
-#[test]
-#[ignore = "requires tmux; CI explicitly runs this suite"]
-fn restores_interrupted_modal_without_killing_selected_process() {
-    let server = Server::new();
-    let origin = server.window();
-    let original = server.tmux.panes().unwrap()[0].clone();
-    let placeholder = server
-        .tmux
-        .run(&[
-            "new-session",
-            "-d",
-            "-s",
-            "kelpmux-fixture",
-            "-P",
-            "-F",
-            "#{pane_id}",
-            "exec sleep 2147483647",
-        ])
-        .unwrap();
-    server
-        .tmux
-        .run(&["swap-pane", "-s", &original.id, "-t", &placeholder])
-        .unwrap();
-    let modal = workspace::Modal {
-        origin: origin.clone(),
-        pane: original.id.clone(),
-        placeholder,
-        session: "kelpmux-fixture".into(),
-        full: false,
-        action: None,
-        client: "fixture".into(),
-    };
-    server
-        .tmux
-        .set(&modal.placeholder, "@kelpmux-placeholder", &modal.session)
-        .unwrap();
-    journal::private_dir(&server.state()).unwrap();
-    journal::atomic(
-        &server
-            .state()
-            .join(format!("modal-{}.json", origin.trim_start_matches('@'))),
-        &modal,
-    )
-    .unwrap();
-    workspace::recover_modal(&server.tmux, &server.state(), &origin).unwrap();
-    let panes = server.tmux.panes().unwrap();
-    assert_eq!(panes.len(), 1);
-    assert_eq!(panes[0].pid, original.pid);
-    assert_eq!(panes[0].window, origin);
-}
-
 struct Client {
     child: std::process::Child,
     master: std::os::fd::OwnedFd,
@@ -350,7 +300,7 @@ impl Client {
             });
         }
         let child = command.spawn().unwrap();
-        // Drain terminal output so modal redraws never block on a full PTY buffer.
+        // Drain terminal output so native redraws never block on a full PTY buffer.
         let drain = master.try_clone().unwrap();
         std::thread::spawn(move || {
             let mut bytes = [0_u8; 8192];
@@ -394,138 +344,6 @@ impl Drop for Client {
         let _ = self.child.kill();
         let _ = self.child.wait();
     }
-}
-
-#[test]
-#[ignore = "requires tmux; CI explicitly runs this suite"]
-fn reading_fullscreen_restore_and_agent_switch_keep_processes() {
-    let server = Server::new();
-    let window = server.window();
-    workspace::resize(
-        &server.tmux,
-        &server.state(),
-        &window,
-        Grid::parse("2x1").unwrap(),
-        false,
-    )
-    .unwrap();
-    server.wait_idle();
-    let originals = server.tmux.panes().unwrap();
-    let config = server.cli(&["tmux-config"]);
-    assert!(config.status.success());
-    let config_path = server.root.join("integration.conf");
-    fs::write(&config_path, config.stdout).unwrap();
-    server
-        .tmux
-        .run(&["source-file", config_path.to_str().unwrap()])
-        .unwrap();
-    let client = Client::attach(&server, 240, 60);
-    let name = server
-        .tmux
-        .run(&["list-clients", "-F", "#{client_name}"])
-        .unwrap();
-    let mut child = Command::new(env!("CARGO_BIN_EXE_kelpmux"))
-        .args([
-            "--state-dir",
-            server.state().to_str().unwrap(),
-            "--tmux-socket",
-            server.tmux.socket.as_ref().unwrap().to_str().unwrap(),
-            "zoom",
-            "--pane",
-            &originals[0].id,
-            "--client",
-            &name,
-        ])
-        .env_remove("TMUX")
-        .stdout(Stdio::null())
-        .stderr(Stdio::piped())
-        .spawn()
-        .unwrap();
-    let path = server
-        .state()
-        .join(format!("modal-{}.json", window.trim_start_matches('@')));
-    wait(|| {
-        path.exists()
-            && server
-                .tmux
-                .run(&["list-clients", "-F", "#{session_name}"])
-                .is_ok_and(|s| s.contains("kelpmux-"))
-    });
-    wait(|| {
-        server
-            .tmux
-            .format(&originals[0].id, "#{pane_width}")
-            .is_ok_and(|s| s == "120")
-    });
-    client.keys(b"\x1bf");
-    wait(|| {
-        server
-            .tmux
-            .format(&originals[0].id, "#{pane_width}")
-            .is_ok_and(|s| s == "240")
-    });
-    client.keys(b"\x1br");
-    wait(|| {
-        server
-            .tmux
-            .format(&originals[0].id, "#{pane_width}")
-            .is_ok_and(|s| s == "120")
-    });
-    client.keys(b"\x02p");
-    std::thread::sleep(Duration::from_millis(100));
-    client.keys(b"2\r");
-    wait(|| {
-        server
-            .tmux
-            .format(&originals[1].id, "#{pane_width}")
-            .is_ok_and(|s| s == "120")
-    });
-    assert_eq!(
-        server
-            .tmux
-            .option(&originals[1].id, "@kelpmux-number")
-            .unwrap(),
-        "2"
-    );
-    assert_eq!(
-        server
-            .tmux
-            .format(&originals[1].id, "#{pane_index}")
-            .unwrap(),
-        "1"
-    );
-    client.resize(90, 40);
-    wait(|| {
-        server
-            .tmux
-            .format(&originals[1].id, "#{pane_width}")
-            .is_ok_and(|s| s.parse::<u32>().is_ok_and(|w| w <= 90))
-    });
-    client.keys(b"\x02z");
-    wait(|| child.try_wait().unwrap().is_some());
-    let output = child.wait_with_output().unwrap();
-    assert!(
-        output.status.success(),
-        "{}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-    let remaining = server.tmux.panes().unwrap();
-    assert_eq!(remaining.len(), 2);
-    for original in originals {
-        assert!(
-            remaining
-                .iter()
-                .any(|p| p.id == original.id && p.pid == original.pid && p.window == window)
-        );
-    }
-    assert!(!path.exists());
-    assert_eq!(
-        server
-            .tmux
-            .option(&remaining[1].id, "@kelpmux-number")
-            .unwrap(),
-        ""
-    );
 }
 
 #[test]
@@ -578,4 +396,355 @@ fn discovery_updates_headers_and_journals_exit_without_launching_real_agents() {
         records.as_array().unwrap().last().unwrap()["event"],
         "exited"
     );
+}
+
+#[test]
+#[ignore = "requires tmux 3.8; CI explicitly runs this suite"]
+fn native_reading_preserves_panes_indices_and_grid_slots() {
+    let server = Server::new();
+    let window = server.window();
+    workspace::resize(
+        &server.tmux,
+        &server.state(),
+        &window,
+        Grid::parse("2x2").unwrap(),
+        false,
+    )
+    .unwrap();
+    server.wait_idle();
+    let originals = server.tmux.panes().unwrap();
+    let positions = server
+        .tmux
+        .run(&[
+            "list-panes",
+            "-t",
+            &window,
+            "-F",
+            "#{pane_id} #{pane_index} #{pane_left} #{pane_top} #{pane_width} #{pane_height}",
+        ])
+        .unwrap();
+    let pane = &originals[1];
+    let read = server.cli(&["read", "--pane", &pane.id]);
+    assert!(
+        read.status.success(),
+        "{}",
+        String::from_utf8_lossy(&read.stderr)
+    );
+    assert_eq!(
+        server
+            .tmux
+            .format(
+                &pane.id,
+                "#{pane_floating_flag} #{pane_index} #{pane_width}"
+            )
+            .unwrap(),
+        "1 2 120"
+    );
+    assert_eq!(
+        server
+            .tmux
+            .run(&["list-sessions", "-F", "#{session_name}"])
+            .unwrap(),
+        "test"
+    );
+    assert_eq!(server.tmux.panes().unwrap().len(), 4);
+    assert!(
+        !server
+            .cli(&["layout", "1x1", "--window", &window])
+            .status
+            .success()
+    );
+    assert!(
+        server
+            .cli(&["fullscreen", "--pane", &pane.id])
+            .status
+            .success()
+    );
+    assert_eq!(
+        server
+            .tmux
+            .format(&pane.id, "#{window_zoomed_flag} #{pane_width}")
+            .unwrap(),
+        "1 300"
+    );
+    assert!(
+        server
+            .cli(&["restore", "--pane", &pane.id])
+            .status
+            .success()
+    );
+    assert_eq!(
+        server
+            .tmux
+            .format(&pane.id, "#{pane_floating_flag} #{pane_width}")
+            .unwrap(),
+        "1 120"
+    );
+    // A new short-lived helper invocation returns the same process; no recovery
+    // file or long-running reading controller is involved.
+    assert!(
+        server
+            .cli(&["select", "3", "--window", &window])
+            .status
+            .success()
+    );
+    assert_eq!(
+        server
+            .tmux
+            .format(&originals[2].id, "#{pane_floating_flag} #{pane_index}")
+            .unwrap(),
+        "1 3"
+    );
+    let grid = server.cli(&["grid", "--window", &window]);
+    assert!(grid.status.success());
+    assert_eq!(
+        server
+            .tmux
+            .run(&[
+                "list-panes",
+                "-t",
+                &window,
+                "-F",
+                "#{pane_id} #{pane_index} #{pane_left} #{pane_top} #{pane_width} #{pane_height}"
+            ])
+            .unwrap(),
+        positions
+    );
+    for original in originals {
+        assert!(
+            server
+                .tmux
+                .panes()
+                .unwrap()
+                .iter()
+                .any(|p| p.id == original.id
+                    && p.pid == original.pid
+                    && p.window == window
+                    && !p.floating)
+        );
+    }
+}
+
+#[test]
+#[ignore = "requires tmux 3.8; CI explicitly runs this suite"]
+fn native_reading_keyboard_resize_and_single_pane_work() {
+    let server = Server::new();
+    let window = server.window();
+    workspace::resize(
+        &server.tmux,
+        &server.state(),
+        &window,
+        Grid::parse("2x1").unwrap(),
+        false,
+    )
+    .unwrap();
+    server.wait_idle();
+    let original = server.tmux.panes().unwrap()[0].clone();
+    let config = server.cli(&["tmux-config"]);
+    assert!(config.status.success());
+    let path = server.root.join("keys.conf");
+    fs::write(&path, config.stdout).unwrap();
+    server
+        .tmux
+        .run(&["source-file", path.to_str().unwrap()])
+        .unwrap();
+    let client = Client::attach(&server, 240, 60);
+    server
+        .tmux
+        .run(&["select-pane", "-t", &original.id])
+        .unwrap();
+    client.keys(b"\x02z");
+    wait(|| {
+        server
+            .tmux
+            .format(&original.id, "#{pane_floating_flag} #{pane_width}")
+            .is_ok_and(|s| s == "1 120")
+    });
+    assert_eq!(
+        server
+            .tmux
+            .run(&["list-clients", "-F", "#{client_name}"])
+            .unwrap()
+            .lines()
+            .count(),
+        1
+    );
+    client.keys(b"\x02f");
+    wait(|| {
+        server
+            .tmux
+            .format(&original.id, "#{window_zoomed_flag} #{pane_width}")
+            .is_ok_and(|s| s == "1 240")
+    });
+    client.keys(b"\x02R");
+    wait(|| {
+        server
+            .tmux
+            .format(&original.id, "#{pane_floating_flag} #{pane_width}")
+            .is_ok_and(|s| s == "1 120")
+    });
+    client.keys(b"\x02p");
+    std::thread::sleep(Duration::from_millis(100));
+    client.keys(b"2\r");
+    let second = server
+        .tmux
+        .panes()
+        .unwrap()
+        .into_iter()
+        .find(|p| p.index == 2)
+        .unwrap();
+    wait(|| {
+        server
+            .tmux
+            .format(&second.id, "#{pane_floating_flag}")
+            .is_ok_and(|s| s == "1")
+    });
+    client.resize(90, 40);
+    wait(|| {
+        server
+            .tmux
+            .format(&second.id, "#{pane_width}")
+            .is_ok_and(|s| s == "90")
+    });
+    client.resize(240, 60);
+    wait(|| {
+        server
+            .tmux
+            .format(&second.id, "#{pane_width}")
+            .is_ok_and(|s| s == "120")
+    });
+    client.keys(b"\x02z");
+    wait(|| {
+        server
+            .tmux
+            .format(&second.id, "#{pane_floating_flag}")
+            .is_ok_and(|s| s == "0")
+    });
+    assert_eq!(server.tmux.panes().unwrap().len(), 2);
+    drop(client);
+    server.wait_idle();
+    workspace::resize(
+        &server.tmux,
+        &server.state(),
+        &window,
+        Grid::parse("1x1").unwrap(),
+        false,
+    )
+    .unwrap();
+    let single = server.tmux.panes().unwrap()[0].clone();
+    assert!(server.cli(&["read", "--pane", &single.id]).status.success());
+    assert!(server.cli(&["grid", "--window", &window]).status.success());
+    assert_eq!(server.tmux.panes().unwrap()[0].pid, single.pid);
+}
+
+#[test]
+#[ignore = "requires tmux 3.8; CI explicitly runs this suite"]
+fn bindings_only_preserves_user_appearance_and_manual_floating_panes() {
+    let server = Server::new();
+    let window = server.window();
+    server
+        .tmux
+        .run(&["set-option", "-g", "status-left", "my status"])
+        .unwrap();
+    let config = server.cli(&["tmux-config", "--bindings-only"]);
+    assert!(config.status.success());
+    let path = server.root.join("bindings.conf");
+    fs::write(&path, config.stdout).unwrap();
+    server
+        .tmux
+        .run(&["source-file", path.to_str().unwrap()])
+        .unwrap();
+    assert_eq!(
+        server
+            .tmux
+            .run(&["show-options", "-gv", "status-left"])
+            .unwrap(),
+        "my status"
+    );
+    let pane = server.tmux.panes().unwrap()[0].clone();
+    server
+        .tmux
+        .run(&["break-pane", "-W", "-s", &pane.id])
+        .unwrap();
+    assert!(!server.cli(&["read", "--pane", &pane.id]).status.success());
+    assert!(
+        !server
+            .cli(&["layout", "1x1", "--window", &window])
+            .status
+            .success()
+    );
+    assert!(server.cli(&["grid", "--window", &window]).status.success());
+    assert_eq!(
+        server
+            .tmux
+            .format(&pane.id, "#{pane_floating_flag}")
+            .unwrap(),
+        "1"
+    );
+}
+
+#[test]
+#[ignore = "requires tmux 3.8; CI explicitly runs this suite"]
+fn returning_reading_preserves_external_new_panes_and_application_colors() {
+    let server = Server::new();
+    let window = server.window();
+    workspace::resize(
+        &server.tmux,
+        &server.state(),
+        &window,
+        Grid::parse("2x1").unwrap(),
+        false,
+    )
+    .unwrap();
+    server.wait_idle();
+    let originals = server.tmux.panes().unwrap();
+    let selected = &originals[0];
+    let background = &originals[1];
+    server
+        .tmux
+        .run(&[
+            "send-keys",
+            "-t",
+            &background.id,
+            "printf '\\033[48;2;40;40;40mgray-bg\\033[0m\\n'",
+            "Enter",
+        ])
+        .unwrap();
+    wait(|| {
+        server
+            .tmux
+            .run(&["capture-pane", "-e", "-p", "-t", &background.id])
+            .is_ok_and(|s| s.contains("gray-bg") && s.contains("48;2;40;40;40"))
+    });
+    assert!(
+        server
+            .cli(&["read", "--pane", &selected.id])
+            .status
+            .success()
+    );
+    // A native split outside the helper changes the inventory while reading.
+    let added = server
+        .tmux
+        .run(&[
+            "split-window",
+            "-h",
+            "-d",
+            "-t",
+            &background.id,
+            "-P",
+            "-F",
+            "#{pane_id}",
+        ])
+        .unwrap();
+    assert!(server.cli(&["grid", "--window", &window]).status.success());
+    let after = server.tmux.panes().unwrap();
+    assert_eq!(after.len(), 3);
+    assert!(after.iter().any(|p| p.id == added));
+    for original in originals {
+        assert!(
+            after
+                .iter()
+                .any(|p| p.id == original.id && p.pid == original.pid && !p.floating)
+        );
+    }
 }

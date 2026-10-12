@@ -2,12 +2,13 @@ use crate::{Result, label, model::Agent};
 use serde::{Deserialize, Serialize};
 use std::{collections::BTreeMap, path::PathBuf, process::Command};
 
-pub const HEADER_FORMAT: &str = "#[fg=#{?pane_active,colour16,colour231},bg=#{?pane_active,colour39,colour24},bold] #{?pane_active,▶, } #{?@kelpmux-number,#{@kelpmux-number},#{pane_index}} #[fg=colour16,bg=#{?@kelpmux-color,#{@kelpmux-color},colour245},nobold] #{?@kelpmux-name,#{@kelpmux-name},#{b:pane_current_path}} #{@kelpmux-status} ";
+pub const HEADER_FORMAT: &str = "#[fg=#{?pane_active,colour16,colour231},bg=#{?pane_active,colour39,colour24},bold] #{?pane_active,▶, } #{pane_index} #[fg=colour16,bg=#{?@kelpmux-color,#{@kelpmux-color},colour245},nobold] #{?@kelpmux-name,#{@kelpmux-name},#{b:pane_current_path}} #{@kelpmux-status} ";
 pub const HEADER_STYLE: &str = "fg=colour16,bg=#{?@kelpmux-color,#{@kelpmux-color},colour245}";
 
 #[derive(Debug, Clone, Default)]
 pub struct Tmux {
     pub socket: Option<PathBuf>,
+    pub binary: Option<PathBuf>,
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Pane {
@@ -17,11 +18,16 @@ pub struct Pane {
     pub index: usize,
     pub cwd: String,
     pub dead: bool,
+    pub floating: bool,
 }
 
 impl Tmux {
     pub fn run(&self, args: &[&str]) -> Result<String> {
-        let mut cmd = Command::new("tmux");
+        let mut cmd = Command::new(
+            self.binary
+                .as_deref()
+                .unwrap_or_else(|| std::path::Path::new("tmux")),
+        );
         if let Some(socket) = &self.socket {
             cmd.arg("-S").arg(socket);
         }
@@ -41,12 +47,12 @@ impl Tmux {
             "list-panes",
             "-a",
             "-F",
-            "#{pane_id}|#{window_id}|#{pane_pid}|#{pane_index}|#{pane_dead}|#{pane_current_path}",
+            "#{pane_id}|#{window_id}|#{pane_pid}|#{pane_index}|#{pane_dead}|#{pane_floating_flag}|#{pane_current_path}",
         ])?;
         let mut panes = BTreeMap::new();
         for line in text.lines() {
-            let f: Vec<_> = line.splitn(6, '|').collect();
-            if f.len() != 6 {
+            let f: Vec<_> = line.splitn(7, '|').collect();
+            if f.len() != 7 {
                 return Err(format!("invalid tmux pane listing: {line:?}").into());
             }
             panes.insert(
@@ -57,7 +63,8 @@ impl Tmux {
                     pid: f[2].parse()?,
                     index: f[3].parse()?,
                     dead: f[4] == "1",
-                    cwd: f[5].into(),
+                    cwd: f[6].into(),
+                    floating: f[5] == "1",
                 },
             );
         }
