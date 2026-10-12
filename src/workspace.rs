@@ -327,6 +327,7 @@ fn dimensions(text: &str) -> Result<(usize, usize)> {
 pub enum Reading {
     Toggle,
     Fullscreen,
+    ToggleFullscreen,
     Restore,
 }
 
@@ -449,6 +450,15 @@ pub fn reading(tmux: &Tmux, root: &Path, pane: &str, width: usize, mode: Reading
     let _lock = Lock::acquire(&root.join("workspace.lock"), true)?;
     let window = tmux.format(pane, "#{window_id}")?;
     let saved = reading_width(tmux, pane)?;
+    let mode = if mode == Reading::ToggleFullscreen {
+        if saved.is_some() && tmux.option(pane, "@kelpmux-reading-full")? == "1" {
+            Reading::Restore
+        } else {
+            Reading::Fullscreen
+        }
+    } else {
+        mode
+    };
     if saved.is_some() && mode == Reading::Toggle {
         return return_pane(tmux, pane);
     }
@@ -498,6 +508,18 @@ pub fn reading(tmux: &Tmux, root: &Path, pane: &str, width: usize, mode: Reading
         }
         tmux.set(pane, "@kelpmux-reading-full", "0")?;
         fit_reading(tmux, pane, saved.unwrap_or(width))?;
+    }
+    Ok(())
+}
+
+pub fn close_reading(tmux: &Tmux, root: &Path, pane: &str) -> Result<()> {
+    if !valid_id(pane, '%') {
+        return Err("close needs a pane ID".into());
+    }
+    private_dir(root)?;
+    let _lock = Lock::acquire(&root.join("workspace.lock"), true)?;
+    if reading_width(tmux, pane)?.is_some() {
+        return_pane(tmux, pane)?;
     }
     Ok(())
 }
