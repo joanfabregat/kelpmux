@@ -496,7 +496,8 @@ fn graphical_grid_picker_selects_on_large_and_small_terminals_and_blocks_busy_sh
     std::thread::sleep(Duration::from_millis(150));
     assert_eq!(server.tmux.panes().unwrap().len(), 4);
     client.keys(b"\x1b");
-    std::thread::sleep(Duration::from_millis(100));
+    // Let the terminal's default escape-time expire before sending a prefix.
+    std::thread::sleep(Duration::from_millis(600));
     client.keys(b"\x02?");
     client.wait_output("Kelpmux shortcuts");
     client.keys(b"\x1b");
