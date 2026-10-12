@@ -242,7 +242,7 @@ fn run() -> Result<()> {
             for description in [
                 "-Read / grid: Ctrl+b z or Alt+Tab / Alt+0",
                 "-Switch reading pane: Alt+1 through Alt+9",
-                "-Fullscreen / reading width: Ctrl+b f or Full / Window",
+                "-Fullscreen / reading width: Ctrl+b f or ⛶ / ▣",
                 "-Return to grid: × in reading header",
                 "-Grid picker: Ctrl+b g or Grid",
                 "-Swap pane: Ctrl+b s, number / click",
@@ -497,7 +497,8 @@ fn print_config(exe: &Path, opts: &Options, appearance: bool) -> Result<()> {
         "#[fg=colour16,bg=colour39]#[range=user|kelpmux-grid] Grid #[norange]#[default] ",
         "#{pane_index}: #{=/24/...:#{?@kelpmux-name,#{@kelpmux-name},#{b:pane_current_path}}} ",
         "#{?#{&&:#{@kelpmux-reading-width},#{window_zoomed_flag}},",
-        "#[fg=colour16#,bg=colour39]#[range=user|kelpmux-full] #{?@kelpmux-reading-full,Window,Full} #[norange]#[default] ",
+        "#[fg=colour231#,bg=colour24]#[range=user|kelpmux-read] ↙ #[norange]#[default] ",
+        "#[fg=colour16#,bg=colour39]#[range=user|kelpmux-full] #{?@kelpmux-reading-full,▣,⛶} #[norange]#[default] ",
         "#[fg=colour231#,bg=colour88]#[range=user|kelpmux-close] × #[norange]#[default],}",
     );
     println!("# Optional tmux 3.8+ example. Your tmux configuration owns appearance and bindings.");
@@ -528,9 +529,8 @@ fn print_config(exe: &Path, opts: &Options, appearance: bool) -> Result<()> {
         tmux_quote(&format!("{base} swap-picker --pane '#{{pane_id}}'"))
     );
     for press in ["MouseDown1", "DoubleClick1", "TripleClick1"] {
-        println!(
-            "bind -n {press}Control8 if-shell -F -t = '#{{@kelpmux-reading-width}}' {{ run-shell -b -t = {full} }}"
-        );
+        println!("bind -n {press}Control7 run-shell -b -t = {zoom}");
+        println!("bind -n {press}Control8 run-shell -b -t = {full}");
         println!(
             "bind -n {press}Control9 if-shell -F -t = '#{{@kelpmux-reading-width}}' {{ run-shell -b -t = {close} }}"
         );
@@ -553,7 +553,7 @@ fn print_config(exe: &Path, opts: &Options, appearance: bool) -> Result<()> {
     println!("bind ? run-shell -b {help}");
     for press in ["MouseDown1", "DoubleClick1", "TripleClick1"] {
         println!(
-            "bind -n {press}Status if-shell -F '#{{==:#{{mouse_status_range}},kelpmux-help}}' {{ run-shell -b {help} }} {{ if-shell -F '#{{==:#{{mouse_status_range}},kelpmux-grid}}' {{ }} {{ if-shell -F '#{{==:#{{mouse_status_range}},kelpmux-full}}' {{ run-shell -b {full} }} {{ if-shell -F '#{{==:#{{mouse_status_range}},kelpmux-close}}' {{ run-shell -b {close} }} {{ select-window -t = }} }} }} }}"
+            "bind -n {press}Status if-shell -F '#{{==:#{{mouse_status_range}},kelpmux-help}}' {{ run-shell -b {help} }} {{ if-shell -F '#{{==:#{{mouse_status_range}},kelpmux-grid}}' {{ }} {{ if-shell -F '#{{==:#{{mouse_status_range}},kelpmux-read}}' {{ run-shell -b {zoom} }} {{ if-shell -F '#{{==:#{{mouse_status_range}},kelpmux-full}}' {{ run-shell -b {full} }} {{ if-shell -F '#{{==:#{{mouse_status_range}},kelpmux-close}}' {{ run-shell -b {close} }} {{ select-window -t = }} }} }} }} }}"
         );
     }
     // Open on release so the opening tap cannot immediately dismiss the picker.

@@ -878,7 +878,7 @@ fn mouse_controls_sticky_help_and_word_navigation_preserve_agent_panes() {
     client.output.lock().unwrap().clear();
     client.click(2, 59);
     client.wait_output("Kelpmux shortcuts");
-    let menu_width = "Fullscreen / reading width: Ctrl+b f or Full / Window"
+    let menu_width = "Fullscreen / reading width: Ctrl+b f or ⛶ / ▣"
         .chars()
         .count()
         + 4;
@@ -916,7 +916,16 @@ fn mouse_controls_sticky_help_and_word_navigation_preserve_agent_panes() {
         "0 0"
     );
     server.wait_idle();
-    client.keys(b"\x02z");
+    // Both controls are available on an ordinary tiled pane.
+    let coords = server
+        .tmux
+        .format(&original.id, "#{pane_left} #{pane_top} #{pane_width}")
+        .unwrap();
+    let coords: Vec<usize> = coords
+        .split_whitespace()
+        .map(|v| v.parse().unwrap())
+        .collect();
+    client.click(coords[0] + coords[2] - 6, coords[1] - 1);
     wait(|| {
         server
             .tmux
@@ -933,7 +942,7 @@ fn mouse_controls_sticky_help_and_word_navigation_preserve_agent_panes() {
         .map(|v| v.parse().unwrap())
         .collect();
     client.output.lock().unwrap().clear();
-    client.click(coords[0] + coords[2] - 7, coords[1] - 1);
+    client.click(coords[0] + coords[2] - 6, coords[1] - 1);
     wait(|| {
         server
             .tmux
@@ -942,13 +951,13 @@ fn mouse_controls_sticky_help_and_word_navigation_preserve_agent_panes() {
             == "1"
     });
     // Fullscreen hides the tiled header; equivalent controls remain in the status bar.
-    client.wait_output("Window");
+    client.wait_output("▣");
     client.output.lock().unwrap().clear();
     let status_label = server
         .tmux
         .format(&original.id, "#{pane_index}: #{b:pane_current_path}")
         .unwrap();
-    let full_button_x = " ?  Grid ".chars().count() + 2 + status_label.chars().count() + 3;
+    let full_button_x = " ?  Grid ".chars().count() + 2 + status_label.chars().count() + 5;
     client.click(full_button_x, 59);
     wait(|| {
         server
@@ -957,7 +966,7 @@ fn mouse_controls_sticky_help_and_word_navigation_preserve_agent_panes() {
             .unwrap()
             == "0"
     });
-    client.wait_output("Full");
+    client.wait_output("⛶");
     let coords = server
         .tmux
         .format(&original.id, "#{pane_left} #{pane_top} #{pane_width}")
@@ -988,6 +997,33 @@ fn mouse_controls_sticky_help_and_word_navigation_preserve_agent_panes() {
             .unwrap(),
         "0"
     );
+    // Fullscreen can also start directly from the tiled header.
+    let coords = server
+        .tmux
+        .format(&original.id, "#{pane_left} #{pane_top} #{pane_width}")
+        .unwrap();
+    let coords: Vec<usize> = coords
+        .split_whitespace()
+        .map(|v| v.parse().unwrap())
+        .collect();
+    client.click(coords[0] + coords[2] - 2, coords[1] - 1);
+    wait(|| {
+        server
+            .tmux
+            .format(&original.id, "#{window_zoomed_flag}")
+            .unwrap()
+            == "1"
+    });
+    let read_button_x = " ?  Grid ".chars().count() + 2 + status_label.chars().count() + 1;
+    client.click(read_button_x, 59);
+    wait(|| {
+        server
+            .tmux
+            .format(&original.id, "#{pane_floating_flag} #{window_zoomed_flag}")
+            .unwrap()
+            == "0 0"
+    });
+    assert_eq!(server.tmux.panes().unwrap()[0].pid, original.pid);
 }
 
 #[test]

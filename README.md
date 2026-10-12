@@ -75,15 +75,15 @@ kelpmux tmux-config > kelpmux-example.tmux.conf
 kelpmux tmux-config --bindings-only > kelpmux-bindings.tmux.conf
 ```
 
-The full example includes optional header appearance, colored Full / Window and × controls on reading headers, and colored ? and Grid buttons in the status bar. Closing a reading view returns its pane to the grid without terminating it. When native fullscreen hides the header, the equivalent reading controls appear in the status bar. `--bindings-only` leaves appearance, pane numbering, mouse settings, status line and text styles under your existing configuration. Both variants explicitly replace the documented keyboard and control-click bindings and install a `window-resized[80]` hook to refit native reading panes. Regenerate after moving the helper or changing the binary/socket/state paths. Nothing enables mouse handling or starts discovery; retain `set -g mouse on` in your own configuration if desired.
+The full example includes optional header appearance, two colored icon buttons on every pane header (↗ for capped reading zoom and ⛶ for fullscreen), and colored ? and Grid buttons in the status bar. Reading views show ↙ to return to the grid and × to close the view without terminating its pane; fullscreen shows ▣ to restore capped reading width. When native fullscreen hides the header, the equivalent reading controls appear in the status bar. The icons use standard Unicode and require no special icon font. `--bindings-only` leaves appearance, pane numbering, mouse settings, status line and text styles under your existing configuration. Both variants explicitly replace the documented keyboard and control-click bindings and install a `window-resized[80]` hook to refit native reading panes. Regenerate after moving the helper or changing the binary/socket/state paths. Nothing enables mouse handling or starts discovery; retain `set -g mouse on` in your own configuration if desired.
 
 The example assumes the default `Ctrl+B` prefix:
 
 | Shortcut | Action |
 | --- | --- |
-| Prefix then `z`, or Option/Alt+Tab / Option/Alt+0 | Toggle reading view / return to grid |
+| Prefix then `z`, Option/Alt+Tab / Option/Alt+0, or header ↗ / ↙ | Toggle reading view / return to grid |
 | Option/Alt+1…9 | Read a numbered pane |
-| Prefix then `f`, or header Full / Window | Toggle native fullscreen / capped reading width |
+| Prefix then `f`, or header ⛶ / ▣ | Toggle native fullscreen / capped reading width |
 | Header × | Return the reading pane to its grid tile |
 | Prefix then uppercase `R` | Explicitly restore capped reading width |
 | Prefix then `g`, or click/tap Grid | Grid-card picker; returns managed reading panes first |
