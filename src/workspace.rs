@@ -28,6 +28,93 @@ impl Grid {
     }
 }
 
+pub struct GridChoice {
+    pub grid: Grid,
+    pub current: bool,
+    pub blocked: Option<String>,
+}
+
+impl GridChoice {
+    /// Separate native menu rows: tmux menu items cannot contain newlines.
+    pub fn drawing(&self, compact: bool) -> Vec<String> {
+        if compact {
+            return vec![vec!["□"; self.grid.cols].join(" "); self.grid.rows];
+        }
+        let edge = |left, joint: &str, right| {
+            format!("{left}{}{right}", vec!["───"; self.grid.cols].join(joint))
+        };
+        let mut lines = vec![edge("┌", "┬", "┐")];
+        for row in 0..self.grid.rows {
+            lines.push(format!("│{}│", vec!["   "; self.grid.cols].join("│")));
+            if row + 1 < self.grid.rows {
+                lines.push(edge("├", "┼", "┤"));
+            }
+        }
+        lines.push(edge("└", "┴", "┘"));
+        lines
+    }
+}
+
+/// Read-only preview. Applying a choice still performs resize's fresh checks.
+pub fn grid_choices(tmux: &Tmux, window: &str) -> Result<Vec<GridChoice>> {
+    if !valid_id(window, '@') {
+        return Err("grid picker requires a window id such as @0".into());
+    }
+    let panes: Vec<_> = tmux
+        .panes()?
+        .into_iter()
+        .filter(|p| p.window == window)
+        .collect();
+    if panes.is_empty() {
+        return Err("window has no panes".into());
+    }
+    let mut floating = panes.iter().any(|p| p.floating);
+    for pane in &panes {
+        floating |= reading_width(tmux, &pane.id)?.is_some();
+    }
+    let zoomed = tmux.format(window, "#{window_zoomed_flag}")? == "1";
+    let (width, height) = dimensions(&tmux.format(window, "#{window_width} #{window_height}")?)?;
+    let positions = tmux.run(&["list-panes", "-t", window, "-F", "#{pane_left} #{pane_top}"])?;
+    let mut xs = std::collections::BTreeSet::new();
+    let mut ys = std::collections::BTreeSet::new();
+    for line in positions.lines() {
+        let (x, y) = dimensions(line)?;
+        xs.insert(x);
+        ys.insert(y);
+    }
+    let tree = process::snapshot(Path::new("/proc"))?;
+    let unused = panes
+        .iter()
+        .filter(|p| !p.dead && process::idle(&tree, p.pid, false))
+        .count();
+    ["1x1", "2x1", "2x2", "3x2", "2x3", "3x3"]
+        .into_iter()
+        .map(|shape| {
+            let grid = Grid::parse(shape)?;
+            let needed = panes.len().saturating_sub(grid.count());
+            let blocked = if floating {
+                Some("Return to grid first".into())
+            } else if zoomed {
+                Some("Unzoom first".into())
+            } else if sizes(width, grid.cols).is_err() || sizes(height, grid.rows).is_err() {
+                Some("Terminal too small".into())
+            } else if unused < needed {
+                Some(format!("Needs {needed} unused; {unused} available"))
+            } else {
+                None
+            };
+            Ok(GridChoice {
+                grid,
+                current: !floating
+                    && panes.len() == grid.count()
+                    && xs.len() == grid.cols
+                    && ys.len() == grid.rows,
+                blocked,
+            })
+        })
+        .collect()
+}
+
 pub fn checksum(layout: &str) -> u16 {
     layout
         .bytes()

@@ -248,6 +248,7 @@ fn dry_run_is_read_only_and_generated_config_parses() {
 struct Client {
     child: std::process::Child,
     master: std::os::fd::OwnedFd,
+    output: std::sync::Arc<std::sync::Mutex<Vec<u8>>>,
 }
 impl Client {
     fn attach(server: &Server, cols: u16, rows: u16) -> Self {
@@ -279,6 +280,7 @@ impl Client {
         let mut command = Command::new("tmux");
         command
             .args([
+                "-u",
                 "-S",
                 server.tmux.socket.as_ref().unwrap().to_str().unwrap(),
                 "attach-session",
@@ -302,13 +304,21 @@ impl Client {
         let child = command.spawn().unwrap();
         // Drain terminal output so native redraws never block on a full PTY buffer.
         let drain = master.try_clone().unwrap();
+        let output = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let captured = output.clone();
         std::thread::spawn(move || {
             let mut bytes = [0_u8; 8192];
             loop {
-                if unsafe { libc::read(drain.as_raw_fd(), bytes.as_mut_ptr().cast(), bytes.len()) }
-                    <= 0
-                {
+                let count = unsafe {
+                    libc::read(drain.as_raw_fd(), bytes.as_mut_ptr().cast(), bytes.len())
+                };
+                if count <= 0 {
                     break;
+                }
+                let mut buffer = captured.lock().unwrap();
+                buffer.extend_from_slice(&bytes[..count as usize]);
+                if buffer.len() > 1024 * 1024 {
+                    buffer.drain(..512 * 1024);
                 }
             }
         });
@@ -318,7 +328,25 @@ impl Client {
                 .run(&["list-clients", "-F", "#{client_name}"])
                 .is_ok_and(|s| !s.is_empty())
         });
-        Self { child, master }
+        Self {
+            child,
+            master,
+            output,
+        }
+    }
+    fn output_contains(&self, text: &str) -> bool {
+        String::from_utf8_lossy(&self.output.lock().unwrap()).contains(text)
+    }
+    fn wait_output(&self, text: &str) {
+        let start = Instant::now();
+        while !self.output_contains(text) {
+            assert!(
+                start.elapsed() < Duration::from_secs(8),
+                "missing {text}: {:?}",
+                String::from_utf8_lossy(&self.output.lock().unwrap())
+            );
+            std::thread::sleep(Duration::from_millis(20));
+        }
     }
     fn resize(&self, cols: u16, rows: u16) {
         use std::os::fd::AsRawFd;
@@ -395,6 +423,89 @@ fn discovery_updates_headers_and_journals_exit_without_launching_real_agents() {
     assert_eq!(
         records.as_array().unwrap().last().unwrap()["event"],
         "exited"
+    );
+}
+
+#[test]
+#[ignore = "requires tmux 3.8; CI explicitly runs this suite"]
+fn graphical_grid_picker_selects_on_large_and_small_terminals_and_blocks_busy_shrink() {
+    let server = Server::new();
+    let window = server.window();
+    let config = server.cli(&["tmux-config"]);
+    assert!(config.status.success());
+    let path = server.root.join("picker.conf");
+    fs::write(&path, config.stdout).unwrap();
+    server
+        .tmux
+        .run(&["source-file", path.to_str().unwrap()])
+        .unwrap();
+    for (height, key, shape) in [(60, b'4', "3x2"), (28, b'5', "2x3"), (18, b'3', "2x2")] {
+        server.wait_idle();
+        let client = Client::attach(&server, 100, height);
+        client.keys(b"\x02g");
+        client.wait_output("Kelpmux grid");
+        assert!(client.output_contains("cols"));
+        client.keys(&[key]);
+        let grid = Grid::parse(shape).unwrap();
+        wait(|| {
+            workspace::grid_choices(&server.tmux, &window)
+                .is_ok_and(|choices| choices.iter().any(|c| c.grid == grid && c.current))
+        });
+        assert_eq!(server.tmux.format(&window, "#{pane_in_mode}").unwrap(), "0");
+        drop(client);
+        wait(|| {
+            server
+                .tmux
+                .run(&["list-clients"])
+                .is_ok_and(|s| s.is_empty())
+        });
+    }
+    server.wait_idle();
+    let pane = server.tmux.panes().unwrap()[0].clone();
+    server
+        .tmux
+        .run(&["respawn-pane", "-k", "-t", &pane.id, "exec sleep 60"])
+        .unwrap();
+    wait(|| {
+        let tree = process::snapshot(std::path::Path::new("/proc")).unwrap();
+        let current = server.tmux.panes().unwrap();
+        !process::idle(
+            &tree,
+            current.iter().find(|p| p.id == pane.id).unwrap().pid,
+            false,
+        )
+    });
+    let choices = workspace::grid_choices(&server.tmux, &window).unwrap();
+    // One busy pane still permits 1x1; occupy another so it becomes unsafe.
+    assert!(choices[0].blocked.is_none());
+    let other = server.tmux.panes().unwrap()[1].clone();
+    server
+        .tmux
+        .run(&["respawn-pane", "-k", "-t", &other.id, "exec sleep 60"])
+        .unwrap();
+    wait(|| {
+        workspace::grid_choices(&server.tmux, &window).unwrap()[0]
+            .blocked
+            .is_some()
+    });
+    let client = Client::attach(&server, 100, 28);
+    client.keys(b"\x02g");
+    client.wait_output("Needs 3 unused; 2 available");
+    assert!(client.output_contains("□"));
+    client.keys(b"1");
+    std::thread::sleep(Duration::from_millis(150));
+    assert_eq!(server.tmux.panes().unwrap().len(), 4);
+    client.keys(b"\x1b");
+    std::thread::sleep(Duration::from_millis(100));
+    client.keys(b"\x02?");
+    client.wait_output("Kelpmux shortcuts");
+    client.keys(b"\x1b");
+    // A stale menu cannot bypass the applying command's occupancy checks.
+    assert!(
+        !server
+            .cli(&["layout", "1x1", "--window", &window])
+            .status
+            .success()
     );
 }
 

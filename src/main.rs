@@ -232,6 +232,7 @@ fn run() -> Result<()> {
                 "C",
                 "-y",
                 "C",
+                "--",
             ];
             for description in [
                 "-Read / grid: Ctrl+b z or Alt+Tab / Alt+0",
@@ -252,36 +253,83 @@ fn run() -> Result<()> {
             let client = required(&mut args, "--client")?;
             clean(&args)?;
             let base = base_command(&env::current_exe()?, &opts);
+            let height: usize = opts
+                .tmux
+                .run(&["display-message", "-p", "-c", &client, "#{client_height}"])?
+                .parse()?;
+            let choices = workspace::grid_choices(&opts.tmux, &window)?;
             let mut arguments: Vec<String> = [
                 "display-menu",
                 "-c",
                 &client,
+                "-t",
+                &window,
                 "-T",
                 "Kelpmux grid",
                 "-x",
                 "C",
                 "-y",
                 "C",
+                "--",
             ]
             .into_iter()
             .map(str::to_owned)
             .collect();
-            for (index, grid) in ["1x1", "2x1", "2x2", "3x2", "2x3", "3x3"]
-                .iter()
-                .enumerate()
-            {
-                arguments.extend([
-                    grid.to_string(),
-                    (index + 1).to_string(),
-                    format!(
-                        "run-shell -b {}",
-                        tmux_quote(&format!(
-                            "{base} layout {grid} --window {}",
-                            kelpmux::shell_quote(&window)
-                        ))
-                    ),
-                ]);
+            for (index, choice) in choices.iter().enumerate() {
+                let grid = format!("{}x{}", choice.grid.cols, choice.grid.rows);
+                let command = format!(
+                    "run-shell -b {}",
+                    tmux_quote(&format!(
+                        "{base} layout {grid} --window {} >/dev/null",
+                        kelpmux::shell_quote(&window)
+                    ))
+                );
+                let mut drawing = choice.drawing(height < 40);
+                if height < 22 {
+                    drawing = vec![drawing.join(" / ")];
+                }
+                for (row, line) in drawing.iter().enumerate() {
+                    let mut name = format!("{line:<13}");
+                    if row == 0 {
+                        name.push_str(&format!(
+                            "  {} cols × {} rows",
+                            choice.grid.cols, choice.grid.rows
+                        ));
+                        if choice.current {
+                            name.push_str("  ● current");
+                        }
+                        if let Some(reason) = &choice.blocked {
+                            name.push_str(&format!("  {reason}"));
+                        }
+                    }
+                    if choice.blocked.is_some() {
+                        name.insert(0, '-');
+                    } else if choice.current {
+                        name = format!("#[fg=colour39,bold]{name}#[default]");
+                    }
+                    arguments.extend([
+                        name,
+                        if row == 0 && choice.blocked.is_none() {
+                            (index + 1).to_string()
+                        } else {
+                            String::new()
+                        },
+                        if choice.blocked.is_none() {
+                            command.clone()
+                        } else {
+                            String::new()
+                        },
+                    ]);
+                }
+                if index + 1 < choices.len() && height >= 22 {
+                    arguments.push(String::new());
+                }
             }
+            arguments.extend([
+                "-Number / arrows + Enter / click · Esc closes".into(),
+                String::new(),
+                String::new(),
+            ]);
             opts.tmux
                 .run(&arguments.iter().map(String::as_str).collect::<Vec<_>>())?;
         }
