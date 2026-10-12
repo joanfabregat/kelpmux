@@ -1,5 +1,6 @@
 //! Real tmux tests always use a private socket, empty config, and disposable state.
 use kelpmux::{
+    model::{Agent, Kind, Status},
     process,
     tmux::Tmux,
     workspace::{self, Grid},
@@ -418,12 +419,127 @@ fn discovery_updates_headers_and_journals_exit_without_launching_real_agents() {
     server.wait_idle();
     assert!(server.cli(&["scan"]).status.success());
     assert_eq!(server.tmux.option(&pane.id, "@kelpmux-status").unwrap(), "");
+    assert_eq!(
+        server
+            .tmux
+            .option(&pane.id, "@kelpmux-color-muted")
+            .unwrap(),
+        ""
+    );
     let records: serde_json::Value =
         serde_json::from_slice(&server.cli(&["journal"]).stdout).unwrap();
     assert_eq!(
         records.as_array().unwrap().last().unwrap()["event"],
         "exited"
     );
+}
+
+#[test]
+#[ignore = "requires tmux 3.8; CI explicitly runs this suite"]
+fn status_titles_use_bright_and_muted_colors_with_native_floating_headers() {
+    let server = Server::new();
+    let window = server.window();
+    workspace::resize(
+        &server.tmux,
+        &server.state(),
+        &window,
+        Grid::parse("2x1").unwrap(),
+        false,
+    )
+    .unwrap();
+    server.wait_idle();
+    let panes = server.tmux.panes().unwrap();
+    let config = server.cli(&["tmux-config"]);
+    assert!(config.status.success());
+    let path = server.root.join("colors.conf");
+    fs::write(&path, config.stdout).unwrap();
+    server
+        .tmux
+        .run(&["source-file", path.to_str().unwrap()])
+        .unwrap();
+    let client = Client::attach(&server, 240, 60);
+    for status in [
+        Status::Working,
+        Status::InputNeeded,
+        Status::TurnFinished,
+        Status::Failed,
+        Status::Idle,
+        Status::Unknown,
+    ] {
+        client.output.lock().unwrap().clear();
+        for pane in &panes {
+            server
+                .tmux
+                .header(&Agent {
+                    pane: pane.id.clone(),
+                    window: window.clone(),
+                    pid: pane.pid,
+                    process_start: 0,
+                    kind: Kind::Codex,
+                    session_id: None,
+                    name: "synthetic-status".into(),
+                    cwd: pane.cwd.clone(),
+                    status,
+                    source: "test".into(),
+                    first_seen: 0,
+                    last_seen: 0,
+                    ended_at: None,
+                })
+                .unwrap();
+        }
+        server
+            .tmux
+            .run(&["select-pane", "-t", &panes[0].id])
+            .unwrap();
+        server.tmux.run(&["refresh-client"]).unwrap();
+        client.wait_output(&format!(
+            "48;5;{}",
+            status.color().trim_start_matches("colour")
+        ));
+        client.wait_output(&format!(
+            "48;5;{}",
+            status.muted_color().trim_start_matches("colour")
+        ));
+        assert!(!client.output_contains("#{?pane_active"));
+        let expanded = server
+            .tmux
+            .format(&panes[0].id, &kelpmux::tmux::header_format())
+            .unwrap();
+        assert!(expanded.contains(&format!("fill={}", status.color())));
+        server
+            .tmux
+            .run(&["select-pane", "-t", &panes[1].id])
+            .unwrap();
+        let expanded = server
+            .tmux
+            .format(&panes[0].id, &kelpmux::tmux::header_format())
+            .unwrap();
+        assert!(expanded.contains(&format!("fill={}", status.muted_color())));
+    }
+    client.output.lock().unwrap().clear();
+    assert!(
+        server
+            .cli(&["read", "--pane", &panes[0].id])
+            .status
+            .success()
+    );
+    client.wait_output("synthetic-status");
+    assert!(!client.output_contains("#{?pane_active"));
+    assert_eq!(
+        server
+            .tmux
+            .format(&panes[0].id, "#{pane_floating_flag}")
+            .unwrap(),
+        "1"
+    );
+    assert_eq!(
+        server
+            .tmux
+            .run(&["show-options", "-gwv", "pane-border-style"])
+            .unwrap(),
+        "fg=colour238,bg=colour234"
+    );
+    assert_eq!(server.tmux.panes().unwrap()[0].pid, panes[0].pid);
 }
 
 #[test]

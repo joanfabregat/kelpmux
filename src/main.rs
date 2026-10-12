@@ -88,6 +88,7 @@ fn scan(opts: &Options) -> Result<()> {
                 "@kelpmux-name",
                 "@kelpmux-status",
                 "@kelpmux-color",
+                "@kelpmux-color-muted",
                 "@kelpmux-session",
             ] {
                 opts.tmux.set(&pane.id, name, "")?;
@@ -422,8 +423,8 @@ fn base_command(exe: &Path, opts: &Options) -> String {
 }
 fn print_config(exe: &Path, opts: &Options, appearance: bool) -> Result<()> {
     let base = base_command(exe, opts);
-    let header = kelpmux::tmux::HEADER_FORMAT;
-    let style = kelpmux::tmux::HEADER_STYLE;
+    let header = kelpmux::tmux::header_format();
+    let style = kelpmux::tmux::BORDER_STYLE;
     println!("# Optional tmux 3.8+ example. Your tmux configuration owns appearance and bindings.");
     if appearance {
         println!(
