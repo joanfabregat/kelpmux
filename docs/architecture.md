@@ -1,29 +1,33 @@
 # Architecture
 
-tmux owns PTYs, terminal emulation, layouts, clients, and all application processes. Kelpmux owns agent metadata, guarded workspace operations, reading-view lifecycle, and optional integration output. The daemon is a foreground poller, not a terminal server and not an agent launcher.
+Kelpmux is a small Rust helper beside unmodified tmux 3.8+. tmux owns PTYs, terminal emulation, drawing, focus, mouse input, native layouts, floating panes, zoom, clients and application processes. User-owned tmux configuration owns the interface. Kelpmux owns agent metadata, guarded grid operations, optional journal retention and reading geometry commands. The foreground discovery daemon is a metadata poller, not a terminal server or agent launcher.
 
 ## Discovery and journal
 
-Each scan lists and deduplicates tmux panes (including linked windows), snapshots Linux processes, and walks descendants from each pane's shell. The outermost interactive Claude/Codex process is the pane's agent. Headless executions and shared app/MCP servers are excluded. PID plus Linux process birth ticks prevents PID-reuse confusion. Supported metadata adapters produce a session ID, name, and status; missing or unfamiliar fields become unknown.
+A scan deduplicates linked tmux panes, snapshots Linux processes, and walks descendants from each pane shell. The outermost interactive Claude/Codex process is the pane's agent; headless jobs and shared app/MCP servers are excluded. PID plus process birth ticks prevents PID reuse confusion. Metadata adapters produce session ID, name and lifecycle evidence; unfamiliar or missing evidence is unknown.
 
-Registry writes use a file lock, private atomic replacement, and filesystem sync. The append-only JSONL journal records discovered/changed/renamed/hook/exited transitions. It stores metadata, never hook payloads. Pruning retains seven days; the registry retains currently live processes and recent ended processes. A corrupt registry fails visibly instead of being silently overwritten.
+The daemon writes native pane options: `@kelpmux-name`, `@kelpmux-status`, `@kelpmux-color` and `@kelpmux-session`. tmux renders these in the user's chosen header format. Optional hooks supply stronger identity/lifecycle evidence without launching agents through Kelpmux.
 
-The discovery schema belongs to external tools and can change. Fixtures isolate adapters from the user's actual home directory. Local Codex daemon queries only initialize a metadata client and read an already identified thread with turns excluded; they never start/resume a thread. No metadata query can infer ownership safely when several TUIs share a server and expose no identity.
+Registry replacement is private, atomic and file-locked. The JSONL journal records metadata changes and prunes after seven days. It stores no transcript or hook payload. Current live records remain even for longer-running agents. Corrupt registry data fails visibly. Discovery fixtures never use actual user credentials or transcripts.
 
-## Reading view
+## Native reading view
 
-A window-scoped lock permits one reading controller per origin window. A temporary session holds the selected pane; a sleeping placeholder preserves the origin's slot. Pane swaps keep the original PTY, PID, and scrollback. Modal state is persisted before the swap so interruption can be repaired.
+`break-pane -W` lifts the existing pane out of its tile while retaining its native window, pane ID, index, PID and scrollback. `resize-pane` sets the width cap and height, and `move-pane -P centre` centers it. Native zoom gives explicit fullscreen and automatically uses all columns when the window is smaller than the cap. A native `window-resized` hook calls a short-lived geometry helper to restore the cap when the screen grows; explicit fullscreen remains fullscreen.
 
-The outer client displays a tmux popup containing another tmux client attached to the temporary session. On full/restore/select actions, the inner client detaches; the controller reopens the popup at the requested dimensions or swaps another agent in. The normal view uses at most the configured content width plus border columns. Small screens and fullscreen omit the border. The existing tmux client handles live terminal resizing; the next reopen recomputes the width cap.
+The saved tile is owned by tmux. `join-pane -s %ID -t %ID` restores it. To prevent uneven-split rounding drift, the helper stores the original native layout and pane/index inventory in pane options before lifting. It reapplies that layout only if the original inventory still matches and no unrelated floating panes remain. Otherwise it preserves external additions/removals through native reinsertion. Closing or interrupting the helper cannot kill an agent or strand it in a temporary session.
 
-Restore swaps the original pane back and deletes only the expected temporary session. Unexpected panes are retained for manual recovery. A crash after temporary session creation but before its state file is written can leave an unused session named `kelpmux-*`; no agent has been moved at that point.
+Reading commands are serialized by a workspace lock. No command remains running while reading. There is no nested client, popup attachment, placeholder process, modal JSON file, dedicated key table, or recovery command. A floating pane created outside Kelpmux is not taken over. State surviving a helper interruption is ordinary tmux state; `grid` or native unzoom/join can restore it.
 
-## Grid changes
+Native reading belongs to a window. Clients showing that same window see the same layout and reading pane, subject to tmux's normal window-size policy. Changing screens never introduces another terminal emulator or environment. Shortcuts and application input use the ordinary tmux key tables.
 
-Custom tmux layout strings include tmux's checksum and equally distributed row/column sizes. Growing splits a wide pane and then applies the requested final grid. Shrinking computes the complete removal set, checks `/proc` for foreground/background/stopped jobs, revalidates pane and process identity, and uses a tmux-side foreground-shell check. Operations take a workspace lock and refuse native zoom or an open reading view.
+## Guarded grids
 
-These checks are conservative, but tmux does not offer transactional process deletion. Concurrent user input or native tmux mutations can race the check. Applications that detach entirely from their pane shell and controlling terminal are outside pane occupancy tracking. Runnable shells are treated as occupied to protect CPU-bound shell built-ins. A shell built-in blocked on terminal input can still resemble an idle prompt in `/proc`; reliable identification of that case needs shell cooperation and is outside the beta. No shell process is frozen: tmux automatically resumes most stopped pane shells, which would make a SIGSTOP-based guard misleading.
+Grid planning produces balanced native layout strings. Growing splits a pane and applies the preset; shrinking identifies the complete candidate set, checks foreground/background/stopped jobs, revalidates PID birth and pane identity, and asks tmux to check the shell immediately before removal. Highest numbered unused shells are removed first. Floating panes, managed reading state and zoom make a layout change refuse without removing panes.
 
-## Boundaries
+There is no atomic operating-system/tmux transaction for occupancy and removal. Concurrent input or external native mutations can race the final check; interruption can leave a partial grid. Fully detached processes outside the pane's process tree are not tracked. Runnable shells are considered occupied. A blocked shell builtin can resemble an idle prompt without shell cooperation. No process is frozen to manufacture a transaction.
 
-The first beta supports one tmux socket per state directory, Linux process inspection, and up to nine slots in the provided presets. It does not manage system services, modify user configuration, launch agents, restart failed agents, record terminal output, or provide nested scratch popups. The Rust modules deliberately keep discovery, persistence, tmux transport, and workspace behavior separate so adapters can evolve without replacing tmux.
+## Configuration and distribution
+
+`--tmux-binary` selects an explicit upstream executable; generated bindings carry it with the socket and state directory. This allows a privately built tmux alongside apt's version. `tmux-config` prints an optional appearance/binding example; `--bindings-only` avoids changing user appearance. Neither output is sourced automatically. Dotfiles remain the source of truth for final shortcuts and visual choices.
+
+Linux x86-64 and ARM64 CI build a SHA-256-pinned upstream release and run real private-server terminal tests. Release packages include the same unmodified tmux build with its own copyright/license. Rust dependencies retain their licenses. No fork, service unit, installation, configuration replacement, agent launch or automatic recovery is performed.

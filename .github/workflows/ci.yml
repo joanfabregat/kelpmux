@@ -32,9 +32,14 @@ jobs:
       - name: Install test prerequisites
         run: |
           sudo apt-get update
-          sudo apt-get install -y tmux
+          sudo apt-get install -y build-essential pkg-config libevent-dev libncurses-dev bison
           rustup toolchain install 1.99.0 --profile minimal
-          tmux -V
+      - name: Build verified upstream tmux 3.8
+        run: |
+          mkdir -p target
+          curl -fsSL https://github.com/tmux/tmux/releases/download/3.8/tmux-3.8.tar.gz -o target/tmux-3.8.tar.gz
+          scripts/build-tmux.sh target/tmux-3.8.tar.gz "$PWD/target/tmux-3.8"
+          echo "$PWD/target/tmux-3.8/bin" >> "$GITHUB_PATH"
       - name: Real tmux integration (private sockets, no user configuration)
         run: cargo test --locked --test tmux -- --ignored --test-threads=1
   msrv:

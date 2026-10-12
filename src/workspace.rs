@@ -1,14 +1,10 @@
 use crate::{
     Result,
-    journal::{Lock, atomic, private_dir},
-    process, shell_quote,
+    journal::{Lock, private_dir},
+    process,
     tmux::{Pane, Tmux},
 };
-use serde::{Deserialize, Serialize};
-use std::{
-    fs,
-    path::{Path, PathBuf},
-};
+use std::path::Path;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Grid {
@@ -110,12 +106,6 @@ pub fn resize(tmux: &Tmux, root: &Path, window: &str, grid: Grid, dry: bool) -> 
     }
     private_dir(root)?;
     let _lock = Lock::acquire(&root.join("workspace.lock"), false)?;
-    if valid_id(&tmux.format(window, "#{@kelpmux-origin}")?, '@') {
-        return Err("return to grid before changing layout".into());
-    }
-    if modal_path(root, window).exists() {
-        return Err("return to grid before changing layout".into());
-    }
     let mut panes: Vec<_> = tmux
         .panes()?
         .into_iter()
@@ -124,6 +114,11 @@ pub fn resize(tmux: &Tmux, root: &Path, window: &str, grid: Grid, dry: bool) -> 
     panes.sort_by_key(|p| p.index);
     if panes.is_empty() {
         return Err("window has no panes".into());
+    }
+    for pane in &panes {
+        if pane.floating || reading_width(tmux, &pane.id)?.is_some() {
+            return Err("return floating panes to the grid before changing layout".into());
+        }
     }
     if tmux.format(window, "#{window_zoomed_flag}")? == "1" {
         return Err("unzoom before changing layout".into());
@@ -239,397 +234,219 @@ fn dimensions(text: &str) -> Result<(usize, usize)> {
     Ok((f[0].parse()?, f[1].parse()?))
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct Modal {
-    pub origin: String,
-    pub pane: String,
-    pub placeholder: String,
-    pub session: String,
-    pub full: bool,
-    pub action: Option<String>,
-    pub client: String,
-}
-fn modal_path(root: &Path, window: &str) -> PathBuf {
-    root.join(format!("modal-{}.json", window.trim_start_matches('@')))
-}
-fn modal_read(root: &Path, origin: &str) -> Result<Modal> {
-    if !valid_id(origin, '@') {
-        return Err("invalid origin window".into());
-    }
-    Ok(serde_json::from_reader(fs::File::open(modal_path(
-        root, origin,
-    ))?)?)
-}
-fn base_command(exe: &Path, root: &Path, tmux: &Tmux) -> Result<String> {
-    Ok(format!(
-        "{} --state-dir {} --tmux-socket {}",
-        shell_quote(&exe.to_string_lossy()),
-        shell_quote(&root.to_string_lossy()),
-        shell_quote(&tmux.socket_path()?)
-    ))
+/// tmux owns floating panes and their saved tile positions. No extra client,
+/// temporary session, placeholder process, or recovery file is needed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Reading {
+    Toggle,
+    Fullscreen,
+    Restore,
 }
 
-pub fn modal_action(tmux: &Tmux, root: &Path, origin: &str, action: &str) -> Result<()> {
-    let _lock = Lock::acquire(&root.join("modal-action.lock"), true)?;
-    let mut modal = modal_read(root, origin)?;
-    if !["grid", "full", "restore"].contains(&action)
-        && !action
-            .strip_prefix("select:")
-            .is_some_and(|s| s.parse::<usize>().is_ok_and(|n| (1..=9).contains(&n)))
-    {
-        return Err("invalid modal action".into());
+pub fn native_floating_supported(version: &str) -> bool {
+    let Some((major, rest)) = version.split_once('.') else {
+        return false;
+    };
+    let minor: String = rest.chars().take_while(char::is_ascii_digit).collect();
+    match (major.parse::<u32>(), minor.parse::<u32>()) {
+        (Ok(major), Ok(minor)) => major > 3 || (major == 3 && minor >= 8),
+        _ => false,
     }
-    modal.action = Some(action.into());
-    atomic(&modal_path(root, origin), &modal)?;
-    tmux.run(&["detach-client", "-s", &modal.session])?;
+}
+
+fn require_native(tmux: &Tmux, pane: &str) -> Result<()> {
+    let version = tmux.format(pane, "#{version}")?;
+    if !native_floating_supported(&version) {
+        return Err(format!("native reading view requires tmux 3.8+; server is {version}").into());
+    }
     Ok(())
 }
 
-pub fn recover_modal(tmux: &Tmux, root: &Path, origin: &str) -> Result<()> {
-    if !valid_id(origin, '@') {
-        return Err("invalid origin window".into());
+fn reading_width(tmux: &Tmux, pane: &str) -> Result<Option<usize>> {
+    let value = tmux.option(pane, "@kelpmux-reading-width")?;
+    if value.is_empty() {
+        return Ok(None);
     }
-    let _lock = Lock::acquire(&root.join(format!("zoom-{}.lock", &origin[1..])), false)?;
-    let modal = modal_read(root, origin)?;
-    restore(tmux, root, &modal)
-}
-fn restore(tmux: &Tmux, root: &Path, modal: &Modal) -> Result<()> {
-    let _lock = Lock::acquire(&root.join("workspace.lock"), true)?;
-    if !valid_id(&modal.origin, '@')
-        || !valid_id(&modal.pane, '%')
-        || !valid_id(&modal.placeholder, '%')
-        || !modal.session.starts_with("kelpmux-")
-    {
-        return Err("invalid modal recovery state".into());
+    let width: usize = value.parse()?;
+    if !(40..=500).contains(&width) {
+        return Err("invalid saved reading width".into());
     }
-    let panes = tmux.panes()?;
-    let selected = panes.iter().find(|p| p.id == modal.pane);
-    let placeholder = panes.iter().find(|p| p.id == modal.placeholder);
-    if let Some(slot) = placeholder {
-        let tree = process::snapshot(Path::new("/proc"))?;
-        let args = process::args(Path::new("/proc"), slot.pid);
-        if tmux.option(&slot.id, "@kelpmux-placeholder")? != modal.session
-            || !tree.get(&slot.pid).is_some_and(|p| p.command == "sleep")
-            || process::descendants(&tree, slot.pid).len() != 1
-            || args.last().map(String::as_str) != Some("2147483647")
-        {
-            return Err("placeholder was reused; all panes preserved for manual recovery".into());
-        }
-    }
-    match (selected, placeholder) {
-        (Some(p), Some(slot)) if slot.window == modal.origin && p.window != modal.origin => {
-            tmux.run(&["swap-pane", "-s", &modal.pane, "-t", &modal.placeholder])?;
-        }
-        (Some(p), _) if p.window == modal.origin => (),
-        // The original application was closed by the user; remove only the known empty placeholder.
-        (None, Some(slot)) if slot.window == modal.origin => {
-            tmux.run(&["kill-pane", "-t", &modal.placeholder])?;
-        }
-        _ => {
-            return Err(
-                "modal cannot be restored automatically; agent remains in its temporary session"
-                    .into(),
-            );
-        }
-    }
-    // Never kill a session with an unexpected pane or a still-running agent in it.
-    if let Ok(text) = tmux.run(&["list-panes", "-s", "-t", &modal.session, "-F", "#{pane_id}"]) {
-        if text.lines().any(|id| id != modal.placeholder) {
-            return Err(
-                "temporary session contains additional panes; preserved for manual recovery".into(),
-            );
-        }
-        tmux.run(&["kill-session", "-t", &modal.session])?;
-    }
-    if selected.is_some() {
-        tmux.run(&["set-option", "-pu", "-t", &modal.pane, "@kelpmux-number"])?;
-        tmux.run(&["select-pane", "-t", &modal.pane])?;
-    }
-    fs::remove_file(modal_path(root, &modal.origin))?;
-    Ok(())
+    Ok(Some(width))
 }
 
-pub fn zoom(
-    tmux: &Tmux,
-    root: &Path,
-    pane: &str,
-    client: &str,
-    max_width: usize,
-    full: bool,
-) -> Result<()> {
-    if !valid_id(pane, '%') || !(40..=500).contains(&max_width) {
-        return Err("zoom requires a pane id and width between 40 and 500".into());
-    }
-    private_dir(root)?;
-    let origin = tmux.format(pane, "#{window_id}")?;
-    let inner_origin = tmux.format(pane, "#{@kelpmux-origin}")?;
-    if valid_id(&inner_origin, '@') {
-        return modal_action(
-            tmux,
-            root,
-            &inner_origin,
-            if full { "full" } else { "grid" },
-        );
-    }
-    if modal_path(root, &origin).exists() {
-        let existing = modal_read(root, &origin)?;
-        if !tmux
-            .run(&[
-                "list-clients",
-                "-t",
-                &existing.session,
-                "-F",
-                "#{client_name}",
-            ])?
-            .is_empty()
-        {
-            return modal_action(tmux, root, &origin, if full { "full" } else { "grid" });
-        }
-        return Err("stale modal state: use recover-modal before zooming".into());
-    }
-    let _lock = Lock::acquire(
-        &root.join(format!("zoom-{}.lock", origin.trim_start_matches('@'))),
-        false,
-    )?;
-    let setup_lock = Lock::acquire(&root.join("workspace.lock"), true)?;
-    if modal_path(root, &origin).exists() {
-        return Err("stale modal state: use recover-modal before zooming".into());
-    }
+fn window_members(tmux: &Tmux, window: &str) -> Result<String> {
+    let members = tmux.run(&["list-panes", "-t", window, "-F", "#{pane_id}:#{pane_index}"])?;
+    let mut lines: Vec<_> = members.lines().collect();
+    lines.sort_unstable();
+    Ok(lines.join(" "))
+}
+
+fn return_pane(tmux: &Tmux, pane: &str) -> Result<()> {
+    let window = tmux.format(pane, "#{window_id}")?;
+    let layout = tmux.option(pane, "@kelpmux-reading-layout")?;
+    let members = tmux.option(pane, "@kelpmux-reading-members")?;
     if tmux.format(pane, "#{window_zoomed_flag}")? == "1" {
         tmux.run(&["resize-pane", "-Z", "-t", pane])?;
     }
-    let exe = std::env::current_exe()?;
-    let command = base_command(&exe, root, tmux)?;
-    let session = format!(
-        "kelpmux-{}-{}",
-        std::process::id(),
-        origin.trim_start_matches('@')
-    );
-    let placeholder = tmux.run(&[
-        "new-session",
-        "-d",
-        "-s",
-        &session,
-        "-P",
-        "-F",
-        "#{pane_id}",
-        "exec sleep 2147483647",
-    ])?;
-    let mut modal = Modal {
-        origin: origin.clone(),
-        pane: pane.into(),
-        placeholder,
-        session,
-        full,
-        action: None,
-        client: client.into(),
+    if tmux.format(pane, "#{pane_floating_flag}")? == "1" {
+        // tmux restores the original tile itself, including its original index.
+        tmux.run(&["join-pane", "-s", pane, "-t", pane])?;
+    }
+    // Native reinsertion can shift an uneven split by one column. Restore the
+    // original geometry only while every original pane/index is still present
+    // and there are no unrelated floating panes. Never remove or replace panes.
+    if !layout.is_empty()
+        && !members.is_empty()
+        && members == window_members(tmux, &window)?
+        && !tmux
+            .panes()?
+            .iter()
+            .any(|p| p.window == window && p.floating)
+    {
+        tmux.run(&["select-layout", "-t", &window, &layout])?;
+        tmux.run(&["select-pane", "-t", pane])?;
+    }
+    for option in [
+        "@kelpmux-reading-width",
+        "@kelpmux-reading-full",
+        "@kelpmux-reading-layout",
+        "@kelpmux-reading-members",
+    ] {
+        tmux.run(&["set-option", "-pu", "-t", pane, option])?;
+    }
+    Ok(())
+}
+
+fn fit_reading(tmux: &Tmux, pane: &str, width: usize) -> Result<()> {
+    let (w, h) = dimensions(&tmux.format(pane, "#{window_width} #{window_height}")?)?;
+    if w < 5 || h < 5 {
+        return Err("terminal too small for reading view".into());
+    }
+    if w <= width + 2 {
+        // Native zoom uses every available column on small clients. The saved
+        // floating cell remains owned by tmux and is restored on a larger screen.
+        if tmux.format(pane, "#{window_zoomed_flag}")? != "1" {
+            tmux.run(&["resize-pane", "-Z", "-t", pane])?;
+        }
+        return Ok(());
+    }
+    let border = if tmux.format(pane, "#{pane-border-lines}")? == "none" {
+        0
+    } else {
+        2
     };
-    tmux.set(&modal.placeholder, "@kelpmux-placeholder", &modal.session)?;
-    atomic(&modal_path(root, &origin), &modal)?;
-    drop(setup_lock);
-    let result = (|| -> Result<()> {
+    let target_w = width.min(w.saturating_sub(border));
+    let target_h = (h * 95 / 100).saturating_sub(border).max(3);
+    let current = dimensions(&tmux.format(pane, "#{pane_width} #{pane_height}")?)?;
+    if current != (target_w, target_h) {
+        tmux.run(&[
+            "resize-pane",
+            "-t",
+            pane,
+            "-x",
+            &(target_w + border).to_string(),
+            "-y",
+            &(target_h + border).to_string(),
+        ])?;
+    }
+    tmux.run(&["move-pane", "-s", pane, "-P", "centre"])?;
+    Ok(())
+}
+
+pub fn reading(tmux: &Tmux, root: &Path, pane: &str, width: usize, mode: Reading) -> Result<()> {
+    if !valid_id(pane, '%') || !(40..=500).contains(&width) {
+        return Err("reading view needs a pane ID and width between 40 and 500".into());
+    }
+    require_native(tmux, pane)?;
+    private_dir(root)?;
+    let _lock = Lock::acquire(&root.join("workspace.lock"), true)?;
+    let window = tmux.format(pane, "#{window_id}")?;
+    let saved = reading_width(tmux, pane)?;
+    if saved.is_some() && mode == Reading::Toggle {
+        return return_pane(tmux, pane);
+    }
+    if saved.is_none() && mode == Reading::Restore {
+        return Err("pane is not in reading view".into());
+    }
+    // Return the previous reading pane before opening another. Ordinary floating
+    // panes are left alone; they are not assumed to belong to Kelpmux.
+    if saved.is_none() {
+        if tmux.format(pane, "#{pane_floating_flag}")? == "1" {
+            return Err("pane is already floating outside Kelpmux".into());
+        }
+        for other in tmux
+            .panes()?
+            .into_iter()
+            .filter(|p| p.window == window && p.id != pane)
+        {
+            if reading_width(tmux, &other.id)?.is_some() {
+                return_pane(tmux, &other.id)?;
+            }
+        }
+        if tmux.format(pane, "#{window_zoomed_flag}")? == "1" {
+            tmux.run(&["resize-pane", "-Z", "-t", pane])?;
+        }
         tmux.set(
-            &modal.pane,
-            "@kelpmux-number",
-            &tmux.format(&modal.pane, "#{pane_index}")?,
+            pane,
+            "@kelpmux-reading-layout",
+            &tmux.format(pane, "#{window_layout}")?,
         )?;
-        tmux.run(&["swap-pane", "-s", &modal.pane, "-t", &modal.placeholder])?;
-        tmux.run(&[
-            "set-option",
-            "-t",
-            &modal.session,
-            "@kelpmux-origin",
-            &origin,
-        ])?;
-        tmux.run(&["set-option", "-t", &modal.session, "status", "on"])?;
-        tmux.run(&["set-option", "-t", &modal.session, "status-position", "top"])?;
-        tmux.run(&[
-            "set-option",
-            "-t",
-            &modal.session,
-            "status-style",
-            crate::tmux::HEADER_STYLE,
-        ])?;
-        tmux.run(&["set-option", "-t", &modal.session, "status-right", ""])?;
-        tmux.run(&[
-            "set-option",
-            "-t",
-            &modal.session,
-            "status-left-length",
-            "150",
-        ])?;
-        tmux.run(&[
-            "set-option",
-            "-t",
-            &modal.session,
-            "status-format[0]",
-            "#{status-left}",
-        ])?;
-        tmux.run(&[
-            "set-option",
-            "-t",
-            &modal.session,
-            "key-table",
-            "kelpmux-modal",
-        ])?;
-        tmux.run(&[
-            "set-option",
-            "-t",
-            &modal.session,
-            "destroy-unattached",
-            "off",
-        ])?;
-        // A custom default key table must explicitly enter the prefix table.
-        for option in ["prefix", "prefix2"] {
-            let prefix = tmux.run(&["show-options", "-Av", "-t", &modal.session, option])?;
-            if prefix != "None" {
-                tmux.run(&[
-                    "bind-key",
-                    "-T",
-                    "kelpmux-modal",
-                    &prefix,
-                    "switch-client",
-                    "-T",
-                    "prefix",
-                ])?;
-            }
+        tmux.set(
+            pane,
+            "@kelpmux-reading-members",
+            &window_members(tmux, &window)?,
+        )?;
+        tmux.set(pane, "@kelpmux-reading-width", &width.to_string())?;
+        tmux.run(&["break-pane", "-W", "-s", pane])?;
+    }
+    tmux.run(&["select-pane", "-t", pane])?;
+    if mode == Reading::Fullscreen {
+        tmux.set(pane, "@kelpmux-reading-full", "1")?;
+        if tmux.format(pane, "#{window_zoomed_flag}")? != "1" {
+            tmux.run(&["resize-pane", "-Z", "-t", pane])?;
         }
-        for (key, action) in [
-            ("M-Tab", "grid"),
-            ("M-0", "grid"),
-            ("M-f", "full"),
-            ("M-r", "restore"),
-        ] {
-            tmux.run(&[
-                "bind-key",
-                "-T",
-                "kelpmux-modal",
-                key,
-                "run-shell",
-                "-b",
-                &format!("{command} modal-action {action} --origin '#{{@kelpmux-origin}}'"),
-            ])?;
+    } else {
+        if tmux.format(pane, "#{window_zoomed_flag}")? == "1" {
+            tmux.run(&["resize-pane", "-Z", "-t", pane])?;
         }
-        for n in 1..=9 {
-            tmux.run(&[
-                "bind-key",
-                "-T",
-                "kelpmux-modal",
-                &format!("M-{n}"),
-                "run-shell",
-                "-b",
-                &format!("{command} modal-action select:{n} --origin '#{{@kelpmux-origin}}'"),
-            ])?;
+        tmux.set(pane, "@kelpmux-reading-full", "0")?;
+        fit_reading(tmux, pane, saved.unwrap_or(width))?;
+    }
+    Ok(())
+}
+
+pub fn grid(tmux: &Tmux, root: &Path, window: &str) -> Result<()> {
+    if !valid_id(window, '@') {
+        return Err("grid needs a window ID".into());
+    }
+    private_dir(root)?;
+    let _lock = Lock::acquire(&root.join("workspace.lock"), true)?;
+    for pane in tmux.panes()?.into_iter().filter(|p| p.window == window) {
+        if reading_width(tmux, &pane.id)?.is_some() {
+            return_pane(tmux, &pane.id)?;
         }
-        tmux.run(&[
-            "bind-key",
-            "-T",
-            "kelpmux-modal",
-            "MouseDown1Status",
-            "if-shell",
-            "-F",
-            "#{==:#{mouse_status_range},kelpmux-help}",
-            &format!(
-                "run-shell -b {}",
-                shell_quote(&format!("{command} help-menu --client '#{{client_name}}'"))
-            ),
-            "",
-        ])?;
-        loop {
-            let toolbar = format!(
-                "{} #[range=user|kelpmux-help] ? #[norange]",
-                crate::tmux::HEADER_FORMAT
-            );
-            tmux.run(&["set-option", "-t", &modal.session, "status-left", &toolbar])?;
-            let dims = tmux.run(&[
-                "display-message",
-                "-p",
-                "-c",
-                client,
-                "#{client_width} #{client_height}",
-            ])?;
-            let (width, height) = dimensions(&dims)?;
-            let popup_width = if modal.full {
-                width
-            } else {
-                width.min(max_width + 2)
-            };
-            if height < 5 || width < 5 {
-                return Err("terminal too small for reading view".into());
+    }
+    Ok(())
+}
+
+/// Called from native resize hooks. Reading geometry follows the window shared
+/// by its clients; tmux remains in charge of deciding that window's dimensions.
+pub fn refresh_reading(tmux: &Tmux, root: &Path, window: &str) -> Result<()> {
+    if !valid_id(window, '@') {
+        return Err("resize needs a window ID".into());
+    }
+    private_dir(root)?;
+    let _lock = Lock::acquire(&root.join("workspace.lock"), true)?;
+    for pane in tmux.panes()?.into_iter().filter(|p| p.window == window) {
+        if let Some(width) = reading_width(tmux, &pane.id)? {
+            if tmux.option(&pane.id, "@kelpmux-reading-full")? == "1" {
+                continue;
             }
-            // Percentages are resolved by tmux at execution time, avoiding a race
-            // with a terminal resize between our dimension query and popup creation.
-            let popup_height = if modal.full || width <= max_width + 2 {
-                "100%"
-            } else {
-                "95%"
-            };
-            let attach = format!(
-                "env -u TMUX tmux -S {} attach-session -t {}",
-                shell_quote(&tmux.socket_path()?),
-                shell_quote(&modal.session)
-            );
-            let mut args = vec![
-                "display-popup",
-                "-E",
-                "-c",
-                client,
-                "-x",
-                "C",
-                "-y",
-                "C",
-                "-w",
-            ];
-            let w = if modal.full || width <= max_width + 2 {
-                "100%".into()
-            } else {
-                popup_width.to_string()
-            };
-            args.extend([&w, "-h", popup_height]);
-            if modal.full || width <= max_width + 2 {
-                args.push("-B");
+            if tmux.format(&pane.id, "#{window_zoomed_flag}")? == "1" {
+                tmux.run(&["resize-pane", "-Z", "-t", &pane.id])?;
             }
-            args.push(&attach);
-            if let Err(error) = tmux.run(&args) {
-                if error.to_string().contains("too large") {
-                    std::thread::sleep(std::time::Duration::from_millis(10));
-                    continue;
-                }
-                return Err(error);
-            }
-            let _action_lock = Lock::acquire(&root.join("modal-action.lock"), true)?;
-            let updated = modal_read(root, &origin)?;
-            let Some(action) = updated.action else {
-                break;
-            };
-            if action == "grid" {
-                break;
-            }
-            if let Some(number) = action.strip_prefix("select:") {
-                let index: usize = number.parse()?;
-                let slots = tmux.panes()?;
-                if let Some(target) = slots
-                    .iter()
-                    .find(|p| p.window == origin && p.index == index)
-                {
-                    if target.id == modal.placeholder {
-                        break;
-                    }
-                    // Return the old pane, then move the newly selected pane into the same temporary session.
-                    tmux.run(&["swap-pane", "-s", &modal.pane, "-t", &modal.placeholder])?;
-                    tmux.run(&["set-option", "-pu", "-t", &modal.pane, "@kelpmux-number"])?;
-                    modal.pane = target.id.clone();
-                    tmux.set(&modal.pane, "@kelpmux-number", &target.index.to_string())?;
-                    tmux.run(&["swap-pane", "-s", &modal.pane, "-t", &modal.placeholder])?;
-                }
-            } else {
-                modal.full = action == "full";
-            }
-            modal.action = None;
-            atomic(&modal_path(root, &origin), &modal)?;
+            fit_reading(tmux, &pane.id, width)?;
         }
-        Ok(())
-    })();
-    let cleanup = restore(tmux, root, &modal);
-    result.and(cleanup)
+    }
+    Ok(())
 }

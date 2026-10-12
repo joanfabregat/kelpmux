@@ -1,10 +1,10 @@
 [package]
 name = "kelpmux"
-version = "0.1.0-beta.1"
+version = "0.1.0-beta.2"
 edition = "2024"
 rust-version = "1.85"
 license = "Apache-2.0"
-description = "An agent-aware workspace controller for tmux"
+description = "Agent metadata and safe workspace helpers for tmux"
 repository = "https://github.com/joanfabregat/kelpmux"
 keywords = ["tmux", "terminal", "agents", "claude", "codex"]
 categories = ["command-line-utilities"]

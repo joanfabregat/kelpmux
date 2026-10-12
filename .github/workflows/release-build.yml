@@ -36,6 +36,12 @@ jobs:
             test "$TAG" = "v$version"
           fi
       - run: cargo build --release --locked
+      - name: Build verified upstream tmux 3.8
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential pkg-config libevent-dev libncurses-dev bison
+          curl -fsSL https://github.com/tmux/tmux/releases/download/3.8/tmux-3.8.tar.gz -o target/tmux-3.8.tar.gz
+          scripts/build-tmux.sh target/tmux-3.8.tar.gz "$PWD/target/tmux-3.8"
       - name: Package binary, license, and checksum
         env:
           TARGET: ${{ matrix.target }}
@@ -43,6 +49,8 @@ jobs:
           mkdir -p dist/package
           cp target/release/kelpmux LICENSE NOTICE README.md CONTRIBUTING.md dist/package/
           cp -R assets docs examples dist/package/
+          cp -R scripts dist/package/
+          cp -R target/tmux-3.8 dist/package/tmux
           tar -C dist/package -czf "dist/kelpmux-$TARGET.tar.gz" .
           (cd dist && sha256sum "kelpmux-$TARGET.tar.gz" > "kelpmux-$TARGET.tar.gz.sha256")
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
