@@ -105,7 +105,7 @@ pub fn resize(tmux: &Tmux, root: &Path, window: &str, grid: Grid, dry: bool) -> 
         return Err("layout requires a window id such as @0".into());
     }
     private_dir(root)?;
-    let _lock = Lock::acquire(&root.join("workspace.lock"), false)?;
+    let _lock = Lock::acquire(&root.join("workspace.lock"), true)?;
     let mut panes: Vec<_> = tmux
         .panes()?
         .into_iter()
