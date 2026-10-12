@@ -15,7 +15,7 @@ pub fn now() -> u64 {
         .as_secs()
 }
 
-/// Escape shell arguments used only when tmux needs a popup command string.
+/// Escape shell arguments for optional tmux command bindings.
 pub fn shell_quote(value: &str) -> String {
     format!("'{}'", value.replace('\'', "'\\''"))
 }
