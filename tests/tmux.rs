@@ -99,6 +99,7 @@ impl Drop for Server {
         let _ = fs::remove_dir_all(&self.root);
     }
 }
+#[track_caller]
 fn wait(mut predicate: impl FnMut() -> bool) {
     let start = Instant::now();
     while !predicate() {
@@ -943,7 +944,12 @@ fn mouse_controls_sticky_help_and_word_navigation_preserve_agent_panes() {
     // Fullscreen hides the tiled header; equivalent controls remain in the status bar.
     client.wait_output("Window");
     client.output.lock().unwrap().clear();
-    client.click(30, 59);
+    let status_label = server
+        .tmux
+        .format(&original.id, "#{pane_index}: #{b:pane_current_path}")
+        .unwrap();
+    let full_button_x = " ?  Grid ".chars().count() + 2 + status_label.chars().count() + 3;
+    client.click(full_button_x, 59);
     wait(|| {
         server
             .tmux
