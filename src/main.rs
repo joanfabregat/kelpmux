@@ -2,7 +2,7 @@ use kelpmux::{
     Result,
     discovery::Discovery,
     journal::{Lock, Store, private_dir},
-    model::Kind,
+    model::{Kind, Status},
     now,
     tmux::Tmux,
     workspace::{self, Grid, Reading},
@@ -80,22 +80,26 @@ fn scan(opts: &Options) -> Result<()> {
         opts.tmux.header(agent)?;
     }
     // Remove stale agent labels when a shell is reused.
+    let processes = kelpmux::process::snapshot(Path::new("/proc"))?;
     for pane in opts.tmux.panes()? {
+        opts.tmux.pane_palette(&pane.id)?;
         if !store
             .registry
             .agents
             .values()
             .any(|a| a.pane == pane.id && a.ended_at.is_none())
         {
-            for name in [
-                "@kelpmux-name",
-                "@kelpmux-status",
-                "@kelpmux-color",
-                "@kelpmux-color-muted",
-                "@kelpmux-session",
-            ] {
+            for name in ["@kelpmux-name", "@kelpmux-session"] {
                 opts.tmux.set(&pane.id, name, "")?;
             }
+            let status = if pane.dead {
+                Status::Exited
+            } else if kelpmux::process::idle(&processes, pane.pid, false) {
+                Status::Idle
+            } else {
+                Status::Working
+            };
+            opts.tmux.pane_status(&pane.id, status)?;
         }
     }
     Ok(())
@@ -248,6 +252,7 @@ fn run() -> Result<()> {
                 "-Grid picker: Ctrl+b g or Grid",
                 "-Swap pane: Ctrl+b s, number / click",
                 "-Rows / columns (from grid): Ctrl+b v / h",
+                "-Markers: ● working ! input ✓ done × failed ○ idle",
                 "-Help: click ? again / outside / × to close",
             ] {
                 arguments.extend([description, "", ""]);
