@@ -444,6 +444,9 @@ fn preserve_reading_slot(tmux: &Tmux, pane: &str) -> Result<()> {
     tmux.set(pane, "@kelpmux-reading-placeholder", &slot)?;
     tmux.set(&slot, "@kelpmux-placeholder", pane)?;
     tmux.set(&slot, "pane-border-status", "off")?;
+    tmux.set(&slot, "pane-border-format", "")?;
+    tmux.set(&slot, "pane-border-style", "fg=black,bg=black")?;
+    tmux.set(&slot, "pane-active-border-style", "fg=black,bg=black")?;
     tmux.set(&slot, "window-style", "bg=black")?;
     tmux.set(&slot, "window-active-style", "bg=black")?;
     tmux.run(&["join-pane", "-d", "-s", &slot, "-t", &slot])?;

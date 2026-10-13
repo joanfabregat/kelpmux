@@ -820,6 +820,10 @@ fn native_reading_preserves_panes_indices_and_grid_slots() {
 fn reading_keeps_background_geometry_and_cleans_only_empty_placeholders() {
     for shape in ["1x1", "2x1", "2x2", "3x2", "2x3", "3x3"] {
         let server = Server::new();
+        server
+            .tmux
+            .run(&["set-option", "-g", "pane-border-status", "top"])
+            .unwrap();
         let window = server.window();
         workspace::resize(
             &server.tmux,
@@ -878,6 +882,7 @@ fn reading_keeps_background_geometry_and_cleans_only_empty_placeholders() {
                 .unwrap(),
             before[original.len() / 2].split_once(' ').unwrap().1
         );
+        assert_eq!(server.tmux.option(&slot, "pane-border-format").unwrap(), "");
         assert_eq!(
             server.tmux.panes().unwrap().len(),
             original.len(),
