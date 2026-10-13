@@ -6,13 +6,13 @@ pub const HEADER_BACKGROUND: &str = "#{?pane_active,#{?@kelpmux-color,#{@kelpmux
 pub const BORDER_STYLE: &str = "fg=colour238,bg=colour234";
 
 pub fn header_format() -> String {
-    let badge = "#[fg=#{?pane_active,colour16,colour231},bg=#{?pane_active,colour39,colour24},bold] #{?pane_active,▶, } #{pane_index} ";
+    let badge = "#[fg=#{?pane_active,colour231,colour117},bg=#{?pane_active,colour24,colour17},bold] #{?pane_active,▶, } #{pane_index} ";
     let foreground = "#{?pane_active,colour16,colour252}";
     let text = " #{?@kelpmux-name,#{@kelpmux-name},#{b:pane_current_path}} #{@kelpmux-status} ";
     let controls = concat!(
-        "#[align=right]#[fg=colour231,bg=colour24]#[range=control|7] #{?@kelpmux-reading-width,↙,↗} #[norange]#[bg=default] ",
+        "#[align=right]#[fg=colour231,bg=colour24]#[range=control|7] #{?@kelpmux-reading-width,↙,↗} #[norange]",
         "#[fg=colour16,bg=colour39]#[range=control|8] #{?@kelpmux-reading-full,▣,⛶} #[norange]",
-        "#{?@kelpmux-reading-width,#[bg=default] #[fg=colour231#,bg=colour88]#[range=control|9] × #[norange],}",
+        "#{?@kelpmux-reading-width,#[fg=colour231#,bg=colour88]#[range=control|9] × #[norange],}",
     );
     // Fill the entire title independently of the quiet one-column borders.
     format!(
@@ -62,23 +62,27 @@ impl Tmux {
             "list-panes",
             "-a",
             "-F",
-            "#{pane_id}|#{window_id}|#{pane_pid}|#{pane_index}|#{pane_dead}|#{pane_floating_flag}|#{pane_current_path}",
+            "#{pane_id}|#{window_id}|#{pane_pid}|#{pane_index}|#{pane_dead}|#{pane_floating_flag}|#{@kelpmux-placeholder}|#{pane_current_path}",
         ])?;
         let mut panes = BTreeMap::new();
         for line in text.lines() {
-            let f: Vec<_> = line.splitn(7, '|').collect();
-            if f.len() != 7 {
+            let f: Vec<_> = line.splitn(8, '|').collect();
+            if f.len() != 8 {
                 return Err(format!("invalid tmux pane listing: {line:?}").into());
+            }
+            // A process-free reading slot is decoration, never an agent or grid slot.
+            if !f[6].is_empty() && f[2].is_empty() {
+                continue;
             }
             panes.insert(
                 f[0].to_owned(),
                 Pane {
                     id: f[0].into(),
                     window: f[1].into(),
-                    pid: f[2].parse()?,
+                    pid: if f[2].is_empty() { 0 } else { f[2].parse()? },
                     index: f[3].parse()?,
                     dead: f[4] == "1",
-                    cwd: f[6].into(),
+                    cwd: f[7].into(),
                     floating: f[5] == "1",
                 },
             );
