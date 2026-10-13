@@ -67,6 +67,7 @@ fn clean(args: &[String]) -> Result<()> {
     }
 }
 fn scan(opts: &Options) -> Result<()> {
+    workspace::cleanup_reading_slots(&opts.tmux, &opts.root)?;
     let agents = Discovery::new(&opts.home).scan(&opts.tmux.panes()?, now())?;
     let mut store = Store::open(&opts.root)?;
     store.reconcile(agents, now())?;
@@ -497,8 +498,7 @@ fn print_config(exe: &Path, opts: &Options, appearance: bool) -> Result<()> {
         "#[fg=colour16,bg=colour39]#[range=user|kelpmux-grid] Grid #[norange]#[default] ",
         "#{pane_index}: #{=/24/...:#{?@kelpmux-name,#{@kelpmux-name},#{b:pane_current_path}}} ",
         "#{?#{&&:#{@kelpmux-reading-width},#{window_zoomed_flag}},",
-        "#[fg=colour231#,bg=colour24]#[range=user|kelpmux-read] ↙ #[norange]#[default] ",
-        "#[fg=colour16#,bg=colour39]#[range=user|kelpmux-full] #{?@kelpmux-reading-full,▣,⛶} #[norange]#[default] ",
+        "#[fg=colour16#,bg=colour39]#[range=user|kelpmux-full] #{?@kelpmux-reading-full,▣,⛶} #[norange]",
         "#[fg=colour231#,bg=colour88]#[range=user|kelpmux-close] × #[norange]#[default],}",
     );
     println!("# Optional tmux 3.8+ example. Your tmux configuration owns appearance and bindings.");

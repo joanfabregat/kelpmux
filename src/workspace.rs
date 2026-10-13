@@ -322,8 +322,8 @@ fn dimensions(text: &str) -> Result<(usize, usize)> {
     Ok((f[0].parse()?, f[1].parse()?))
 }
 
-/// tmux owns floating panes and their saved tile positions. No extra client,
-/// temporary session, placeholder process, or recovery file is needed.
+/// tmux owns floating panes and their saved tile positions. A process-free
+/// black pane preserves the reading pane's background slot.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Reading {
     Toggle,
@@ -364,10 +364,156 @@ fn reading_width(tmux: &Tmux, pane: &str) -> Result<Option<usize>> {
 }
 
 fn window_members(tmux: &Tmux, window: &str) -> Result<String> {
-    let members = tmux.run(&["list-panes", "-t", window, "-F", "#{pane_id}:#{pane_index}"])?;
-    let mut lines: Vec<_> = members.lines().collect();
+    let mut lines: Vec<_> = tmux
+        .panes()?
+        .into_iter()
+        .filter(|p| p.window == window)
+        .map(|p| format!("{}:{}", p.id, p.index))
+        .collect();
     lines.sort_unstable();
     Ok(lines.join(" "))
+}
+
+fn layout_leaf(value: &serde_json::Value, pane: &str) -> Option<serde_json::Value> {
+    if value.get("I").and_then(serde_json::Value::as_str) == Some(pane) {
+        return Some(value.clone());
+    }
+    value
+        .get("c")?
+        .as_array()?
+        .iter()
+        .find_map(|child| layout_leaf(child, pane))
+}
+
+fn replace_layout_leaf(
+    value: &mut serde_json::Value,
+    pane: &str,
+    replacement: &str,
+    index: usize,
+) -> bool {
+    if value.get("I").and_then(serde_json::Value::as_str) == Some(pane) {
+        value["I"] = replacement.into();
+        value["i"] = index.into();
+        value.as_object_mut().unwrap().remove("a");
+        return true;
+    }
+    value
+        .get_mut("c")
+        .and_then(serde_json::Value::as_array_mut)
+        .is_some_and(|children| {
+            children
+                .iter_mut()
+                .any(|child| replace_layout_leaf(child, pane, replacement, index))
+        })
+}
+
+fn clear_layout_focus(value: &mut serde_json::Value) {
+    if let Some(object) = value.as_object_mut() {
+        object.remove("a");
+        if let Some(children) = object
+            .get_mut("c")
+            .and_then(serde_json::Value::as_array_mut)
+        {
+            for child in children {
+                clear_layout_focus(child);
+            }
+        }
+    }
+}
+
+fn preserve_reading_slot(tmux: &Tmux, pane: &str) -> Result<()> {
+    let mut layout: serde_json::Value =
+        serde_json::from_str(&tmux.option(pane, "@kelpmux-reading-layout")?)?;
+    clear_layout_focus(&mut layout["L"]);
+    // Empty tmux panes have no process or PTY command. Create it floating so
+    // none of the original pane indices change, then tile it and restore geometry.
+    let slot = tmux.run(&[
+        "new-pane",
+        "-d",
+        "-E",
+        "-P",
+        "-F",
+        "#{pane_id}",
+        "-t",
+        pane,
+        "-s",
+        "bg=black",
+        "-T",
+        "",
+    ])?;
+    tmux.set(pane, "@kelpmux-reading-placeholder", &slot)?;
+    tmux.set(&slot, "@kelpmux-placeholder", pane)?;
+    tmux.set(&slot, "pane-border-status", "off")?;
+    tmux.set(&slot, "window-style", "bg=black")?;
+    tmux.set(&slot, "window-active-style", "bg=black")?;
+    tmux.run(&["join-pane", "-d", "-s", &slot, "-t", &slot])?;
+    let index: usize = tmux.format(&slot, "#{pane_index}")?.parse()?;
+    if !replace_layout_leaf(&mut layout["L"], pane, &slot, index) {
+        return Err("saved layout has no reading pane".into());
+    }
+    let current: serde_json::Value = serde_json::from_str(&tmux.format(pane, "#{window_layout}")?)?;
+    let floating =
+        layout_leaf(&current["L"], pane).ok_or("floating pane missing from native layout")?;
+    let tree = layout["L"].take();
+    layout["L"] = serde_json::json!({"t":"h", "w":tree["w"], "h":tree["h"], "x":0, "y":0, "c":[floating, tree]});
+    tmux.run(&["select-layout", "-t", pane, &layout.to_string()])?;
+    Ok(())
+}
+
+fn remove_reading_slot(tmux: &Tmux, pane: &str) -> Result<()> {
+    let slot = tmux.option(pane, "@kelpmux-reading-placeholder")?;
+    if valid_id(&slot, '%') && tmux.format(&slot, "#{pane_id}").is_ok_and(|id| id == slot) {
+        // Never delete a slot that somebody repurposed by starting a process.
+        if tmux.option(&slot, "@kelpmux-placeholder")? == pane
+            && tmux.format(&slot, "#{pane_pid}")?.is_empty()
+        {
+            destroy_empty_slot(tmux, &slot, pane)?;
+        } else {
+            tmux.run(&["set-option", "-pu", "-t", &slot, "@kelpmux-placeholder"])?;
+        }
+    }
+    Ok(())
+}
+
+fn destroy_empty_slot(tmux: &Tmux, slot: &str, owner: &str) -> Result<()> {
+    // Recheck inside tmux, so a newly respawned process is never a removal target.
+    tmux.run(&[
+        "if-shell",
+        "-F",
+        "-t",
+        slot,
+        &format!("#{{&&:#{{==:#{{pane_pid}},}},#{{==:#{{@kelpmux-placeholder}},{owner}}}}}"),
+        &format!("kill-pane -t {slot}"),
+    ])?;
+    Ok(())
+}
+
+/// Remove decoration left behind by a killed pane or a manual native return.
+/// The metadata poller calls this under the same lock as reading/grid commands.
+pub fn cleanup_reading_slots(tmux: &Tmux, root: &Path) -> Result<()> {
+    private_dir(root)?;
+    let _lock = Lock::acquire(&root.join("workspace.lock"), true)?;
+    let slots = tmux.run(&[
+        "list-panes",
+        "-a",
+        "-F",
+        "#{pane_id}|#{@kelpmux-placeholder}|#{pane_pid}",
+    ])?;
+    for line in slots.lines() {
+        let fields: Vec<_> = line.split('|').collect();
+        if fields.len() != 3 || !valid_id(fields[1], '%') {
+            continue;
+        }
+        if !fields[2].is_empty() {
+            tmux.run(&["set-option", "-pu", "-t", fields[0], "@kelpmux-placeholder"])?;
+        } else if tmux.format(fields[1], "#{pane_floating_flag}").is_err()
+            || tmux.format(fields[1], "#{pane_floating_flag}")? != "1"
+            || reading_width(tmux, fields[1])?.is_none()
+        {
+            destroy_empty_slot(tmux, fields[0], fields[1])?;
+        }
+    }
+    Ok(())
 }
 
 fn return_pane(tmux: &Tmux, pane: &str) -> Result<()> {
@@ -377,6 +523,7 @@ fn return_pane(tmux: &Tmux, pane: &str) -> Result<()> {
     if tmux.format(pane, "#{window_zoomed_flag}")? == "1" {
         tmux.run(&["resize-pane", "-Z", "-t", pane])?;
     }
+    remove_reading_slot(tmux, pane)?;
     if tmux.format(pane, "#{pane_floating_flag}")? == "1" {
         // tmux restores the original tile itself, including its original index.
         tmux.run(&["join-pane", "-s", pane, "-t", pane])?;
@@ -400,6 +547,7 @@ fn return_pane(tmux: &Tmux, pane: &str) -> Result<()> {
         "@kelpmux-reading-full",
         "@kelpmux-reading-layout",
         "@kelpmux-reading-members",
+        "@kelpmux-reading-placeholder",
     ] {
         tmux.run(&["set-option", "-pu", "-t", pane, option])?;
     }
@@ -496,6 +644,11 @@ pub fn reading(tmux: &Tmux, root: &Path, pane: &str, width: usize, mode: Reading
         )?;
         tmux.set(pane, "@kelpmux-reading-width", &width.to_string())?;
         tmux.run(&["break-pane", "-W", "-s", pane])?;
+        if let Err(error) = preserve_reading_slot(tmux, pane) {
+            // Roll back setup without touching the agent process.
+            return_pane(tmux, pane)?;
+            return Err(error);
+        }
     }
     tmux.run(&["select-pane", "-t", pane])?;
     if mode == Reading::Fullscreen {

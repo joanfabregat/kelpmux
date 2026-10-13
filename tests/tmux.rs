@@ -817,6 +817,142 @@ fn native_reading_preserves_panes_indices_and_grid_slots() {
 
 #[test]
 #[ignore = "requires tmux 3.8; CI explicitly runs this suite"]
+fn reading_keeps_background_geometry_and_cleans_only_empty_placeholders() {
+    for shape in ["1x1", "2x1", "2x2", "3x2", "2x3", "3x3"] {
+        let server = Server::new();
+        let window = server.window();
+        workspace::resize(
+            &server.tmux,
+            &server.state(),
+            &window,
+            Grid::parse(shape).unwrap(),
+            false,
+        )
+        .unwrap();
+        server.wait_idle();
+        let original = server.tmux.panes().unwrap();
+        let geometry = |id: &str| {
+            server
+                .tmux
+                .format(
+                    id,
+                    "#{pane_index} #{pane_left} #{pane_top} #{pane_width} #{pane_height}",
+                )
+                .unwrap()
+        };
+        let before: Vec<_> = original.iter().map(|p| geometry(&p.id)).collect();
+        let source = &original[original.len() / 2];
+        workspace::reading(
+            &server.tmux,
+            &server.state(),
+            &source.id,
+            120,
+            workspace::Reading::Toggle,
+        )
+        .unwrap();
+        for (pane, position) in original.iter().zip(&before) {
+            if pane.id != source.id {
+                assert_eq!(
+                    geometry(&pane.id),
+                    *position,
+                    "background changed in {shape}"
+                );
+            }
+        }
+        let slot = server
+            .tmux
+            .option(&source.id, "@kelpmux-reading-placeholder")
+            .unwrap();
+        assert_eq!(server.tmux.format(&slot, "#{pane_pid}").unwrap(), "");
+        assert_eq!(
+            server.tmux.option(&slot, "window-style").unwrap(),
+            "bg=black"
+        );
+        assert_eq!(
+            server
+                .tmux
+                .format(
+                    &slot,
+                    "#{pane_left} #{pane_top} #{pane_width} #{pane_height}"
+                )
+                .unwrap(),
+            before[original.len() / 2].split_once(' ').unwrap().1
+        );
+        assert_eq!(
+            server.tmux.panes().unwrap().len(),
+            original.len(),
+            "placeholder must not count as an agent"
+        );
+        workspace::cleanup_reading_slots(&server.tmux, &server.state()).unwrap();
+        assert!(server.tmux.format(&slot, "#{pane_id}").is_ok());
+        workspace::grid(&server.tmux, &server.state(), &window).unwrap();
+        assert_ne!(
+            server.tmux.format(&slot, "#{pane_id}").unwrap_or_default(),
+            slot
+        );
+        for (pane, position) in original.iter().zip(&before) {
+            assert_eq!(geometry(&pane.id), *position);
+            assert!(
+                server
+                    .tmux
+                    .panes()
+                    .unwrap()
+                    .iter()
+                    .any(|p| p.id == pane.id && p.pid == pane.pid)
+            );
+        }
+    }
+    let server = Server::new();
+    let source = server.tmux.panes().unwrap()[0].clone();
+    workspace::reading(
+        &server.tmux,
+        &server.state(),
+        &source.id,
+        120,
+        workspace::Reading::Toggle,
+    )
+    .unwrap();
+    let slot = server
+        .tmux
+        .option(&source.id, "@kelpmux-reading-placeholder")
+        .unwrap();
+    // A user can turn the decoration into a real terminal; never kill that process.
+    server
+        .tmux
+        .run(&["respawn-pane", "-t", &slot, "exec sleep 60"])
+        .unwrap();
+    let pid = server.tmux.format(&slot, "#{pane_pid}").unwrap();
+    workspace::cleanup_reading_slots(&server.tmux, &server.state()).unwrap();
+    workspace::close_reading(&server.tmux, &server.state(), &source.id).unwrap();
+    assert_eq!(server.tmux.format(&slot, "#{pane_pid}").unwrap(), pid);
+    assert_eq!(server.tmux.panes().unwrap().len(), 2);
+    // An explicitly killed source leaves only empty decoration for the poller.
+    workspace::reading(
+        &server.tmux,
+        &server.state(),
+        &source.id,
+        120,
+        workspace::Reading::Toggle,
+    )
+    .unwrap();
+    let orphan = server
+        .tmux
+        .option(&source.id, "@kelpmux-reading-placeholder")
+        .unwrap();
+    server.tmux.run(&["kill-pane", "-t", &source.id]).unwrap();
+    workspace::cleanup_reading_slots(&server.tmux, &server.state()).unwrap();
+    assert_ne!(
+        server
+            .tmux
+            .format(&orphan, "#{pane_id}")
+            .unwrap_or_default(),
+        orphan
+    );
+    assert_eq!(server.tmux.format(&slot, "#{pane_pid}").unwrap(), pid);
+}
+
+#[test]
+#[ignore = "requires tmux 3.8; CI explicitly runs this suite"]
 fn mouse_controls_sticky_help_and_word_navigation_preserve_agent_panes() {
     let server = Server::new();
     let window = server.window();
@@ -925,7 +1061,7 @@ fn mouse_controls_sticky_help_and_word_navigation_preserve_agent_panes() {
         .split_whitespace()
         .map(|v| v.parse().unwrap())
         .collect();
-    client.click(coords[0] + coords[2] - 6, coords[1] - 1);
+    client.click(coords[0] + coords[2] - 5, coords[1] - 1);
     wait(|| {
         server
             .tmux
@@ -942,7 +1078,7 @@ fn mouse_controls_sticky_help_and_word_navigation_preserve_agent_panes() {
         .map(|v| v.parse().unwrap())
         .collect();
     client.output.lock().unwrap().clear();
-    client.click(coords[0] + coords[2] - 6, coords[1] - 1);
+    client.click(coords[0] + coords[2] - 5, coords[1] - 1);
     wait(|| {
         server
             .tmux
@@ -957,7 +1093,7 @@ fn mouse_controls_sticky_help_and_word_navigation_preserve_agent_panes() {
         .tmux
         .format(&original.id, "#{pane_index}: #{b:pane_current_path}")
         .unwrap();
-    let full_button_x = " ?  Grid ".chars().count() + 2 + status_label.chars().count() + 5;
+    let full_button_x = " ?  Grid ".chars().count() + 2 + status_label.chars().count() + 1;
     client.click(full_button_x, 59);
     wait(|| {
         server
@@ -1014,8 +1150,8 @@ fn mouse_controls_sticky_help_and_word_navigation_preserve_agent_panes() {
             .unwrap()
             == "1"
     });
-    let read_button_x = " ?  Grid ".chars().count() + 2 + status_label.chars().count() + 1;
-    client.click(read_button_x, 59);
+    let close_button_x = " ?  Grid ".chars().count() + 2 + status_label.chars().count() + 4;
+    client.click(close_button_x, 59);
     wait(|| {
         server
             .tmux
