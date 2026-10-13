@@ -41,22 +41,15 @@ impl Status {
             Self::Unknown => "UNKNOWN",
         }
     }
-    pub fn color(self) -> &'static str {
+    pub fn marker(self) -> &'static str {
         match self {
-            Self::Working => "colour39",
-            Self::InputNeeded => "colour214",
-            Self::TurnFinished => "colour42",
-            Self::Failed => "colour196",
-            _ => "colour245",
-        }
-    }
-    pub fn muted_color(self) -> &'static str {
-        match self {
-            Self::Working => "colour24",
-            Self::InputNeeded => "colour94",
-            Self::TurnFinished => "colour29",
-            Self::Failed => "colour88",
-            _ => "colour239",
+            Self::Working => "●",
+            Self::InputNeeded => "!",
+            Self::TurnFinished => "✓",
+            Self::Idle => "○",
+            Self::Failed => "×",
+            Self::Exited => "■",
+            Self::Unknown => "?",
         }
     }
     pub fn from_live(value: &str) -> Self {

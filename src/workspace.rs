@@ -509,8 +509,9 @@ pub fn cleanup_reading_slots(tmux: &Tmux, root: &Path) -> Result<()> {
         }
         if !fields[2].is_empty() {
             tmux.run(&["set-option", "-pu", "-t", fields[0], "@kelpmux-placeholder"])?;
-        } else if tmux.format(fields[1], "#{pane_floating_flag}").is_err()
-            || tmux.format(fields[1], "#{pane_floating_flag}")? != "1"
+        } else if !tmux
+            .format(fields[1], "#{||:#{pane_floating_flag},#{pane_zoomed_flag}}")
+            .is_ok_and(|managed| managed == "1")
             || reading_width(tmux, fields[1])?.is_none()
         {
             destroy_empty_slot(tmux, fields[0], fields[1])?;

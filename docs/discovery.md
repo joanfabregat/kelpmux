@@ -14,7 +14,7 @@ Use `kelpmux name --pane %ID 'Display name'` for an override. Session-bound over
 
 The adapters were developed against Codex 0.162.1 and Claude Code 2.1.296 metadata. These interfaces can change. The beta cannot identify every Codex shared-daemon TUI: a shared server holding several rollout descriptors does not prove which TUI owns which conversation. Starting with `codex resume SESSION_ID` exposes an identity without using a Kelpmux launcher, although switching to a different conversation inside that TUI can invalidate the original argument. A fresh/shared-daemon TUI may need optional hooks with reliable pane correlation to supply its ID. `resume --last` and interactive session pickers do not expose a reliable ID by themselves.
 
-Names and session IDs are separate fields. UNKNOWN means that evidence is unavailable; idle and turn finished are only shown when the adapter or hooks supply that lifecycle information. A process exiting produces an EXITED journal transition and clears the pane's agent header. Discovery cannot distinguish a crash from an intentional exit solely from a vanished PID.
+Names and session IDs are separate fields. UNKNOWN means that evidence is unavailable; agent idle and turn finished are only shown when the adapter or hooks supply that lifecycle information. A process exiting produces an EXITED journal transition and clears the pane's agent identity. Its fixed palette color remains; an ordinary shell shows ○ idle and a running non-agent command shows ● working. A retained dead pane shows ■ exited. Discovery cannot distinguish a crash from an intentional exit solely from a vanished PID.
 
 ## Optional: lifecycle hooks
 

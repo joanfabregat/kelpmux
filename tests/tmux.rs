@@ -422,13 +422,20 @@ fn discovery_updates_headers_and_journals_exit_without_launching_real_agents() {
         .unwrap();
     server.wait_idle();
     assert!(server.cli(&["scan"]).status.success());
-    assert_eq!(server.tmux.option(&pane.id, "@kelpmux-status").unwrap(), "");
+    assert_eq!(
+        server.tmux.option(&pane.id, "@kelpmux-status").unwrap(),
+        "IDLE"
+    );
+    assert_eq!(
+        server.tmux.option(&pane.id, "@kelpmux-marker").unwrap(),
+        "○"
+    );
     assert_eq!(
         server
             .tmux
             .option(&pane.id, "@kelpmux-color-muted")
             .unwrap(),
-        ""
+        "colour24"
     );
     let records: serde_json::Value =
         serde_json::from_slice(&server.cli(&["journal"]).stdout).unwrap();
@@ -440,14 +447,14 @@ fn discovery_updates_headers_and_journals_exit_without_launching_real_agents() {
 
 #[test]
 #[ignore = "requires tmux 3.8; CI explicitly runs this suite"]
-fn status_titles_use_bright_and_muted_colors_with_native_floating_headers() {
+fn pane_palette_stays_fixed_across_status_focus_and_native_reading() {
     let server = Server::new();
     let window = server.window();
     workspace::resize(
         &server.tmux,
         &server.state(),
         &window,
-        Grid::parse("2x1").unwrap(),
+        Grid::parse("3x3").unwrap(),
         false,
     )
     .unwrap();
@@ -462,6 +469,26 @@ fn status_titles_use_bright_and_muted_colors_with_native_floating_headers() {
         .run(&["source-file", path.to_str().unwrap()])
         .unwrap();
     let client = Client::attach(&server, 240, 60);
+    for pane in &panes {
+        server.tmux.pane_palette(&pane.id).unwrap();
+    }
+    let colors: Vec<_> = panes
+        .iter()
+        .map(|p| {
+            (
+                server.tmux.option(&p.id, "@kelpmux-color").unwrap(),
+                server.tmux.option(&p.id, "@kelpmux-color-muted").unwrap(),
+            )
+        })
+        .collect();
+    assert_ne!(colors[0], colors[1]);
+    assert_eq!(
+        colors
+            .iter()
+            .collect::<std::collections::BTreeSet<_>>()
+            .len(),
+        9
+    );
     for status in [
         Status::Working,
         Status::InputNeeded,
@@ -498,11 +525,11 @@ fn status_titles_use_bright_and_muted_colors_with_native_floating_headers() {
         server.tmux.run(&["refresh-client"]).unwrap();
         client.wait_output(&format!(
             "48;5;{}",
-            status.color().trim_start_matches("colour")
+            colors[0].0.trim_start_matches("colour")
         ));
         client.wait_output(&format!(
             "48;5;{}",
-            status.muted_color().trim_start_matches("colour")
+            colors[1].1.trim_start_matches("colour")
         ));
         assert!(!client.output_contains("#{?pane_active"));
         assert!(!client.output_contains("bg=colour88]"));
@@ -510,7 +537,12 @@ fn status_titles_use_bright_and_muted_colors_with_native_floating_headers() {
             .tmux
             .format(&panes[0].id, &kelpmux::tmux::header_format())
             .unwrap();
-        assert!(expanded.contains(&format!("fill={}", status.color())));
+        assert!(expanded.contains(&format!("fill={}", colors[0].0)));
+        assert!(expanded.contains(status.marker()));
+        assert_eq!(
+            server.tmux.option(&panes[0].id, "@kelpmux-marker").unwrap(),
+            status.marker()
+        );
         server
             .tmux
             .run(&["select-pane", "-t", &panes[1].id])
@@ -519,7 +551,7 @@ fn status_titles_use_bright_and_muted_colors_with_native_floating_headers() {
             .tmux
             .format(&panes[0].id, &kelpmux::tmux::header_format())
             .unwrap();
-        assert!(expanded.contains(&format!("fill={}", status.muted_color())));
+        assert!(expanded.contains(&format!("fill={}", colors[0].1)));
     }
     client.output.lock().unwrap().clear();
     assert!(
@@ -545,6 +577,30 @@ fn status_titles_use_bright_and_muted_colors_with_native_floating_headers() {
         "fg=colour238,bg=colour234"
     );
     assert_eq!(server.tmux.panes().unwrap()[0].pid, panes[0].pid);
+    assert_eq!(
+        server.tmux.option(&panes[0].id, "@kelpmux-color").unwrap(),
+        colors[0].0
+    );
+    // Returning and swapping pane positions must preserve identity colors.
+    workspace::grid(&server.tmux, &server.state(), &window).unwrap();
+    server
+        .tmux
+        .run(&["swap-pane", "-s", &panes[0].id, "-t", &panes[1].id])
+        .unwrap();
+    for (pane, (bright, muted)) in panes.iter().zip(&colors) {
+        server.tmux.pane_palette(&pane.id).unwrap();
+        assert_eq!(
+            server.tmux.option(&pane.id, "@kelpmux-color").unwrap(),
+            *bright
+        );
+        assert_eq!(
+            server
+                .tmux
+                .option(&pane.id, "@kelpmux-color-muted")
+                .unwrap(),
+            *muted
+        );
+    }
 }
 
 #[test]
@@ -757,6 +813,26 @@ fn native_reading_preserves_panes_indices_and_grid_slots() {
             .unwrap(),
         "1 300"
     );
+    // Discovery runs every two seconds, including during fullscreen. Native
+    // zoom makes the floating source temporarily tiled; its slot must survive.
+    workspace::cleanup_reading_slots(&server.tmux, &server.state()).unwrap();
+    assert_eq!(
+        server
+            .tmux
+            .format(&pane.id, "#{window_zoomed_flag} #{pane_width}")
+            .unwrap(),
+        "1 300"
+    );
+    for _ in 0..3 {
+        assert!(server.cli(&["scan"]).status.success());
+        assert_eq!(
+            server
+                .tmux
+                .format(&pane.id, "#{pane_zoomed_flag} #{pane_width}")
+                .unwrap(),
+            "1 300"
+        );
+    }
     assert!(
         server
             .cli(&["restore", "--pane", &pane.id])
@@ -1019,12 +1095,12 @@ fn mouse_controls_sticky_help_and_word_navigation_preserve_agent_panes() {
     client.output.lock().unwrap().clear();
     client.click(2, 59);
     client.wait_output("Kelpmux shortcuts");
-    let menu_width = "Fullscreen / reading width: Ctrl+b f or ⛶ / ▣"
+    let menu_width = "Markers: ● working ! input ✓ done × failed ○ idle"
         .chars()
         .count()
         + 4;
     let menu_x = (240 - 1) / 2 - menu_width / 2;
-    let menu_y = (59 - 1) / 2 + 10 / 2 - 10;
+    let menu_y = (59 - 1) / 2 + 11 / 2 - 11;
     client.click(menu_x + menu_width - 4, menu_y);
     client.keys(b"\x1b[24~");
     wait(|| probe() == "hit");
@@ -1280,6 +1356,23 @@ fn native_reading_keyboard_resize_and_single_pane_work() {
             .format(&original.id, "#{window_zoomed_flag} #{pane_width}")
             .is_ok_and(|s| s == "1 240")
     });
+    for (cols, rows) in [(90, 40), (300, 80), (240, 60)] {
+        client.resize(cols, rows);
+        wait(|| {
+            server
+                .tmux
+                .format(&original.id, "#{pane_zoomed_flag} #{pane_width}")
+                .is_ok_and(|s| s == format!("1 {cols}"))
+        });
+        assert!(server.cli(&["scan"]).status.success());
+        assert_eq!(
+            server
+                .tmux
+                .format(&original.id, "#{pane_zoomed_flag} #{pane_width}")
+                .unwrap(),
+            format!("1 {cols}")
+        );
+    }
     client.keys(b"\x02R");
     wait(|| {
         server
@@ -1308,6 +1401,14 @@ fn native_reading_keyboard_resize_and_single_pane_work() {
             .format(&second.id, "#{pane_width}")
             .is_ok_and(|s| s == "90")
     });
+    assert!(server.cli(&["scan"]).status.success());
+    assert_eq!(
+        server
+            .tmux
+            .format(&second.id, "#{pane_zoomed_flag} #{pane_width}")
+            .unwrap(),
+        "1 90"
+    );
     client.resize(240, 60);
     wait(|| {
         server
