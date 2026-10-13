@@ -195,6 +195,8 @@ pub enum ClientMessage {
     Paste(Vec<u8>),
     Mouse(MouseEvent),
     Action(Action),
+    /// Explicit local administration; does not transfer interactive ownership.
+    Command(Action),
     Inspect,
     Ping,
 }
