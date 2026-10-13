@@ -1,0 +1,792 @@
+//! Foreground Linux frontend. TTY state belongs to an attach client, never to
+//! the server or its persistent PTYs.
+use super::{
+    input::{Decoder, Router},
+    protocol::*,
+    render::terminal_diff,
+    server::{self, ServerConfig},
+};
+use crate::Result;
+use base64::{Engine, engine::general_purpose::STANDARD};
+use std::{
+    collections::VecDeque,
+    fs,
+    io::{Read, Write},
+    os::{
+        fd::AsRawFd,
+        unix::{
+            fs::{FileTypeExt, MetadataExt},
+            net::UnixStream,
+        },
+    },
+    path::{Path, PathBuf},
+    sync::atomic::{AtomicBool, Ordering},
+    time::{Duration, Instant},
+};
+
+pub const HELP: &str = "Owned native terminal workspaces (Linux):
+  kelpmux server [--socket PATH] [--state-dir PATH] [--shell PATH] [--cwd PATH] [--size CxR]
+  kelpmux attach [--socket PATH] [--takeover]
+  kelpmux ctl [--socket PATH] list|layout CxR|focus ID|read ID|fullscreen ID|close|shutdown
+
+The server stays in the foreground; attach/detach never owns shell lifetimes.
+Default socket: $XDG_STATE_HOME/kelpmux/native/control.sock
+  (falls back to ~/.local/state/kelpmux/native/control.sock)
+Attach keys: Ctrl-B d detach, Ctrl-B z read, Ctrl-B f full, Ctrl-B ? help.";
+const TIMEOUT: Duration = Duration::from_secs(3);
+const ESCAPE_TIMEOUT: Duration = Duration::from_millis(35);
+const MAX_PENDING: usize = 256 * 1024;
+static INTERRUPTED: AtomicBool = AtomicBool::new(false);
+static RESIZED: AtomicBool = AtomicBool::new(false);
+extern "C" fn signal(signal: libc::c_int) {
+    if signal == libc::SIGWINCH {
+        RESIZED.store(true, Ordering::Relaxed);
+    } else {
+        INTERRUPTED.store(true, Ordering::Relaxed);
+    }
+}
+
+struct Options {
+    socket: PathBuf,
+    state: PathBuf,
+    shell: PathBuf,
+    cwd: PathBuf,
+    size: (u16, u16),
+    takeover: bool,
+    command: Vec<String>,
+}
+fn options(args: &[String]) -> Result<Options> {
+    let home = std::env::var_os("HOME")
+        .map(PathBuf::from)
+        .ok_or("HOME is unavailable")?;
+    let state = std::env::var_os("XDG_STATE_HOME")
+        .map(PathBuf::from)
+        .filter(|path| path.is_absolute())
+        .unwrap_or_else(|| home.join(".local/state"))
+        .join("kelpmux/native");
+    let mut result = Options {
+        socket: state.join("control.sock"),
+        state,
+        shell: std::env::var_os("SHELL")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| PathBuf::from("/bin/bash")),
+        cwd: std::env::current_dir()?,
+        size: (120, 40),
+        takeover: false,
+        command: vec![],
+    };
+    let verb = args.first().ok_or("missing native command")?;
+    let mut position = 1;
+    while position < args.len() {
+        let arg = &args[position];
+        position += 1;
+        if arg == "--takeover" && verb == "attach" {
+            result.takeover = true;
+            continue;
+        }
+        if arg.starts_with("--") {
+            let value = args.get(position).ok_or("option needs a value")?;
+            position += 1;
+            match arg.as_str() {
+                "--socket" => result.socket = PathBuf::from(value),
+                "--state-dir" if verb == "server" => result.state = PathBuf::from(value),
+                "--shell" if verb == "server" => result.shell = PathBuf::from(value),
+                "--cwd" if verb == "server" => result.cwd = PathBuf::from(value),
+                "--size" if verb == "server" => {
+                    result.size = parse_size(value)?;
+                    validate_size(result.size.0, result.size.1)?;
+                }
+                _ => return Err(format!("unknown {verb} option {arg}").into()),
+            }
+        } else if verb == "ctl" {
+            result.command.push(arg.clone());
+        } else {
+            return Err(format!("unexpected argument {arg}").into());
+        }
+    }
+    Ok(result)
+}
+fn parse_size(value: &str) -> Result<(u16, u16)> {
+    let (cols, rows) = value.split_once('x').ok_or("size must be CxR")?;
+    Ok((cols.parse()?, rows.parse()?))
+}
+pub fn run(args: &[String]) -> Result<()> {
+    if args.iter().any(|arg| arg == "--help" || arg == "-h") {
+        println!("{HELP}");
+        return Ok(());
+    }
+    let options = options(args)?;
+    match args[0].as_str() {
+        "server" => server::serve(ServerConfig {
+            socket: options.socket,
+            state_dir: options.state,
+            shell: options.shell,
+            cwd: options.cwd,
+            cols: options.size.0,
+            rows: options.size.1,
+        }),
+        "attach" => {
+            let result = attach(&options.socket, options.takeover);
+            if INTERRUPTED.load(Ordering::Relaxed) {
+                Ok(())
+            } else {
+                result
+            }
+        }
+        "ctl" => control(&options.socket, &options.command),
+        _ => Err("unknown native command".into()),
+    }
+}
+fn connect(path: &Path) -> Result<UnixStream> {
+    for ancestor in path.ancestors() {
+        if fs::symlink_metadata(ancestor).is_ok_and(|meta| meta.file_type().is_symlink()) {
+            return Err("native socket path contains a symlink".into());
+        }
+    }
+    let meta = fs::symlink_metadata(path)?;
+    if !meta.file_type().is_socket()
+        || meta.uid() != unsafe { libc::geteuid() }
+        || meta.mode() & 0o077 != 0
+    {
+        return Err("native socket must be private and owned by this user".into());
+    }
+    let parent = fs::symlink_metadata(path.parent().ok_or("socket needs a directory")?)?;
+    if !parent.is_dir() || parent.uid() != unsafe { libc::geteuid() } || parent.mode() & 0o077 != 0
+    {
+        return Err("native socket directory must be private and owned by this user".into());
+    }
+    let socket = UnixStream::connect(path)?;
+    let mut credentials: libc::ucred = unsafe { std::mem::zeroed() };
+    let mut length = std::mem::size_of::<libc::ucred>() as libc::socklen_t;
+    if unsafe {
+        libc::getsockopt(
+            socket.as_raw_fd(),
+            libc::SOL_SOCKET,
+            libc::SO_PEERCRED,
+            (&mut credentials as *mut libc::ucred).cast(),
+            &mut length,
+        )
+    } != 0
+    {
+        return Err(std::io::Error::last_os_error().into());
+    }
+    if length as usize != std::mem::size_of::<libc::ucred>()
+        || credentials.uid != unsafe { libc::geteuid() }
+    {
+        return Err("native server belongs to another user".into());
+    }
+    socket.set_read_timeout(Some(TIMEOUT))?;
+    socket.set_write_timeout(Some(TIMEOUT))?;
+    Ok(socket)
+}
+fn response(socket: &mut UnixStream) -> Result<ServerMessage> {
+    let deadline = Instant::now() + TIMEOUT;
+    fn exact(socket: &mut UnixStream, mut bytes: &mut [u8], deadline: Instant) -> Result<()> {
+        while !bytes.is_empty() {
+            let remaining = deadline
+                .checked_duration_since(Instant::now())
+                .ok_or("native handshake timed out")?;
+            socket.set_read_timeout(Some(remaining))?;
+            match socket.read(bytes) {
+                Ok(0) => return Err("native server disconnected before its reply".into()),
+                Ok(n) => {
+                    bytes = &mut bytes[n..];
+                }
+                Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+                Err(e) => return Err(e.into()),
+            }
+        }
+        Ok(())
+    }
+    let mut header = [0; 4];
+    exact(socket, &mut header, deadline)?;
+    let size = u32::from_be_bytes(header) as usize;
+    if size == 0 || size > MAX_MESSAGE {
+        return Err("invalid native reply size".into());
+    }
+    let mut bytes = vec![0; size];
+    exact(socket, &mut bytes, deadline)?;
+    Ok(serde_json::from_slice(&bytes)?)
+}
+fn control(path: &Path, args: &[String]) -> Result<()> {
+    let [command, rest @ ..] = args else {
+        return Err("ctl requires a command".into());
+    };
+    let id = || -> Result<u64> {
+        if rest.len() != 1 {
+            return Err("command requires one pane ID".into());
+        }
+        Ok(rest[0].parse()?)
+    };
+    let message = match command.as_str() {
+        "list" if rest.is_empty() => ClientMessage::Inspect,
+        "layout" if rest.len() == 1 => {
+            let (cols, rows) = parse_size(&rest[0])?;
+            if cols > u8::MAX.into() || rows > u8::MAX.into() {
+                return Err("invalid layout".into());
+            }
+            super::workspace::Workspace::grid_count(cols as u8, rows as u8)?;
+            ClientMessage::Command(Action::Grid {
+                cols: cols as u8,
+                rows: rows as u8,
+            })
+        }
+        "focus" => ClientMessage::Command(Action::Focus(id()?)),
+        "read" => ClientMessage::Command(Action::Read(id()?)),
+        "fullscreen" => ClientMessage::Command(Action::Fullscreen(id()?)),
+        "close" if rest.is_empty() => ClientMessage::Command(Action::CloseReading),
+        "shutdown" if rest.is_empty() => ClientMessage::Command(Action::Shutdown),
+        _ => return Err("invalid ctl command; see kelpmux --help".into()),
+    };
+    let mut socket = connect(path)?;
+    write_message(&mut socket, &message)?;
+    match response(&mut socket)? {
+        state @ ServerMessage::State { .. } => {
+            println!("{}", serde_json::to_string_pretty(&state)?);
+            Ok(())
+        }
+        ServerMessage::Error(error) => Err(error.into()),
+        _ => Err("native server did not acknowledge the management command".into()),
+    }
+}
+fn tty_size() -> Result<(u16, u16)> {
+    let mut size: libc::winsize = unsafe { std::mem::zeroed() };
+    if unsafe { libc::ioctl(libc::STDOUT_FILENO, libc::TIOCGWINSZ, &mut size) } != 0 {
+        return Err(std::io::Error::last_os_error().into());
+    }
+    if size.ws_col == 0 || size.ws_row == 0 || size.ws_col > 1000 || size.ws_row > 500 {
+        return Err("TTY size must be 1–1000 columns and 1–500 rows".into());
+    }
+    Ok((size.ws_col, size.ws_row))
+}
+fn backend_size(size: (u16, u16)) -> (u16, u16) {
+    (size.0.clamp(40, 400), size.1.clamp(10, 160))
+}
+struct RawTty {
+    original: libc::termios,
+    flags: i32,
+    actions: Vec<(i32, libc::sigaction)>,
+    entered: bool,
+}
+struct TerminalWriter;
+impl Write for TerminalWriter {
+    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+        if INTERRUPTED.load(Ordering::Relaxed) {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::ConnectionAborted,
+                "attach interrupted",
+            ));
+        }
+        let count = unsafe { libc::write(1, bytes.as_ptr().cast(), bytes.len().min(4096)) };
+        if count >= 0 {
+            return Ok(count as usize);
+        }
+        let error = std::io::Error::last_os_error();
+        if error.kind() == std::io::ErrorKind::Interrupted && INTERRUPTED.load(Ordering::Relaxed) {
+            Err(std::io::Error::new(
+                std::io::ErrorKind::ConnectionAborted,
+                "attach interrupted",
+            ))
+        } else {
+            Err(error)
+        }
+    }
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+impl RawTty {
+    fn enter() -> Result<Self> {
+        INTERRUPTED.store(false, Ordering::Relaxed);
+        RESIZED.store(false, Ordering::Relaxed);
+        let mut original = unsafe { std::mem::zeroed() };
+        if unsafe { libc::tcgetattr(0, &mut original) } != 0 {
+            return Err(std::io::Error::last_os_error().into());
+        }
+        let flags = unsafe { libc::fcntl(0, libc::F_GETFL) };
+        if flags < 0 {
+            return Err(std::io::Error::last_os_error().into());
+        }
+        let mut guard = Self {
+            original,
+            flags,
+            actions: vec![],
+            entered: false,
+        };
+        for sig in [
+            libc::SIGWINCH,
+            libc::SIGINT,
+            libc::SIGTERM,
+            libc::SIGHUP,
+            libc::SIGQUIT,
+            libc::SIGTSTP,
+        ] {
+            let mut action: libc::sigaction = unsafe { std::mem::zeroed() };
+            let mut old = unsafe { std::mem::zeroed() };
+            action.sa_sigaction = signal as *const () as usize;
+            unsafe {
+                libc::sigemptyset(&mut action.sa_mask);
+            }
+            if unsafe { libc::sigaction(sig, &action, &mut old) } != 0 {
+                return Err(std::io::Error::last_os_error().into());
+            }
+            guard.actions.push((sig, old));
+        }
+        let mut raw = original;
+        unsafe {
+            libc::cfmakeraw(&mut raw);
+        }
+        if unsafe { libc::tcsetattr(0, libc::TCSANOW, &raw) } != 0 {
+            return Err(std::io::Error::last_os_error().into());
+        }
+        // Mark entered before writing: a partial write still needs restoration.
+        guard.entered = true;
+        TerminalWriter.write_all(
+            b"\x1b[?1l\x1b>\x1b[?1049h\x1b[?25l\x1b[?1002h\x1b[?1006h\x1b[?1004h\x1b[?2004h",
+        )?;
+        Ok(guard)
+    }
+}
+impl Drop for RawTty {
+    fn drop(&mut self) {
+        if self.entered {
+            // Never wait indefinitely for a blocked/closed display on exit.
+            // Nonblocking mode is temporary and original descriptor flags are
+            // restored below, including when stdin/stdout share one OFD.
+            let flags = unsafe { libc::fcntl(1, libc::F_GETFL) };
+            if flags >= 0 && unsafe { libc::fcntl(1, libc::F_SETFL, flags | libc::O_NONBLOCK) } == 0
+            {
+                let mut bytes: &[u8]=b"\x1b[0m\x1b[?1l\x1b>\x1b[?2004l\x1b[?1004l\x1b[?1006l\x1b[?1002l\x1b[?1000l\x1b[?25h\x1b[?1049l";
+                let deadline = Instant::now() + Duration::from_millis(100);
+                while !bytes.is_empty() && Instant::now() < deadline {
+                    let count = unsafe { libc::write(1, bytes.as_ptr().cast(), bytes.len()) };
+                    if count > 0 {
+                        bytes = &bytes[count as usize..];
+                        continue;
+                    }
+                    let error = std::io::Error::last_os_error();
+                    if !matches!(
+                        error.kind(),
+                        std::io::ErrorKind::WouldBlock | std::io::ErrorKind::Interrupted
+                    ) {
+                        break;
+                    }
+                    let mut poll = libc::pollfd {
+                        fd: 1,
+                        events: libc::POLLOUT,
+                        revents: 0,
+                    };
+                    unsafe {
+                        libc::poll(&mut poll, 1, 10);
+                    }
+                }
+                unsafe {
+                    libc::fcntl(1, libc::F_SETFL, flags);
+                }
+            }
+        }
+        unsafe {
+            libc::tcsetattr(0, libc::TCSANOW, &self.original);
+            libc::fcntl(0, libc::F_SETFL, self.flags);
+        }
+        for (sig, action) in &self.actions {
+            unsafe {
+                libc::sigaction(*sig, action, std::ptr::null_mut());
+            }
+        }
+    }
+}
+struct Channel {
+    socket: UnixStream,
+    input: Vec<u8>,
+    output: VecDeque<u8>,
+    eof: bool,
+}
+impl Channel {
+    fn new(socket: UnixStream) -> Result<Self> {
+        socket.set_read_timeout(None)?;
+        socket.set_write_timeout(None)?;
+        socket.set_nonblocking(true)?;
+        Ok(Self {
+            socket,
+            input: vec![],
+            output: VecDeque::new(),
+            eof: false,
+        })
+    }
+    fn send(&mut self, message: &ClientMessage) -> Result<()> {
+        let bytes = serde_json::to_vec(message)?;
+        if bytes.len() > MAX_MESSAGE || self.output.len() + bytes.len() + 4 > MAX_PENDING {
+            return Err("native server is not consuming input".into());
+        }
+        self.output.extend((bytes.len() as u32).to_be_bytes());
+        self.output.extend(bytes);
+        Ok(())
+    }
+    fn flush(&mut self) -> Result<()> {
+        while !self.output.is_empty() {
+            let (bytes, _) = self.output.as_slices();
+            match self.socket.write(bytes) {
+                Ok(0) => return Err("native server disconnected".into()),
+                Ok(n) => {
+                    self.output.drain(..n);
+                }
+                Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => break,
+                Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+                Err(e) => return Err(e.into()),
+            }
+        }
+        Ok(())
+    }
+    fn receive(&mut self) -> Result<Vec<ServerMessage>> {
+        let mut result = vec![];
+        let mut bytes = [0; 8192];
+        // Yield after a bounded batch even if the server writes continuously.
+        for _ in 0..128 {
+            match self.socket.read(&mut bytes) {
+                Ok(0) => {
+                    self.eof = true;
+                    break;
+                }
+                Ok(n) => {
+                    if self.input.len() + n > MAX_MESSAGE + 4 {
+                        return Err("native message exceeds the size limit".into());
+                    }
+                    self.input.extend_from_slice(&bytes[..n]);
+                }
+                Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => break,
+                Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+                Err(e) => return Err(e.into()),
+            }
+            loop {
+                if self.input.len() < 4 {
+                    break;
+                }
+                let size = u32::from_be_bytes(self.input[..4].try_into().unwrap()) as usize;
+                if size == 0 || size > MAX_MESSAGE {
+                    return Err("invalid native message size".into());
+                }
+                if self.input.len() < size + 4 {
+                    break;
+                }
+                result.push(serde_json::from_slice(&self.input[4..size + 4])?);
+                self.input.drain(..size + 4);
+            }
+        }
+        if self.eof && !self.input.is_empty() {
+            return Err("native server disconnected mid-message".into());
+        }
+        Ok(result)
+    }
+}
+fn validate_frame(frame: &Frame) -> Result<()> {
+    validate_size(frame.cols, frame.rows)?;
+    if frame.cells.len() != usize::from(frame.cols) * usize::from(frame.rows)
+        || frame.panes.len() > 5
+    {
+        return Err("invalid native frame dimensions".into());
+    }
+    for cell in &frame.cells {
+        if cell.width > 2 || cell.text.len() > 1024 || cell.text.chars().any(char::is_control) {
+            return Err("invalid native cell".into());
+        }
+        let mut chars = cell.text.chars();
+        if cell.width == 0 {
+            if !cell.text.is_empty() {
+                return Err("invalid native continuation".into());
+            }
+        } else if let Some(first) = chars.next() {
+            if unicode_width::UnicodeWidthChar::width(first).unwrap_or(0) != usize::from(cell.width)
+                || chars.any(|c| unicode_width::UnicodeWidthChar::width(c).unwrap_or(0) != 0)
+            {
+                return Err("invalid native glyph width".into());
+            }
+        }
+    }
+    for view in &frame.panes {
+        for rect in [view.rect, view.body] {
+            if u32::from(rect.x) + u32::from(rect.cols) > u32::from(frame.cols)
+                || u32::from(rect.y) + u32::from(rect.rows) > u32::from(frame.rows)
+            {
+                return Err("native pane is outside its frame".into());
+            }
+        }
+    }
+    Ok(())
+}
+fn fitted(frame: &Frame, size: (u16, u16), notice: Option<&str>) -> Frame {
+    let mut fit = frame.clone();
+    fit.cols = size.0;
+    fit.rows = size.1;
+    fit.cells = vec![Cell::default(); usize::from(size.0) * usize::from(size.1)];
+    // Reserve the actual bottom row for the footer, including narrow observers.
+    for y in 0..size.1.saturating_sub(1).min(frame.rows.saturating_sub(1)) {
+        for x in 0..size.0.min(frame.cols) {
+            let mut cell =
+                frame.cells[usize::from(y) * usize::from(frame.cols) + usize::from(x)].clone();
+            if cell.width == 2 && x + 1 >= size.0 {
+                cell.width = 1;
+                cell.text = " ".into();
+            }
+            fit.cells[usize::from(y) * usize::from(size.0) + usize::from(x)] = cell;
+        }
+    }
+    let target = usize::from(size.1 - 1) * usize::from(size.0);
+    let source = usize::from(frame.rows - 1) * usize::from(frame.cols);
+    for x in 0..size.0.saturating_sub(3).min(frame.cols.saturating_sub(3)) {
+        let mut cell = frame.cells[source + usize::from(x)].clone();
+        if cell.width == 2 && x + 1 >= size.0.saturating_sub(3) {
+            cell.width = 1;
+            cell.text = " ".into();
+        }
+        fit.cells[target + usize::from(x)] = cell;
+    }
+    if size.0 >= 3 {
+        for x in 0..3usize {
+            fit.cells[target + usize::from(size.0) - 3 + x] =
+                frame.cells[source + usize::from(frame.cols) - 3 + x].clone();
+        }
+    }
+    if let Some(notice) = notice {
+        let text = format!(" {}", super::engine::safe_text(notice));
+        let mut x = 0usize;
+        for cell in &mut fit.cells[target..target + usize::from(size.0.saturating_sub(3))] {
+            *cell = Cell {
+                fg: Color::Indexed(231),
+                bg: Color::Indexed(88),
+                ..Cell::default()
+            };
+        }
+        for c in text.chars() {
+            let width = unicode_width::UnicodeWidthChar::width(c).unwrap_or(0);
+            if width == 0 || x + width > usize::from(size.0.saturating_sub(3)) {
+                continue;
+            }
+            fit.cells[target + x] = Cell {
+                text: c.to_string(),
+                width: width as u8,
+                fg: Color::Indexed(231),
+                bg: Color::Indexed(88),
+                ..Cell::default()
+            };
+            if width == 2 {
+                fit.cells[target + x + 1] = Cell {
+                    text: String::new(),
+                    width: 0,
+                    fg: Color::Indexed(231),
+                    bg: Color::Indexed(88),
+                    ..Cell::default()
+                };
+            }
+            x += width;
+        }
+    }
+    fit.cursor = frame
+        .cursor
+        .filter(|c| c.position.x < size.0 && c.position.y < size.1.saturating_sub(1));
+    if !frame.controller {
+        fit.cursor = None;
+    }
+    fit
+}
+fn queue_events(pending: &mut VecDeque<InputEvent>, events: Vec<InputEvent>) -> Result<()> {
+    pending.extend(events);
+    let size: usize = pending
+        .iter()
+        .map(|event| match event {
+            InputEvent::Bytes(bytes) | InputEvent::Paste(bytes) => bytes.len(),
+            InputEvent::Mouse(_) => 32,
+        })
+        .sum();
+    if size > MAX_PENDING || pending.len() > 4096 {
+        return Err("too much input before the first native frame".into());
+    }
+    Ok(())
+}
+fn paint(
+    stdout: &mut impl Write,
+    painted: &mut Option<Frame>,
+    frame: &Frame,
+    size: (u16, u16),
+    notice: Option<&str>,
+) -> Result<()> {
+    let fit = fitted(frame, size, notice);
+    let keypad = |frame: &Frame| {
+        frame.controller
+            && !frame.help
+            && frame
+                .panes
+                .iter()
+                .rev()
+                .find(|view| view.pane.id == frame.active)
+                .is_some_and(|view| view.modes.application_keypad)
+    };
+    if painted
+        .as_ref()
+        .is_none_or(|previous| keypad(previous) != keypad(frame))
+    {
+        stdout.write_all(if keypad(frame) { b"\x1b=" } else { b"\x1b>" })?;
+    }
+    stdout.write_all(&terminal_diff(painted.as_ref(), &fit))?;
+    stdout.flush()?;
+    *painted = Some(fit);
+    Ok(())
+}
+fn attach(path: &Path, takeover: bool) -> Result<()> {
+    if unsafe { libc::isatty(0) } != 1 || unsafe { libc::isatty(1) } != 1 {
+        return Err("attach requires stdin and stdout to be TTYs".into());
+    }
+    let mut size = tty_size()?;
+    let (cols, rows) = backend_size(size);
+    let mut socket = connect(path)?;
+    write_message(
+        &mut socket,
+        &ClientMessage::Attach {
+            version: VERSION,
+            cols,
+            rows,
+            takeover,
+        },
+    )?;
+    match response(&mut socket)? {
+        ServerMessage::Welcome { version, .. } if version == VERSION => {}
+        ServerMessage::Error(error) => return Err(error.into()),
+        _ => return Err("incompatible native server handshake".into()),
+    }
+    // All connection/handshake failures precede raw and alternate-screen mode.
+    let mut channel = Channel::new(socket)?;
+    let _tty = RawTty::enter()?;
+    let mut decoder = Decoder::default();
+    let mut router = Router::default();
+    let mut latest: Option<Frame> = None;
+    let mut painted: Option<Frame> = None;
+    let mut escape = None;
+    let mut stdout = TerminalWriter;
+    let mut notice: Option<String> = None;
+    let mut pending = VecDeque::new();
+    loop {
+        if INTERRUPTED.load(Ordering::Relaxed) {
+            return Ok(());
+        }
+        if RESIZED.swap(false, Ordering::Relaxed) {
+            size = tty_size()?;
+            painted = None;
+            // Server stores observer geometry without resizing the workspace.
+            let (cols, rows) = backend_size(size);
+            channel.send(&ClientMessage::Resize { cols, rows })?;
+            channel.flush()?;
+            if let Some(frame) = latest.as_ref() {
+                paint(&mut stdout, &mut painted, frame, size, notice.as_deref())?;
+            }
+        }
+        let mut newest = None;
+        let mut error_changed = false;
+        for message in channel.receive()? {
+            match message {
+                ServerMessage::Frame(frame) => {
+                    validate_frame(&frame)?;
+                    newest = Some(frame);
+                }
+                ServerMessage::Clipboard(text) => {
+                    if text.len() <= MAX_INPUT {
+                        write!(stdout, "\x1b]52;c;{}\x07", STANDARD.encode(text.as_bytes()))?;
+                        stdout.flush()?;
+                    }
+                }
+                // Routine action errors keep the frontend and its PTYs alive.
+                ServerMessage::Error(error) => {
+                    notice = Some(error.chars().take(1024).collect());
+                    error_changed = true;
+                }
+                ServerMessage::Detached => return Ok(()),
+                _ => {}
+            }
+        }
+        if let Some(frame) = newest {
+            paint(&mut stdout, &mut painted, &frame, size, notice.as_deref())?;
+            latest = Some(frame);
+        } else if error_changed {
+            if let Some(frame) = latest.as_ref() {
+                paint(&mut stdout, &mut painted, frame, size, notice.as_deref())?;
+            }
+        }
+        if channel.eof {
+            return Ok(());
+        }
+        if escape.is_some_and(|time: Instant| time.elapsed() >= ESCAPE_TIMEOUT) {
+            queue_events(&mut pending, decoder.flush())?;
+            escape = None;
+        }
+        if let Some(frame) = latest.as_ref() {
+            while let Some(mut event) = pending.pop_front() {
+                // The fitted footer moves; translate only its help hit target.
+                // Pane and help-panel coordinates stay in backend geometry.
+                if let InputEvent::Mouse(mouse) = &mut event {
+                    if mouse.position.y == size.1 - 1
+                        && mouse.position.x >= size.0.saturating_sub(3)
+                    {
+                        mouse.position = Point {
+                            x: frame.cols - 2,
+                            y: frame.rows - 1,
+                        };
+                    } else if mouse.position.y >= size.1.saturating_sub(1) {
+                        continue;
+                    }
+                }
+                let messages = router.route(event, frame);
+                if !messages.is_empty() && notice.take().is_some() {
+                    paint(&mut stdout, &mut painted, frame, size, None)?;
+                }
+                for message in messages {
+                    channel.send(&message)?;
+                }
+            }
+        }
+        channel.flush()?;
+        let mut polls = [
+            libc::pollfd {
+                fd: 0,
+                events: libc::POLLIN,
+                revents: 0,
+            },
+            libc::pollfd {
+                fd: channel.socket.as_raw_fd(),
+                events: libc::POLLIN
+                    | if channel.output.is_empty() {
+                        0
+                    } else {
+                        libc::POLLOUT
+                    },
+                revents: 0,
+            },
+        ];
+        let result = unsafe { libc::poll(polls.as_mut_ptr(), 2, 10) };
+        if result < 0 {
+            if std::io::Error::last_os_error().kind() == std::io::ErrorKind::Interrupted {
+                continue;
+            }
+            return Err(std::io::Error::last_os_error().into());
+        }
+        if polls[0].revents & (libc::POLLIN | libc::POLLHUP) != 0 {
+            // Leave the shared TTY file description blocking: stdin/stdout may
+            // be dup'd from one descriptor. One read follows a readiness poll.
+            let mut bytes = [0; 8192];
+            let count = unsafe { libc::read(0, bytes.as_mut_ptr().cast(), bytes.len()) };
+            if count == 0 {
+                return Ok(());
+            }
+            if count < 0 {
+                let error = std::io::Error::last_os_error();
+                if matches!(
+                    error.kind(),
+                    std::io::ErrorKind::WouldBlock | std::io::ErrorKind::Interrupted
+                ) {
+                    continue;
+                }
+                return Err(error.into());
+            }
+            queue_events(&mut pending, decoder.feed(&bytes[..count as usize]))?;
+            escape = Some(Instant::now());
+        }
+    }
+}

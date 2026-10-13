@@ -295,6 +295,8 @@ fn fill(frame: &mut Frame, rect: Rect, bg: Color) {
 fn char_width(c: char) -> u16 {
     c.width().unwrap_or(0) as u16
 }
+// Position, clipping and style are independent inputs to this drawing primitive.
+#[allow(clippy::too_many_arguments)]
 fn write_text(
     frame: &mut Frame,
     x: u16,

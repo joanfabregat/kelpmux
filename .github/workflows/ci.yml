@@ -20,7 +20,23 @@ jobs:
       - run: cargo clippy --locked --all-targets -- -D warnings
       - run: cargo test --locked
       - run: cargo build --locked --release
+      - name: Validate distribution license texts
+        run: bash scripts/package-licenses.sh target/dependency-licenses
+  native:
+    name: Native PTY and terminal (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, ubuntu-24.04-arm]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+      - run: rustup toolchain install 1.99.0 --profile minimal
+      - name: Real owned PTYs, terminal engine, and frontend routing
+        run: cargo test --locked --test native_server --test native_engine --test native_workspace --test native_client --test native_hooks --test native_protocol -- --test-threads=1
   integration:
+    name: Legacy tmux compatibility (${{ matrix.os }})
     strategy:
       fail-fast: false
       matrix:
@@ -34,7 +50,7 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y build-essential pkg-config libevent-dev libncurses-dev bison
           rustup toolchain install 1.99.0 --profile minimal
-      - name: Build verified upstream tmux 3.8
+      - name: Build verified upstream tmux 3.8 for compatibility tests
         run: |
           mkdir -p target
           curl -fsSL https://github.com/tmux/tmux/releases/download/3.8/tmux-3.8.tar.gz -o target/tmux-3.8.tar.gz
@@ -44,10 +60,12 @@ jobs:
         run: cargo test --locked --test tmux -- --ignored --test-threads=1
   msrv:
     runs-on: ubuntu-24.04
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
       - run: rustup toolchain install 1.85.0 --profile minimal
-      - run: cargo +1.85.0 test --locked --test core
+      - name: All tests on the minimum Rust version, including owned PTYs
+        run: cargo +1.85.0 test --locked
   dependencies:
     runs-on: ubuntu-24.04
     steps:
@@ -59,4 +77,13 @@ jobs:
       - name: Check dependency license policy
         run: |
           cargo metadata --locked --format-version 1 > metadata.json
-          jq -e 'all(.packages[]; .license as $license | ["MIT", "Apache-2.0", "MIT OR Apache-2.0", "Apache-2.0 OR MIT", "Unlicense OR MIT", "(MIT OR Apache-2.0) AND Unicode-3.0"] | index($license) != null)' metadata.json
+          jq -e '
+            all(.packages[];
+              . as $package |
+              (["MIT", "Apache-2.0", "MIT OR Apache-2.0", "Apache-2.0 OR MIT", "Unlicense OR MIT"] | index($package.license) != null)
+              or ($package.name == "unicode-ident" and $package.license == "(MIT OR Apache-2.0) AND Unicode-3.0")
+              or ($package.name == "cursor-icon" and $package.license == "MIT OR Apache-2.0 OR Zlib")
+              or ((["linux-raw-sys", "rustix", "rustix-openpty"] | index($package.name) != null)
+                 and $package.license == "Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT")
+            )
+          ' metadata.json

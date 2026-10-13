@@ -107,11 +107,20 @@ fn scan(opts: &Options) -> Result<()> {
 
 fn run() -> Result<()> {
     let mut args: Vec<_> = env::args().skip(1).collect();
-    if args.first().is_some_and(|arg| matches!(arg.as_str(), "server" | "attach" | "ctl")) {
+    if args.first().is_some_and(|arg| arg == "native-event") {
+        return kelpmux::native::hooks::run(&args[1..]);
+    }
+    if args
+        .first()
+        .is_some_and(|arg| matches!(arg.as_str(), "server" | "attach" | "ctl"))
+    {
         return kelpmux::native::cli::run(&args);
     }
     if args.is_empty() || args == ["--help"] || args == ["-h"] {
-        println!("{}\n\nLegacy tmux compatibility commands:\n{HELP}", kelpmux::native::cli::HELP);
+        println!(
+            "{}\n  kelpmux native-event codex|claude [--pane ID] [--state-dir PATH]\n      Optional native lifecycle hook; JSON on stdin.\n\nLegacy tmux compatibility commands:\n{HELP}",
+            kelpmux::native::cli::HELP
+        );
         return Ok(());
     }
     if args == ["--version"] {

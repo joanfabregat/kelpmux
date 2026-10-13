@@ -78,7 +78,7 @@ impl Decoder {
                     0xf0..=0xf4 => 4,
                     _ => 1,
                 };
-                (self.pending.len() >= size + 1).then_some(size + 1)
+                (self.pending.len() > size).then_some(size + 1)
             };
             if let Some(length) = length {
                 let sequence: Vec<_> = self.pending.drain(..length).collect();
@@ -146,11 +146,18 @@ pub struct Router {
     swap: Option<Option<PaneId>>,
     scrolling: bool,
     selection: Option<(PaneId, Point, Point)>,
+    observed_help: bool,
+    help_override: Option<bool>,
 }
 impl Router {
     pub fn route(&mut self, event: InputEvent, frame: &Frame) -> Vec<ClientMessage> {
+        if self.observed_help != frame.help {
+            self.observed_help = frame.help;
+            self.help_override = None;
+        }
+        let help = self.help_override.unwrap_or(frame.help);
         match event {
-            InputEvent::Paste(bytes) if frame.controller && !frame.help => {
+            InputEvent::Paste(bytes) if frame.controller && !help => {
                 vec![ClientMessage::Paste(bytes)]
             }
             InputEvent::Paste(_) => vec![],
@@ -212,6 +219,9 @@ impl Router {
                     _ => None,
                 };
                 if let Some(action) = action {
+                    if action == Action::Help && frame.controller {
+                        self.toggle_help(frame);
+                    }
                     emit(&mut output, action, frame.controller);
                 }
                 continue;
@@ -223,8 +233,9 @@ impl Router {
             if !frame.controller {
                 continue;
             }
-            if frame.help {
+            if self.help_override.unwrap_or(frame.help) {
                 if matches!(key, b"q" | b"\x1b" | b"?") {
+                    self.toggle_help(frame);
                     emit(&mut output, Action::Help, true);
                 }
                 continue;
@@ -285,11 +296,23 @@ impl Router {
             if let Some(action) = action {
                 emit(&mut output, action, true);
             } else {
-                let application_cursor = frame.panes.iter().rev()
+                let modes = frame
+                    .panes
+                    .iter()
+                    .rev()
                     .find(|view| view.pane.id == frame.active)
-                    .is_some_and(|view| view.modes.application_cursor);
-                if let [27, b'[', final_byte @ (b'A' | b'B' | b'C' | b'D' | b'H' | b'F')] = key {
-                    if application_cursor {
+                    .map(|view| view.modes)
+                    .unwrap_or_default();
+                if matches!(key, b"\x1b[I" | b"\x1b[O") && !modes.focus {
+                    continue;
+                }
+                if let [
+                    27,
+                    b'[',
+                    final_byte @ (b'A' | b'B' | b'C' | b'D' | b'H' | b'F'),
+                ] = key
+                {
+                    if modes.application_cursor {
                         push_input(&mut output, &[27, b'O', *final_byte]);
                     } else {
                         push_input(&mut output, key);
@@ -306,13 +329,16 @@ impl Router {
         if !frame.controller {
             return output;
         }
-        if frame.help {
+        if self.help_override.unwrap_or(frame.help) {
             let bounds = help_bounds(frame.cols, frame.rows);
             let close = event.position.y == bounds.y
                 && event.position.x >= bounds.x + bounds.cols.saturating_sub(3);
             let toggle = event.position.y == frame.rows.saturating_sub(1)
                 && event.position.x >= frame.cols.saturating_sub(3);
-            if event.kind == MouseKind::Press && (!bounds.contains(event.position) || close || toggle) {
+            if event.kind == MouseKind::Press
+                && (!bounds.contains(event.position) || close || toggle)
+            {
+                self.toggle_help(frame);
                 emit(&mut output, Action::Help, true);
             }
             return output;
@@ -321,6 +347,7 @@ impl Router {
             && event.position.y == frame.rows.saturating_sub(1)
             && event.position.x >= frame.cols.saturating_sub(3)
         {
+            self.toggle_help(frame);
             emit(&mut output, Action::Help, true);
             return output;
         }
@@ -351,8 +378,10 @@ impl Router {
             return output;
         };
         let id = view.pane.id;
-        if event.kind == MouseKind::Press && !view.overlay
-            && frame.reading != ReadingMode::Grid && id != frame.active
+        if event.kind == MouseKind::Press
+            && !view.overlay
+            && frame.reading != ReadingMode::Grid
+            && id != frame.active
         {
             // Focusing a background tile moves the overlay. Its old body coordinates
             // must not also become a click or selection in the newly moved terminal.
@@ -422,6 +451,9 @@ impl Router {
             }
         }
         output
+    }
+    fn toggle_help(&mut self, frame: &Frame) {
+        self.help_override = Some(!self.help_override.unwrap_or(frame.help));
     }
 }
 fn local_point(point: Point, body: Rect) -> Point {

@@ -82,7 +82,7 @@ fn every_grid_balances_cells_keeps_header_footer_and_all_panes() {
                 assert_eq!(view.body.y, view.rect.y + 1);
                 assert_eq!(view.body.rows, view.rect.rows - 1);
                 assert!(view.rect.x + view.rect.cols <= cols);
-                assert!(view.rect.y + view.rect.rows <= rows - 1);
+                assert!(view.rect.y + view.rect.rows < rows);
             }
             if shape.0 == 2 {
                 assert_eq!(views[0].rect.x + views[0].rect.cols + 1, views[1].rect.x);
@@ -168,10 +168,16 @@ fn reading_toggle_exits_fullscreen_and_background_focus_does_not_select_old_coor
     ws.apply(&Action::Read(1)).unwrap();
     let f = frame(&ws);
     let background = &f.panes[1];
-    let point = Point { x: background.body.x + background.body.cols - 1, y: 1 };
+    let point = Point {
+        x: background.body.x + background.body.cols - 1,
+        y: 1,
+    };
     assert!(!f.panes.last().unwrap().rect.contains(point));
     let mut router = Router::default();
-    assert_eq!(action(&router.route(mouse(point, MouseKind::Press), &f)), vec![Action::Focus(2)]);
+    assert_eq!(
+        action(&router.route(mouse(point, MouseKind::Press), &f)),
+        vec![Action::Focus(2)]
+    );
 }
 
 #[test]
@@ -195,7 +201,47 @@ fn application_cursor_mode_translates_arrows_but_preserves_word_shortcuts() {
     f.panes[0].modes.application_cursor = true;
     let mut router = Router::default();
     let messages = router.route(InputEvent::Bytes(b"\x1b[A\x1bf\x1b[1;3C".to_vec()), &f);
-    assert!(matches!(&messages[..], [ClientMessage::Input(bytes)] if bytes == b"\x1bOA\x1bf\x1b[1;3C"));
+    assert!(
+        matches!(&messages[..], [ClientMessage::Input(bytes)] if bytes == b"\x1bOA\x1bf\x1b[1;3C")
+    );
+}
+
+#[test]
+fn focus_reports_only_reach_applications_that_requested_them() {
+    let ws = workspace(80, 24, (1, 1));
+    let mut f = frame(&ws);
+    let mut router = Router::default();
+    assert!(
+        router
+            .route(InputEvent::Bytes(b"\x1b[I\x1b[O".to_vec()), &f)
+            .is_empty()
+    );
+    f.panes[0].modes.focus = true;
+    assert!(
+        matches!(&router.route(InputEvent::Bytes(b"\x1b[I\x1b[O".to_vec()), &f)[..], [ClientMessage::Input(bytes)] if bytes == b"\x1b[I\x1b[O")
+    );
+}
+
+#[test]
+fn help_keys_do_not_leak_into_the_application_before_a_new_frame_arrives() {
+    let f = frame(&workspace(80, 24, (1, 1)));
+    let mut router = Router::default();
+    let messages = router.route(InputEvent::Bytes(b"\x02?qhello".to_vec()), &f);
+    assert_eq!(action(&messages), vec![Action::Help, Action::Help]);
+    assert!(matches!(messages.last(), Some(ClientMessage::Input(bytes)) if bytes == b"hello"));
+    assert_eq!(
+        action(&router.route(InputEvent::Bytes(b"\x02?".to_vec()), &f)),
+        vec![Action::Help]
+    );
+    assert!(
+        router
+            .route(InputEvent::Paste(b"no leak".to_vec()), &f)
+            .is_empty()
+    );
+    assert_eq!(
+        action(&router.route(InputEvent::Bytes(b"q".to_vec()), &f)),
+        vec![Action::Help]
+    );
 }
 #[test]
 fn decoder_handles_fragmented_mouse_paste_and_escape_timeout() {
@@ -427,6 +473,8 @@ fn app_mouse_forwarding_shift_selection_wheel_and_help() {
         action(&router.route(InputEvent::Bytes(vec![27]), &f)),
         vec![Action::Help]
     );
+    // A separate open-help interaction; the preceding Escape already closed it.
+    let mut router = Router::default();
     assert_eq!(
         action(&router.route(mouse(Point { x: 0, y: 0 }, MouseKind::Press), &f)),
         vec![Action::Help]

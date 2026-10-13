@@ -174,3 +174,59 @@ fn queries_observe_palette_at_each_osc_terminator() {
     assert!(replies[0].contains("rgb:ffff/0000/0000"));
     assert!(replies[1].contains("rgb:0000/0000/ffff"));
 }
+
+#[test]
+fn composed_reading_views_replay_colors_unicode_and_background_geometry() {
+    use kelpmux::model::Status;
+    for cols in [40, 120, 240] {
+        let mut ws = Workspace::new(cols, 24).unwrap();
+        ws.panes = (1..=4)
+            .map(|id| PaneInfo {
+                id,
+                number: id as usize,
+                pid: id as u32,
+                cwd: "/".into(),
+                title: format!("agent {id}"),
+                palette: id as u8,
+                status: Status::Working,
+                session_id: Some(format!("session-{id}")),
+                dead: false,
+            })
+            .collect();
+        ws.active = 2;
+        ws.apply(&Action::Grid { cols: 2, rows: 2 }).unwrap();
+        let original = ws.layout();
+        let mut display = Terminal::new(cols, 24);
+        let mut previous = None;
+        for action in [
+            Action::CloseReading,
+            Action::Read(2),
+            Action::Fullscreen(2),
+            Action::Read(2),
+        ] {
+            ws.apply(&action).unwrap();
+            let mut screens = BTreeMap::new();
+            for (id, width, height) in ws.terminal_sizes() {
+                let mut terminal = Terminal::new(width, height);
+                terminal
+                    .feed(format!("\x1b[38;2;12;34;56;48;5;{id}m界e\u{301} pane{id}").as_bytes());
+                screens.insert(id, terminal.snapshot());
+            }
+            let frame = compose(&ws, &screens, true, None, 3);
+            assert_eq!(&ws.layout()[..4], &original[..]);
+            display.feed(&terminal_diff(previous.as_ref(), &frame));
+            assert_eq!(display.snapshot().cells, frame.cells);
+            assert_eq!(display.snapshot().cursor, frame.cursor);
+            let overlay = frame.panes.iter().find(|v| v.overlay);
+            if let Some(overlay) = overlay {
+                assert_eq!(overlay.pane.id, 2);
+                let body =
+                    usize::from(overlay.body.y) * usize::from(cols) + usize::from(overlay.body.x);
+                assert_eq!(frame.cells[body].fg, Color::Rgb(12, 34, 56));
+                assert_eq!(frame.cells[body].bg, Color::Indexed(2));
+            }
+            previous = Some(frame);
+        }
+        assert_eq!(ws.reading, ReadingMode::Grid);
+    }
+}

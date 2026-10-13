@@ -2,6 +2,7 @@ Kelpmux
 Copyright 2026 Joan Fabregat and Kelpmux contributors
 Licensed under the Apache License, Version 2.0.
 
-Release archives include unmodified tmux 3.8, copyright its respective authors.
-Its license and source digest are included under tmux/share/doc/tmux/.
-Kelpmux's Apache-2.0 license does not replace tmux's license.
+Native release archives use Alacritty's terminal engine and other Rust
+dependencies, copyright their respective authors. Exact versions, license
+expressions and upstream license texts are included under dependency-licenses/.
+Kelpmux's Apache-2.0 license does not replace those dependencies' licenses.

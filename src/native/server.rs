@@ -117,9 +117,12 @@ struct NativePane {
     terminal: Terminal,
     pending: VecDeque<u8>,
     dead: bool,
+    last_input: Option<Instant>,
+    idle_observations: u8,
+    agent_named: bool,
 }
 impl NativePane {
-    fn spawn(config: &ServerConfig, cols: u16, rows: u16) -> Result<Self> {
+    fn spawn(config: &ServerConfig, cols: u16, rows: u16, id: PaneId) -> Result<Self> {
         let mut master = -1;
         let mut slave = -1;
         let size = libc::winsize {
@@ -153,6 +156,13 @@ impl NativePane {
             .arg("-i")
             .current_dir(&config.cwd)
             .env("TERM", "xterm-256color")
+            .env("COLORTERM", "truecolor")
+            .env_remove("NO_COLOR")
+            .env("KELPMUX", "1")
+            .env("KELPMUX_PANE", format!("%{id}"))
+            .env_remove("SSH_CONNECTION")
+            .env_remove("SSH_CLIENT")
+            .env_remove("SSH_TTY")
             .env_remove("TMUX")
             .env_remove("TMUX_PANE")
             .env_remove("STY")
@@ -182,6 +192,9 @@ impl NativePane {
             terminal: Terminal::new(cols, rows),
             pending: VecDeque::new(),
             dead: false,
+            last_input: None,
+            idle_observations: 0,
+            agent_named: false,
         };
         pane.start = process::read(Path::new("/proc"), pane.child.id())?.start;
         let fd = pane.master.as_raw_fd();
@@ -199,6 +212,10 @@ impl NativePane {
             return Err("pane input queue is full".into());
         }
         self.pending.extend(bytes);
+        if !bytes.is_empty() {
+            self.last_input = Some(Instant::now());
+            self.idle_observations = 0;
+        }
         Ok(())
     }
     fn resize(&mut self, cols: u16, rows: u16) {
@@ -214,6 +231,14 @@ impl NativePane {
         }
     }
     fn unused(&self, tree: &BTreeMap<u32, process::Process>) -> bool {
+        if !self.pending.is_empty()
+            || self.idle_observations < 2
+            || self
+                .last_input
+                .is_some_and(|at| at.elapsed() < Duration::from_millis(200))
+        {
+            return false;
+        }
         let Some(root) = tree.get(&self.child.id()) else {
             return false;
         };
@@ -222,6 +247,25 @@ impl NativePane {
             && !tree
                 .values()
                 .any(|p| p.pid != root.pid && p.tty == root.tty)
+    }
+    fn observe_idle(&mut self) {
+        // Two separate event-loop observations plus a cooldown narrow the race
+        // between writing terminal input and the shell consuming it. This is
+        // conservative evidence, not an atomic guarantee against external input.
+        let root = process::read(Path::new("/proc"), self.child.id()).ok();
+        let idle = self.pending.is_empty()
+            && self
+                .last_input
+                .is_none_or(|at| at.elapsed() >= Duration::from_millis(200))
+            && root.is_some_and(|root| {
+                root.start == self.start
+                    && process::idle(&BTreeMap::from([(root.pid, root.clone())]), root.pid, false)
+            });
+        self.idle_observations = if idle {
+            self.idle_observations.saturating_add(1).min(2)
+        } else {
+            0
+        };
     }
 }
 impl Drop for NativePane {
@@ -260,6 +304,7 @@ struct Client {
     input: Vec<u8>,
     started: Option<Instant>,
     attached: bool,
+    geometry: Option<(u16, u16)>,
     output: VecDeque<Vec<u8>>,
     writing: Option<(Vec<u8>, usize)>,
     frame: Option<Vec<u8>>,
@@ -298,6 +343,7 @@ impl Client {
             input: vec![],
             started: None,
             attached: false,
+            geometry: None,
             output: VecDeque::new(),
             writing: None,
             frame: None,
@@ -423,6 +469,7 @@ impl Server {
             &self.config,
             self.workspace.cols,
             self.workspace.rows.saturating_sub(2),
+            id,
         )?;
         self.workspace.panes.push(PaneInfo {
             id,
@@ -454,7 +501,23 @@ impl Server {
         let count = Workspace::grid_count(cols, rows)?;
         let old_len = self.workspace.panes.len();
         if count < old_len {
-            let victims: Vec<_> = self.workspace.panes[count..].iter().map(|p| p.id).collect();
+            let tree = process::snapshot(Path::new("/proc"))?;
+            let victims: Vec<_> = self
+                .workspace
+                .panes
+                .iter()
+                .rev()
+                .filter(|info| {
+                    self.panes
+                        .get(&info.id)
+                        .is_some_and(|pane| pane.unused(&tree))
+                })
+                .take(old_len - count)
+                .map(|info| info.id)
+                .collect();
+            if victims.len() != old_len - count {
+                return Err("grid shrink refused: insufficient unused panes; remaining panes are occupied or cannot be proven idle".into());
+            }
             // Validate every victim from one fresh snapshot, then recheck all immediately before mutation.
             for _ in 0..2 {
                 let tree = process::snapshot(Path::new("/proc"))?;
@@ -469,7 +532,7 @@ impl Server {
                 }
             }
             let mut prepared = self.workspace.clone();
-            prepared.panes.truncate(count);
+            prepared.panes.retain(|pane| !victims.contains(&pane.id));
             if victims.contains(&prepared.active) {
                 prepared.active = prepared.panes[0].id;
             }
@@ -563,6 +626,7 @@ impl Server {
                     return Err("client already attached".into());
                 }
                 self.clients.get_mut(&id).unwrap().attached = true;
+                self.clients.get_mut(&id).unwrap().geometry = Some((cols, rows));
                 if self.controller.is_none() || takeover {
                     self.controller = Some(id);
                     self.workspace.resize(cols, rows)?;
@@ -590,8 +654,20 @@ impl Server {
                 self.dirty = true;
             }
             ClientMessage::Action(Action::Takeover) if self.clients[&id].attached => {
+                let (cols, rows) = self.clients[&id]
+                    .geometry
+                    .ok_or("attached client has no geometry")?;
                 self.controller = Some(id);
-                self.dirty = true;
+                self.workspace.resize(cols, rows)?;
+                self.resize();
+            }
+            ClientMessage::Resize { cols, rows } if self.clients[&id].attached => {
+                validate_size(cols, rows)?;
+                self.clients.get_mut(&id).unwrap().geometry = Some((cols, rows));
+                if self.controller == Some(id) {
+                    self.workspace.resize(cols, rows)?;
+                    self.resize();
+                }
             }
             message => {
                 if self.controller != Some(id) || !self.clients[&id].attached {
@@ -862,14 +938,23 @@ impl Server {
             }
             if info.dead {
                 info.status = Status::Exited;
-            } else if let Some(agent) = reconciled
-                .iter()
-                .find(|a| a.pane == format!("%{}", info.id))
-            {
+            } else if let Some(agent) = reconciled.iter().find(|a| {
+                a.pane == format!("%{}", info.id)
+                    && process::read(Path::new("/proc"), a.pid)
+                        .is_ok_and(|p| p.start == a.process_start)
+            }) {
                 info.status = agent.status;
                 info.session_id = agent.session_id.clone();
                 info.title = agent.name.chars().take(1024).collect();
+                if let Some(pane) = self.panes.get_mut(&info.id) {
+                    pane.agent_named = true;
+                }
             } else {
+                if let Some(pane) = self.panes.get_mut(&info.id) {
+                    if std::mem::take(&mut pane.agent_named) {
+                        info.title = "shell".into();
+                    }
+                }
                 info.session_id = None;
                 info.status = if process::idle(&tree, info.pid, false) {
                     Status::Idle
@@ -888,19 +973,29 @@ impl Server {
             .iter()
             .map(|(id, pane)| (*id, pane.terminal.snapshot()))
             .collect();
-        let frame = render::compose(
+        let observer_frame = render::compose(
             &self.workspace,
             &screens,
             false,
             self.notice.as_deref(),
             spinner,
         );
+        let controller_frame = render::compose(
+            &self.workspace,
+            &screens,
+            true,
+            self.notice.as_deref(),
+            spinner,
+        );
         let mut removed = vec![];
         for (id, client) in &mut self.clients {
             if client.attached {
-                let mut frame = frame.clone();
-                frame.controller = self.controller == Some(*id);
-                if client.latest(&frame).is_err() {
+                let frame = if self.controller == Some(*id) {
+                    &controller_frame
+                } else {
+                    &observer_frame
+                };
+                if client.latest(frame).is_err() {
                     removed.push(*id);
                 }
             }
@@ -1003,6 +1098,7 @@ pub fn serve(config: ServerConfig) -> Result<()> {
     let mut render_time = Instant::now() - Duration::from_secs(1);
     let mut animation = Instant::now();
     let mut spinner = 0;
+    let mut idle_poll = Instant::now() - Duration::from_millis(100);
     while !server.shutdown {
         for _ in 0..MAX_CLIENTS {
             match listener.accept() {
@@ -1043,6 +1139,14 @@ pub fn serve(config: ServerConfig) -> Result<()> {
             }
         }
         server.poll_ptys();
+        if idle_poll.elapsed() >= Duration::from_millis(100) {
+            for pane in server.panes.values_mut() {
+                if !pane.dead {
+                    pane.observe_idle();
+                }
+            }
+            idle_poll = Instant::now();
+        }
         if discovery.elapsed() >= Duration::from_secs(2) {
             let _ = requests.try_send(server.discovery_snapshot());
             discovery = Instant::now();
