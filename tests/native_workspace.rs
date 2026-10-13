@@ -158,6 +158,45 @@ fn selection_focus_swap_and_invalid_actions_preserve_identity() {
     assert!(ws.resize(39, 10).is_err());
     assert_eq!(format!("{ws:?}"), before);
 }
+
+#[test]
+fn reading_toggle_exits_fullscreen_and_background_focus_does_not_select_old_coordinates() {
+    let mut ws = workspace(240, 40, (2, 1));
+    ws.apply(&Action::Fullscreen(1)).unwrap();
+    ws.apply(&Action::Read(1)).unwrap();
+    assert_eq!(ws.reading, ReadingMode::Grid);
+    ws.apply(&Action::Read(1)).unwrap();
+    let f = frame(&ws);
+    let background = &f.panes[1];
+    let point = Point { x: background.body.x + background.body.cols - 1, y: 1 };
+    assert!(!f.panes.last().unwrap().rect.contains(point));
+    let mut router = Router::default();
+    assert_eq!(action(&router.route(mouse(point, MouseKind::Press), &f)), vec![Action::Focus(2)]);
+}
+
+#[test]
+fn help_close_button_and_footer_toggle_close_without_application_input() {
+    let mut ws = workspace(100, 30, (1, 1));
+    ws.help = true;
+    let f = frame(&ws);
+    let mut router = Router::default();
+    // Help uses a 76x18 centered rectangle; close is its three rightmost header cells.
+    for point in [Point { x: 86, y: 5 }, Point { x: 98, y: 29 }] {
+        let messages = router.route(mouse(point, MouseKind::Press), &f);
+        assert_eq!(action(&messages), vec![Action::Help]);
+        assert_eq!(messages.len(), 1);
+    }
+}
+
+#[test]
+fn application_cursor_mode_translates_arrows_but_preserves_word_shortcuts() {
+    let ws = workspace(80, 24, (1, 1));
+    let mut f = frame(&ws);
+    f.panes[0].modes.application_cursor = true;
+    let mut router = Router::default();
+    let messages = router.route(InputEvent::Bytes(b"\x1b[A\x1bf\x1b[1;3C".to_vec()), &f);
+    assert!(matches!(&messages[..], [ClientMessage::Input(bytes)] if bytes == b"\x1bOA\x1bf\x1b[1;3C"));
+}
 #[test]
 fn decoder_handles_fragmented_mouse_paste_and_escape_timeout() {
     let mut decoder = Decoder::default();

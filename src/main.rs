@@ -110,12 +110,8 @@ fn run() -> Result<()> {
     if args.first().is_some_and(|arg| matches!(arg.as_str(), "server" | "attach" | "ctl")) {
         return kelpmux::native::cli::run(&args);
     }
-    if args.is_empty() || args == ["--help"] {
-        println!("{}\n\nLegacy tmux compatibility commands:\n{HELP}", kelpmux::native::cli::HELP);
-        return Ok(());
-    }
     if args.is_empty() || args == ["--help"] || args == ["-h"] {
-        println!("{HELP}");
+        println!("{}\n\nLegacy tmux compatibility commands:\n{HELP}", kelpmux::native::cli::HELP);
         return Ok(());
     }
     if args == ["--version"] {

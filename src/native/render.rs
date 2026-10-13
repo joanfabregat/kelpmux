@@ -98,7 +98,7 @@ pub fn compose(
             Color::Indexed(234),
         );
         let label = if controller {
-            "^B prefix · 1–4 focus · r read · f full · d detach"
+            "^B: z read · f full · g grid · d detach"
         } else {
             "Observer · Ctrl-B t take control"
         };
@@ -163,17 +163,17 @@ pub fn compose(
         }
         let lines = [
             "Ctrl-B, then:",
-            "1–4       Focus a pane",
-            "r         Reading view (120 columns)",
-            "f         Full width reading",
-            "Esc       Return to grid",
-            "g         Cycle grid",
+            "1–9       Read a numbered pane (also Alt+1–9)",
+            "z         Reading view / grid (also Alt+Tab / Alt+0)",
+            "f         Full width / capped reading",
+            "g         Cycle 1x1 / 2x1 / 2x2 (occupied panes protected)",
+            "s, N, M   Swap numbered panes N and M",
             "d         Detach",
             "t         Take control",
             "?         Toggle this help",
-            "Wheel     Scroll history",
-            "Drag      Select text",
-            "y         Copy selection",
+            "[         Scroll mode: arrows / PgUp / PgDn; q to leave",
+            "y         Copy selection (also on drag release)",
+            "Wheel/drag Scroll/select; hold Shift for mouse-aware apps",
         ];
         for (i, line) in lines
             .iter()

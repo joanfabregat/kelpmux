@@ -285,7 +285,18 @@ impl Router {
             if let Some(action) = action {
                 emit(&mut output, action, true);
             } else {
-                push_input(&mut output, key);
+                let application_cursor = frame.panes.iter().rev()
+                    .find(|view| view.pane.id == frame.active)
+                    .is_some_and(|view| view.modes.application_cursor);
+                if let [27, b'[', final_byte @ (b'A' | b'B' | b'C' | b'D' | b'H' | b'F')] = key {
+                    if application_cursor {
+                        push_input(&mut output, &[27, b'O', *final_byte]);
+                    } else {
+                        push_input(&mut output, key);
+                    }
+                } else {
+                    push_input(&mut output, key);
+                }
             }
         }
         output
@@ -297,7 +308,11 @@ impl Router {
         }
         if frame.help {
             let bounds = help_bounds(frame.cols, frame.rows);
-            if event.kind == MouseKind::Press && !bounds.contains(event.position) {
+            let close = event.position.y == bounds.y
+                && event.position.x >= bounds.x + bounds.cols.saturating_sub(3);
+            let toggle = event.position.y == frame.rows.saturating_sub(1)
+                && event.position.x >= frame.cols.saturating_sub(3);
+            if event.kind == MouseKind::Press && (!bounds.contains(event.position) || close || toggle) {
                 emit(&mut output, Action::Help, true);
             }
             return output;
@@ -336,6 +351,14 @@ impl Router {
             return output;
         };
         let id = view.pane.id;
+        if event.kind == MouseKind::Press && !view.overlay
+            && frame.reading != ReadingMode::Grid && id != frame.active
+        {
+            // Focusing a background tile moves the overlay. Its old body coordinates
+            // must not also become a click or selection in the newly moved terminal.
+            emit(&mut output, Action::Focus(id), true);
+            return output;
+        }
         if event.position.y == view.rect.y {
             if event.kind != MouseKind::Press {
                 return output;

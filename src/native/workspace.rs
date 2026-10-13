@@ -144,7 +144,7 @@ impl Workspace {
             Action::Read(id) => {
                 self.require_pane(id)?;
                 self.active = id;
-                self.reading = if self.reading == ReadingMode::Capped(id) {
+                self.reading = if matches!(self.reading, ReadingMode::Capped(current) | ReadingMode::Fullscreen(current) if current == id) {
                     ReadingMode::Grid
                 } else {
                     ReadingMode::Capped(id)
