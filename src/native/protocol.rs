@@ -110,6 +110,7 @@ pub struct PaneView {
     pub rect: Rect,
     pub body: Rect,
     pub overlay: bool,
+    pub modes: InputModes,
 }
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Frame {
