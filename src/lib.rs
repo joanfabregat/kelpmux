@@ -2,6 +2,7 @@
 pub mod discovery;
 pub mod journal;
 pub mod model;
+pub mod native;
 pub mod picker;
 pub mod process;
 pub mod tmux;
