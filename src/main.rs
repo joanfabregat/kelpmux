@@ -11,7 +11,7 @@ use std::{
     env,
     io::Read,
     path::{Path, PathBuf},
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 const HELP: &str = r#"kelpmux — agent metadata and safe workspace helpers for tmux (Linux)
@@ -150,11 +150,19 @@ fn run() -> Result<()> {
             clean(&args)?;
             private_dir(&opts.root)?;
             let _lock = Lock::acquire(&opts.root.join("daemon.lock"), false)?;
+            let mut next_scan = Instant::now();
+            let mut frame = 0;
             loop {
-                if let Err(error) = scan(&opts) {
-                    eprintln!("kelpmux: discovery: {error}");
+                if Instant::now() >= next_scan {
+                    if let Err(error) = scan(&opts) {
+                        eprintln!("kelpmux: discovery: {error}");
+                    }
+                    next_scan = Instant::now() + Duration::from_secs(interval);
                 }
-                std::thread::sleep(Duration::from_secs(interval));
+                // Header animation does not rescan processes, transcripts or journal.
+                let _ = opts.tmux.animate_working(frame);
+                frame = (frame + 1) % kelpmux::model::WORKING_FRAMES.len();
+                std::thread::sleep(Duration::from_millis(125));
             }
         }
         "list" => {
@@ -252,7 +260,7 @@ fn run() -> Result<()> {
                 "-Grid picker: Ctrl+b g or Grid",
                 "-Swap pane: Ctrl+b s, number / click",
                 "-Rows / columns (from grid): Ctrl+b v / h",
-                "-Markers: ● working ! input ✓ done × failed ○ idle",
+                "-Markers: ⠋ working ! input ✓ done × failed ○ idle",
                 "-Help: click ? again / outside / × to close",
             ] {
                 arguments.extend([description, "", ""]);
