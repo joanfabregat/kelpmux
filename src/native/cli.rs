@@ -35,7 +35,9 @@ Default socket: $XDG_STATE_HOME/kelpmux/native/control.sock
 Attach keys: Ctrl-B d detach, Ctrl-B z read, Ctrl-B f full, Ctrl-B ? help.";
 const TIMEOUT: Duration = Duration::from_secs(3);
 const ESCAPE_TIMEOUT: Duration = Duration::from_millis(35);
-const MAX_PENDING: usize = 256 * 1024;
+// JSON encodes byte arrays as decimal integers: a 64 KiB paste can exceed
+// 256 KiB on the wire even when the raw payload is within its limit.
+const MAX_PENDING: usize = 512 * 1024;
 static INTERRUPTED: AtomicBool = AtomicBool::new(false);
 static RESIZED: AtomicBool = AtomicBool::new(false);
 extern "C" fn signal(signal: libc::c_int) {

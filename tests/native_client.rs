@@ -147,8 +147,20 @@ impl Pty {
             thread::sleep(Duration::from_millis(5));
         }
     }
-    fn input(&mut self, bytes: &[u8]) {
-        self.master.write_all(bytes).unwrap();
+    fn input(&mut self, mut bytes: &[u8]) {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while !bytes.is_empty() {
+            match self.master.write(bytes) {
+                Ok(0) => panic!("frontend input closed"),
+                Ok(count) => bytes = &bytes[count..],
+                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                    self.drain();
+                    assert!(Instant::now() < deadline, "frontend did not consume input");
+                    thread::sleep(Duration::from_millis(1));
+                }
+                Err(error) => panic!("frontend input failed: {error}"),
+            }
+        }
     }
     fn finish(&mut self, success: bool) {
         let deadline = Instant::now() + Duration::from_secs(5);
@@ -847,6 +859,37 @@ fn termination_with_backpressured_display_restores_raw_mode_promptly() {
         );
         thread::sleep(Duration::from_millis(10));
     }
+    tty.finish(true);
+    backend.join().unwrap();
+}
+
+#[test]
+fn maximum_literal_paste_fits_the_wire_queue_and_keeps_client_attached() {
+    let fixture = Fixture::new();
+    let path = fixture.socket.clone();
+    let (sent, received) = mpsc::channel();
+    let backend = thread::spawn(move || {
+        let mut socket = fixture.accept();
+        welcome(&mut socket, true);
+        let message = read_message::<ClientMessage>(&mut socket).unwrap().unwrap();
+        assert!(
+            matches!(message, ClientMessage::Paste(ref bytes) if bytes.len() == MAX_INPUT && bytes.iter().all(|byte| *byte == b'x'))
+        );
+        sent.send(()).unwrap();
+        assert!(matches!(
+            read_message::<ClientMessage>(&mut socket).unwrap(),
+            Some(ClientMessage::Action(Action::Detach))
+        ));
+        write_message(&mut socket, &ServerMessage::Detached).unwrap();
+    });
+    let mut tty = Pty::spawn(&path, 80, 24);
+    tty.ready();
+    let mut paste = b"\x1b[200~".to_vec();
+    paste.extend(std::iter::repeat_n(b'x', MAX_INPUT));
+    paste.extend_from_slice(b"\x1b[201~");
+    tty.input(&paste);
+    received.recv_timeout(Duration::from_secs(5)).unwrap();
+    tty.input(b"\x02d");
     tty.finish(true);
     backend.join().unwrap();
 }

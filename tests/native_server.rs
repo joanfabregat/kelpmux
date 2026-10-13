@@ -319,7 +319,21 @@ fn journal_lock_does_not_stall_pty_loop_or_shutdown() {
     let daemon = Daemon::start();
     let root = daemon.root.join("state/native");
     kelpmux::journal::private_dir(&root).unwrap();
-    let lock = kelpmux::journal::Lock::acquire(&root.join("registry.lock"), false).unwrap();
+    // The initial metadata pass may briefly own this lock, especially on ARM.
+    // Acquire it with a bounded retry before testing the server while we hold it.
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let lock = loop {
+        match kelpmux::journal::Lock::acquire(&root.join("registry.lock"), false) {
+            Ok(lock) => break lock,
+            Err(error) => {
+                assert!(
+                    Instant::now() < deadline,
+                    "fixture could not acquire journal lock: {error}"
+                );
+                thread::sleep(Duration::from_millis(10));
+            }
+        }
+    };
     let (mut stream, _, _) = daemon.attach();
     thread::sleep(Duration::from_millis(2100));
     let start = Instant::now();
