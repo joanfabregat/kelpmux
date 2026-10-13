@@ -605,6 +605,125 @@ fn pane_palette_stays_fixed_across_status_focus_and_native_reading() {
 
 #[test]
 #[ignore = "requires tmux 3.8; CI explicitly runs this suite"]
+fn braille_spinner_animates_working_headers_and_stops_when_idle() {
+    use kelpmux::model::WORKING_FRAMES;
+    let server = Server::new();
+    let window = server.window();
+    workspace::resize(
+        &server.tmux,
+        &server.state(),
+        &window,
+        Grid::parse("2x2").unwrap(),
+        false,
+    )
+    .unwrap();
+    server.wait_idle();
+    let panes = server.tmux.panes().unwrap();
+    let config = server.cli(&["tmux-config"]);
+    let path = server.root.join("spinner.conf");
+    fs::write(&path, config.stdout).unwrap();
+    server
+        .tmux
+        .run(&["source-file", path.to_str().unwrap()])
+        .unwrap();
+    let client = Client::attach(&server, 240, 60);
+    for (pane, status) in panes.iter().zip([
+        Status::Working,
+        Status::InputNeeded,
+        Status::TurnFinished,
+        Status::Idle,
+    ]) {
+        server.tmux.pane_palette(&pane.id).unwrap();
+        server.tmux.pane_status(&pane.id, status).unwrap();
+    }
+    server.tmux.animate_working(1).unwrap();
+    client.wait_output(WORKING_FRAMES[1]);
+    server
+        .tmux
+        .pane_status(&panes[0].id, Status::Working)
+        .unwrap();
+    assert_eq!(
+        server.tmux.option(&panes[0].id, "@kelpmux-marker").unwrap(),
+        WORKING_FRAMES[1],
+        "discovery must not reset the frame"
+    );
+    server.tmux.animate_working(2).unwrap();
+    client.wait_output(WORKING_FRAMES[2]);
+    for (pane, marker) in panes[1..].iter().zip(["!", "✓", "○"]) {
+        assert_eq!(
+            server.tmux.option(&pane.id, "@kelpmux-marker").unwrap(),
+            marker
+        );
+    }
+    server
+        .tmux
+        .pane_status(&panes[0].id, Status::Unknown)
+        .unwrap();
+    server.tmux.animate_working(3).unwrap();
+    assert_eq!(
+        server.tmux.option(&panes[0].id, "@kelpmux-marker").unwrap(),
+        "?"
+    );
+
+    // Exercise the real daemon scheduler with a generic occupied shell, not an agent.
+    server
+        .tmux
+        .run(&["send-keys", "-t", &panes[0].id, "sleep 60", "Enter"])
+        .unwrap();
+    struct StopChild(std::process::Child);
+    impl Drop for StopChild {
+        fn drop(&mut self) {
+            let _ = self.0.kill();
+            let _ = self.0.wait();
+        }
+    }
+    let _daemon = StopChild(
+        Command::new(env!("CARGO_BIN_EXE_kelpmux"))
+            .args([
+                "--state-dir",
+                server.state().to_str().unwrap(),
+                "--tmux-socket",
+                server.tmux.socket.as_ref().unwrap().to_str().unwrap(),
+                "daemon",
+            ])
+            .env("HOME", &server.root)
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .unwrap(),
+    );
+    let mut frames = std::collections::BTreeSet::new();
+    wait(|| {
+        let marker = server.tmux.option(&panes[0].id, "@kelpmux-marker").unwrap();
+        if WORKING_FRAMES.contains(&marker.as_str()) {
+            frames.insert(marker);
+        }
+        frames.len() >= 3
+    });
+    server
+        .tmux
+        .run(&["send-keys", "-t", &panes[0].id, "C-c"])
+        .unwrap();
+    wait(|| server.tmux.option(&panes[0].id, "@kelpmux-marker").unwrap() == "○");
+    std::thread::sleep(Duration::from_millis(400));
+    assert_eq!(
+        server.tmux.option(&panes[0].id, "@kelpmux-marker").unwrap(),
+        "○"
+    );
+    for pane in panes {
+        assert!(
+            server
+                .tmux
+                .panes()
+                .unwrap()
+                .iter()
+                .any(|p| p.id == pane.id && p.pid == pane.pid)
+        );
+    }
+}
+
+#[test]
+#[ignore = "requires tmux 3.8; CI explicitly runs this suite"]
 fn graphical_grid_picker_selects_on_large_and_small_terminals_and_blocks_busy_shrink() {
     let server = Server::new();
     let window = server.window();
@@ -1095,7 +1214,7 @@ fn mouse_controls_sticky_help_and_word_navigation_preserve_agent_panes() {
     client.output.lock().unwrap().clear();
     client.click(2, 59);
     client.wait_output("Kelpmux shortcuts");
-    let menu_width = "Markers: ● working ! input ✓ done × failed ○ idle"
+    let menu_width = "Markers: ⠋ working ! input ✓ done × failed ○ idle"
         .chars()
         .count()
         + 4;

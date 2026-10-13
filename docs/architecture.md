@@ -10,6 +10,8 @@ The daemon writes native pane options: `@kelpmux-name`, `@kelpmux-status`, `@kel
 
 Registry replacement is private, atomic and file-locked. The JSONL journal records metadata changes and prunes after seven days. It stores no transcript or hook payload. Current live records remain even for longer-running agents. Corrupt registry data fails visibly. Discovery fixtures never use actual user credentials or transcripts.
 
+The daemon schedules a UI tick every 125 ms separately from its metadata scan interval. A tick queries working panes in active windows and updates their braille frame in one native command batch, rechecking working status before each update. Static states never animate, and a metadata refresh does not reset an existing working frame. Animation does not read transcripts, scan `/proc`, mutate workspace geometry or write journal events; failed updates are retried on the next tick. Metadata scans can briefly delay the frame cadence.
+
 ## Native reading view
 
 The grid chooser uses a temporary native modal pane with close-on-outside-click and Escape cancellation. Its Rust renderer draws only six preset cards and handles keyboard/mouse input on its own PTY; it never proxies agent output. A private window-option request joins the dialog to its invoking helper. The preset is applied only after that dialog pane disappears, so it cannot count as an occupied agent or be removed as a shrink candidate. Request options are cleared and occupancy is validated again on apply. Pane movement uses native `display-panes` previews and digit/click selection with stable source/destination IDs; no text command prompt is involved.

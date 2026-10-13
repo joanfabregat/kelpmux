@@ -1,5 +1,7 @@
 use serde::{Deserialize, Serialize};
 
+pub const WORKING_FRAMES: [&str; 10] = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
+
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum Kind {
@@ -43,7 +45,7 @@ impl Status {
     }
     pub fn marker(self) -> &'static str {
         match self {
-            Self::Working => "●",
+            Self::Working => WORKING_FRAMES[0],
             Self::InputNeeded => "!",
             Self::TurnFinished => "✓",
             Self::Idle => "○",

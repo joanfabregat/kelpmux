@@ -22,7 +22,7 @@ Agent metadata and safe workspace helpers for tmux, inspired by Monterey's kelp 
 
 - Native floating reading view capped at 120 content columns. A process-free black slot keeps the background grid in its original shape; other panes retain their sizes and keep running. Small windows use native fullscreen zoom automatically; larger windows restore the width cap. Explicit fullscreen stays fullscreen until restored.
 - The same pane, process, index, and scrollback remain in the same window. Returning restores its grid position. No nested client, temporary session, sleeping placeholder, separate key table, or reading controller stays running.
-- Agent status, session name and identifiable session ID are written to native pane options. Each pane keeps one of nine palette colors across status changes, agent exits and pane movement, with a bright selected title and a darker unselected shade. Status markers show ● working, ! input needed, ✓ turn finished, × failed, ○ idle, ■ exited and ? unknown. A distinct number badge and focus arrow identify selection; subdued one-column separators and white/gray default text preserve application colors.
+- Agent status, session name and identifiable session ID are written to native pane options. Each pane keeps one of nine palette colors across status changes, agent exits and pane movement, with a bright selected title and a darker unselected shade. Working panes show a braille spinner (`⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏`); static markers show ! input needed, ✓ turn finished, × failed, ○ idle, ■ exited and ? unknown. A distinct number badge and focus arrow identify selection; subdued one-column separators and white/gray default text preserve application colors.
 - Guarded grids: `1x1`, `2x1`, `2x2`, `3x2`, `2x3`, `3x3` (columns × rows). Growing adds shells; shrinking removes only enough unused shells. Foreground, background and stopped jobs all make a pane occupied.
 - Seven-day metadata journal: agent type, session ID when identifiable, name, directory, pane/window IDs, process identity, and lifecycle changes. Resume using the agent's own TUI.
 
@@ -66,7 +66,7 @@ env -u NO_COLOR /absolute/path/to/tmux/bin/tmux -L kelpmux-preview -f /absolute/
 kelpmux --tmux-binary /absolute/path/to/tmux/bin/tmux --tmux-socket /absolute/path/to/socket --state-dir /absolute/path/to/preview-state daemon
 ```
 
-The daemon runs in the foreground and polls every two seconds. Run it in a dedicated tmux window or your chosen supervisor. `Ctrl+C` stops metadata discovery; tmux panes and agents remain. `scan` runs one pass; `list` reads the latest metadata without scanning.
+The daemon runs in the foreground and polls metadata every two seconds. A separate UI tick animates visible working headers at approximately eight frames per second without rescanning processes or transcripts and without changing the journal. Frame updates are batched across panes; inactive windows need no animation redraw. Run it in a dedicated tmux window or your chosen supervisor. `Ctrl+C` stops metadata discovery and animation; tmux panes and agents remain. `scan` runs one pass; `list` reads the latest metadata without scanning.
 
 Review the generated example before sourcing it. It uses absolute helper/state paths and preserves an explicitly selected tmux binary/socket:
 

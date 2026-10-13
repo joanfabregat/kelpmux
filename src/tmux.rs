@@ -1,6 +1,6 @@
 use crate::{
     Result, label,
-    model::{Agent, Status},
+    model::{Agent, Status, WORKING_FRAMES},
 };
 use serde::{Deserialize, Serialize};
 use std::{collections::BTreeMap, path::PathBuf, process::Command};
@@ -141,8 +141,57 @@ impl Tmux {
         Ok(())
     }
     pub fn pane_status(&self, pane: &str, status: Status) -> Result<()> {
+        if status == Status::Working {
+            // A metadata refresh must not restart an already-running spinner.
+            self.run(&[
+                "if-shell",
+                "-F",
+                "-t",
+                pane,
+                "#{!=:#{@kelpmux-status},WORKING}",
+                &format!(
+                    "set-option -p -t {pane} @kelpmux-marker {}",
+                    status.marker()
+                ),
+            ])?;
+        } else {
+            self.set(pane, "@kelpmux-marker", status.marker())?;
+        }
         self.set(pane, "@kelpmux-status", status.text())?;
-        self.set(pane, "@kelpmux-marker", status.marker())?;
+        Ok(())
+    }
+    pub fn animate_working(&self, frame: usize) -> Result<()> {
+        // One query and one batched update per frame, regardless of pane count.
+        // Background windows need no redraw; they catch up when made visible.
+        let panes = self.run(&[
+            "list-panes",
+            "-a",
+            "-F",
+            "#{?#{&&:#{window_active},#{==:#{@kelpmux-status},WORKING}},#{pane_id},}",
+        ])?;
+        let mut commands = Vec::new();
+        for pane in panes
+            .lines()
+            .filter(|pane| crate::workspace::valid_id(pane, '%'))
+        {
+            if !commands.is_empty() {
+                commands.push(";".to_owned());
+            }
+            commands.extend([
+                "if-shell".to_owned(),
+                "-F".to_owned(),
+                "-t".to_owned(),
+                pane.to_owned(),
+                "#{==:#{@kelpmux-status},WORKING}".to_owned(),
+                format!(
+                    "set-option -p -t {pane} @kelpmux-marker {}",
+                    WORKING_FRAMES[frame % WORKING_FRAMES.len()]
+                ),
+            ]);
+        }
+        if !commands.is_empty() {
+            self.run(&commands.iter().map(String::as_str).collect::<Vec<_>>())?;
+        }
         Ok(())
     }
     pub fn socket_path(&self) -> Result<String> {
