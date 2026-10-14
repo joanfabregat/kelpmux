@@ -43,6 +43,7 @@ fn agent() -> Agent {
         cwd: "/project".into(),
         status: Status::Working,
         source: "fixture".into(),
+        observation: Default::default(),
         first_seen: 10,
         last_seen: 10,
         ended_at: None,
@@ -436,4 +437,46 @@ fn codex_native_child_reads_existing_daemon_metadata_without_starting_a_thread()
     assert_eq!(found[0].pid, 102);
     assert_eq!(found[0].name, "Review");
     assert_eq!(found[0].status, Status::InputNeeded);
+}
+
+#[test]
+fn idle_is_not_completion_and_status_evidence_preserves_hook_event_time() {
+    use kelpmux::model::{Observation, StatusSource};
+    let dir = Temp::new();
+    let mut store = Store::open(&dir.0).unwrap();
+    let mut observed = agent();
+    observed.observation = Observation::checked(StatusSource::LiveRecord, 100);
+    store.reconcile(vec![observed.clone()], 100).unwrap();
+    observed.status = Status::Idle;
+    observed.observation.checked_at = 102;
+    store.reconcile(vec![observed.clone()], 102).unwrap();
+    assert_eq!(store.registry.agents[&observed.key()].status, Status::Idle);
+    assert!(
+        store.registry.agents[&observed.key()]
+            .observation
+            .event_at
+            .is_none()
+    );
+    assert!(!observed.observation.stale(110));
+    assert!(observed.observation.stale(113));
+    store.registry.hooks.insert(
+        observed.key(),
+        kelpmux::journal::Hook {
+            id: observed.session_id.clone().unwrap(),
+            kind: observed.kind,
+            status: Status::InputNeeded,
+            at: 105,
+        },
+    );
+    observed.status = Status::Unknown;
+    observed.observation.source = StatusSource::Unknown;
+    store.reconcile(vec![observed.clone()], 110).unwrap();
+    let evidence = &store.registry.agents[&observed.key()].observation;
+    assert_eq!(evidence.source, StatusSource::Hook);
+    assert_eq!(evidence.checked_at, 110);
+    assert_eq!(evidence.event_at, Some(105));
+    let mut old_json = serde_json::to_value(observed).unwrap();
+    old_json.as_object_mut().unwrap().remove("observation");
+    let old: Agent = serde_json::from_value(old_json).unwrap();
+    assert_eq!(old.observation.source, StatusSource::Unknown);
 }

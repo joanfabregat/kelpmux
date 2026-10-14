@@ -29,11 +29,15 @@ pub const HELP: &str = "Owned native terminal workspaces (Linux):
   kelpmux ssh-entry [--workspace NAME] [--takeover]
   kelpmux status|stop|recover|diagnostics|templates [--workspace NAME]
   kelpmux benchmark
+  kelpmux bridge [--workspace NAME] [--socket PATH]
+  kelpmux stream-inspect [--workspace NAME] [PANE_ID ...]
   kelpmux server [--socket PATH] [--state-dir PATH] [--shell PATH] [--cwd PATH] [--size CxR] [--config PATH]
-  kelpmux attach [--workspace NAME] [--socket PATH] [--takeover]
+  kelpmux attach [--workspace NAME] [--socket PATH] [--takeover] [--current-client]
   kelpmux ctl [--socket PATH] list|layout CxR|focus ID|read ID|fullscreen ID|close|shutdown
 
 start owns a detached server; ssh-entry starts or attaches. stop ends its processes.
+--current-client explicitly skips retained-client selection; the protocol handshake remains mandatory.
+Custom sockets infer adjacent state; specify --state-dir when state lives elsewhere.
 Default workspace: main; socket: $XDG_STATE_HOME/kelpmux/workspaces/main/control.sock
   (falls back to ~/.local/state/kelpmux/workspaces/main/control.sock)
 Grids: 1x1, 2x1, 2x2, 3x2, 2x3, 3x3. Shrinking preserves occupied panes.
@@ -64,6 +68,7 @@ struct Options {
     cwd: PathBuf,
     size: (u16, u16),
     takeover: bool,
+    current_client: bool,
     command: Vec<String>,
     background: bool,
     settings: super::lifecycle::Settings,
@@ -79,6 +84,7 @@ fn options(args: &[String]) -> Result<Options> {
         cwd: std::env::current_dir()?,
         size: (120, 40),
         takeover: false,
+        current_client: false,
         command: vec![],
         background: false,
         settings: super::lifecycle::Settings::default(),
@@ -101,6 +107,10 @@ fn options(args: &[String]) -> Result<Options> {
         }
         if arg == "--takeover" && matches!(verb.as_str(), "attach" | "ssh-entry") {
             result.takeover = true;
+            continue;
+        }
+        if arg == "--current-client" && matches!(verb.as_str(), "attach" | "ssh-entry") {
+            result.current_client = true;
             continue;
         }
         if arg.starts_with("--") {
@@ -132,11 +142,28 @@ fn options(args: &[String]) -> Result<Options> {
                 }
                 _ => return Err(format!("unknown {verb} option {arg}").into()),
             }
-        } else if verb == "ctl" {
+        } else if matches!(verb.as_str(), "ctl" | "stream-inspect") {
             result.command.push(arg.clone());
         } else {
             return Err(format!("unexpected argument {arg}").into());
         }
+    }
+    // Default custom sockets to adjacent state instead of reading unrelated main
+    // metadata/config. Separately stored state requires explicit --state-dir.
+    if socket_explicit
+        && !state_explicit
+        && workspace.is_none()
+        && matches!(
+            verb.as_str(),
+            "attach" | "ssh-entry" | "status" | "diagnostics" | "ctl" | "bridge" | "stream-inspect"
+        )
+    {
+        result.state = result
+            .socket
+            .parent()
+            .filter(|path| !path.as_os_str().is_empty())
+            .unwrap_or_else(|| Path::new("."))
+            .to_path_buf();
     }
     if let Some(workspace) = workspace {
         let path = super::lifecycle::workspace_path(&workspace)?;
@@ -149,7 +176,9 @@ fn options(args: &[String]) -> Result<Options> {
     }
     if let Some(path) = config_path {
         result.settings = super::lifecycle::Settings::load(&path)?;
-    } else if !matches!(verb.as_str(), "server") && result.state.join("workspace.json").is_file() {
+    } else if matches!(verb.as_str(), "start" | "ssh-entry")
+        && result.state.join("workspace.json").is_file()
+    {
         result.settings = super::lifecycle::Settings::load(&result.state.join("workspace.json"))?;
     }
     if let Some(shell) = &result.settings.shell {
@@ -221,12 +250,29 @@ pub fn run(args: &[String]) -> Result<()> {
                 settings: &options.settings,
             })?;
             if args[0] == "ssh-entry" {
-                attach(&options.socket, options.takeover)
+                attach(attach_socket(&options)?, options.takeover)
             } else {
                 control(&options.socket, &["list".into()])
             }
         }
-        "status" => control(&options.socket, &["list".into()]),
+        "status" => {
+            let stream = connect(&options.socket)?;
+            let identity = super::upgrade::identify(&stream, &options.state)?;
+            eprintln!(
+                "Kelpmux workspace {}: server {} (protocol {}), client {} (protocol {}), PID {}",
+                options
+                    .state
+                    .file_name()
+                    .unwrap_or_default()
+                    .to_string_lossy(),
+                identity.version,
+                identity.protocol_label(),
+                env!("CARGO_PKG_VERSION"),
+                VERSION,
+                identity.pid
+            );
+            control(&options.socket, &["list".into()])
+        }
         "diagnostics" => control(&options.socket, &["diagnostics".into()]),
         "templates" => {
             println!(
@@ -242,6 +288,17 @@ pub fn run(args: &[String]) -> Result<()> {
             );
             Ok(())
         }
+        "bridge" => super::bridge::run(connect(&options.socket)?),
+        "stream-inspect" => {
+            let panes = options
+                .command
+                .iter()
+                .map(|id| id.parse())
+                .collect::<std::result::Result<Vec<u64>, _>>()?;
+            let state = super::reference::inspect(connect(&options.socket)?, panes)?;
+            println!("{}", serde_json::to_string_pretty(&state)?);
+            Ok(())
+        }
         "stop" => control(&options.socket, &["shutdown".into()]),
         "recover" => {
             println!(
@@ -251,7 +308,7 @@ pub fn run(args: &[String]) -> Result<()> {
             Ok(())
         }
         "attach" => {
-            let result = attach(&options.socket, options.takeover);
+            let result = attach(attach_socket(&options)?, options.takeover);
             if INTERRUPTED.load(Ordering::Relaxed) {
                 Ok(())
             } else {
@@ -358,6 +415,7 @@ fn control(path: &Path, args: &[String]) -> Result<()> {
             })
         }
         "focus" => ClientMessage::Command(Action::Focus(id()?)),
+        "reclaim" => ClientMessage::Command(Action::ClaimPane(id()?)),
         "read" => ClientMessage::Command(Action::Read(id()?)),
         "fullscreen" => ClientMessage::Command(Action::Fullscreen(id()?)),
         "close" if rest.is_empty() => ClientMessage::Command(Action::CloseReading),
@@ -764,13 +822,19 @@ fn paint(
     *painted = Some(fit);
     Ok(())
 }
-fn attach(path: &Path, takeover: bool) -> Result<()> {
+fn attach_socket(options: &Options) -> Result<UnixStream> {
+    if options.current_client {
+        connect(&options.socket)
+    } else {
+        super::upgrade::attach_matching(&options.socket, &options.state, options.takeover)
+    }
+}
+fn attach(mut socket: UnixStream, takeover: bool) -> Result<()> {
     if unsafe { libc::isatty(0) } != 1 || unsafe { libc::isatty(1) } != 1 {
         return Err("attach requires stdin and stdout to be TTYs".into());
     }
     let mut size = tty_size()?;
     let (cols, rows) = backend_size(size);
-    let mut socket = connect(path)?;
     write_message(
         &mut socket,
         &ClientMessage::Attach {
@@ -782,7 +846,12 @@ fn attach(path: &Path, takeover: bool) -> Result<()> {
     )?;
     match response(&mut socket)? {
         ServerMessage::Welcome { version, .. } if version == VERSION => {}
-        ServerMessage::Error(error) => return Err(error.into()),
+        ServerMessage::Welcome { version, .. } => return Err(format!(
+            "workspace uses native protocol {version}, client uses {VERSION}; attach with the workspace's retained matching client; existing sessions are unchanged"
+        ).into()),
+        ServerMessage::Error(error) => return Err(format!(
+            "native attach failed: {error}; client protocol {VERSION}; existing sessions are unchanged"
+        ).into()),
         _ => return Err("incompatible native server handshake".into()),
     }
     // All connection/handshake failures precede raw and alternate-screen mode.

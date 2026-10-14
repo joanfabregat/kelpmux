@@ -311,6 +311,7 @@ impl Drop for NativePane {
 }
 
 struct Client {
+    stream: Option<StreamClient>,
     previous_frame: Option<(u64, Frame)>,
     full_frames: u64,
     patch_frames: u64,
@@ -325,6 +326,15 @@ struct Client {
     writing: Option<(Vec<u8>, usize)>,
     frame: Option<Vec<u8>>,
     queued: usize,
+}
+struct StreamClient {
+    panes: Vec<PaneId>,
+    previous: BTreeMap<PaneId, super::stream::PaneSnapshot>,
+    metadata: Option<super::stream::Update>,
+}
+struct PaneLease {
+    owner: u64,
+    size: (u16, u16),
 }
 fn wire(message: &ServerMessage) -> Result<Vec<u8>> {
     let bytes = serde_json::to_vec(message)?;
@@ -355,6 +365,7 @@ impl Client {
         }
         socket.set_nonblocking(true)?;
         Ok(Self {
+            stream: None,
             previous_frame: None,
             full_frames: 0,
             patch_frames: 0,
@@ -515,6 +526,8 @@ impl Drop for RecoveryJob {
     }
 }
 struct Server {
+    epoch: String,
+    leases: BTreeMap<PaneId, PaneLease>,
     initializing: bool,
     recovery_job: Option<RecoveryJob>,
     aliases: BTreeMap<PaneId, String>,
@@ -534,6 +547,334 @@ struct Server {
     shutdown: bool,
 }
 impl Server {
+    fn tui_write_allowed(&self, pane: PaneId) -> Result<()> {
+        if self.leases.contains_key(&pane) {
+            return Err("pane belongs to a native client; claim it explicitly first".into());
+        }
+        Ok(())
+    }
+    fn stream_owned(&self, client: u64, pane: PaneId) -> Result<()> {
+        if !self.panes.contains_key(&pane) {
+            return Err("unknown pane".into());
+        }
+        if self
+            .leases
+            .get(&pane)
+            .is_none_or(|lease| lease.owner != client)
+        {
+            return Err("pane lease required".into());
+        }
+        Ok(())
+    }
+    fn stream_request(&mut self, id: u64, request: super::stream::Request) -> Result<()> {
+        use super::stream::{Event, Request};
+        if let Request::Hello { version } = request {
+            if version != super::stream::VERSION {
+                return Err("unsupported stream protocol version".into());
+            }
+            let client = self.clients.get_mut(&id).unwrap();
+            if client.attached || client.stream.is_some() {
+                return Err("connection already initialized".into());
+            }
+            client.stream = Some(StreamClient {
+                panes: Vec::new(),
+                previous: BTreeMap::new(),
+                metadata: None,
+            });
+            client.send(ServerMessage::Stream(Event::Welcome {
+                version,
+                client: id,
+                epoch: self.epoch.clone(),
+                capabilities: super::stream::CAPABILITIES
+                    .iter()
+                    .map(|s| (*s).into())
+                    .collect(),
+            }))?;
+            self.dirty = true;
+            return Ok(());
+        }
+        if self.clients[&id].stream.is_none() {
+            return Err("stream hello required".into());
+        }
+        match request {
+            Request::Subscribe { panes } => {
+                let unique: std::collections::BTreeSet<_> = panes.iter().copied().collect();
+                if panes.len() > super::stream::MAX_SUBSCRIPTIONS
+                    || unique.len() != panes.len()
+                    || panes.iter().any(|pane| !self.panes.contains_key(pane))
+                {
+                    return Err("invalid pane subscriptions".into());
+                }
+                if panes
+                    .iter()
+                    .map(|pane| {
+                        usize::from(self.panes[pane].size.0) * usize::from(self.panes[pane].size.1)
+                    })
+                    .sum::<usize>()
+                    > super::stream::MAX_SUBSCRIBED_CELLS
+                {
+                    return Err("pane subscription cell budget exceeded".into());
+                }
+                let stream = self.clients.get_mut(&id).unwrap().stream.as_mut().unwrap();
+                stream.panes = panes;
+                stream.previous.clear();
+                stream.metadata = None;
+            }
+            Request::Claim { pane, takeover } => {
+                let pty = self.panes.get(&pane).ok_or("unknown pane")?;
+                if pty.dead {
+                    return Err("pane process has exited".into());
+                }
+                if self
+                    .leases
+                    .get(&pane)
+                    .is_some_and(|lease| lease.owner != id)
+                    && !takeover
+                {
+                    return Err("pane already leased".into());
+                }
+                self.leases.insert(
+                    pane,
+                    PaneLease {
+                        owner: id,
+                        size: pty.size,
+                    },
+                );
+                self.clients
+                    .get_mut(&id)
+                    .unwrap()
+                    .send(ServerMessage::Stream(Event::Lease {
+                        pane,
+                        owner: Some(id),
+                    }))?;
+            }
+            Request::Release { pane } => {
+                self.stream_owned(id, pane)?;
+                self.leases.remove(&pane);
+                self.resize();
+                self.clients
+                    .get_mut(&id)
+                    .unwrap()
+                    .send(ServerMessage::Stream(Event::Lease { pane, owner: None }))?;
+            }
+            Request::Resize { pane, cols, rows } => {
+                self.stream_owned(id, pane)?;
+                super::stream::validate_size(cols, rows)?;
+                self.leases.get_mut(&pane).unwrap().size = (cols, rows);
+                self.panes.get_mut(&pane).unwrap().resize(cols, rows);
+            }
+            Request::Input { pane, bytes } => {
+                self.stream_owned(id, pane)?;
+                if bytes.len() > MAX_INPUT {
+                    return Err("pane input too large".into());
+                }
+                self.panes.get_mut(&pane).unwrap().queue(&bytes)?;
+                if let Some(info) = self.workspace.panes.iter_mut().find(|info| info.id == pane) {
+                    info.last_activity = crate::now();
+                }
+            }
+            Request::Paste { pane, bytes } => {
+                self.stream_owned(id, pane)?;
+                if bytes.len() > MAX_INPUT {
+                    return Err("pane paste too large".into());
+                }
+                let pty = self.panes.get_mut(&pane).unwrap();
+                if pty.terminal.snapshot().modes.bracketed_paste {
+                    pty.queue(
+                        &[
+                            b"\x1b[200~".as_slice(),
+                            bytes.as_slice(),
+                            b"\x1b[201~".as_slice(),
+                        ]
+                        .concat(),
+                    )?;
+                } else {
+                    pty.queue(&bytes)?;
+                }
+                if let Some(info) = self.workspace.panes.iter_mut().find(|info| info.id == pane) {
+                    info.last_activity = crate::now();
+                }
+            }
+            Request::Mouse { pane, event } => {
+                self.stream_owned(id, pane)?;
+                let pty = self.panes.get_mut(&pane).unwrap();
+                if event.position.x >= pty.size.0 || event.position.y >= pty.size.1 {
+                    return Err("mouse outside pane".into());
+                }
+                let modes = pty.terminal.snapshot().modes;
+                if modes.mouse_click || modes.mouse_drag || modes.mouse_motion {
+                    if let Some(info) = self.workspace.panes.iter_mut().find(|info| info.id == pane)
+                    {
+                        info.last_activity = crate::now();
+                    }
+                    if event.kind == MouseKind::Move
+                        && !modes.mouse_motion
+                        && !(modes.mouse_drag && event.button < 3)
+                    {
+                        return Ok(());
+                    }
+                    let button = match event.kind {
+                        MouseKind::WheelUp => 64,
+                        MouseKind::WheelDown => 65,
+                        _ => u16::from(event.button.min(3)),
+                    } + if event.kind == MouseKind::Move { 32 } else { 0 }
+                        + if event.shift { 4 } else { 0 }
+                        + if event.alt { 8 } else { 0 }
+                        + if event.ctrl { 16 } else { 0 };
+                    if modes.mouse_sgr {
+                        pty.queue(
+                            format!(
+                                "\x1b[<{button};{};{}{}",
+                                event.position.x + 1,
+                                event.position.y + 1,
+                                if event.kind == MouseKind::Release {
+                                    'm'
+                                } else {
+                                    'M'
+                                }
+                            )
+                            .as_bytes(),
+                        )?;
+                    } else {
+                        return Err("legacy mouse encoding unsupported by stream client".into());
+                    }
+                }
+            }
+            Request::Resync { pane } => {
+                let stream = self.clients.get_mut(&id).unwrap().stream.as_mut().unwrap();
+                if !stream.panes.contains(&pane) {
+                    return Err("pane is not subscribed".into());
+                }
+                stream.previous.remove(&pane);
+            }
+            Request::Acknowledge { notification } => {
+                self.activity.acknowledge(notification)?;
+            }
+            Request::Hello { .. } => unreachable!(),
+        }
+        self.dirty = true;
+        Ok(())
+    }
+    fn stream_frames(&mut self, vitals: super::vitals::Vitals) {
+        use super::stream::{Event, Lease, PaneSnapshot, Update};
+        self.leases.retain(|pane, _| self.panes.contains_key(pane));
+        let mut removed = Vec::new();
+        for (id, client) in &mut self.clients {
+            let idle =
+                client.frame.is_none() && client.writing.is_none() && client.output.is_empty();
+            let Some(stream) = client.stream.as_mut() else {
+                continue;
+            };
+            if stream
+                .panes
+                .iter()
+                .filter_map(|pane| self.panes.get(pane))
+                .map(|pane| usize::from(pane.size.0) * usize::from(pane.size.1))
+                .sum::<usize>()
+                > super::stream::MAX_SUBSCRIBED_CELLS
+            {
+                removed.push(*id);
+                continue;
+            }
+            stream.panes.retain(|pane| self.panes.contains_key(pane));
+            let mut update = Update {
+                epoch: self.epoch.clone(),
+                subscribed: stream.panes.clone(),
+                snapshots: Vec::new(),
+                patches: Vec::new(),
+                panes: self.workspace.panes.clone(),
+                leases: self
+                    .leases
+                    .iter()
+                    .map(|(pane, lease)| Lease {
+                        pane: *pane,
+                        owner: lease.owner,
+                    })
+                    .collect(),
+                notifications: self.activity.snapshots(),
+                vitals: vitals.clone(),
+            };
+            stream.panes.retain(|pane| self.panes.contains_key(pane));
+            stream
+                .previous
+                .retain(|pane, _| stream.panes.contains(pane));
+            for pane in &stream.panes {
+                let screen = self.panes[pane].terminal.snapshot();
+                if idle
+                    && stream
+                        .previous
+                        .get(pane)
+                        .is_some_and(|old| old.screen == screen)
+                {
+                    continue;
+                }
+                let patch = if idle {
+                    stream
+                        .previous
+                        .get(pane)
+                        .and_then(|old| super::stream::diff(old, &screen))
+                } else {
+                    None
+                };
+                let revision = if let Some(patch) = patch {
+                    let revision = patch.revision;
+                    update.patches.push(patch);
+                    revision
+                } else {
+                    update.snapshots.push(PaneSnapshot {
+                        pane: *pane,
+                        revision: 1,
+                        screen: screen.clone(),
+                    });
+                    1
+                };
+                stream.previous.insert(
+                    *pane,
+                    PaneSnapshot {
+                        pane: *pane,
+                        revision,
+                        screen,
+                    },
+                );
+            }
+            let metadata = Update {
+                epoch: update.epoch.clone(),
+                subscribed: update.subscribed.clone(),
+                snapshots: Vec::new(),
+                patches: Vec::new(),
+                panes: update.panes.clone(),
+                leases: update.leases.clone(),
+                notifications: update.notifications.clone(),
+                vitals: update.vitals.clone(),
+            };
+            if update.snapshots.is_empty()
+                && update.patches.is_empty()
+                && stream.metadata.as_ref() == Some(&metadata)
+            {
+                continue;
+            }
+            stream.metadata = Some(metadata);
+            let packet = match wire(&ServerMessage::Stream(Event::Update(update))) {
+                Ok(packet) => packet,
+                Err(_) => {
+                    removed.push(*id);
+                    continue;
+                }
+            };
+            if let Some(old) = client.frame.take() {
+                client.queued = client.queued.saturating_sub(old.len());
+            }
+            if client.queued + packet.len() > 2 * MAX_QUEUED {
+                removed.push(*id);
+                continue;
+            }
+            client.queued += packet.len();
+            client.frame = Some(packet);
+        }
+        for id in removed {
+            self.remove_client(id);
+        }
+    }
     fn persist_geometry(&mut self) -> Result<()> {
         let path = self.config.state_dir.join("workspace.json");
         let mut settings = if path.exists() {
@@ -737,6 +1078,7 @@ impl Server {
         Ok(true)
     }
     fn close_pane(&mut self, id: PaneId) -> Result<()> {
+        self.tui_write_allowed(id)?;
         let dialog = self
             .workspace
             .ui
@@ -883,6 +1225,7 @@ impl Server {
             kind: None,
             last_activity: crate::now(),
             status_since: crate::now(),
+            observation: crate::model::Observation::default(),
         });
         self.panes.insert(id, pane);
         self.next_pane += 1;
@@ -894,6 +1237,11 @@ impl Server {
     fn resize(&mut self) {
         for (id, cols, rows) in self.workspace.terminal_sizes() {
             if let Some(pane) = self.panes.get_mut(&id) {
+                let (cols, rows) = self
+                    .leases
+                    .get(&id)
+                    .map(|lease| lease.size)
+                    .unwrap_or((cols, rows));
                 pane.resize(cols.max(1), rows.max(1));
             }
         }
@@ -940,9 +1288,11 @@ impl Server {
                 .iter()
                 .rev()
                 .filter(|info| {
-                    self.panes
-                        .get(&info.id)
-                        .is_some_and(|pane| pane.unused(&tree))
+                    !self.leases.contains_key(&info.id)
+                        && self
+                            .panes
+                            .get(&info.id)
+                            .is_some_and(|pane| pane.unused(&tree))
                 })
                 .take(old_len - count)
                 .map(|info| info.id)
@@ -1003,6 +1353,21 @@ impl Server {
         Ok(())
     }
     fn message(&mut self, id: u64, message: ClientMessage) -> Result<()> {
+        if let ClientMessage::Stream(request) = message {
+            let result = self.stream_request(id, request);
+            if let Err(error) = result {
+                self.clients
+                    .get_mut(&id)
+                    .unwrap()
+                    .send(ServerMessage::Stream(super::stream::Event::Error {
+                        message: error.to_string(),
+                    }))?;
+            }
+            return Ok(());
+        }
+        if self.clients[&id].stream.is_some() {
+            return Err("stream peers may only send stream requests".into());
+        }
         match message {
             ClientMessage::Diagnostics => {
                 let report = super::diagnostics::Report {
@@ -1080,8 +1445,35 @@ impl Server {
                 .unwrap()
                 .send(ServerMessage::Pong)?,
             ClientMessage::Command(action) => {
+                if self.clients[&id].attached && self.controller != Some(id) {
+                    return Err(
+                        "observers cannot issue management commands; take control explicitly"
+                            .into(),
+                    );
+                }
+                match &action {
+                    Action::Scroll { pane, .. } | Action::SelectText { pane, .. } => {
+                        self.tui_write_allowed(*pane)?
+                    }
+                    Action::SelectionStart | Action::SelectionMove { .. } => {
+                        self.tui_write_allowed(self.workspace.active)?
+                    }
+                    Action::SearchSelect(index) => {
+                        if let Some(hit) = self.workspace.ui.search_hits.get(*index) {
+                            self.tui_write_allowed(hit.pane)?;
+                        }
+                    }
+                    _ => {}
+                }
                 if !self.feature_action(id, &action)? {
                     match action {
+                        Action::ClaimPane(pane) => {
+                            if !self.panes.contains_key(&pane) {
+                                return Err("unknown pane".into());
+                            }
+                            self.leases.remove(&pane);
+                            self.resize();
+                        }
                         Action::Shutdown => self.shutdown = true,
                         Action::Grid { cols, rows } => self.grid(cols, rows)?,
                         Action::ClosePaneConfirm(pane) => self.close_pane(pane)?,
@@ -1198,6 +1590,7 @@ impl Server {
                         self.resize();
                     }
                     ClientMessage::Input(bytes) => {
+                        self.tui_write_allowed(self.workspace.active)?;
                         if bytes.len() > MAX_INPUT {
                             return Err("input too large".into());
                         }
@@ -1216,6 +1609,7 @@ impl Server {
                         self.dirty = true;
                     }
                     ClientMessage::Paste(bytes) => {
+                        self.tui_write_allowed(self.workspace.active)?;
                         if bytes.len() > MAX_INPUT {
                             return Err("paste too large".into());
                         }
@@ -1246,6 +1640,28 @@ impl Server {
                     }
                     ClientMessage::Mouse(mouse) => self.mouse(mouse)?,
                     ClientMessage::Action(action) => {
+                        if let Action::ClaimPane(pane) = action {
+                            if !self.panes.contains_key(&pane) {
+                                return Err("unknown pane".into());
+                            }
+                            self.leases.remove(&pane);
+                            self.resize();
+                            return Ok(());
+                        }
+                        match &action {
+                            Action::Scroll { pane, .. } | Action::SelectText { pane, .. } => {
+                                self.tui_write_allowed(*pane)?
+                            }
+                            Action::SelectionStart | Action::SelectionMove { .. } => {
+                                self.tui_write_allowed(self.workspace.active)?
+                            }
+                            Action::SearchSelect(index) => {
+                                if let Some(hit) = self.workspace.ui.search_hits.get(*index) {
+                                    self.tui_write_allowed(hit.pane)?;
+                                }
+                            }
+                            _ => {}
+                        }
                         let geometry = matches!(action, Action::ResizeGrid { .. });
                         if !self.feature_action(id, &action)? {
                             match action {
@@ -1303,6 +1719,7 @@ impl Server {
         else {
             return Ok(());
         };
+        self.tui_write_allowed(view.pane.id)?;
         if mouse.kind == MouseKind::Press {
             self.workspace.apply(&Action::Focus(view.pane.id))?;
             self.resize();
@@ -1449,6 +1866,11 @@ impl Server {
                     info.dead = true;
                     info.status = Status::Exited;
                     info.status_since = crate::now();
+                    info.observation = crate::model::Observation {
+                        source: crate::model::StatusSource::Process,
+                        checked_at: crate::now(),
+                        event_at: Some(crate::now()),
+                    };
                 }
                 self.dirty = true;
             }
@@ -1518,6 +1940,7 @@ impl Server {
                         .is_ok_and(|p| p.start == a.process_start)
             }) {
                 info.status = agent.status;
+                info.observation = agent.observation.clone();
                 info.kind = Some(agent.kind);
                 info.session_id = agent.session_id.clone();
                 info.title = self
@@ -1547,6 +1970,10 @@ impl Server {
                 } else {
                     Status::Unknown
                 };
+                info.observation = crate::model::Observation::checked(
+                    crate::model::StatusSource::Process,
+                    crate::now(),
+                );
             }
             if before.status != info.status {
                 info.status_since = crate::now();
@@ -1560,6 +1987,7 @@ impl Server {
         }
         self.workspace.ui.notifications = self.activity.all().to_vec();
         let vitals = self.vitals.sample();
+        self.stream_frames(vitals.clone());
         self.workspace.ui.vitals = if self.workspace.cols <= 60 {
             let mut compact = Vec::new();
             if let Some(cpu) = vitals.cpu {
@@ -1614,6 +2042,11 @@ impl Server {
     }
     fn remove_client(&mut self, id: u64) {
         self.clients.remove(&id);
+        let before = self.leases.len();
+        self.leases.retain(|_, lease| lease.owner != id);
+        if before != self.leases.len() {
+            self.resize();
+        }
         if self.controller == Some(id) {
             self.controller = None;
             self.dirty = true;
@@ -1694,6 +2127,10 @@ pub fn serve(config: ServerConfig) -> Result<()> {
     let (listener, _endpoint) = endpoint(&config)?;
     super::lifecycle::save_pid(&config.state_dir)?;
     let mut server = Server {
+        epoch: fs::read_to_string("/proc/sys/kernel/random/uuid")?
+            .trim()
+            .to_owned(),
+        leases: BTreeMap::new(),
         initializing: true,
         recovery_job: None,
         aliases: BTreeMap::new(),

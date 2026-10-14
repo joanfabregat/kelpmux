@@ -155,7 +155,7 @@ impl Terminal {
                     .iter()
                     .position(|b| *b == 0x1b)
                     .map_or(bytes.len(), |offset| index + offset);
-                self.parser.advance(&mut self.term, &bytes[index..end]);
+                self.advance_parser(&bytes[index..end]);
                 index = end;
                 continue;
             }
@@ -190,6 +190,27 @@ impl Terminal {
                 self.primary_history = None;
             }
             index += 1;
+        }
+    }
+    fn advance_parser(&mut self, mut bytes: &[u8]) {
+        // VTE 0.15's partial UTF-8 fast path can consume intervening ASCII
+        // without printing it when a later codepoint is incomplete. Keep ASCII
+        // batching, but complete Unicode one byte at a time so arbitrary PTY
+        // read boundaries cannot lose text. The parser retains UTF-8 state.
+        while !bytes.is_empty() {
+            let ascii = bytes
+                .iter()
+                .position(|b| !b.is_ascii())
+                .unwrap_or(bytes.len());
+            if ascii != 0 {
+                self.parser.advance(&mut self.term, &bytes[..ascii]);
+                bytes = &bytes[ascii..];
+            }
+            if let Some((byte, rest)) = bytes.split_first() {
+                self.parser
+                    .advance(&mut self.term, std::slice::from_ref(byte));
+                bytes = rest;
+            }
         }
     }
     pub fn resize(&mut self, cols: u16, rows: u16) {

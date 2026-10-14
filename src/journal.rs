@@ -168,12 +168,6 @@ impl Store {
             let key = agent.key();
             if let Some(old) = self.registry.agents.get(&key) {
                 agent.first_seen = old.first_seen;
-                if agent.status == Status::Idle
-                    && matches!(old.status, Status::Working | Status::TurnFinished)
-                    && old.session_id == agent.session_id
-                {
-                    agent.status = Status::TurnFinished;
-                }
             }
             if let Some(hook) = self.registry.hooks.get(&key) {
                 if hook.kind == agent.kind && hook.at >= time.saturating_sub(RETENTION) {
@@ -187,6 +181,11 @@ impl Store {
                             || hook.at >= time.saturating_sub(5))
                     {
                         agent.status = hook.status;
+                        agent.observation = crate::model::Observation {
+                            source: crate::model::StatusSource::Hook,
+                            checked_at: time,
+                            event_at: Some(hook.at),
+                        };
                     }
                 }
             }
@@ -209,6 +208,11 @@ impl Store {
             if ended.ended_at.is_none() {
                 ended.ended_at = Some(time);
                 ended.status = Status::Exited;
+                ended.observation = crate::model::Observation {
+                    source: crate::model::StatusSource::Process,
+                    checked_at: time,
+                    event_at: Some(time),
+                };
                 self.append("exited", &ended, time)?;
             }
             if ended
@@ -318,6 +322,12 @@ impl Store {
         }
         agent.session_id = Some(id.into());
         agent.status = status;
+        let at = now();
+        agent.observation = crate::model::Observation {
+            source: crate::model::StatusSource::Hook,
+            checked_at: at,
+            event_at: Some(at),
+        };
         agent.source = "hook".into();
         let agent = agent.clone();
         self.registry.hooks.insert(
@@ -326,10 +336,10 @@ impl Store {
                 id: id.into(),
                 kind,
                 status,
-                at: now(),
+                at,
             },
         );
-        self.append("hook", &agent, now())?;
+        self.append("hook", &agent, at)?;
         self.save()
     }
 }

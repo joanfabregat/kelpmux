@@ -94,6 +94,8 @@ pub struct PaneInfo {
     pub title: String,
     pub palette: u8,
     pub status: Status,
+    #[serde(default)]
+    pub observation: crate::model::Observation,
     pub session_id: Option<String>,
     pub dead: bool,
     #[serde(default)]
@@ -160,6 +162,8 @@ pub enum InputEvent {
 }
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Action {
+    /// Explicitly take this pane back from an independent native client.
+    ClaimPane(PaneId),
     HelpScroll(i16),
     Overview,
     Notifications,
@@ -239,6 +243,7 @@ pub enum Action {
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum ClientMessage {
+    Stream(super::stream::Request),
     Diagnostics,
     History {
         pane: PaneId,
@@ -269,6 +274,7 @@ pub enum ClientMessage {
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum ServerMessage {
+    Stream(super::stream::Event),
     Diagnostics(super::diagnostics::Report),
     History {
         pane: PaneId,
