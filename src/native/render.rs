@@ -1172,7 +1172,7 @@ fn draw_dashboard(
             .filter(|pane| Some(pane.id) != workspace.ui.scratch)
             .map(|pane| {
                 format!(
-                    "{} {} {} · {} · session {} · {} · {}",
+                    "{} {} {} · {} · session {} · {} · {} · {}{}",
                     pane.number,
                     pane.status.marker(),
                     pane.title,
@@ -1183,6 +1183,12 @@ fn draw_dashboard(
                         "activity unknown".into()
                     } else {
                         format!("{}s ago", crate::now().saturating_sub(pane.last_activity))
+                    },
+                    pane.observation.source.label(),
+                    if pane.observation.stale(crate::now()) {
+                        " (stale/unknown check)"
+                    } else {
+                        ""
                     }
                 )
             })

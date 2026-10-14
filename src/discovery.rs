@@ -74,6 +74,10 @@ impl Discovery {
                     .into_owned(),
                 cwd,
                 status: Status::Unknown,
+                observation: crate::model::Observation::checked(
+                    crate::model::StatusSource::Process,
+                    time,
+                ),
                 source: "process".into(),
                 first_seen: time,
                 last_seen: time,
@@ -108,6 +112,7 @@ impl Discovery {
                 }
                 if let Some(status) = string(&value, &["status"]) {
                     agent.status = Status::from_live(&status);
+                    agent.observation.source = crate::model::StatusSource::LiveRecord;
                 }
                 agent.source = "claude-live-record".into();
             }
@@ -178,6 +183,7 @@ impl Discovery {
                     agent.name = name.into();
                 }
                 agent.status = codex_status(&thread["status"]);
+                agent.observation.source = crate::model::StatusSource::AppServer;
                 return;
             }
         }
@@ -186,6 +192,7 @@ impl Discovery {
         }
         if let Some(path) = rollout {
             agent.status = rollout_status(&path);
+            agent.observation.source = crate::model::StatusSource::Transcript;
         }
     }
 }

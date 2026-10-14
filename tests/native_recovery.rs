@@ -43,6 +43,7 @@ fn agent(pid: u32, cwd: &str, time: u64) -> Agent {
         cwd: cwd.into(),
         status: Status::Working,
         source: "fixture".into(),
+        observation: Default::default(),
         first_seen: time,
         last_seen: time,
         ended_at: None,

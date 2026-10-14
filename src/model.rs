@@ -68,6 +68,49 @@ impl Status {
     }
 }
 
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum StatusSource {
+    #[default]
+    Unknown,
+    Process,
+    Hook,
+    LiveRecord,
+    AppServer,
+    Transcript,
+}
+impl StatusSource {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Unknown => "evidence unknown",
+            Self::Process => "process observation",
+            Self::Hook => "lifecycle hook",
+            Self::LiveRecord => "live record",
+            Self::AppServer => "agent server",
+            Self::Transcript => "transcript observation",
+        }
+    }
+}
+/// A fresh check of historical evidence does not invent a fresh lifecycle event.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct Observation {
+    pub source: StatusSource,
+    pub checked_at: u64,
+    pub event_at: Option<u64>,
+}
+impl Observation {
+    pub fn checked(source: StatusSource, checked_at: u64) -> Self {
+        Self {
+            source,
+            checked_at,
+            event_at: None,
+        }
+    }
+    pub fn stale(&self, now: u64) -> bool {
+        self.checked_at == 0 || now.saturating_sub(self.checked_at) > 10
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Agent {
     pub pane: String,
@@ -79,6 +122,8 @@ pub struct Agent {
     pub name: String,
     pub cwd: String,
     pub status: Status,
+    #[serde(default)]
+    pub observation: Observation,
     /// Evidence used for identity, never inferred from an arbitrary newest transcript.
     pub source: String,
     pub first_seen: u64,
@@ -97,6 +142,8 @@ impl Agent {
             || self.name != other.name
             || self.cwd != other.cwd
             || self.status != other.status
+            || self.observation.source != other.observation.source
+            || self.observation.event_at != other.observation.event_at
             || self.ended_at != other.ended_at
     }
 }

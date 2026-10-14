@@ -257,5 +257,6 @@ pub fn start(request: StartRequest<'_>) -> Result<()> {
     }
 }
 pub fn save_pid(state: &Path) -> Result<()> {
-    journal::atomic(&state.join("server.pid"), &std::process::id())
+    journal::atomic(&state.join("server.pid"), &std::process::id())?;
+    super::upgrade::save(state)
 }

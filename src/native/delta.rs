@@ -59,7 +59,7 @@ fn shape(frame: &Frame) -> Result<usize> {
     }
     Ok(cells)
 }
-fn cell_valid(cell: &Cell) -> bool {
+pub(crate) fn cell_valid(cell: &Cell) -> bool {
     if cell.width > 2 || cell.text.len() > 1024 || cell.text.chars().any(char::is_control) {
         return false;
     }

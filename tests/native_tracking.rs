@@ -46,6 +46,7 @@ fn agent(time: u64) -> Agent {
         cwd: "/project".into(),
         status: Status::Working,
         source: "fixture".into(),
+        observation: Default::default(),
         first_seen: time,
         last_seen: time,
         ended_at: None,
