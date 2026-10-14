@@ -25,6 +25,7 @@ fn frame(screen: Screen) -> Frame {
         controller: true,
         help: false,
         notice: None,
+        ui: Default::default(),
     }
 }
 #[test]
@@ -191,6 +192,7 @@ fn composed_reading_views_replay_colors_unicode_and_background_geometry() {
                 status: Status::Working,
                 session_id: Some(format!("session-{id}")),
                 dead: false,
+                ..Default::default()
             })
             .collect();
         ws.active = 2;

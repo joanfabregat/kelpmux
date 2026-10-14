@@ -4,19 +4,29 @@ use crate::{Result, journal};
 use serde::{Deserialize, Serialize};
 use std::{
     fs::{self, OpenOptions},
-    io::Write,
     os::{
         fd::AsRawFd,
-        unix::{
-            fs::{MetadataExt, OpenOptionsExt},
-            net::UnixStream,
-        },
+        unix::fs::{MetadataExt, OpenOptionsExt},
     },
     path::{Path, PathBuf},
     process::{Command, Stdio},
     thread,
     time::{Duration, Instant},
 };
+
+pub fn private_state(state: &Path) -> Result<()> {
+    if !state.is_absolute() || state == Path::new("/") || state == Path::new("/tmp") {
+        return Err("workspace state requires a dedicated absolute directory".into());
+    }
+    for path in state.ancestors() {
+        if let Ok(meta) = fs::symlink_metadata(path) {
+            if meta.file_type().is_symlink() || !meta.is_dir() {
+                return Err("workspace state contains a symlink or non-directory".into());
+            }
+        }
+    }
+    journal::private_dir(state)
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
@@ -70,21 +80,19 @@ pub fn workspace_path(name: &str) -> Result<PathBuf> {
         .join(name))
 }
 pub fn inspect(socket: &Path) -> Result<ServerMessage> {
-    let mut stream = UnixStream::connect(socket)?;
-    stream.set_read_timeout(Some(Duration::from_secs(2)))?;
-    stream.set_write_timeout(Some(Duration::from_secs(2)))?;
+    let mut stream = super::cli::connect(socket)?;
     write_message(&mut stream, &ClientMessage::Inspect)?;
-    read_message(&mut stream)?.ok_or_else(|| "workspace disconnected".into())
+    super::cli::response(&mut stream)
 }
 /// Called before any threads are created. The original process returns false;
 /// its session-independent grandchild continues with stdio redirected.
 pub fn detach(state: &Path) -> Result<bool> {
-    journal::private_dir(state)?;
+    private_state(state)?;
     let log = OpenOptions::new()
         .create(true)
         .append(true)
         .mode(0o600)
-        .custom_flags(libc::O_NOFOLLOW)
+        .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
         .open(state.join("server.log"))?;
     if !log.metadata()?.is_file() || log.metadata()?.uid() != unsafe { libc::geteuid() } {
         return Err("server log must be an owned regular file".into());
@@ -129,11 +137,14 @@ pub struct StartRequest<'a> {
     pub settings: &'a Settings,
 }
 pub fn start(request: StartRequest<'_>) -> Result<()> {
+    private_state(request.state)?;
     if matches!(inspect(request.socket), Ok(ServerMessage::State { .. })) {
         return Ok(());
     }
-    journal::private_dir(request.state)?;
-    journal::atomic(&request.state.join("workspace.json"), request.settings)?;
+    let mut persisted = request.settings.clone();
+    persisted.shell = Some(request.shell.to_path_buf());
+    persisted.cwd = Some(request.cwd.to_path_buf());
+    journal::atomic(&request.state.join("workspace.json"), &persisted)?;
     let size = format!("{}x{}", request.cols, request.rows);
     let mut child = Command::new(std::env::current_exe()?)
         .arg("server")
@@ -180,13 +191,5 @@ pub fn start(request: StartRequest<'_>) -> Result<()> {
     }
 }
 pub fn save_pid(state: &Path) -> Result<()> {
-    let mut file = OpenOptions::new()
-        .write(true)
-        .create(true)
-        .truncate(true)
-        .mode(0o600)
-        .custom_flags(libc::O_NOFOLLOW)
-        .open(state.join("server.pid"))?;
-    writeln!(file, "{}", std::process::id())?;
-    Ok(())
+    journal::atomic(&state.join("server.pid"), &std::process::id())
 }

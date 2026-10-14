@@ -80,6 +80,8 @@ fn options(args: &[String]) -> Result<Options> {
     let mut state_explicit = false;
     let mut socket_explicit = false;
     let mut config_path = None;
+    let mut shell_explicit = false;
+    let mut cwd_explicit = false;
     while position < args.len() {
         let arg = &args[position];
         position += 1;
@@ -87,7 +89,7 @@ fn options(args: &[String]) -> Result<Options> {
             result.background = true;
             continue;
         }
-        if arg == "--takeover" && verb == "attach" {
+        if arg == "--takeover" && matches!(verb.as_str(), "attach" | "ssh-entry") {
             result.takeover = true;
             continue;
         }
@@ -106,10 +108,12 @@ fn options(args: &[String]) -> Result<Options> {
                 "--workspace" => workspace = Some(value.clone()),
                 "--config" => config_path = Some(PathBuf::from(value)),
                 "--shell" if matches!(verb.as_str(), "server" | "start" | "ssh-entry") => {
-                    result.shell = PathBuf::from(value)
+                    result.shell = PathBuf::from(value);
+                    shell_explicit = true;
                 }
                 "--cwd" if matches!(verb.as_str(), "server" | "start" | "ssh-entry") => {
-                    result.cwd = PathBuf::from(value)
+                    result.cwd = PathBuf::from(value);
+                    cwd_explicit = true;
                 }
                 "--size" if matches!(verb.as_str(), "server" | "start" | "ssh-entry") => {
                     result.size = parse_size(value)?;
@@ -138,10 +142,14 @@ fn options(args: &[String]) -> Result<Options> {
         result.settings = super::lifecycle::Settings::load(&result.state.join("workspace.json"))?;
     }
     if let Some(shell) = &result.settings.shell {
-        result.shell = shell.clone();
+        if !shell_explicit {
+            result.shell = shell.clone();
+        }
     }
     if let Some(cwd) = &result.settings.cwd {
-        result.cwd = cwd.clone();
+        if !cwd_explicit {
+            result.cwd = cwd.clone();
+        }
     }
     // Daemon children must not reinterpret relative paths after their caller exits.
     let absolute = |path: &Path| -> Result<PathBuf> {
@@ -220,7 +228,7 @@ pub fn run(args: &[String]) -> Result<()> {
         _ => Err("unknown native command".into()),
     }
 }
-fn connect(path: &Path) -> Result<UnixStream> {
+pub(crate) fn connect(path: &Path) -> Result<UnixStream> {
     for ancestor in path.ancestors() {
         if fs::symlink_metadata(ancestor).is_ok_and(|meta| meta.file_type().is_symlink()) {
             return Err("native socket path contains a symlink".into());
@@ -262,7 +270,7 @@ fn connect(path: &Path) -> Result<UnixStream> {
     socket.set_write_timeout(Some(TIMEOUT))?;
     Ok(socket)
 }
-fn response(socket: &mut UnixStream) -> Result<ServerMessage> {
+pub(crate) fn response(socket: &mut UnixStream) -> Result<ServerMessage> {
     let deadline = Instant::now() + TIMEOUT;
     fn exact(socket: &mut UnixStream, mut bytes: &mut [u8], deadline: Instant) -> Result<()> {
         while !bytes.is_empty() {

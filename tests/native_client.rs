@@ -703,6 +703,24 @@ fn live_server_attach_layout_read_fullscreen_detach_reconnect_preserves_shell() 
         thread::sleep(Duration::from_millis(10));
     }
     tty.input(b"\x02g");
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        tty.drain();
+        let mut display = kelpmux::native::engine::Terminal::new(80, 24);
+        display.feed(&tty.output);
+        let text: String = display
+            .snapshot()
+            .cells
+            .iter()
+            .map(|cell| cell.text.as_str())
+            .collect();
+        if text.contains("Grid · arrows") {
+            break;
+        }
+        assert!(Instant::now() < deadline, "grid picker did not appear");
+        thread::sleep(Duration::from_millis(10));
+    }
+    tty.input(b"2");
     wait_state(&server, &mut tty, |panes, _, _| panes.len() == 2);
     let read = header_button(&server, original.id, ReadingMode::Grid, 0);
     wait_header(

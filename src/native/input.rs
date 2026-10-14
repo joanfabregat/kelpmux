@@ -143,7 +143,8 @@ fn decode_mouse(bytes: &[u8]) -> Option<MouseEvent> {
 #[derive(Default)]
 pub struct Router {
     prefix: bool,
-    swap: Option<Option<PaneId>>,
+    resizing: bool,
+    pending_modal: bool,
     scrolling: bool,
     selection: Option<(PaneId, Point, Point)>,
     observed_help: bool,
@@ -151,13 +152,21 @@ pub struct Router {
 }
 impl Router {
     pub fn route(&mut self, event: InputEvent, frame: &Frame) -> Vec<ClientMessage> {
+        if frame.ui.dialog.is_some() || frame.help {
+            self.pending_modal = false;
+        }
         if self.observed_help != frame.help {
             self.observed_help = frame.help;
             self.help_override = None;
         }
         let help = self.help_override.unwrap_or(frame.help);
         match event {
-            InputEvent::Paste(bytes) if frame.controller && !help => {
+            InputEvent::Paste(bytes)
+                if frame.controller
+                    && !help
+                    && frame.ui.dialog.is_none()
+                    && !self.pending_modal =>
+            {
                 vec![ClientMessage::Paste(bytes)]
             }
             InputEvent::Paste(_) => vec![],
@@ -187,38 +196,53 @@ impl Router {
             position += length;
             if self.prefix {
                 self.prefix = false;
-                let action = match key {
-                    b"d" => Some(Action::Detach),
-                    b"t" | b"T" => Some(Action::Takeover),
-                    b"z" => Some(Action::Read(frame.active)),
-                    b"f" => Some(Action::Fullscreen(frame.active)),
-                    b"?" => Some(Action::Help),
-                    b"g" => {
-                        let count = frame.panes.iter().filter(|p| !p.overlay).count();
-                        let (cols, rows) = match count {
-                            1 => (2, 1),
-                            2 => (2, 2),
-                            _ => (1, 1),
-                        };
-                        Some(Action::Grid { cols, rows })
+                let configured = std::str::from_utf8(key)
+                    .ok()
+                    .and_then(|key| frame.ui.config.bindings.get(key));
+                let action = if let Some(binding) = configured {
+                    self.binding(binding, frame)
+                } else {
+                    match key {
+                        b"d" => Some(Action::Detach),
+                        b"t" | b"T" => Some(Action::Takeover),
+                        b"z" => Some(Action::Read(frame.active)),
+                        b"f" => Some(Action::Fullscreen(frame.active)),
+                        b"?" => Some(Action::Help),
+                        b"g" => Some(Action::GridPicker),
+                        b"a" => Some(Action::Agents(super::ui::AgentFilter::All)),
+                        b"!" => Some(Action::Agents(super::ui::AgentFilter::Attention)),
+                        b"n" => Some(Action::Agents(super::ui::AgentFilter::Finished)),
+                        b"h" => Some(Action::FocusDirection { dx: -1, dy: 0 }),
+                        b"l" => Some(Action::FocusDirection { dx: 1, dy: 0 }),
+                        b"j" => Some(Action::FocusDirection { dx: 0, dy: 1 }),
+                        b"k" => Some(Action::FocusDirection { dx: 0, dy: -1 }),
+                        b"+" => self.resize_action(frame, 10, 0),
+                        b"-" => self.resize_action(frame, -10, 0),
+                        b">" => self.resize_action(frame, 0, 2),
+                        b"<" => self.resize_action(frame, 0, -2),
+                        b"[" => {
+                            self.scrolling = true;
+                            None
+                        }
+                        b"y" => Some(Action::Copy(frame.active)),
+                        b"s" => Some(Action::MovePicker),
+                        [digit @ b'1'..=b'9'] => Some(Action::Select((digit - b'0') as usize)),
+                        [byte] if *byte == frame.ui.config.prefix && frame.controller => {
+                            output.push(ClientMessage::Input(vec![*byte]));
+                            None
+                        }
+                        _ => None,
                     }
-                    b"[" => {
-                        self.scrolling = true;
-                        None
-                    }
-                    b"y" => Some(Action::Copy(frame.active)),
-                    b"s" => {
-                        self.swap = Some(None);
-                        None
-                    }
-                    [digit @ b'1'..=b'9'] => Some(Action::Select((digit - b'0') as usize)),
-                    b"\x02" if frame.controller => {
-                        output.push(ClientMessage::Input(vec![2]));
-                        None
-                    }
-                    _ => None,
                 };
                 if let Some(action) = action {
+                    if frame.controller
+                        && matches!(
+                            action,
+                            Action::GridPicker | Action::MovePicker | Action::Agents(_)
+                        )
+                    {
+                        self.pending_modal = true;
+                    }
                     if action == Action::Help && frame.controller {
                         self.toggle_help(frame);
                     }
@@ -226,40 +250,57 @@ impl Router {
                 }
                 continue;
             }
-            if key == b"\x02" {
+            if key == [frame.ui.config.prefix] {
                 self.prefix = true;
                 continue;
             }
             if !frame.controller {
                 continue;
             }
+            if self.pending_modal {
+                continue;
+            }
+            if let Some(dialog) = frame.ui.dialog {
+                let action = match key {
+                    b"\x1b" | b"q" => Some(Action::DialogClose),
+                    b"\x1b[A" => Some(Action::DialogNavigate { dx: 0, dy: -1 }),
+                    b"\x1b[B" => Some(Action::DialogNavigate { dx: 0, dy: 1 }),
+                    b"\x1b[C" => Some(Action::DialogNavigate { dx: 1, dy: 0 }),
+                    b"\x1b[D" => Some(Action::DialogNavigate { dx: -1, dy: 0 }),
+                    _ => None,
+                };
+                if let Some(action) = action {
+                    emit(&mut output, action, true);
+                } else if matches!(key, b"\r" | b"\n") {
+                    output.extend(self.pick_dialog(frame, dialog.selection));
+                } else if let [digit @ b'1'..=b'9'] = key {
+                    let index = if dialog.kind == super::ui::DialogKind::Agents {
+                        let panes: Vec<_> = frame
+                            .panes
+                            .iter()
+                            .filter(|v| !v.overlay)
+                            .map(|v| v.pane.clone())
+                            .collect();
+                        super::workspace::dialog_entries(&panes, Some(dialog))
+                            .iter()
+                            .position(|id| {
+                                panes
+                                    .iter()
+                                    .any(|p| p.id == *id && p.number == usize::from(digit - b'0'))
+                            })
+                    } else {
+                        Some(usize::from(digit - b'1'))
+                    };
+                    if let Some(index) = index {
+                        output.extend(self.pick_dialog(frame, index));
+                    }
+                }
+                continue;
+            }
             if self.help_override.unwrap_or(frame.help) {
                 if matches!(key, b"q" | b"\x1b" | b"?") {
                     self.toggle_help(frame);
                     emit(&mut output, Action::Help, true);
-                }
-                continue;
-            }
-            if let Some(source) = self.swap.take() {
-                if let [digit @ b'1'..=b'9'] = key {
-                    if let Some(pane) = frame
-                        .panes
-                        .iter()
-                        .find(|p| p.pane.number == (digit - b'0') as usize)
-                    {
-                        if let Some(source) = source {
-                            emit(
-                                &mut output,
-                                Action::Swap {
-                                    source,
-                                    target: pane.pane.id,
-                                },
-                                true,
-                            );
-                        } else {
-                            self.swap = Some(Some(pane.pane.id));
-                        }
-                    }
                 }
                 continue;
             }
@@ -329,6 +370,79 @@ impl Router {
         if !frame.controller {
             return output;
         }
+        if self.pending_modal {
+            return output;
+        }
+        if self.resizing && matches!(event.kind, MouseKind::Move | MouseKind::Release) {
+            if let Some(view) = frame.panes.iter().rev().find(|v| v.overlay) {
+                let cols = (event.position.x.saturating_sub(view.rect.x) + 1)
+                    .saturating_mul(2)
+                    .saturating_sub(view.rect.cols);
+                let rows = (event.position.y.saturating_sub(view.rect.y) + 1)
+                    .saturating_mul(2)
+                    .saturating_sub(view.rect.rows);
+                emit(
+                    &mut output,
+                    Action::ReadResize {
+                        cols: cols.clamp(20, frame.cols),
+                        rows: rows.clamp(3, frame.rows - 1),
+                    },
+                    true,
+                );
+            }
+            if event.kind == MouseKind::Release {
+                self.resizing = false;
+            }
+            return output;
+        }
+        if let Some(dialog) = frame.ui.dialog {
+            let bounds = super::workspace::dialog_bounds(frame.cols, frame.rows);
+            if event.kind == MouseKind::Press
+                && (!bounds.contains(event.position)
+                    || (event.position.y == bounds.y
+                        && event.position.x >= bounds.x + bounds.cols - 3))
+            {
+                emit(&mut output, Action::DialogClose, true);
+                return output;
+            }
+            let index = if dialog.kind == super::ui::DialogKind::Grid {
+                super::workspace::grid_cards(bounds)
+                    .iter()
+                    .position(|rect| rect.contains(event.position))
+            } else if dialog.kind == super::ui::DialogKind::Move {
+                let views: Vec<_> = frame.panes.iter().filter(|v| !v.overlay).collect();
+                let columns = views.iter().filter(|v| v.rect.y == 0).count().max(1) as u8;
+                let rows = views.len().div_ceil(usize::from(columns)) as u8;
+                super::workspace::move_cards(bounds, columns, rows)
+                    .iter()
+                    .position(|rect| rect.contains(event.position))
+            } else if event.position.y > bounds.y + 1 {
+                let visible = usize::from(bounds.rows.saturating_sub(2));
+                Some(
+                    usize::from(event.position.y - bounds.y - 2)
+                        + dialog.selection.saturating_sub(visible.saturating_sub(1)),
+                )
+            } else {
+                None
+            };
+            if let Some(index) = index {
+                let panes: Vec<_> = frame
+                    .panes
+                    .iter()
+                    .filter(|v| !v.overlay)
+                    .map(|v| v.pane.clone())
+                    .collect();
+                if index >= super::workspace::dialog_entries(&panes, Some(dialog)).len() {
+                    return output;
+                }
+                if event.kind == MouseKind::Press {
+                    output.extend(self.pick_dialog(frame, index));
+                } else if event.kind == MouseKind::Move {
+                    emit(&mut output, Action::DialogPick(index), true);
+                }
+            }
+            return output;
+        }
         if self.help_override.unwrap_or(frame.help) {
             let bounds = help_bounds(frame.cols, frame.rows);
             let close = event.position.y == bounds.y
@@ -341,6 +455,15 @@ impl Router {
                 self.toggle_help(frame);
                 emit(&mut output, Action::Help, true);
             }
+            return output;
+        }
+        if event.kind == MouseKind::Press
+            && event.position.y == frame.rows.saturating_sub(1)
+            && event.position.x >= frame.cols.saturating_sub(10)
+            && event.position.x < frame.cols.saturating_sub(3)
+        {
+            self.pending_modal = true;
+            emit(&mut output, Action::GridPicker, true);
             return output;
         }
         if event.kind == MouseKind::Press
@@ -378,6 +501,15 @@ impl Router {
             return output;
         };
         let id = view.pane.id;
+        if event.kind == MouseKind::Press
+            && view.overlay
+            && matches!(frame.reading, ReadingMode::Capped(_))
+            && event.position.x == view.rect.x + view.rect.cols - 1
+            && event.position.y == view.rect.y + view.rect.rows - 1
+        {
+            self.resizing = true;
+            return output;
+        }
         if event.kind == MouseKind::Press
             && !view.overlay
             && frame.reading != ReadingMode::Grid
@@ -454,6 +586,92 @@ impl Router {
     }
     fn toggle_help(&mut self, frame: &Frame) {
         self.help_override = Some(!self.help_override.unwrap_or(frame.help));
+    }
+    fn resize_action(&self, frame: &Frame, dx: i16, dy: i16) -> Option<Action> {
+        let view = frame.panes.iter().rev().find(|v| v.overlay)?;
+        Some(Action::ReadResize {
+            cols: view
+                .rect
+                .cols
+                .saturating_add_signed(dx)
+                .clamp(20, frame.cols),
+            rows: view
+                .rect
+                .rows
+                .saturating_add_signed(dy)
+                .clamp(3, frame.rows - 1),
+        })
+    }
+    fn binding(&mut self, name: &str, frame: &Frame) -> Option<Action> {
+        Some(match name {
+            "help" => Action::Help,
+            "grid" => Action::GridPicker,
+            "read" => Action::Read(frame.active),
+            "fullscreen" => Action::Fullscreen(frame.active),
+            "agents" => Action::Agents(super::ui::AgentFilter::All),
+            "attention" => Action::Agents(super::ui::AgentFilter::Attention),
+            "finished" => Action::Agents(super::ui::AgentFilter::Finished),
+            "move" => Action::MovePicker,
+            "focus-left" => Action::FocusDirection { dx: -1, dy: 0 },
+            "focus-right" => Action::FocusDirection { dx: 1, dy: 0 },
+            "focus-up" => Action::FocusDirection { dx: 0, dy: -1 },
+            "focus-down" => Action::FocusDirection { dx: 0, dy: 1 },
+            "detach" => Action::Detach,
+            "copy" => Action::Copy(frame.active),
+            "takeover" => Action::Takeover,
+            "scroll" => {
+                self.scrolling = true;
+                return None;
+            }
+            "read-wider" => return self.resize_action(frame, 10, 0),
+            "read-narrower" => return self.resize_action(frame, -10, 0),
+            "read-taller" => return self.resize_action(frame, 0, 2),
+            "read-shorter" => return self.resize_action(frame, 0, -2),
+            _ => return None,
+        })
+    }
+    fn pick_dialog(&self, frame: &Frame, index: usize) -> Vec<ClientMessage> {
+        use super::ui::DialogKind;
+        let Some(dialog) = frame.ui.dialog else {
+            return vec![];
+        };
+        let mut actions = vec![];
+        if dialog.kind == DialogKind::Grid {
+            if let Some(&(cols, rows)) = super::workspace::GRIDS.get(index) {
+                let occupied = frame
+                    .panes
+                    .iter()
+                    .filter(|v| !v.overlay && !frame.ui.unused.contains(&v.pane.id))
+                    .count();
+                if usize::from(cols) * usize::from(rows) < occupied {
+                    return vec![];
+                }
+                actions.push(Action::Grid { cols, rows });
+            } else {
+                return vec![];
+            }
+        } else {
+            let panes: Vec<_> = frame
+                .panes
+                .iter()
+                .filter(|v| !v.overlay)
+                .map(|v| v.pane.clone())
+                .collect();
+            let entries = super::workspace::dialog_entries(&panes, Some(dialog));
+            let Some(&id) = entries.get(index) else {
+                return vec![];
+            };
+            actions.push(if dialog.kind == DialogKind::Move {
+                Action::Swap {
+                    source: dialog.source.unwrap_or(frame.active),
+                    target: id,
+                }
+            } else {
+                Action::Focus(id)
+            });
+        }
+        actions.push(Action::DialogClose);
+        actions.into_iter().map(ClientMessage::Action).collect()
     }
 }
 fn local_point(point: Point, body: Rect) -> Point {

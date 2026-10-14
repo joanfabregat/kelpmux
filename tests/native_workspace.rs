@@ -18,6 +18,7 @@ fn pane(id: u64) -> PaneInfo {
         status: Status::Unknown,
         session_id: None,
         dead: false,
+        ..Default::default()
     }
 }
 fn workspace(cols: u16, rows: u16, shape: (u8, u8)) -> Workspace {
@@ -46,6 +47,7 @@ fn frame(workspace: &Workspace) -> Frame {
         controller: true,
         help: workspace.help,
         notice: None,
+        ui: workspace.ui.clone(),
     }
 }
 fn action(messages: &[ClientMessage]) -> Vec<Action> {
@@ -73,7 +75,7 @@ fn mouse(position: Point, kind: MouseKind) -> InputEvent {
 #[test]
 fn every_grid_balances_cells_keeps_header_footer_and_all_panes() {
     for (cols, rows) in [(40, 10), (121, 41), (400, 160)] {
-        for shape in [(1, 1), (2, 1), (2, 2)] {
+        for shape in kelpmux::native::workspace::GRIDS {
             let mut ws = workspace(cols, rows, shape);
             let views = ws.layout();
             assert_eq!(views.len(), (shape.0 * shape.1) as usize);
@@ -310,13 +312,12 @@ fn prefix_sequences_and_application_editing_keys_are_separate() {
     assert_eq!(passthrough, keys);
     assert_eq!(
         action(&router.route(InputEvent::Bytes(b"\x02s14".to_vec()), &frame)),
-        vec![Action::Swap {
-            source: 1,
-            target: 4
-        }]
+        vec![Action::MovePicker]
     );
     assert!(
-        matches!(&router.route(InputEvent::Paste(b"\x02z".to_vec()), &frame)[..], [ClientMessage::Paste(p)] if p == b"\x02z")
+        router
+            .route(InputEvent::Paste(b"\x02z".to_vec()), &frame)
+            .is_empty()
     );
 }
 #[test]

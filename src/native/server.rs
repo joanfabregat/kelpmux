@@ -711,6 +711,7 @@ impl Server {
                         {
                             info.last_activity = crate::now();
                         }
+                        self.dirty = true;
                     }
                     ClientMessage::Paste(bytes) => {
                         if bytes.len() > MAX_INPUT {
@@ -731,6 +732,15 @@ impl Server {
                             bytes
                         };
                         pane.queue(&data)?;
+                        if let Some(info) = self
+                            .workspace
+                            .panes
+                            .iter_mut()
+                            .find(|info| info.id == self.workspace.active)
+                        {
+                            info.last_activity = crate::now();
+                        }
+                        self.dirty = true;
                     }
                     ClientMessage::Mouse(mouse) => self.mouse(mouse)?,
                     ClientMessage::Action(action) => {
@@ -796,6 +806,15 @@ impl Server {
             .ok_or("unknown mouse pane")?;
         let modes = pane.terminal.snapshot().modes;
         if !mouse.shift && (modes.mouse_click || modes.mouse_drag || modes.mouse_motion) {
+            if let Some(info) = self
+                .workspace
+                .panes
+                .iter_mut()
+                .find(|info| info.id == view.pane.id)
+            {
+                info.last_activity = crate::now();
+            }
+            self.dirty = true;
             if mouse.kind == MouseKind::Move
                 && !modes.mouse_motion
                 && !(modes.mouse_drag && mouse.button < 3)
@@ -859,6 +878,11 @@ impl Server {
                     Ok(0) => break,
                     Ok(n) => {
                         self.dirty = true;
+                        if let Some(info) =
+                            self.workspace.panes.iter_mut().find(|info| info.id == *id)
+                        {
+                            info.last_activity = crate::now();
+                        }
                         for effect in pane.terminal.feed(&buf[..n]) {
                             match effect {
                                 Effect::WritePty(bytes) => {
@@ -900,6 +924,7 @@ impl Server {
                 if let Some(info) = self.workspace.panes.iter_mut().find(|p| p.id == *id) {
                     info.dead = true;
                     info.status = Status::Exited;
+                    info.status_since = crate::now();
                 }
                 self.dirty = true;
             }
@@ -1107,6 +1132,8 @@ fn discovery_worker(
 
 pub fn serve(config: ServerConfig) -> Result<()> {
     validate_size(config.cols, config.rows)?;
+    config.ui.validate()?;
+    Workspace::grid_count(config.initial_grid.0, config.initial_grid.1)?;
     let mut workspace = Workspace::new(config.cols, config.rows)?;
     workspace.ui.config = config.ui.clone();
     let (listener, _endpoint) = endpoint(&config)?;
@@ -1258,5 +1285,10 @@ pub fn serve(config: ServerConfig) -> Result<()> {
     drop(requests);
     drop(results);
     let _ = worker.join();
+    server.panes.clear();
+    if let Ok(mut store) = journal::Store::open_nonblocking(&server.config.state_dir.join("native"))
+    {
+        let _ = store.reconcile(vec![], crate::now());
+    }
     Ok(())
 }

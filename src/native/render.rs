@@ -34,6 +34,7 @@ pub fn compose(
         controller,
         help: workspace.help,
         notice: notice.map(safe_text),
+        ui: workspace.ui.clone(),
     };
     for view in &mut frame.panes {
         if let Some(screen) = screens.get(&view.pane.id) {
@@ -68,7 +69,7 @@ pub fn compose(
                     }
                 }
             }
-            if selected && !workspace.help {
+            if selected && !workspace.help && workspace.ui.dialog.is_none() {
                 if let Some(cursor) = screen
                     .cursor
                     .filter(|c| c.position.x < view.body.cols && c.position.y < view.body.rows)
@@ -84,6 +85,18 @@ pub fn compose(
             }
         }
         header(&mut frame, &view, selected, workspace.reading, spinner);
+        if view.overlay && matches!(workspace.reading, ReadingMode::Capped(_)) {
+            write_text(
+                &mut frame,
+                view.rect.x + view.rect.cols - 1,
+                view.rect.y + view.rect.rows - 1,
+                1,
+                "◢",
+                Color::Indexed(231),
+                Color::Indexed(24),
+                true,
+            );
+        }
     }
     if frame.rows > 0 {
         let y = frame.rows - 1;
@@ -98,16 +111,26 @@ pub fn compose(
             Color::Indexed(234),
         );
         let label = if controller {
-            "^B: z read · f full · g grid · d detach"
+            format!(
+                "^{}: {} read · {} grid · {} detach",
+                char::from(b'A' + workspace.ui.config.prefix - 1),
+                binding_label(&workspace.ui.config, "z", "read"),
+                binding_label(&workspace.ui.config, "g", "grid"),
+                binding_label(&workspace.ui.config, "d", "detach")
+            )
         } else {
-            "Observer · Ctrl-B t take control"
+            format!(
+                "Observer · Ctrl-{} {} take control",
+                char::from(b'A' + workspace.ui.config.prefix - 1),
+                binding_label(&workspace.ui.config, "tT", "takeover")
+            )
         };
-        let mut text = label.to_owned();
+        let mut text = label;
         if let Some(notice) = notice {
             text.push_str(" · ");
             text.push_str(&safe_text(notice));
         }
-        let width = frame.cols.saturating_sub(3);
+        let width = frame.cols.saturating_sub(10);
         write_text(
             &mut frame,
             0,
@@ -121,6 +144,16 @@ pub fn compose(
         write_text(
             &mut frame,
             width,
+            y,
+            7,
+            " Grid ",
+            Color::Indexed(231),
+            Color::Indexed(24),
+            true,
+        );
+        write_text(
+            &mut frame,
+            width + 7,
             y,
             3,
             " ? ",
@@ -161,19 +194,52 @@ pub fn compose(
                 true,
             );
         }
+        let key = |default, action| binding_label(&workspace.ui.config, default, action);
         let lines = [
-            "Ctrl-B, then:",
-            "1–9       Read a numbered pane (also Alt+1–9)",
-            "z         Reading view / grid (also Alt+Tab / Alt+0)",
-            "f         Full width / capped reading",
-            "g         Cycle 1x1 / 2x1 / 2x2 (occupied panes protected)",
-            "s, N, M   Swap numbered panes N and M",
-            "d         Detach",
-            "t         Take control",
-            "?         Toggle this help",
-            "[         Scroll mode: arrows / PgUp / PgDn; q to leave",
-            "y         Copy selection (also on drag release)",
-            "Wheel/drag Scroll/select; hold Shift for mouse-aware apps",
+            format!(
+                "Ctrl-{}, then:",
+                char::from(b'A' + workspace.ui.config.prefix - 1)
+            ),
+            "1–9       Read a numbered pane (also Alt+1–9)".into(),
+            format!(
+                "{}  Reading / grid (also Alt+Tab / Alt+0)",
+                key("z", "read")
+            ),
+            format!("{}  Full width / capped reading", key("f", "fullscreen")),
+            format!(
+                "{}  Grid picker (occupied panes protected)",
+                key("g", "grid")
+            ),
+            format!(
+                "{}, N  Move active pane to numbered destination",
+                key("s", "move")
+            ),
+            format!(
+                "{} / {} / {}  Agents / attention / finished",
+                key("a", "agents"),
+                key("!", "attention"),
+                key("n", "finished")
+            ),
+            format!(
+                "{} {} {} {}  Focus left/down/up/right",
+                key("h", "focus-left"),
+                key("j", "focus-down"),
+                key("k", "focus-up"),
+                key("l", "focus-right")
+            ),
+            format!(
+                "{} {} {} {}  Read width +10/-10; height +2/-2",
+                key("+", "read-wider"),
+                key("-", "read-narrower"),
+                key(">", "read-taller"),
+                key("<", "read-shorter")
+            ),
+            format!("{}  Detach", key("d", "detach")),
+            format!("{}  Take control", key("tT", "takeover")),
+            format!("{}  Toggle help", key("?", "help")),
+            format!("{}  Scroll: arrows/PgUp/PgDn; q leaves", key("[", "scroll")),
+            format!("{}  Copy selection (also drag release)", key("y", "copy")),
+            "Wheel/drag Scroll/select; Shift for mouse-aware apps".into(),
         ];
         for (i, line) in lines
             .iter()
@@ -193,6 +259,9 @@ pub fn compose(
         }
         frame.cursor = None;
     }
+    if let Some(dialog) = workspace.ui.dialog {
+        draw_dialog(&mut frame, workspace, dialog);
+    }
     repair_wide_edges(&mut frame);
     frame
 }
@@ -208,7 +277,7 @@ fn header(
     }
     let (bright, muted) = PALETTE[usize::from(view.pane.palette) % PALETTE.len()];
     let bg = Color::Indexed(if selected { bright } else { muted });
-    let fg = Color::Indexed(if selected { 16 } else { 252 });
+    let fg = Color::Indexed(if selected { 231 } else { 245 });
     fill(
         frame,
         Rect {
@@ -229,7 +298,7 @@ fn header(
         view.rect.y,
         view.rect.cols.min(badge_width),
         &badge,
-        Color::Indexed(if selected { 231 } else { 117 }),
+        Color::Indexed(if selected { 226 } else { 117 }),
         Color::Indexed(if selected { 24 } else { 17 }),
         true,
     );
@@ -270,6 +339,239 @@ fn header(
             Color::Indexed(*bg),
             true,
         );
+    }
+}
+fn draw_dialog(frame: &mut Frame, workspace: &Workspace, dialog: super::ui::Dialog) {
+    use super::ui::{AgentFilter, DialogKind};
+    let bounds = super::workspace::dialog_bounds(frame.cols, frame.rows);
+    fill(frame, bounds, Color::Indexed(236));
+    let title = match dialog.kind {
+        DialogKind::Grid => " Grid · arrows, Enter or click",
+        DialogKind::Move => " Move active pane · choose destination",
+        DialogKind::Agents => match dialog.filter {
+            AgentFilter::All => " Agents",
+            AgentFilter::Attention => " Agents needing attention",
+            AgentFilter::Finished => " Finished agents",
+        },
+    };
+    write_text(
+        frame,
+        bounds.x,
+        bounds.y,
+        bounds.cols,
+        title,
+        Color::Indexed(231),
+        Color::Indexed(24),
+        true,
+    );
+    write_text(
+        frame,
+        bounds.x + bounds.cols - 3,
+        bounds.y,
+        3,
+        " × ",
+        Color::Indexed(231),
+        Color::Indexed(88),
+        true,
+    );
+    if dialog.kind == DialogKind::Grid {
+        let occupied = workspace
+            .panes
+            .iter()
+            .filter(|p| !workspace.ui.unused.contains(&p.id))
+            .count();
+        for (index, (rect, &(cols, rows))) in super::workspace::grid_cards(bounds)
+            .into_iter()
+            .zip(super::workspace::GRIDS.iter())
+            .enumerate()
+        {
+            let enabled = usize::from(cols) * usize::from(rows) >= occupied;
+            let bg = Color::Indexed(if index == dialog.selection && enabled {
+                24
+            } else {
+                236
+            });
+            let fg = Color::Indexed(if enabled { 231 } else { 240 });
+            fill(frame, rect, bg);
+            let label = if rect.cols < 16 {
+                format!("{}×{}", cols, rows)
+            } else {
+                format!("{} cols × {} rows", cols, rows)
+            };
+            write_text(
+                frame,
+                rect.x + 1,
+                rect.y,
+                rect.cols.saturating_sub(2),
+                &label,
+                fg,
+                bg,
+                true,
+            );
+            let drawing = if cols == 1 {
+                "┌────┐"
+            } else if cols == 2 {
+                "┌──┬──┐"
+            } else {
+                "┌─┬─┬─┐"
+            };
+            if rect.rows > 1 {
+                write_text(
+                    frame,
+                    rect.x + 1,
+                    rect.y + 1,
+                    rect.cols.saturating_sub(2),
+                    drawing,
+                    fg,
+                    bg,
+                    false,
+                );
+            }
+            for row in 0..u16::from(rows) * 2 {
+                let y = rect.y + 2 + row;
+                if y < rect.y + rect.rows {
+                    let line = if row == u16::from(rows) * 2 - 1 {
+                        if cols == 1 {
+                            "└────┘"
+                        } else if cols == 2 {
+                            "└──┴──┘"
+                        } else {
+                            "└─┴─┴─┘"
+                        }
+                    } else if row % 2 == 1 {
+                        if cols == 1 {
+                            "├────┤"
+                        } else if cols == 2 {
+                            "├──┼──┤"
+                        } else {
+                            "├─┼─┼─┤"
+                        }
+                    } else if cols == 1 {
+                        "│    │"
+                    } else if cols == 2 {
+                        "│  │  │"
+                    } else {
+                        "│ │ │ │"
+                    };
+                    write_text(
+                        frame,
+                        rect.x + 1,
+                        y,
+                        rect.cols.saturating_sub(2),
+                        line,
+                        fg,
+                        bg,
+                        false,
+                    );
+                }
+            }
+        }
+    } else if dialog.kind == DialogKind::Move {
+        for (index, rect) in
+            super::workspace::move_cards(bounds, workspace.grid_cols, workspace.grid_rows)
+                .into_iter()
+                .enumerate()
+        {
+            if let Some(pane) = workspace.panes.get(index) {
+                let bg = Color::Indexed(if index == dialog.selection { 24 } else { 236 });
+                fill(frame, rect, bg);
+                let label = format!(
+                    " {} {}",
+                    pane.number,
+                    if Some(pane.id) == dialog.source {
+                        "← source"
+                    } else {
+                        ""
+                    }
+                );
+                write_text(
+                    frame,
+                    rect.x + 1,
+                    rect.y,
+                    rect.cols.saturating_sub(2),
+                    &label,
+                    Color::Indexed(226),
+                    bg,
+                    true,
+                );
+                if rect.rows > 1 {
+                    write_text(
+                        frame,
+                        rect.x + 1,
+                        rect.y + 1,
+                        rect.cols.saturating_sub(2),
+                        &pane.title,
+                        Color::Indexed(231),
+                        bg,
+                        false,
+                    );
+                }
+            }
+        }
+    } else {
+        let entries = workspace.dialog_entries();
+        if entries.is_empty() {
+            write_text(
+                frame,
+                bounds.x + 1,
+                bounds.y + 2,
+                bounds.cols - 2,
+                "No matching agents",
+                Color::Indexed(245),
+                Color::Indexed(236),
+                false,
+            );
+        }
+        let visible = usize::from(bounds.rows.saturating_sub(2));
+        let offset = dialog.selection.saturating_sub(visible.saturating_sub(1));
+        for (index, id) in entries.iter().enumerate().skip(offset).take(visible) {
+            if let Some(pane) = workspace.panes.iter().find(|p| p.id == *id) {
+                let rect = Rect {
+                    x: bounds.x,
+                    y: bounds.y + 2 + (index - offset) as u16,
+                    cols: bounds.cols,
+                    rows: 1,
+                };
+                let bg = Color::Indexed(if index == dialog.selection { 24 } else { 236 });
+                fill(frame, rect, bg);
+                let label = format!(
+                    " {} {} {} · {} · session {}",
+                    pane.number,
+                    pane.status.marker(),
+                    pane.title,
+                    pane.status.text(),
+                    pane.session_id.as_deref().unwrap_or("unknown")
+                );
+                write_text(
+                    frame,
+                    rect.x + 1,
+                    rect.y,
+                    rect.cols - 2,
+                    &label,
+                    Color::Indexed(231),
+                    bg,
+                    index == dialog.selection,
+                );
+            }
+        }
+    }
+    frame.cursor = None;
+}
+fn binding_label(config: &super::ui::UiConfig, defaults: &str, action: &str) -> String {
+    let mut keys: Vec<String> = defaults
+        .chars()
+        .map(|c| c.to_string())
+        .filter(|key| config.bindings.get(key).is_none_or(|value| value == action))
+        .collect();
+    for (key, value) in &config.bindings {
+        if value == action && !keys.contains(key) {
+            keys.push(key.clone());
+        }
+    }
+    if keys.is_empty() {
+        "unbound".into()
+    } else {
+        keys.join("/")
     }
 }
 fn put(frame: &mut Frame, x: u16, y: u16, cell: Cell) {
@@ -479,6 +781,7 @@ mod tests {
                 status: Status::Idle,
                 session_id: None,
                 dead: false,
+                ..Default::default()
             },
             rect: Rect {
                 x: 0,

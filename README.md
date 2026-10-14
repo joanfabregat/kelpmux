@@ -7,65 +7,64 @@
 <p align="center">
   <a href="https://github.com/joanfabregat/kelpmux/actions/workflows/ci.yml"><img src="https://github.com/joanfabregat/kelpmux/actions/workflows/ci.yml/badge.svg?branch=main" alt="CI status"></a>
   <a href="https://github.com/joanfabregat/kelpmux/actions/workflows/release-build.yml"><img src="https://github.com/joanfabregat/kelpmux/actions/workflows/release-build.yml/badge.svg?branch=main" alt="Release build status"></a>
-  <a href="docs/releases.md"><img src="https://img.shields.io/badge/version-0.2.0--alpha.1-blue" alt="Version 0.2.0-alpha.1"></a>
+  <a href="docs/releases.md"><img src="https://img.shields.io/badge/version-0.2.0--beta.1-blue" alt="Version 0.2.0-beta.1"></a>
   <a href="LICENSE"><img src="https://img.shields.io/github/license/joanfabregat/kelpmux" alt="License: Apache-2.0"></a>
   <a href="#build-and-validate"><img src="https://img.shields.io/badge/Rust-1.85%2B-orange?logo=rust" alt="Rust 1.85 or newer"></a>
   <a href="docs/native.md"><img src="https://img.shields.io/badge/Linux-x86__64%20%7C%20ARM64-blue?logo=linux" alt="Linux x86-64 and ARM64"></a>
 </p>
 
-Kelpmux is a persistent terminal workspace for coding agents, inspired by Monterey's kelp forests. The **0.2.0-alpha.1 native preview** owns its PTYs, terminal emulation, grid, reading views, input and attached clients. Shells and agents keep running when a client detaches, while the foreground server remains alive. Apache-2.0 licensed.
+Kelpmux is a persistent terminal workspace for coding agents, inspired by Monterey's kelp forests. The native Rust server owns its PTYs, Alacritty terminal emulation, grids, reading views and agent metadata. Detaching a client leaves shells and agents running. Apache-2.0 licensed; native mode needs no tmux.
 
-## Native alpha
+## Native beta
 
-- Balanced `1x1`, `2x1` and `2x2` grids. Growing creates shells; shrinking refuses panes with foreground, background or stopped jobs.
-- A centered reading view capped at 120 content columns, plus explicit fullscreen with a visible header. The source tile stays in place and other panes keep their terminal sizes. Returning restores the selected pane to its tile.
-- Stable pane IDs and palette colors across focus changes and swaps. Headers distinguish the pane number, title and lifecycle marker; working agents have a braille spinner.
-- ANSI application colors, Unicode text, terminal history, alternate screens, mouse reporting and bracketed paste through an Alacritty terminal engine. Application word-editing keys pass through.
-- One controlling client, with additional clients as observers. Taking control is explicit; controller dimensions set the workspace size. Smaller observers see a clipped view and larger observers see padding.
-- Claude/Codex metadata discovery and optional lifecycle hooks, with a seven-day metadata journal. Session identity stays unknown when the evidence cannot tie it to a pane.
+- Graphical grid selection from `1x1`, `2x1`, `2x2`, `3x2`, `2x3` and `3x3`. Growing creates shells; shrinking refuses to remove foreground, background or stopped jobs.
+- Adjustable centered reading views, fullscreen and restore, keeping the source slot and background geometry in place.
+- Stable pane IDs and colors, distinct pane numbers, lifecycle markers and a braille working spinner. Agent selection filters questions and finished sessions; missing session evidence stays unknown.
+- Configurable shortcuts and graphical pane movement, preserving application word-editing keys outside explicit bindings.
+- Named persistent workspaces with explicit start, attach, status and stop commands. One controller, additional observers and explicit takeover.
+- Alacritty application colors, Unicode text, history, alternate screens, terminal query replies, application mouse reporting, local selection and bracketed paste.
+- Claude/Codex discovery without wrappers, optional lifecycle hooks and a seven-day metadata journal. No prompts, responses, credentials or transcripts are stored in the journal.
 
-The server runs on **Linux**, with readable `/proc`; CI covers x86-64 and ARM64. Native mode requires no tmux installation. This is an alpha with three grid presets, one workspace per server and no automatic recovery after the server exits. The seven-day journal contains metadata, not recoverable terminal processes or transcripts.
+The server runs on **Linux** with readable `/proc`; CI tests x86-64 and ARM64. The server must stay alive to preserve terminals. A crash or reboot does not recreate terminal processes; the journal identifies sessions for manual resumption in their agent TUIs. Physical RootShell/device validation is separate from automated PTY profiles.
 
 ## Start an isolated workspace
 
-Build or unpack the binary, then start the server in a dedicated terminal. All paths below are explicit so the trial uses separate state:
+Build or unpack the binary, then use a new workspace name. Existing alpha and tmux workspaces can continue independently:
 
 ```sh
-kelpmux server --socket "$HOME/.local/state/kelpmux-native-alpha/control.sock" \
-  --state-dir "$HOME/.local/state/kelpmux-native-alpha" \
-  --shell /bin/bash --cwd "$HOME" --size 120x40
+kelpmux start --workspace beta-trial
+kelpmux attach --workspace beta-trial
 ```
 
-From another terminal:
+Inspect it with `kelpmux status --workspace beta-trial`. `Ctrl-B`, then `d` detaches without ending processes. `kelpmux stop --workspace beta-trial` ends that workspace and its owned shells; stop only a disposable trial when finished testing.
 
-```sh
-kelpmux attach --socket "$HOME/.local/state/kelpmux-native-alpha/control.sock"
-```
+`Ctrl-B`, then `g` opens the graphical grid picker; `z` opens reading mode; `f` toggles fullscreen; `?` opens help. `Ctrl-B`, then `a` opens the agent switcher, `!` filters attention and `n` filters finished sessions; `s` opens pane movement. Header controls and the footer expose the same views. Use `attach --takeover` or `Ctrl-B`, then `t` to take control from another client. Controller dimensions determine the backend grid; observers see a clipped or padded frame.
 
-The server starts with one shell. `Ctrl-B`, then `g` cycles `1x1 → 2x1 → 2x2 → 1x1`, subject to shrink safety. `Ctrl-B`, then `z` opens reading mode, `f` toggles fullscreen, and `d` detaches. Detaching leaves the shell and server running. Use `attach --takeover` or `Ctrl-B`, then `t` to take control from another client. Header buttons and the footer `?` expose reading controls and shortcut help.
+`kelpmux ssh-entry --workspace beta-trial` attaches or starts the named workspace from an SSH shell. Automatic SSH routing requires explicit login-hook configuration; a launch command injected into an already running tmux agent is not a shell command. Keep existing SSH authentication unchanged and choose Kelpmux before automatic tmux attachment. See [native commands, configuration and SSH setup](docs/native.md).
 
-Inspect or control the same server with `kelpmux ctl --socket PATH list`, `layout 2x2`, `focus ID`, `read ID`, `fullscreen ID`, `close`, or `shutdown`. `shutdown` ends the server and its owned terminals; `close` only returns a reading view to the grid. These commands never start a server automatically. See [native commands, shortcuts and limitations](docs/native.md).
+The foreground `server --socket PATH --state-dir PATH` and explicit `ctl --socket PATH` interface remain available for controlled development and independent endpoints. Commands never migrate a tmux workspace or install agent hooks automatically.
 
 ## Build and validate
 
-Rust 1.85+ is required. CI pins development Rust 1.99.0, tests the minimum version, audits the locked dependencies, and checks their license expressions. Run dependency-bearing commands in your approved container workflow where required.
+Rust 1.85+ is required. CI pins development Rust 1.99.0, tests minimum Rust, audits locked dependencies against fresh RustSec advisories, and checks their license expressions. Run dependency-bearing commands in your approved container workflow where required.
 
 ```sh
 cargo fmt --all -- --check
 cargo clippy --locked --all-targets -- -D warnings
 cargo test --locked
-cargo test --locked --test native_server --test native_engine --test native_workspace
 cargo build --locked --release
 ```
 
-Native tests use disposable owned PTYs, shells and private sockets. They exercise reconnect identity, controller/observer behavior, malformed clients, live ANSI output and terminal queries, guarded shrinking, terminal emulation, composition and input routing. They do not launch real agents or attach to an existing user workspace. Linux x86-64 and ARM64 CI also retains the separate [tmux compatibility tests](tests/tmux.rs).
+Native fixtures use disposable PTYs, shells and private sockets/state. They test reconnect identity, controller/observer behavior, malformed/slow clients, ANSI/query handling, fragmented input, paste, geometry and overlays, occupied-pane shrink refusal, agent filters, configuration and workspace lifecycle. They do not launch real agents or modify an existing workspace. Small and large terminal profiles check rendering and resize behavior; the [release checklist](docs/releases.md) separately covers hands-on RootShell and display checks.
+
+Quality, native architecture, minimum-Rust, dependency policy and legacy integration jobs run in parallel. Reviewed cache actions restore locked dependency sources and job/toolchain-specific build outputs; only successful trusted events save caches. Current advisories and audit results are never cached. Release jobs produce versioned archives, license texts and verified SHA-256 checksums.
 
 ## Legacy tmux compatibility
 
-The older metadata/helper commands remain available for existing tmux 3.8+ workspaces: `daemon`, `scan`, `list`, `tmux-config`, reading helpers and guarded layouts. tmux owns those terminals and their configuration. Review generated configuration before sourcing it; Kelpmux never changes dotfiles or starts discovery automatically. Legacy mode requires a separately installed tmux; native release archives do not bundle it. See the [optional hook examples](examples), [discovery details](docs/discovery.md), and `kelpmux --help` for legacy commands. Keep existing tmux sessions and their state separate from a native trial.
+Older metadata/helper commands remain available for existing tmux 3.8+ workspaces: `daemon`, `scan`, `list`, `tmux-config`, reading helpers and guarded layouts. tmux owns those terminals and their configuration. Review generated configuration before sourcing it; Kelpmux never changes dotfiles or starts discovery automatically. Legacy mode requires a separately installed tmux; native archives do not bundle it. See [hook examples](examples), [discovery details](docs/discovery.md), and `kelpmux --help`. Keep legacy state separate from a native trial.
 
 ## State and releases
 
-Native state defaults to `$XDG_STATE_HOME/kelpmux/native`, or `~/.local/state/kelpmux/native`, with `control.sock` inside it. State is private and server instances should use separate socket and state paths. The discovery worker writes its metadata registry and journal under `STATE_DIR/native`; no prompts, responses, credentials or transcripts are stored. Optional `native-event` hooks require explicit setup and a discovered agent; the existing hook examples target legacy tmux and need their command replaced for native use. See [native hook setup, journal commands and limitations](docs/native.md) and [architecture](docs/architecture.md).
+Native state uses the XDG state directory or `~/.local/state/kelpmux`; workspace names select independent private endpoints. The discovery worker writes its private registry and seven-day journal under each server's state root. Explicit foreground servers can choose a dedicated socket and state directory. See [architecture](docs/architecture.md) for protocol, geometry, discovery and process-safety boundaries.
 
-Release builds validate the code and produce GNU/Linux x86-64 and ARM64 archives, documentation, licenses and SHA-256 checksums. A version string does not publish a release, install a binary or start a service. See [release procedure](docs/releases.md).
+Release builds validate the repository and package GNU/Linux x86-64 and ARM64 binaries, documentation, locked dependency licenses and checksums. A version string alone does not publish a release, install a binary or start a service. See the [release procedure](docs/releases.md).

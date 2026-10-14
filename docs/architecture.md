@@ -1,6 +1,6 @@
 # Architecture
 
-Native Kelpmux is a Linux terminal multiplexer with a foreground server and separate attached clients. The server owns PTYs, interactive shells, terminal emulation, workspace geometry, agent metadata and client authorization. The frontend owns raw terminal input, escape framing, local shortcut routing and ANSI rendering. The existing tmux adapter remains a separate compatibility path.
+Native Kelpmux is a Linux terminal multiplexer with a persistent server and separate attached clients. The server owns PTYs, interactive shells, terminal emulation, workspace geometry, agent metadata and client authorization. The frontend owns raw terminal input, escape framing, local shortcut routing and ANSI rendering. The existing tmux adapter remains a separate compatibility path.
 
 ## Owned server and terminal engine
 
@@ -20,9 +20,9 @@ The frontend enters raw mode, draws changed ANSI cells and restores its terminal
 
 ## Workspace geometry and input
 
-The pure workspace layer supports balanced `1x1`, `2x1` and `2x2` grids. One row per pane is reserved for its header and the last terminal row for a shared footer; columns have one neutral separator. Pane identity and palette stay with the process while swaps change logical order and displayed numbers.
+The pure workspace layer supports balanced `1x1`, `2x1`, `2x2`, `3x2`, `2x3` and `3x3` grids. One row per pane is reserved for its header and the last terminal row for a shared footer; columns have one neutral separator. Pane identity and palette stay with the process while swaps change logical order and displayed numbers.
 
-Reading is a separate capped or fullscreen overlay referencing the same pane. The grid source stays present for composition and is blacked out; the renderer draws overlays last. Capped mode centers at most 120 content columns and roughly 95% of the work-area height. Fullscreen uses the entire work area while retaining a header. Terminal sizing deduplicates the selected pane and prefers its overlay dimensions, so opening reading affects only that pane's PTY. Closing restores its tile dimensions. Focus while reading follows the newly focused pane in the same reading mode.
+Reading is a separate capped or fullscreen overlay referencing the same pane. The grid source stays present for composition and is blacked out; the renderer draws overlays last. Capped mode defaults to 120 content columns and roughly 95% of the work-area height, with configurable and interactive width/height adjustments. Fullscreen uses the entire work area while retaining a header. Terminal sizing deduplicates the selected pane and prefers its overlay dimensions, so opening reading affects only that pane's PTY. Closing restores its tile dimensions. Focus while reading follows the newly focused pane in the same reading mode.
 
 Header controls use fixed three-column hit targets shared by the compositor and router. Mouse hit testing prefers the topmost overlay. When application mouse reporting is enabled, the server translates absolute frontend coordinates into the target pane's terminal coordinates and honors click/drag/motion modes. Otherwise the router emits body-local selection actions and copies on release; Shift selects or scrolls locally even when application mouse reporting is enabled. Help occupies a centered overlay, consumes application input and closes through its own controls or outside clicks.
 
@@ -44,4 +44,12 @@ The worker and native hook receiver use the registry and JSONL lifecycle journal
 
 Legacy commands use an explicitly selected unmodified tmux 3.8+ executable and socket. tmux owns those PTYs, terminal rendering, layout, mouse, key tables and client size policy. Kelpmux supplies metadata, guarded layout helpers, floating reading geometry, optional lifecycle hooks and generated example bindings. Native and legacy state should be isolated; neither path automatically replaces configuration, starts a daemon or migrates an existing workspace.
 
-CI tests real native PTYs, emulation and input on Linux x86-64 and ARM64, plus Rust 1.85 and dependency advisories/licenses. Separate compatibility jobs build checksum-verified upstream tmux 3.8 and exercise private tmux servers. Release archives package Kelpmux, project licensing and documentation with SHA-256 checksums. tmux is an optional separately installed legacy dependency and is not bundled in native archives. Nothing installs a service, launches a user agent or performs automatic recovery.
+CI tests real native PTYs, emulation and input on Linux x86-64 and ARM64, plus Rust 1.85 and dependency advisories/licenses. Separate compatibility jobs build checksum-verified upstream tmux 3.8 and exercise private tmux servers. Release archives package Kelpmux, project licensing and documentation with SHA-256 checksums. tmux is an optional separately installed legacy dependency and is not bundled in native archives. Starting a named workspace launches its private persistent server explicitly; nothing installs a system service, launches a user agent or performs automatic recovery.
+
+## Beta workspace lifecycle and UI configuration
+
+A named workspace selects its private state directory and socket. `start` creates an explicit persistent instance, `attach` connects without replacing the server, `status` inspects it, and `stop` requests shutdown of that instance. Existing foreground `server` and explicit socket commands remain independent. Startup validates names and live endpoints, avoids duplicate instances, and reports failures rather than silently replacing another workspace. `ssh-entry` is a login entry point that starts or attaches the selected workspace; SSH authentication and terminal transport remain the client's responsibility.
+
+UI configuration is bounded JSON, validated before the server starts. It defines a prefix, reading dimensions and explicit key/action bindings. Application bytes outside those bindings pass through; terminal escape/paste framing remains separate from shortcut interpretation. UI selectors share a model for keyboard and mouse hit testing, full-card selection, disabled grid choices, agent attention/finished filters and pane movement. Display overlays do not change pane identity or move processes between workspaces.
+
+CI cache keys separate compiler versions, architectures and test jobs. PR runs never save cache artifacts, release compilation has read-only repository permissions, and release uploading occurs in a distinct minimal job after both architecture builds succeed. Fresh advisory checks run even when the pinned audit executable or compiled targets are restored.
