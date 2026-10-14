@@ -30,6 +30,8 @@ pub struct ServerConfig {
     pub cwd: PathBuf,
     pub cols: u16,
     pub rows: u16,
+    pub ui: super::ui::UiConfig,
+    pub initial_grid: (u8, u8),
 }
 const MAX_CLIENTS: usize = 16;
 const MAX_QUEUED: usize = MAX_MESSAGE + 4;
@@ -160,6 +162,7 @@ impl NativePane {
             .env_remove("NO_COLOR")
             .env("KELPMUX", "1")
             .env("KELPMUX_PANE", format!("%{id}"))
+            .env("KELPMUX_STATE_DIR", &config.state_dir)
             .env_remove("SSH_CONNECTION")
             .env_remove("SSH_CLIENT")
             .env_remove("SSH_TTY")
@@ -481,6 +484,9 @@ impl Server {
             status: Status::Unknown,
             session_id: None,
             dead: false,
+            kind: None,
+            last_activity: crate::now(),
+            status_since: crate::now(),
         });
         self.panes.insert(id, pane);
         self.next_pane += 1;
@@ -600,6 +606,17 @@ impl Server {
                         self.workspace.apply(&action)?;
                         self.resize();
                     }
+                    Action::ReadResize { .. }
+                    | Action::FocusDirection { .. }
+                    | Action::GridPicker
+                    | Action::Agents(_)
+                    | Action::MovePicker
+                    | Action::DialogNavigate { .. }
+                    | Action::DialogPick(_)
+                    | Action::DialogClose => {
+                        self.workspace.apply(&action)?;
+                        self.resize();
+                    }
                     _ => return Err("unsupported management command".into()),
                 }
                 self.clients
@@ -686,6 +703,14 @@ impl Server {
                             .get_mut(&self.workspace.active)
                             .ok_or("no active pane")?
                             .queue(&bytes)?;
+                        if let Some(info) = self
+                            .workspace
+                            .panes
+                            .iter_mut()
+                            .find(|info| info.id == self.workspace.active)
+                        {
+                            info.last_activity = crate::now();
+                        }
                     }
                     ClientMessage::Paste(bytes) => {
                         if bytes.len() > MAX_INPUT {
@@ -944,6 +969,7 @@ impl Server {
                         .is_ok_and(|p| p.start == a.process_start)
             }) {
                 info.status = agent.status;
+                info.kind = Some(agent.kind);
                 info.session_id = agent.session_id.clone();
                 info.title = agent.name.chars().take(1024).collect();
                 if let Some(pane) = self.panes.get_mut(&info.id) {
@@ -956,6 +982,7 @@ impl Server {
                     }
                 }
                 info.session_id = None;
+                info.kind = None;
                 info.status = if process::idle(&tree, info.pid, false) {
                     Status::Idle
                 } else if tree.contains_key(&info.pid) {
@@ -963,6 +990,9 @@ impl Server {
                 } else {
                     Status::Unknown
                 };
+            }
+            if before.status != info.status {
+                info.status_since = crate::now();
             }
             self.dirty |= before != *info;
         }
@@ -1077,8 +1107,10 @@ fn discovery_worker(
 
 pub fn serve(config: ServerConfig) -> Result<()> {
     validate_size(config.cols, config.rows)?;
-    let workspace = Workspace::new(config.cols, config.rows)?;
+    let mut workspace = Workspace::new(config.cols, config.rows)?;
+    workspace.ui.config = config.ui.clone();
     let (listener, _endpoint) = endpoint(&config)?;
+    super::lifecycle::save_pid(&config.state_dir)?;
     let mut server = Server {
         config,
         workspace,
@@ -1092,6 +1124,7 @@ pub fn serve(config: ServerConfig) -> Result<()> {
         shutdown: false,
     };
     server.add_pane()?;
+    server.grid(server.config.initial_grid.0, server.config.initial_grid.1)?;
     server.resize();
     let (requests, results, worker) = discovery_worker(server.config.state_dir.clone());
     let mut discovery = Instant::now() - Duration::from_secs(2);
@@ -1143,6 +1176,24 @@ pub fn serve(config: ServerConfig) -> Result<()> {
             for pane in server.panes.values_mut() {
                 if !pane.dead {
                     pane.observe_idle();
+                }
+            }
+            if let Ok(tree) = process::snapshot(Path::new("/proc")) {
+                let unused: Vec<_> = server
+                    .workspace
+                    .panes
+                    .iter()
+                    .filter(|info| {
+                        server
+                            .panes
+                            .get(&info.id)
+                            .is_some_and(|pane| pane.unused(&tree))
+                    })
+                    .map(|info| info.id)
+                    .collect();
+                if unused != server.workspace.ui.unused {
+                    server.workspace.ui.unused = unused;
+                    server.dirty = true;
                 }
             }
             idle_poll = Instant::now();

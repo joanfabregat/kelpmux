@@ -31,6 +31,8 @@ impl Daemon {
             cwd: root.clone(),
             cols: 80,
             rows: 24,
+            ui: Default::default(),
+            initial_grid: (1, 1),
         };
         let handle = thread::spawn(move || serve(config));
         let daemon = Self {
@@ -208,6 +210,8 @@ fn active_server_lock_and_symlink_socket_are_rejected() {
         cwd: daemon.root.clone(),
         cols: 80,
         rows: 24,
+        ui: Default::default(),
+        initial_grid: (1, 1),
     };
     assert!(serve(config).is_err());
     let target = daemon.root.join("foreign");
@@ -221,6 +225,8 @@ fn active_server_lock_and_symlink_socket_are_rejected() {
         cwd: daemon.root.clone(),
         cols: 80,
         rows: 24,
+        ui: Default::default(),
+        initial_grid: (1, 1),
     };
     assert!(serve(config).is_err());
     assert_eq!(fs::read(target).unwrap(), b"preserve");

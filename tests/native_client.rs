@@ -207,6 +207,7 @@ fn frame(controller: bool) -> Frame {
         status: Status::Idle,
         session_id: None,
         dead: false,
+        ..PaneInfo::default()
     };
     Frame {
         cols: 80,
@@ -242,6 +243,7 @@ fn frame(controller: bool) -> Frame {
         controller,
         help: false,
         notice: None,
+        ui: Default::default(),
     }
 }
 fn welcome(socket: &mut UnixStream, controller: bool) {

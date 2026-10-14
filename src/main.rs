@@ -110,10 +110,12 @@ fn run() -> Result<()> {
     if args.first().is_some_and(|arg| arg == "native-event") {
         return kelpmux::native::hooks::run(&args[1..]);
     }
-    if args
-        .first()
-        .is_some_and(|arg| matches!(arg.as_str(), "server" | "attach" | "ctl"))
-    {
+    if args.first().is_some_and(|arg| {
+        matches!(
+            arg.as_str(),
+            "server" | "attach" | "ctl" | "start" | "status" | "stop" | "ssh-entry" | "recover"
+        )
+    }) {
         return kelpmux::native::cli::run(&args);
     }
     if args.is_empty() || args == ["--help"] || args == ["-h"] {

@@ -29,6 +29,7 @@ pub fn run(args: &[String]) -> Result<()> {
         .ok_or("native-event requires --pane or KELPMUX_PANE")?;
     let state = option(&mut args, "--state-dir")?
         .map(PathBuf::from)
+        .or_else(|| std::env::var_os("KELPMUX_STATE_DIR").map(PathBuf::from))
         .unwrap_or_else(|| {
             std::env::var_os("XDG_STATE_HOME")
                 .map(PathBuf::from)
@@ -52,7 +53,10 @@ pub fn run(args: &[String]) -> Result<()> {
 }
 
 pub fn receive(state: &Path, pane: &str, kind: Kind, input: &serde_json::Value) -> Result<()> {
-    let id: u64 = pane.trim_start_matches('%').parse()?;
+    if !state.is_absolute() {
+        return Err("native state directory must be absolute".into());
+    }
+    let id: u64 = pane.strip_prefix('%').unwrap_or(pane).parse()?;
     if id == 0 {
         return Err("invalid native pane ID".into());
     }

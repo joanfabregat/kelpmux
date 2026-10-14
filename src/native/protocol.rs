@@ -162,11 +162,20 @@ pub enum Action {
     GridPicker,
     Agents(super::ui::AgentFilter),
     MovePicker,
-    DialogNavigate { dx: i8, dy: i8 },
+    DialogNavigate {
+        dx: i8,
+        dy: i8,
+    },
     DialogPick(usize),
     DialogClose,
-    FocusDirection { dx: i8, dy: i8 },
-    ReadResize { cols: u16, rows: u16 },
+    FocusDirection {
+        dx: i8,
+        dy: i8,
+    },
+    ReadResize {
+        cols: u16,
+        rows: u16,
+    },
     Focus(PaneId),
     Select(usize),
     Read(PaneId),

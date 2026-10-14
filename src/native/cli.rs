@@ -56,16 +56,11 @@ struct Options {
     size: (u16, u16),
     takeover: bool,
     command: Vec<String>,
+    background: bool,
+    settings: super::lifecycle::Settings,
 }
 fn options(args: &[String]) -> Result<Options> {
-    let home = std::env::var_os("HOME")
-        .map(PathBuf::from)
-        .ok_or("HOME is unavailable")?;
-    let state = std::env::var_os("XDG_STATE_HOME")
-        .map(PathBuf::from)
-        .filter(|path| path.is_absolute())
-        .unwrap_or_else(|| home.join(".local/state"))
-        .join("kelpmux/native");
+    let state = super::lifecycle::workspace_path("main")?;
     let mut result = Options {
         socket: state.join("control.sock"),
         state,
@@ -76,12 +71,22 @@ fn options(args: &[String]) -> Result<Options> {
         size: (120, 40),
         takeover: false,
         command: vec![],
+        background: false,
+        settings: super::lifecycle::Settings::default(),
     };
     let verb = args.first().ok_or("missing native command")?;
     let mut position = 1;
+    let mut workspace = None;
+    let mut state_explicit = false;
+    let mut socket_explicit = false;
+    let mut config_path = None;
     while position < args.len() {
         let arg = &args[position];
         position += 1;
+        if arg == "--background" && verb == "server" {
+            result.background = true;
+            continue;
+        }
         if arg == "--takeover" && verb == "attach" {
             result.takeover = true;
             continue;
@@ -90,11 +95,23 @@ fn options(args: &[String]) -> Result<Options> {
             let value = args.get(position).ok_or("option needs a value")?;
             position += 1;
             match arg.as_str() {
-                "--socket" => result.socket = PathBuf::from(value),
-                "--state-dir" if verb == "server" => result.state = PathBuf::from(value),
-                "--shell" if verb == "server" => result.shell = PathBuf::from(value),
-                "--cwd" if verb == "server" => result.cwd = PathBuf::from(value),
-                "--size" if verb == "server" => {
+                "--socket" => {
+                    result.socket = PathBuf::from(value);
+                    socket_explicit = true;
+                }
+                "--state-dir" => {
+                    result.state = PathBuf::from(value);
+                    state_explicit = true;
+                }
+                "--workspace" => workspace = Some(value.clone()),
+                "--config" => config_path = Some(PathBuf::from(value)),
+                "--shell" if matches!(verb.as_str(), "server" | "start" | "ssh-entry") => {
+                    result.shell = PathBuf::from(value)
+                }
+                "--cwd" if matches!(verb.as_str(), "server" | "start" | "ssh-entry") => {
+                    result.cwd = PathBuf::from(value)
+                }
+                "--size" if matches!(verb.as_str(), "server" | "start" | "ssh-entry") => {
                     result.size = parse_size(value)?;
                     validate_size(result.size.0, result.size.1)?;
                 }
@@ -106,6 +123,38 @@ fn options(args: &[String]) -> Result<Options> {
             return Err(format!("unexpected argument {arg}").into());
         }
     }
+    if let Some(workspace) = workspace {
+        let path = super::lifecycle::workspace_path(&workspace)?;
+        if !state_explicit {
+            result.state = path;
+        }
+    }
+    if !socket_explicit {
+        result.socket = result.state.join("control.sock");
+    }
+    if let Some(path) = config_path {
+        result.settings = super::lifecycle::Settings::load(&path)?;
+    } else if !matches!(verb.as_str(), "server") && result.state.join("workspace.json").is_file() {
+        result.settings = super::lifecycle::Settings::load(&result.state.join("workspace.json"))?;
+    }
+    if let Some(shell) = &result.settings.shell {
+        result.shell = shell.clone();
+    }
+    if let Some(cwd) = &result.settings.cwd {
+        result.cwd = cwd.clone();
+    }
+    // Daemon children must not reinterpret relative paths after their caller exits.
+    let absolute = |path: &Path| -> Result<PathBuf> {
+        if path.is_absolute() {
+            Ok(path.to_path_buf())
+        } else {
+            Ok(std::env::current_dir()?.join(path))
+        }
+    };
+    result.socket = absolute(&result.socket)?;
+    result.state = absolute(&result.state)?;
+    result.shell = absolute(&result.shell)?;
+    result.cwd = absolute(&result.cwd)?;
     Ok(result)
 }
 fn parse_size(value: &str) -> Result<(u16, u16)> {
@@ -119,14 +168,46 @@ pub fn run(args: &[String]) -> Result<()> {
     }
     let options = options(args)?;
     match args[0].as_str() {
-        "server" => server::serve(ServerConfig {
-            socket: options.socket,
-            state_dir: options.state,
-            shell: options.shell,
-            cwd: options.cwd,
-            cols: options.size.0,
-            rows: options.size.1,
-        }),
+        "server" => {
+            if options.background && !super::lifecycle::detach(&options.state)? {
+                return Ok(());
+            }
+            server::serve(ServerConfig {
+                socket: options.socket,
+                state_dir: options.state,
+                shell: options.shell,
+                cwd: options.cwd,
+                cols: options.size.0,
+                rows: options.size.1,
+                ui: options.settings.ui,
+                initial_grid: options.settings.grid,
+            })
+        }
+        "start" | "ssh-entry" => {
+            super::lifecycle::start(super::lifecycle::StartRequest {
+                socket: &options.socket,
+                state: &options.state,
+                shell: &options.shell,
+                cwd: &options.cwd,
+                cols: options.size.0,
+                rows: options.size.1,
+                settings: &options.settings,
+            })?;
+            if args[0] == "ssh-entry" {
+                attach(&options.socket, options.takeover)
+            } else {
+                control(&options.socket, &["list".into()])
+            }
+        }
+        "status" => control(&options.socket, &["list".into()]),
+        "stop" => control(&options.socket, &["shutdown".into()]),
+        "recover" => {
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&super::tracking::recovery(&options.state)?)?
+            );
+            Ok(())
+        }
         "attach" => {
             let result = attach(&options.socket, options.takeover);
             if INTERRUPTED.load(Ordering::Relaxed) {
@@ -484,7 +565,7 @@ impl Channel {
 fn validate_frame(frame: &Frame) -> Result<()> {
     validate_size(frame.cols, frame.rows)?;
     if frame.cells.len() != usize::from(frame.cols) * usize::from(frame.rows)
-        || frame.panes.len() > 5
+        || frame.panes.len() > 10
     {
         return Err("invalid native frame dimensions".into());
     }

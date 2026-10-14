@@ -127,6 +127,7 @@ impl Discovery {
             agent.source = "process-identity".into();
         }
         let mut rollout = None;
+        let mut open_rollouts = BTreeMap::new();
         for path in process::links(&self.proc_root, proc.pid) {
             if path.extension().is_some_and(|e| e == "jsonl")
                 && path
@@ -141,15 +142,22 @@ impl Discovery {
                             if let Some(id) =
                                 value["payload"]["id"].as_str().filter(|s| session_id(s))
                             {
-                                agent.session_id = Some(id.into());
-                                agent.source = "open-rollout".into();
-                                rollout = Some(path);
-                                break;
+                                open_rollouts.insert(id.to_owned(), path);
                             }
                         }
                     }
                 }
             }
+        }
+        // Several open conversations in a process do not identify the active TUI.
+        // Never let arbitrary descriptor iteration choose an unrelated session.
+        if open_rollouts.len() == 1 {
+            let (id, path) = open_rollouts.into_iter().next().unwrap();
+            agent.session_id = Some(id);
+            agent.source = "open-rollout".into();
+            rollout = Some(path);
+        } else if let Some(id) = &agent.session_id {
+            rollout = open_rollouts.remove(id);
         }
         let Some(id) = agent.session_id.clone() else {
             return;
