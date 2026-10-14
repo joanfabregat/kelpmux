@@ -1,0 +1,134 @@
+//! Metadata-only agent views and recovery; never launches or resumes a process.
+use super::{protocol::PaneInfo, ui::AgentFilter};
+use crate::{
+    Result,
+    journal::{RETENTION, Store},
+    model::{Agent, Kind, Status},
+    now, session_id, shell_quote,
+};
+use serde::{Deserialize, Serialize};
+use std::{collections::BTreeMap, path::Path};
+
+/// Preserve logical pane order, including ordinary shells in the unfiltered view.
+pub fn filtered(panes: &[PaneInfo], filter: AgentFilter) -> Vec<&PaneInfo> {
+    panes
+        .iter()
+        .filter(|pane| match filter {
+            AgentFilter::All => true,
+            AgentFilter::Attention => {
+                pane.kind.is_some() && matches!(pane.status, Status::InputNeeded | Status::Failed)
+            }
+            AgentFilter::Finished => {
+                pane.kind.is_some() && matches!(pane.status, Status::TurnFinished | Status::Exited)
+            }
+        })
+        .collect()
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RecoveryEntry {
+    pub kind: Kind,
+    pub name: String,
+    pub cwd: String,
+    pub session_id: Option<String>,
+    pub pane: String,
+    pub pid: u32,
+    pub process_start: u64,
+    pub source: String,
+    pub first_seen: u64,
+    pub last_seen: u64,
+    pub ended_at: Option<u64>,
+    pub status: Status,
+    /// Copyable command only; unknown identities must never resume an arbitrary session.
+    pub resume_command: Option<String>,
+}
+
+impl From<Agent> for RecoveryEntry {
+    fn from(agent: Agent) -> Self {
+        let resume_command = agent
+            .session_id
+            .as_deref()
+            .filter(|id| session_id(id))
+            .map(|id| {
+                let argument = shell_quote(id);
+                match agent.kind {
+                    Kind::Codex => format!("codex resume {argument}"),
+                    Kind::Claude => format!("claude --resume {argument}"),
+                }
+            });
+        Self {
+            kind: agent.kind,
+            name: agent.name,
+            cwd: agent.cwd,
+            session_id: agent.session_id,
+            pane: agent.pane,
+            pid: agent.pid,
+            process_start: agent.process_start,
+            source: agent.source,
+            first_seen: agent.first_seen,
+            last_seen: agent.last_seen,
+            ended_at: agent.ended_at,
+            status: agent.status,
+            resume_command,
+        }
+    }
+}
+
+/// Read the native registry and bounded journal under its nonblocking metadata lock.
+/// A retained running record indicates the last observation, not a live-process promise.
+pub fn recovery(state: &Path) -> Result<Vec<RecoveryEntry>> {
+    recovery_at(state, now())
+}
+
+/// Explicit clock for deterministic retention and recovery tests.
+pub fn recovery_at(state: &Path, time: u64) -> Result<Vec<RecoveryEntry>> {
+    let store = Store::open_nonblocking(&state.join("native"))?;
+    store.prune(time)?;
+    let cutoff = time.saturating_sub(RETENTION);
+    // Journal records also recover sessions missing from a registry after a crash.
+    // Process birth ticks keep PID reuse and different sessions separate.
+    let mut latest = BTreeMap::<(String, Option<String>), (u64, Agent)>::new();
+    for record in store
+        .records()?
+        .into_iter()
+        .filter(|record| record.at >= cutoff)
+    {
+        let key = (record.agent.key(), record.agent.session_id.clone());
+        if latest.get(&key).is_none_or(|(at, _)| record.at >= *at) {
+            latest.insert(key, (record.at, record.agent));
+        }
+    }
+    for agent in store
+        .registry
+        .agents
+        .values()
+        .filter(|agent| agent.ended_at.unwrap_or(agent.last_seen) >= cutoff)
+    {
+        let key = (agent.key(), agent.session_id.clone());
+        let at = agent.ended_at.unwrap_or(agent.last_seen);
+        if latest.get(&key).is_none_or(|(old_at, _)| at >= *old_at) {
+            latest.insert(key, (at, agent.clone()));
+        }
+    }
+    // An initial unidentified observation is superseded once this same process
+    // has a positively identified conversation; distinct known IDs remain.
+    let identified: std::collections::BTreeSet<_> = latest
+        .keys()
+        .filter(|(_, id)| id.is_some())
+        .map(|(key, _)| key.clone())
+        .collect();
+    let mut entries: Vec<RecoveryEntry> = latest
+        .into_iter()
+        .filter(|((key, id), _)| id.is_some() || !identified.contains(key))
+        .map(|(_, (_, agent))| RecoveryEntry::from(agent))
+        .collect();
+    entries.sort_by(|a, b| {
+        b.ended_at
+            .unwrap_or(b.last_seen)
+            .cmp(&a.ended_at.unwrap_or(a.last_seen))
+            .then(a.pid.cmp(&b.pid))
+            .then(a.process_start.cmp(&b.process_start))
+            .then(a.session_id.cmp(&b.session_id))
+    });
+    Ok(entries)
+}

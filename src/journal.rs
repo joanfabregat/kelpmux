@@ -114,8 +114,15 @@ pub struct Store {
 }
 impl Store {
     pub fn open(root: &Path) -> Result<Self> {
+        Self::open_locked(root, true)
+    }
+    /// Runtime workers can skip a busy registry instead of blocking PTY shutdown.
+    pub fn open_nonblocking(root: &Path) -> Result<Self> {
+        Self::open_locked(root, false)
+    }
+    fn open_locked(root: &Path, wait: bool) -> Result<Self> {
         private_dir(root)?;
-        let lock = Lock::acquire(&root.join("registry.lock"), true)?;
+        let lock = Lock::acquire(&root.join("registry.lock"), wait)?;
         repair_tail(&root.join("journal.jsonl"))?;
         let file = root.join("registry.json");
         let registry = if file.exists() {
