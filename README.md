@@ -7,7 +7,7 @@
 <p align="center">
   <a href="https://github.com/joanfabregat/kelpmux/actions/workflows/ci.yml"><img src="https://github.com/joanfabregat/kelpmux/actions/workflows/ci.yml/badge.svg?branch=main" alt="CI status"></a>
   <a href="https://github.com/joanfabregat/kelpmux/actions/workflows/release-build.yml"><img src="https://github.com/joanfabregat/kelpmux/actions/workflows/release-build.yml/badge.svg?branch=main" alt="Release build status"></a>
-  <a href="docs/releases.md"><img src="https://img.shields.io/badge/version-0.2.0--beta.1-blue" alt="Version 0.2.0-beta.1"></a>
+  <a href="docs/releases.md"><img src="https://img.shields.io/badge/version-0.2.0--beta.2-blue" alt="Version 0.2.0-beta.2"></a>
   <a href="LICENSE"><img src="https://img.shields.io/github/license/joanfabregat/kelpmux" alt="License: Apache-2.0"></a>
   <a href="#build-and-validate"><img src="https://img.shields.io/badge/Rust-1.85%2B-orange?logo=rust" alt="Rust 1.85 or newer"></a>
   <a href="docs/native.md"><img src="https://img.shields.io/badge/Linux-x86__64%20%7C%20ARM64-blue?logo=linux" alt="Linux x86-64 and ARM64"></a>
@@ -25,6 +25,10 @@ Kelpmux is a persistent terminal workspace for coding agents, inspired by Monter
 - Named persistent workspaces with explicit start, attach, status and stop commands. One controller, additional observers and explicit takeover.
 - Alacritty application colors, Unicode text, history, alternate screens, terminal query replies, application mouse reporting, local selection and bracketed paste.
 - Claude/Codex discovery without wrappers, optional lifecycle hooks and a seven-day metadata journal. No prompts, responses, credentials or transcripts are stored in the journal.
+- Overview, persistent unread notifications with optional sound, and a recovery dashboard grouped by workspace and project with copyable resume commands.
+- A persistent scratch terminal popup, history search across one or all terminals, and keyboard or mouse selection with OSC 52 copy.
+- Startup templates for grids, terminal names and directories; remembered view widths and separator resizing by keyboard or mouse.
+- Revision-checked incremental frames with bounded slow-client resynchronization, a reproducible payload benchmark and content-free diagnostics.
 
 The server runs on **Linux** with readable `/proc`; CI tests x86-64 and ARM64. The server must stay alive to preserve terminals. A crash or reboot does not recreate terminal processes; the journal identifies sessions for manual resumption in their agent TUIs. Physical RootShell/device validation is separate from automated PTY profiles.
 

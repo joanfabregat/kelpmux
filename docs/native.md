@@ -56,7 +56,14 @@ The default prefix is Ctrl-B; release it before the next key. Ordinary applicati
 | Prefix then `h`, `j`, `k`, `l` | Directional focus |
 | Prefix then `+`, `-` | Increase / decrease reading width |
 | Prefix then `,` | Configuration panel |
+| Prefix then `v` | Cycle tab placement |
+| Prefix then `o`, `b`, `r` | Overview, notifications, recovery |
+| Prefix then `N`, `P` | Next question / completion |
+| Prefix then `/`, `c` | History search / persistent scratch |
+| Prefix then Space | Keyboard selection |
+| Prefix then `H`, `L`, `K`, `J` | Resize grid boundaries |
 | Prefix then `?` | Sticky help |
+| Help arrows / Page Up / Page Down / wheel | Scroll help |
 | Prefix then `d` | Detach without terminating processes |
 | Prefix then `t` or `T` | Explicitly take control |
 | Prefix then `[` | History scrolling mode |
@@ -122,3 +129,27 @@ kelpmux --state-dir "$SERVER_STATE/native" name --pane %ID 'Auth migration'
 ## Validation boundary
 
 Automated fixtures use disposable shell PTYs and private sockets. They cover terminal emulation, color/query replies, input/paste/mouse framing, reconnect and ownership, safe grids, responsive geometry, settings/confirmation routing, discovery metadata, bounded RPC replies and named lifecycle behavior. They do not launch real Claude/Codex sessions. Hands-on RootShell, the 32-inch monitor, MacBook Air and tablet/phone UI validation remain separate from simulated character-size profiles.
+
+## Overview, notifications and recovery
+
+Prefix then `o` opens an overview with agent names, status and last activity. Prefix then `b` opens persistent notification history: question, explicit completion, failure, exit and agent bell events. Prefix then uppercase `N` jumps to the next question and uppercase `P` to the next completion. Selecting a notification acknowledges it and focuses its terminal; unread markers survive detaching and server restarts. Initial discovery of an already-finished agent does not generate a completion flood. Settings includes optional notification sound, disabled by default; the terminal client decides whether to play a received bell. Notifications are metadata, bounded to 256 entries and seven days.
+
+Prefix then `r` loads the recovery dashboard from the current and sibling named workspaces, grouped by workspace and working directory. Loading runs outside the terminal I/O loop; held journals are skipped rather than blocking agents. Choose a session and copy its validated resume command through OSC 52. This never executes a command. Recorded status is an observation, not proof that a process survived a crash. Unknown session IDs remain unknown. The command-line `recover` exposes the same grouped metadata.
+
+## Scratch, search and selection
+
+Prefix then `c` toggles a persistent scratch terminal overlay above either grid or tabs. Hiding it preserves its shell and jobs, and restores the underlying terminal. It has its own close confirmation; closing it ends its jobs. It does not consume a main-grid slot, affect safe-shrink eligibility or replace the last main shell. Prefix then `f` expands scratch to the available width and height while it is visible. Agent terminals remain inline tabs.
+
+Prefix then `/` opens history search. Type a literal query, use Tab to switch current/all-terminal scope, and Enter to search or reveal the selected result; Ctrl-Y copies a result. Results are bounded to 100. Primary history is retained while an application uses an alternate screen, but revealing primary history requires leaving that application's alternate screen first. Matching text can still be copied. Search is memory-only and does not write transcripts to the journal.
+
+Prefix then Space starts keyboard selection at the visible cursor. Arrow keys extend it; `y` or Enter copies and exits, while Escape cancels selection routing. Prefix then `[` remains ordinary history scrolling. Mouse selection and OSC 52 depend on terminal-client support. Copy payloads are bounded to 64 KiB. Alacritty keeps a bounded in-memory scrollback; stopping a workspace discards it.
+
+## Templates, adaptive views and resizing
+
+`start --template PATH` initializes a new workspace from a validated JSON template containing a supported grid and optional named panes with absolute working directories and shell paths. Starting an already-live workspace never replaces its terminals. Template names remain stable despite shell-title changes. Effective settings retain the template for restart. See [template example](../examples/native-template.json); replace its directories with your own. `kelpmux templates --workspace NAME` lists validated JSON templates in that workspace's private `templates` directory; it does not launch them.
+
+On narrow terminals, automatic view selection uses one visible tab without removing any terminals. View mode and reading width are remembered separately for compact, medium and wide column profiles. Explicit tab placement always overrides automatic placement. Drag a grid separator to adjust its neighboring columns or rows, or use prefix then uppercase `H`, `L`, `K`, `J` to resize near the active pane. Drag a pane header onto another to swap their logical positions; prefix then `s` remains a graphical keyboard alternative. Grid proportions are saved for restart. Changing a grid preset rebalances its proportions.
+
+## Incremental updates and diagnostics
+
+The server sends full frames for new geometry or resynchronization and revision-checked patches for smaller changes. Queues remain bounded; a slow observer receives a replacement snapshot rather than an unbounded patch backlog. `kelpmux benchmark` prints synthetic one-cell payload sizes and diff timings across supported terminal profiles without starting a workspace. These are payload measurements, not a network latency promise. `kelpmux diagnostics --workspace NAME` reports geometry, uptime, client/pane counts and frame/PTY byte counters, excluding terminal contents, paths, names and session IDs. Frame counters describe generated updates for currently connected clients.

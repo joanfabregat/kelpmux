@@ -3,7 +3,7 @@ use crate::{Result, model::Status};
 use serde::{Deserialize, Serialize};
 use std::io::{Read, Write};
 
-pub const VERSION: u16 = 3;
+pub const VERSION: u16 = 4;
 pub const MAX_MESSAGE: usize = 16 * 1024 * 1024;
 pub const MAX_INPUT: usize = 64 * 1024;
 pub type PaneId = u64;
@@ -160,6 +160,33 @@ pub enum InputEvent {
 }
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Action {
+    HelpScroll(i16),
+    Overview,
+    Notifications,
+    Recovery,
+    RecoveryCopy(usize),
+    SearchCopy(usize),
+    NotificationSoundToggle,
+    Acknowledge(u64),
+    NextAttention,
+    NextFinished,
+    Scratch,
+    ScratchClose,
+    Search {
+        query: String,
+        all: bool,
+    },
+    SearchOpen,
+    SearchSelect(usize),
+    ResizeGrid {
+        column: Option<(u8, u16)>,
+        row: Option<(u8, u16)>,
+    },
+    SelectionStart,
+    SelectionMove {
+        dx: i16,
+        dy: i16,
+    },
     Config,
     TabPositionSet(super::ui::TabPosition),
     ClosePaneRequest(PaneId),
@@ -212,6 +239,12 @@ pub enum Action {
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum ClientMessage {
+    Diagnostics,
+    History {
+        pane: PaneId,
+        start: i32,
+        limit: usize,
+    },
     InspectPane {
         pane: PaneId,
     },
@@ -236,6 +269,12 @@ pub enum ClientMessage {
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum ServerMessage {
+    Diagnostics(super::diagnostics::Report),
+    History {
+        pane: PaneId,
+        lines: Vec<(i32, String)>,
+    },
+    Patch(super::delta::Patch),
     PaneState {
         pane: PaneInfo,
         screen: Screen,
@@ -256,6 +295,28 @@ pub enum ServerMessage {
     Error(String),
     Detached,
     Pong,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Notification {
+    pub id: u64,
+    pub pane: PaneId,
+    pub title: String,
+    pub status: Status,
+    pub at: u64,
+    pub read: bool,
+    pub workspace: String,
+}
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RecoveryItem {
+    pub workspace: String,
+    pub entry: super::tracking::RecoveryEntry,
+}
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SearchHit {
+    pub pane: PaneId,
+    pub line: i32,
+    pub text: String,
 }
 
 pub fn write_message<T: Serialize>(writer: &mut impl Write, value: &T) -> Result<()> {

@@ -4,7 +4,7 @@ use crate::Result;
 use alacritty_terminal::{
     event::{Event, EventListener, WindowSize},
     grid::{Dimensions, Scroll},
-    index::{Column, Point as TermPoint, Side},
+    index::{Column, Line, Point as TermPoint, Side},
     selection::{Selection, SelectionType},
     term::{
         Config, Term, TermMode, cell::Flags, color::Colors, point_to_viewport, viewport_to_point,
@@ -60,6 +60,16 @@ pub struct Terminal {
     term: Term<Listener>,
     parser: Processor,
     listener: Listener,
+    escape: Vec<u8>,
+    primary_history: Option<Vec<HistoryRow>>,
+    selection_anchor: Option<TermPoint>,
+    selection_head: Option<TermPoint>,
+}
+#[derive(Clone)]
+struct HistoryRow {
+    line: i32,
+    text: String,
+    wrapped: bool,
 }
 impl Terminal {
     pub fn new(cols: u16, rows: u16) -> Self {
@@ -72,6 +82,10 @@ impl Terminal {
             term: Term::new(Config::default(), &size, listener.clone()),
             parser: Processor::new(),
             listener,
+            escape: Vec::new(),
+            primary_history: None,
+            selection_anchor: None,
+            selection_head: None,
         }
     }
     pub fn feed(&mut self, bytes: &[u8]) -> Vec<Effect> {
@@ -80,7 +94,7 @@ impl Terminal {
             .split_inclusive(|byte| *byte == 0x07 || *byte == b'\\')
             .flat_map(|part| part.chunks(4096))
         {
-            self.parser.advance(&mut self.term, chunk);
+            self.advance(chunk);
             let events = self
                 .listener
                 .0
@@ -116,9 +130,71 @@ impl Terminal {
                 }
             }
         }
+        if let (Some(anchor), Some(head)) = (self.selection_anchor, self.selection_head) {
+            if let Some(range) = self
+                .term
+                .selection
+                .as_ref()
+                .and_then(|selection| selection.to_range(&self.term))
+            {
+                let reversed = (anchor.line.0, anchor.column.0) > (head.line.0, head.column.0);
+                self.selection_anchor = Some(if reversed { range.end } else { range.start });
+                self.selection_head = Some(if reversed { range.start } else { range.end });
+            } else {
+                self.selection_anchor = None;
+                self.selection_head = None;
+            }
+        }
         effects
     }
+    fn advance(&mut self, bytes: &[u8]) {
+        let mut index = 0;
+        while index < bytes.len() {
+            if self.escape.is_empty() && bytes[index] != 0x1b {
+                let end = bytes[index..]
+                    .iter()
+                    .position(|b| *b == 0x1b)
+                    .map_or(bytes.len(), |offset| index + offset);
+                self.parser.advance(&mut self.term, &bytes[index..end]);
+                index = end;
+                continue;
+            }
+            let byte = bytes[index];
+            if byte == 0x1b {
+                self.escape.clear();
+                self.escape.push(byte);
+            } else {
+                self.escape.push(byte);
+                let complete = self.escape.len() > 2 && (0x40..=0x7e).contains(&byte);
+                if complete {
+                    if !self.term.mode().contains(TermMode::ALT_SCREEN)
+                        && byte == b'h'
+                        && self.escape.starts_with(b"\x1b[?")
+                    {
+                        let params = &self.escape[3..self.escape.len() - 1];
+                        if params
+                            .split(|b| *b == b';')
+                            .any(|p| matches!(p, b"47" | b"1047" | b"1049"))
+                        {
+                            self.primary_history = Some(self.rows());
+                        }
+                    }
+                    self.escape.clear();
+                } else if self.escape.len() > 64 || (self.escape.len() == 2 && byte != b'[') {
+                    self.escape.clear();
+                }
+            }
+            self.parser
+                .advance(&mut self.term, &bytes[index..index + 1]);
+            if !self.term.mode().contains(TermMode::ALT_SCREEN) && self.escape.is_empty() {
+                self.primary_history = None;
+            }
+            index += 1;
+        }
+    }
     pub fn resize(&mut self, cols: u16, rows: u16) {
+        self.selection_anchor = None;
+        self.selection_head = None;
         self.term.resize(Size {
             cols: usize::from(cols.max(2)),
             rows: usize::from(rows.max(1)),
@@ -215,6 +291,187 @@ impl Terminal {
     pub fn scroll(&mut self, lines: i32) {
         self.term.scroll_display(Scroll::Delta(lines));
     }
+    fn rows(&self) -> Vec<HistoryRow> {
+        self.physical_rows(i32::MIN, usize::MAX)
+    }
+    fn physical_rows(&self, start: i32, limit: usize) -> Vec<HistoryRow> {
+        let grid = self.term.grid();
+        let first = start.max(-(grid.history_size() as i32));
+        (first..grid.screen_lines() as i32)
+            .take(limit)
+            .map(|line| {
+                let row = &grid[Line(line)];
+                let wrapped = row[Column(grid.columns() - 1)]
+                    .flags
+                    .contains(Flags::WRAPLINE);
+                let mut text = String::new();
+                for col in 0..grid.columns() {
+                    let cell = &row[Column(col)];
+                    if cell
+                        .flags
+                        .intersects(Flags::WIDE_CHAR_SPACER | Flags::LEADING_WIDE_CHAR_SPACER)
+                    {
+                        continue;
+                    }
+                    let ch = if cell.flags.contains(Flags::HIDDEN) {
+                        ' '
+                    } else {
+                        cell.c
+                    };
+                    if !ch.is_control() {
+                        text.push(ch);
+                    }
+                    if !cell.flags.contains(Flags::HIDDEN) {
+                        if let Some(extra) = cell.zerowidth() {
+                            text.extend(
+                                extra.iter().take(32).copied().filter(|ch| !ch.is_control()),
+                            );
+                        }
+                    }
+                    if text.len() >= 16 * 1024 {
+                        break;
+                    }
+                }
+                if !wrapped {
+                    text.truncate(text.trim_end().len());
+                }
+                HistoryRow {
+                    line,
+                    text,
+                    wrapped,
+                }
+            })
+            .collect()
+    }
+    /// Physical primary rows without changing display offset. Negative indices
+    /// are scrollback; zero is the first live primary row. At most 1,000 rows.
+    pub fn history(&self, start: i32, limit: usize) -> Vec<(i32, String)> {
+        if let Some(rows) = &self.primary_history {
+            rows.iter()
+                .filter(|row| row.line >= start)
+                .take(limit.min(1000))
+                .map(|row| (row.line, row.text.clone()))
+                .collect()
+        } else {
+            self.physical_rows(start, limit.min(1000))
+                .into_iter()
+                .map(|row| (row.line, row.text))
+                .collect()
+        }
+    }
+    /// Literal Unicode search over joined wrapped primary rows. Bounds protect
+    /// interactive searches from unbounded queries/results/very long wraps.
+    /// While alternate mode is active, its primary snapshot and current active
+    /// lines are searchable. Coordinates refer to their respective buffers;
+    /// return to primary mode before revealing cached primary results.
+    pub fn search(&self, query: &str, limit: usize) -> Vec<(i32, String)> {
+        if query.is_empty()
+            || query.len() > 256
+            || query.chars().any(char::is_control)
+            || limit == 0
+        {
+            return Vec::new();
+        }
+        let owned;
+        let rows = if let Some(rows) = &self.primary_history {
+            rows.as_slice()
+        } else {
+            owned = self.rows();
+            owned.as_slice()
+        };
+        let mut hits = Self::search_rows(rows, query, limit.min(256));
+        if self.is_alternate() && self.primary_history.is_some() && hits.len() < limit.min(256) {
+            hits.extend(Self::search_rows(
+                &self.rows(),
+                query,
+                limit.min(256) - hits.len(),
+            ));
+        }
+        hits
+    }
+    fn search_rows(rows: &[HistoryRow], query: &str, limit: usize) -> Vec<(i32, String)> {
+        let mut hits = Vec::new();
+        let mut text = String::new();
+        let mut first = None;
+        for row in rows {
+            first.get_or_insert(row.line);
+            let mut end = row.text.len().min(MAX_INPUT - text.len());
+            while !row.text.is_char_boundary(end) {
+                end -= 1;
+            }
+            text.push_str(&row.text[..end]);
+            if !row.wrapped {
+                if text.contains(query) {
+                    hits.push((first.unwrap_or(row.line), std::mem::take(&mut text)));
+                    if hits.len() >= limit {
+                        break;
+                    }
+                }
+                text.clear();
+                first = None;
+            }
+        }
+        if let Some(first) = first {
+            if hits.len() < limit && text.contains(query) {
+                hits.push((first, text));
+            }
+        }
+        hits
+    }
+    pub fn is_alternate(&self) -> bool {
+        self.term.mode().contains(TermMode::ALT_SCREEN)
+    }
+    pub fn scroll_to(&mut self, line: i32) -> Result<()> {
+        if self.is_alternate() {
+            return Err(
+                "leave the application's alternate screen to reveal primary history".into(),
+            );
+        }
+        let grid = self.term.grid();
+        let offset = (-i64::from(line)).max(0).min(grid.history_size() as i64);
+        self.term.scroll_display(Scroll::Delta(
+            (offset - grid.display_offset() as i64) as i32,
+        ));
+        Ok(())
+    }
+    pub fn selection_start(&mut self, point: Point) -> Result<String> {
+        self.select(point, point)
+    }
+    /// Move the selection head through row/scrollback boundaries, with a
+    /// maximum 16,384-cell span. Returned clipboard text is capped at 64 KiB.
+    pub fn selection_move(&mut self, dx: i32, dy: i32) -> Result<String> {
+        let anchor = self
+            .selection_anchor
+            .ok_or("keyboard selection has not started")?;
+        let head = self.selection_head.unwrap_or(anchor);
+        let cols = self.term.columns() as i64;
+        let first = -(self.term.grid().history_size() as i64) * cols;
+        let last = self.term.screen_lines() as i64 * cols - 1;
+        let anchor_index = i64::from(anchor.line.0) * cols + anchor.column.0 as i64;
+        let target = (i64::from(head.line.0) * cols
+            + head.column.0 as i64
+            + i64::from(dx)
+            + i64::from(dy) * cols)
+            .clamp(first, last)
+            .clamp(anchor_index - 16384, anchor_index + 16384);
+        let point = TermPoint::new(
+            Line(target.div_euclid(cols) as i32),
+            Column(target.rem_euclid(cols) as usize),
+        );
+        self.selection_head = Some(point);
+        let backward = point < anchor;
+        let mut selection = Selection::new(
+            SelectionType::Simple,
+            anchor,
+            if backward { Side::Right } else { Side::Left },
+        );
+        selection.update(point, if backward { Side::Left } else { Side::Right });
+        self.term.selection = Some(selection);
+        if !self.is_alternate() {
+            self.scroll_to(point.line.0)?;
+        }
+        Ok(self.selection().unwrap_or_default())
+    }
     pub fn select(&mut self, start: Point, end: Point) -> Result<String> {
         let valid = |p: Point| {
             usize::from(p.x) < self.term.columns() && usize::from(p.y) < self.term.screen_lines()
@@ -235,11 +492,20 @@ impl Terminal {
         };
         let mut selection = Selection::new(SelectionType::Simple, point(start), Side::Left);
         selection.update(point(end), Side::Right);
+        self.selection_anchor = Some(point(start));
+        self.selection_head = Some(point(end));
         self.term.selection = Some(selection);
         Ok(self.selection().unwrap_or_default())
     }
     pub fn selection(&self) -> Option<String> {
-        self.term.selection_to_string()
+        self.term.selection_to_string().map(|mut text| {
+            let mut end = text.len().min(MAX_INPUT);
+            while !text.is_char_boundary(end) {
+                end -= 1;
+            }
+            text.truncate(end);
+            text
+        })
     }
 }
 

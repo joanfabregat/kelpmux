@@ -1,0 +1,7 @@
+{
+  "grid": [2, 1],
+  "panes": [
+    {"name": "Backend", "cwd": "/home/joan/repos/kelpmux", "shell": "/bin/zsh"},
+    {"name": "Review", "cwd": "/home/joan/repos/kelpmux"}
+  ]
+}

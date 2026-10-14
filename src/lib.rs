@@ -1,4 +1,4 @@
-//! Kelpmux coordinates tmux workspaces without owning agent processes.
+//! Persistent native terminal workspaces and an independent legacy tmux adapter.
 pub mod discovery;
 pub mod journal;
 pub mod model;

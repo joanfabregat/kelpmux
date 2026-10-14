@@ -53,3 +53,13 @@ A named workspace selects its private state directory and socket. `start` create
 UI configuration is bounded JSON, validated before the server starts. It defines a prefix, reading dimensions and explicit key/action bindings. Application bytes outside those bindings pass through; terminal escape/paste framing remains separate from shortcut interpretation. UI selectors share a model for keyboard and mouse hit testing, full-card selection, disabled grid choices, agent attention/finished filters and pane movement. Display overlays do not change pane identity or move processes between workspaces.
 
 CI cache keys separate compiler versions, architectures and test jobs. PR runs never save cache artifacts, release compilation has read-only repository permissions, and release uploading occurs in a distinct minimal job after both architecture builds succeed. Fresh advisory checks run even when the pinned audit executable or compiled targets are restored.
+
+## Native phase-two boundaries
+
+Activity history persists bounded lifecycle metadata separately from terminal history. Discovery produces deduplicated transitions; initial state does not count as a fresh completion. Acknowledgements are persisted, and sound is opt-in in the frontend. Recovery collection uses a bounded background job with cancellation and nonblocking journal access, keeping the terminal I/O loop responsive.
+
+Scratch is a separate persistent PTY whose visibility overlays the base layout. It is excluded from normal grid capacity and shrink candidates. Closing the last main terminal creates a replacement main shell even if scratch exists. Templates prepare new PTYs with validated names and directories; they never reconfigure an existing live instance.
+
+Terminal history, search and selection remain in memory. Alternate-screen entry retains a bounded primary-history snapshot for search; revealing that history waits until the application returns to its primary screen. No search text or terminal contents enter the recovery journal. View modes and widths are remembered by column profile, and grid boundary weights persist independently of process identity.
+
+Composed frame deltas carry checked base/revision numbers and validated changed-cell indices. Full snapshots reset the baseline; backpressured queue replacement uses a snapshot rather than a patch whose base could be missing. Content-free diagnostic counters and a synthetic payload benchmark expose these mechanics without inspecting agent text. Independent native clients will require per-pane subscriptions beyond the current composed-frame protocol.

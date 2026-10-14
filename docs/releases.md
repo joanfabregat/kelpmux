@@ -1,6 +1,6 @@
 # Release procedure
 
-The native beta version is `0.2.0-beta.1`. A version change prepares code for a release; it does not publish a tag, install anything or start a server. Keep an existing alpha or tmux workspace alive during a beta trial, using a separate binary and state root. Never replace the executable of a running preview to test an upgrade.
+The native beta version is `0.2.0-beta.2`. A version change prepares code for a release; it does not publish a tag, install anything or start a server. Keep an existing alpha or tmux workspace alive during a beta trial, using a separate binary and state root. Never replace the executable of a running preview to test an upgrade.
 
 1. Ensure CI is green for the exact release commit, including native PTY/client/UI/tracking/workspace lifecycle tests on Linux x86-64 and ARM64, Rust 1.85, RustSec and license checks, and legacy tmux compatibility tests.
 2. Confirm `Cargo.toml`, `Cargo.lock`, README and documentation contain the intended version. Complete the hardware checklist below and describe any unverified device explicitly in release notes.
