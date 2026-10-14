@@ -446,3 +446,92 @@ fn invalid_grid_resize_is_transactional_and_scratch_does_not_disable_empty_grid_
         vec![Action::Grid { cols: 1, rows: 1 }, Action::DialogClose]
     );
 }
+
+#[test]
+fn dialogs_and_help_take_click_priority_above_scratch_on_compact_terminal() {
+    let mut ws = workspace(40, 10);
+    ws.panes.push(PaneInfo {
+        id: 100,
+        ..Default::default()
+    });
+    ws.ui.scratch = Some(100);
+    ws.apply(&Action::Scratch).unwrap();
+    ws.apply(&Action::Config).unwrap();
+    let bounds = dialog_bounds(ws.cols, ws.rows);
+    let point = Point {
+        x: bounds.x + bounds.cols - 1,
+        y: bounds.y,
+    };
+    assert_eq!(
+        actions(Router::default().route(mouse(point, MouseKind::Press), &frame(&ws))),
+        vec![Action::DialogClose]
+    );
+    ws.apply(&Action::Help).unwrap();
+    assert_eq!(
+        actions(Router::default().route(mouse(point, MouseKind::Press), &frame(&ws))),
+        vec![Action::Help]
+    );
+    assert!(ws.ui.scratch_visible);
+}
+#[test]
+fn search_query_limit_is_utf8_safe_for_typing_and_paste() {
+    let mut ws = workspace(160, 50);
+    ws.apply(&Action::SearchOpen).unwrap();
+    for event in [
+        InputEvent::Bytes("界".repeat(100).into_bytes()),
+        InputEvent::Paste("界".repeat(100).into_bytes()),
+    ] {
+        let messages = actions(Router::default().route(event, &frame(&ws)));
+        assert_eq!(
+            messages,
+            vec![Action::Search {
+                query: "界".repeat(85),
+                all: false
+            }]
+        );
+    }
+}
+#[test]
+fn focusing_hidden_scratch_reveals_it_and_retains_underlying_tab() {
+    let mut ws = workspace(160, 50);
+    ws.apply(&Action::Select(2)).unwrap();
+    ws.panes.push(PaneInfo {
+        id: 100,
+        ..Default::default()
+    });
+    ws.ui.scratch = Some(100);
+    ws.apply(&Action::Focus(100)).unwrap();
+    assert!(ws.ui.scratch_visible);
+    assert_eq!(ws.active, 100);
+    assert_eq!(ws.ui.scratch_return, Some(2));
+    assert!(ws.layout().last().unwrap().body.cols > 0);
+    ws.apply(&Action::ScratchClose).unwrap();
+    assert_eq!(ws.reading, ReadingMode::Tabs(2));
+}
+
+#[test]
+fn observer_can_take_over_and_detach_while_search_is_open() {
+    let mut ws = workspace(160, 50);
+    ws.apply(&Action::SearchOpen).unwrap();
+    let mut f = frame(&ws);
+    f.controller = false;
+    let mut router = Router::default();
+    assert_eq!(
+        actions(router.route(InputEvent::Bytes(vec![2, b't']), &f)),
+        vec![Action::Takeover]
+    );
+    assert_eq!(
+        actions(router.route(InputEvent::Bytes(vec![2, b'd']), &f)),
+        vec![Action::Detach]
+    );
+    assert!(
+        router
+            .route(InputEvent::Bytes(b"must-not-type".to_vec()), &f)
+            .is_empty()
+    );
+    f.controller = true;
+    assert_eq!(
+        actions(router.route(InputEvent::Bytes(vec![2, b'd']), &f)),
+        vec![Action::Detach]
+    );
+}

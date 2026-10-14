@@ -123,6 +123,7 @@ fn run() -> Result<()> {
                 | "recover"
                 | "diagnostics"
                 | "templates"
+                | "benchmark"
         )
     }) {
         return kelpmux::native::cli::run(&args);

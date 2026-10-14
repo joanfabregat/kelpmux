@@ -83,7 +83,7 @@ impl Settings {
             }
         }
         if let Some(template) = &settings.template {
-            template.validate()?;
+            template.validate_schema()?;
         }
         if ![(1, 1), (2, 1), (2, 2), (3, 2), (2, 3), (3, 3)].contains(&settings.grid) {
             return Err("unsupported startup grid".into());

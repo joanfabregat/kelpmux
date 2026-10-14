@@ -25,9 +25,10 @@ use std::{
 };
 
 pub const HELP: &str = "Owned native terminal workspaces (Linux):
-  kelpmux start [--workspace NAME] [--config PATH] [--shell PATH] [--cwd PATH]
+  kelpmux start [--workspace NAME] [--config PATH] [--template PATH] [--shell PATH] [--cwd PATH]
   kelpmux ssh-entry [--workspace NAME] [--takeover]
-  kelpmux status|stop|recover [--workspace NAME]
+  kelpmux status|stop|recover|diagnostics|templates [--workspace NAME]
+  kelpmux benchmark
   kelpmux server [--socket PATH] [--state-dir PATH] [--shell PATH] [--cwd PATH] [--size CxR] [--config PATH]
   kelpmux attach [--workspace NAME] [--socket PATH] [--takeover]
   kelpmux ctl [--socket PATH] list|layout CxR|focus ID|read ID|fullscreen ID|close|shutdown
@@ -37,7 +38,10 @@ Default workspace: main; socket: $XDG_STATE_HOME/kelpmux/workspaces/main/control
   (falls back to ~/.local/state/kelpmux/workspaces/main/control.sock)
 Grids: 1x1, 2x1, 2x2, 3x2, 2x3, 3x3. Shrinking preserves occupied panes.
 Attach keys: Ctrl-B d detach, z grid/tabs, f full width, g grid picker,
-  a agents, ! attention, n finished, s move, ? help. Configurable in --config JSON.";
+  a agents, ! attention, n finished, s move, ? help, , settings,
+  o overview, b notifications, r recovery, / search, c scratch,
+  N next question, P next completion, Space selection, H/L/K/J resize grid.
+Configurable in --config JSON. Scratch is persistent until explicitly closed.";
 const TIMEOUT: Duration = Duration::from_secs(3);
 const ESCAPE_TIMEOUT: Duration = Duration::from_millis(35);
 // JSON encodes byte arrays as decimal integers: a 64 KiB paste can exceed
@@ -169,6 +173,7 @@ fn options(args: &[String]) -> Result<Options> {
     if let Some(path) = template_path {
         let template = super::templates::Template::load(&absolute(&path)?)?;
         result.settings.grid = template.grid;
+        result.settings.grid_weights = [Vec::new(), Vec::new()];
         result.settings.template = Some(template);
     }
     result.socket = absolute(&result.socket)?;
@@ -227,6 +232,13 @@ pub fn run(args: &[String]) -> Result<()> {
             println!(
                 "{}",
                 serde_json::to_string_pretty(&super::templates::list(&options.state)?)?
+            );
+            Ok(())
+        }
+        "benchmark" => {
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&super::diagnostics::benchmark()?)?
             );
             Ok(())
         }

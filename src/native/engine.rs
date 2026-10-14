@@ -459,8 +459,13 @@ impl Terminal {
             Column(target.rem_euclid(cols) as usize),
         );
         self.selection_head = Some(point);
-        let mut selection = Selection::new(SelectionType::Simple, anchor, Side::Left);
-        selection.update(point, Side::Right);
+        let backward = point < anchor;
+        let mut selection = Selection::new(
+            SelectionType::Simple,
+            anchor,
+            if backward { Side::Right } else { Side::Left },
+        );
+        selection.update(point, if backward { Side::Left } else { Side::Right });
         self.term.selection = Some(selection);
         if !self.is_alternate() {
             self.scroll_to(point.line.0)?;

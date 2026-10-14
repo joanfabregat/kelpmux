@@ -515,6 +515,7 @@ impl Drop for RecoveryJob {
     }
 }
 struct Server {
+    initializing: bool,
     recovery_job: Option<RecoveryJob>,
     aliases: BTreeMap<PaneId, String>,
     activity: super::activity::Activity,
@@ -686,6 +687,11 @@ impl Server {
                 self.workspace.ui.search_query = query.clone();
                 self.workspace.ui.search_all = *all;
                 self.workspace.ui.search_hits = hits;
+                if let Some(dialog) = self.workspace.ui.dialog.as_mut() {
+                    if dialog.kind == super::ui::DialogKind::Search {
+                        dialog.selection = 0;
+                    }
+                }
                 self.workspace.apply(action)?;
             }
             Action::SearchSelect(index) => {
@@ -779,15 +785,21 @@ impl Server {
         if self.workspace.active == id {
             self.workspace.active = fallback;
         }
-        fn replace(reading:ReadingMode,id:PaneId,fallback:PaneId)->ReadingMode {match reading {
-            ReadingMode::Tabs(pane) | ReadingMode::Capped(pane) if pane == id => {
-                ReadingMode::Tabs(fallback)
+        fn replace(reading: ReadingMode, id: PaneId, fallback: PaneId) -> ReadingMode {
+            match reading {
+                ReadingMode::Tabs(pane) | ReadingMode::Capped(pane) if pane == id => {
+                    ReadingMode::Tabs(fallback)
+                }
+                ReadingMode::Fullscreen(pane) if pane == id => ReadingMode::Fullscreen(fallback),
+                other => other,
             }
-            ReadingMode::Fullscreen(pane) if pane == id => ReadingMode::Fullscreen(fallback),
-            other => other,
-        }}
-        self.workspace.reading = replace(self.workspace.reading,id,fallback);
-        self.workspace.ui.scratch_reading = self.workspace.ui.scratch_reading.map(|reading|replace(reading,id,fallback));
+        }
+        self.workspace.reading = replace(self.workspace.reading, id, fallback);
+        self.workspace.ui.scratch_reading = self
+            .workspace
+            .ui
+            .scratch_reading
+            .map(|reading| replace(reading, id, fallback));
         self.workspace.ui.dialog = None;
         for (number, pane) in self.workspace.panes.iter_mut().enumerate() {
             pane.number = number + 1;
@@ -824,6 +836,7 @@ impl Server {
             .template
             .as_ref()
             .and_then(|template| template.panes.get(index))
+            .filter(|_| self.initializing)
             .cloned();
         self.spawn_pane(specification)
     }
@@ -1681,6 +1694,7 @@ pub fn serve(config: ServerConfig) -> Result<()> {
     let (listener, _endpoint) = endpoint(&config)?;
     super::lifecycle::save_pid(&config.state_dir)?;
     let mut server = Server {
+        initializing: true,
         recovery_job: None,
         aliases: BTreeMap::new(),
         activity: super::activity::Activity::load(
@@ -1707,6 +1721,7 @@ pub fn serve(config: ServerConfig) -> Result<()> {
     };
     server.add_pane()?;
     server.grid(server.config.initial_grid.0, server.config.initial_grid.1)?;
+    server.initializing = false;
     server.workspace.ui.column_weights = server.config.initial_weights[0].clone();
     server.workspace.ui.row_weights = server.config.initial_weights[1].clone();
     server.persist_geometry()?;

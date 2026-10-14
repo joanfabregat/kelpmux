@@ -14,6 +14,8 @@ The beta provides `InspectPane { pane }` and `PaneState { pane, screen }` as an 
 
 A complete native-client protocol will add subscriptions, per-pane revisions and cell deltas, pane-addressed input/mouse/resize requests, and paginated history/selection/search. All mutating requests must follow explicit controller ownership, size and input limits. Clients reconnect by requesting a snapshot and then subscribing from its revision. Slow consumers receive bounded queues and resynchronization rather than unbounded retained updates. A client can maintain one subscription for each terminal while rendering only the current tab.
 
+Protocol version 4 adds revision-checked patches for composed terminal-frontend frames and a bounded, read-only `History { pane, start, limit }` request (at most 200 lines). Negative line indices refer to scrollback and zero starts the live screen. A full frame resets the frontend revision to 1; a patch is applicable only to its declared base revision. Slow-client replacement uses a full snapshot. These are implemented primitives, but independent per-pane subscriptions and the SSH bridge remain future work; composed frame patches are not yet a native-client stream API.
+
 Decoded cells are the first implementation target. Alacritty on the server remains the authoritative emulator and answers application terminal queries. Sending raw VT bytes into another emulator would require an explicit policy that prevents both emulators from answering the same query. Native scrolling means clients request history ranges and render them locally; it does not require mirroring the terminal frontend's scrolling position.
 
 ## Responsive presentation

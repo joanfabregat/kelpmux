@@ -87,3 +87,11 @@ fn selection_tracks_new_output_and_alternate_swap_requires_a_new_anchor() {
     term.feed(b"\x1b[?1049h");
     assert!(term.selection_move(1, 0).is_err());
 }
+#[test]
+fn backward_selection_includes_both_edges_and_can_reverse_direction() {
+    let mut term = Terminal::new(20, 2);
+    term.feed(b"SELECT_ME++");
+    term.selection_start(Point { x: 8, y: 0 }).unwrap();
+    assert_eq!(term.selection_move(-8, 0).unwrap(), "SELECT_ME");
+    assert_eq!(term.selection_move(10, 0).unwrap(), "E++");
+}

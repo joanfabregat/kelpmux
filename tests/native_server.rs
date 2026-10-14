@@ -93,7 +93,7 @@ impl Drop for Daemon {
 }
 fn next(stream: &mut UnixStream) -> ServerMessage {
     use std::{cell::RefCell, collections::BTreeMap, os::fd::AsRawFd};
-    thread_local! {static FRAMES:RefCell<BTreeMap<i32,(u64,Frame)>>=RefCell::new(BTreeMap::new());}
+    thread_local! {static FRAMES:RefCell<BTreeMap<i32,(u64,Frame)>>=const { RefCell::new(BTreeMap::new()) };}
     let message = read_message(stream).unwrap().expect("server disconnected");
     FRAMES.with(|frames| {
         let mut frames = frames.borrow_mut();

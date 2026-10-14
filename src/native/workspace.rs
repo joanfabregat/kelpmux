@@ -442,7 +442,12 @@ impl Workspace {
                 }
             }
             Action::FocusDirection { dx, dy } => {
-                let index = self.require_pane(self.active)?;
+                let normal = self
+                    .ui
+                    .scratch_return
+                    .filter(|_| self.ui.scratch_visible)
+                    .unwrap_or(self.active);
+                let index = self.require_pane(normal)?;
                 let columns = usize::from(self.grid_cols);
                 let x = index % columns;
                 let y = index / columns;
@@ -465,6 +470,9 @@ impl Workspace {
             }
             Action::Focus(id) => {
                 self.require_pane(id)?;
+                if Some(id) == self.ui.scratch && !self.ui.scratch_visible {
+                    return self.apply(&Action::Scratch);
+                }
                 if self.ui.scratch_visible && Some(id) != self.ui.scratch {
                     self.apply(&Action::ScratchClose)?;
                 }

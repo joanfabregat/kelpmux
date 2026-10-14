@@ -25,6 +25,23 @@ pub struct TemplatePane {
 }
 impl Template {
     pub fn validate(&self) -> Result<()> {
+        self.validate_schema()?;
+        for pane in &self.panes {
+            if !pane.cwd.is_dir() {
+                return Err("template working directories must exist".into());
+            }
+            if let Some(shell) = &pane.shell {
+                let meta = fs::metadata(shell)?;
+                if !meta.is_file() || meta.mode() & 0o111 == 0 {
+                    return Err("template shell must be an executable file".into());
+                }
+            }
+        }
+        Ok(())
+    }
+    /// Validate saved settings without requiring a live terminal's directory to
+    /// still exist. Filesystem checks belong to startup, not attach or stop.
+    pub fn validate_schema(&self) -> Result<()> {
         if !PRESETS.contains(&self.grid)
             || self.panes.len() > usize::from(self.grid.0) * usize::from(self.grid.1)
         {
@@ -39,14 +56,13 @@ impl Template {
             {
                 return Err("template pane names require 1–128 safe bytes".into());
             }
-            if !pane.cwd.is_absolute() || !pane.cwd.is_dir() {
+            if !pane.cwd.is_absolute() {
                 return Err(
                     "template working directories must be existing absolute directories".into(),
                 );
             }
             if let Some(shell) = &pane.shell {
-                let meta = fs::metadata(shell)?;
-                if !shell.is_absolute() || !meta.is_file() || meta.mode() & 0o111 == 0 {
+                if !shell.is_absolute() {
                     return Err("template shell must be an absolute executable file".into());
                 }
             }

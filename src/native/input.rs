@@ -508,22 +508,6 @@ impl Router {
                 return output;
             }
         }
-        if frame.ui.scratch_visible {
-            if let Some(view) = frame
-                .panes
-                .iter()
-                .find(|v| Some(v.pane.id) == frame.ui.scratch)
-            {
-                if event.kind == MouseKind::Press
-                    && (event.position.y == view.rect.y
-                        && event.position.x >= view.rect.x + view.rect.cols - 3
-                        || !view.rect.contains(event.position))
-                {
-                    emit(&mut output, Action::ScratchClose, true);
-                    return output;
-                }
-            }
-        }
         if let Some(dialog) = frame.ui.dialog {
             let bounds = super::workspace::dialog_bounds(frame.cols, frame.rows);
             if event.kind == MouseKind::Press
@@ -589,6 +573,22 @@ impl Router {
                 emit(&mut output, Action::Help, true);
             }
             return output;
+        }
+        if frame.ui.scratch_visible {
+            if let Some(view) = frame
+                .panes
+                .iter()
+                .find(|v| Some(v.pane.id) == frame.ui.scratch)
+            {
+                if event.kind == MouseKind::Press
+                    && (event.position.y == view.rect.y
+                        && event.position.x >= view.rect.x + view.rect.cols - 3
+                        || !view.rect.contains(event.position))
+                {
+                    emit(&mut output, Action::ScratchClose, true);
+                    return output;
+                }
+            }
         }
         if event.kind == MouseKind::Press
             && event.position.y == frame.rows - 1
@@ -1036,6 +1036,11 @@ fn frame_entries(frame: &Frame) -> Vec<u64> {
 }
 impl Router {
     fn search_event(&mut self, event: InputEvent, frame: &Frame) -> Vec<ClientMessage> {
+        if let InputEvent::Bytes(bytes) = &event {
+            if !frame.controller || self.prefix || bytes.first() == Some(&frame.ui.config.prefix) {
+                return self.keys(bytes, frame);
+            }
+        }
         if !frame.controller {
             return vec![];
         }
@@ -1068,7 +1073,7 @@ impl Router {
                     .chars()
                     .filter(|c| !c.is_control())
                 {
-                    if query.chars().count() < 1024 {
+                    if query.len() + c.len_utf8() <= 256 {
                         query.push(c);
                     }
                 }
@@ -1134,10 +1139,7 @@ impl Router {
                             self.search_utf8.push(byte);
                             match std::str::from_utf8(&self.search_utf8) {
                                 Ok(text) => {
-                                    if self.search.as_ref().unwrap().0.chars().count()
-                                        + text.chars().count()
-                                        <= 1024
-                                    {
+                                    if self.search.as_ref().unwrap().0.len() + text.len() <= 256 {
                                         self.search.as_mut().unwrap().0.push_str(text);
                                     }
                                     self.search_utf8.clear();
