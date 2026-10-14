@@ -33,6 +33,10 @@ pub enum AgentFilter {
 }
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum DialogKind {
+    Overview,
+    Notifications,
+    Recovery,
+    Search,
     Grid,
     Agents,
     Move,
@@ -49,20 +53,26 @@ pub struct Dialog {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct UiConfig {
+    pub view_modes: [Option<bool>; 3],
+    pub notification_sound: bool,
     pub prefix: u8,
     pub read_width: u16,
     pub read_height_percent: u8,
     pub bindings: BTreeMap<String, String>,
     pub tab_position: TabPosition,
+    pub remembered_read_widths: [Option<u16>; 3],
 }
 impl Default for UiConfig {
     fn default() -> Self {
         Self {
+            view_modes: [None; 3],
+            notification_sound: false,
             prefix: 2,
             read_width: 120,
             read_height_percent: 95,
             bindings: BTreeMap::new(),
             tab_position: TabPosition::Auto,
+            remembered_read_widths: [None; 3],
         }
     }
 }
@@ -71,6 +81,11 @@ impl UiConfig {
         if !(1..=26).contains(&self.prefix)
             || !(20..=400).contains(&self.read_width)
             || !(20..=100).contains(&self.read_height_percent)
+            || self
+                .remembered_read_widths
+                .iter()
+                .flatten()
+                .any(|width| !(20..=400).contains(width))
         {
             return Err("invalid prefix or reading dimensions".into());
         }
@@ -98,6 +113,18 @@ impl UiConfig {
             "unbound",
             "tab-position",
             "config",
+            "overview",
+            "notifications",
+            "recovery",
+            "next-attention",
+            "next-finished",
+            "scratch",
+            "search",
+            "selection",
+            "grid-narrower",
+            "grid-wider",
+            "grid-shorter",
+            "grid-taller",
         ];
         if self.bindings.iter().any(|(key, action)| {
             key.len() != 1 || !key.is_ascii() || !ACTIONS.contains(&action.as_str())
@@ -109,10 +136,32 @@ impl UiConfig {
 }
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct UiState {
+    pub recovery_loading: bool,
+    pub notifications: Vec<super::protocol::Notification>,
+    pub recovery: Vec<super::protocol::RecoveryItem>,
+    pub search_query: String,
+    pub search_all: bool,
+    pub search_hits: Vec<super::protocol::SearchHit>,
+    pub scratch: Option<u64>,
+    pub scratch_visible: bool,
+    pub scratch_return: Option<u64>,
+    pub scratch_reading: Option<super::protocol::ReadingMode>,
+    pub column_weights: Vec<u16>,
+    pub row_weights: Vec<u16>,
     pub dialog: Option<Dialog>,
+    pub help_offset: u16,
     pub config: UiConfig,
     pub unused: Vec<u64>,
     pub reading_size: Option<(u16, u16)>,
     pub grid_shape: (u8, u8),
     pub vitals: Vec<(String, u8)>,
+}
+pub fn geometry_bucket(cols: u16) -> usize {
+    if cols <= 60 {
+        0
+    } else if cols < 160 {
+        1
+    } else {
+        2
+    }
 }
