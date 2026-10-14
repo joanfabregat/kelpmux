@@ -696,6 +696,7 @@ fn recovery_skips_busy_workspace_without_stalling_pty_and_copies_grouped_resume_
         cwd: "/fixture-project".into(),
         status: Status::TurnFinished,
         source: "fixture".into(),
+        observation: Default::default(),
         first_seen: time,
         last_seen: time,
         ended_at: None,

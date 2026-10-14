@@ -95,7 +95,9 @@ impl Pty {
         );
         let mut command = Command::new(env!("CARGO_BIN_EXE_kelpmux"));
         command
-            .args(["attach", "--socket"])
+            // Deliberately use this binary against a protocol fixture rather than
+            // selecting the test harness executable as a retained Kelpmux client.
+            .args(["attach", "--current-client", "--socket"])
             .arg(path)
             .stdin(Stdio::from(slave.try_clone().unwrap()))
             .stdout(Stdio::from(slave.try_clone().unwrap()))
@@ -392,6 +394,39 @@ fn observer_resize_does_not_resize_backend_and_signal_restores_tty() {
     tty.finish(true);
     backend.join().unwrap();
     assert!(String::from_utf8_lossy(&tty.output).contains("\x1b[?1049l"));
+}
+#[test]
+fn explicit_current_client_still_rejects_protocol_mismatch_before_raw_mode() {
+    let fixture = Fixture::new();
+    let path = fixture.socket.clone();
+    let backend = thread::spawn(move || {
+        let mut socket = fixture.accept();
+        assert!(matches!(
+            read_message::<ClientMessage>(&mut socket).unwrap(),
+            Some(ClientMessage::Attach {
+                version: VERSION,
+                ..
+            })
+        ));
+        write_message(
+            &mut socket,
+            &ServerMessage::Welcome {
+                version: VERSION + 1,
+                client_id: 1,
+                controller: true,
+            },
+        )
+        .unwrap();
+    });
+    let mut tty = Pty::spawn(&path, 80, 24);
+    tty.finish(false);
+    let output = String::from_utf8_lossy(&tty.output);
+    assert!(output.contains(&format!(
+        "workspace uses native protocol {}, client uses {VERSION}",
+        VERSION + 1
+    )));
+    assert!(!output.contains("\x1b[?1049h"));
+    backend.join().unwrap();
 }
 #[test]
 fn handshake_timeout_never_enters_raw_or_alternate_screen() {
