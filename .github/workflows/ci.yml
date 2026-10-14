@@ -74,7 +74,7 @@ jobs:
       - run: rustup toolchain install 1.99.0 --profile minimal
       - run: cargo +1.99.0 fetch --locked
       - name: Real owned PTYs, terminal engine, and frontend routing
-        run: cargo +1.99.0 test --locked --offline --test native_server --test native_engine --test native_workspace --test native_client --test native_ui --test native_tracking --test native_lifecycle --test native_vitals --test native_history --test native_phase2_ui --test native_phase2_server -- --test-threads=2
+        run: cargo +1.99.0 test --locked --offline --test native_server --test native_engine --test native_workspace --test native_client --test native_ui --test native_tracking --test native_lifecycle --test native_vitals --test native_history --test native_phase2_ui --test native_phase2_server --test native_stream --test native_upgrades --test native_conformance --test native_stress --test native_bridge --test native_reference -- --test-threads=2
       - name: Save trusted compiler and dependency cache
         if: success() && contains(fromJSON('["push","workflow_dispatch","release"]'), github.event_name) && steps.rust-cache.outputs.cache-hit != 'true'
         uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4

@@ -223,6 +223,7 @@ impl Workspace {
     }
     pub fn apply(&mut self, action: &Action) -> Result<()> {
         match *action {
+            Action::ClaimPane(_) => {}
             Action::HelpScroll(amount) => {
                 let visible = self.rows.saturating_sub(4).min(28);
                 self.ui.help_offset = self

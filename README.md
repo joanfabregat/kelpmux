@@ -7,7 +7,7 @@
 <p align="center">
   <a href="https://github.com/joanfabregat/kelpmux/actions/workflows/ci.yml"><img src="https://github.com/joanfabregat/kelpmux/actions/workflows/ci.yml/badge.svg?branch=main" alt="CI status"></a>
   <a href="https://github.com/joanfabregat/kelpmux/actions/workflows/release-build.yml"><img src="https://github.com/joanfabregat/kelpmux/actions/workflows/release-build.yml/badge.svg?branch=main" alt="Release build status"></a>
-  <a href="docs/releases.md"><img src="https://img.shields.io/badge/version-0.2.0--beta.2-blue" alt="Version 0.2.0-beta.2"></a>
+  <a href="docs/releases.md"><img src="https://img.shields.io/badge/version-0.2.0--beta.3-blue" alt="Version 0.2.0-beta.3"></a>
   <a href="LICENSE"><img src="https://img.shields.io/github/license/joanfabregat/kelpmux" alt="License: Apache-2.0"></a>
   <a href="#build-and-validate"><img src="https://img.shields.io/badge/Rust-1.85%2B-orange?logo=rust" alt="Rust 1.85 or newer"></a>
   <a href="docs/native.md"><img src="https://img.shields.io/badge/Linux-x86__64%20%7C%20ARM64-blue?logo=linux" alt="Linux x86-64 and ARM64"></a>
@@ -73,3 +73,7 @@ Older metadata/helper commands remain available for existing tmux 3.8+ workspace
 Native state uses the XDG state directory or `~/.local/state/kelpmux`; workspace names select independent private endpoints. The discovery worker writes its private registry and seven-day journal under each server's state root. Explicit foreground servers can choose a dedicated socket and state directory. See [architecture](docs/architecture.md) for protocol, geometry, discovery and process-safety boundaries.
 
 Release builds validate the repository and package GNU/Linux x86-64 and ARM64 binaries, documentation, locked dependency licenses and checksums. A version string alone does not publish a release, install a binary or start a service. See the [release procedure](docs/releases.md).
+
+## Unreleased native-client foundation
+
+Development beta.3 adds experimental independent pane streams, per-pane control/size leases, an SSH stdio bridge, read-only reference inspection and matching-client attachment without restarting workspaces. It also fixes a fragmented-Unicode rendering bug and adds conformance and nine-pane stress coverage. Existing beta.2/alpha sessions keep their current behavior until explicitly replaced. See the [implemented stream contract](docs/native-client-protocol.md) and [proposed native/MCP/device ADR](docs/adr/0001-native-client-protocol-and-device-capabilities.md). Native applications and MCP/device access remain future work.

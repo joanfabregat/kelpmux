@@ -124,6 +124,8 @@ fn run() -> Result<()> {
                 | "diagnostics"
                 | "templates"
                 | "benchmark"
+                | "bridge"
+                | "stream-inspect"
         )
     }) {
         return kelpmux::native::cli::run(&args);

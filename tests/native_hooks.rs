@@ -23,6 +23,7 @@ fn native_hooks_require_live_identity_and_store_only_session_metadata() {
         cwd: "/".into(),
         status: Status::Unknown,
         source: "fixture".into(),
+        observation: Default::default(),
         first_seen: kelpmux::now(),
         last_seen: kelpmux::now(),
         ended_at: None,

@@ -512,6 +512,7 @@ fn pane_palette_stays_fixed_across_status_focus_and_native_reading() {
                     cwd: pane.cwd.clone(),
                     status,
                     source: "test".into(),
+                    observation: Default::default(),
                     first_seen: 0,
                     last_seen: 0,
                     ended_at: None,
