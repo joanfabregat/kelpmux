@@ -64,7 +64,21 @@ impl Daemon {
         daemon
     }
     fn connect(&self) -> Peer {
-        Peer::new(UnixStream::connect(&self.socket).unwrap())
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            match UnixStream::connect(&self.socket) {
+                Ok(stream) => return Peer::new(stream),
+                Err(error)
+                    if matches!(
+                        error.kind(),
+                        std::io::ErrorKind::NotFound | std::io::ErrorKind::ConnectionRefused
+                    ) && Instant::now() < deadline =>
+                {
+                    thread::sleep(Duration::from_millis(10));
+                }
+                Err(error) => panic!("server did not accept connections: {error}"),
+            }
+        }
     }
     fn attach(&self) -> Peer {
         let mut peer = self.connect();
