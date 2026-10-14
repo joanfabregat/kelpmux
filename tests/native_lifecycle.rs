@@ -618,3 +618,65 @@ fn ssh_entry_starts_attaches_and_reconnects_with_nonrecursive_shell_environment(
     second.detach();
     fixture.stop();
 }
+
+#[test]
+fn template_start_preserves_names_directories_restart_and_control_after_directory_removal() {
+    let fixture = Fixture::new();
+    let first = fixture.root.join("first-project");
+    let second = fixture.root.join("second-project");
+    fs::create_dir(&first).unwrap();
+    fs::create_dir(&second).unwrap();
+    let template = fixture.root.join("template.json");
+    fs::write(
+        &template,
+        serde_json::to_vec(&serde_json::json!({
+            "grid": [2,1], "panes": [
+                {"name":"Backend","cwd":first,"shell":"/bin/sh"},
+                {"name":"Review","cwd":second}
+            ]
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+    let initial = fixture.start(&["--template", template.to_str().unwrap()]);
+    assert_eq!(initial.len(), 2);
+    assert_eq!(initial[0].title, "Backend");
+    assert_eq!(initial[1].title, "Review");
+    assert_eq!(Path::new(&initial[0].cwd), first);
+    assert_eq!(Path::new(&initial[1].cwd), second);
+    assert_eq!(fixture.start(&[])[0].pid, initial[0].pid);
+    fixture.stop();
+    let restarted = fixture.start(&[]);
+    assert_eq!(restarted.len(), 2);
+    assert_eq!(restarted[1].title, "Review");
+    assert_eq!(Path::new(&restarted[1].cwd), second);
+    fs::remove_dir(&second).unwrap();
+    assert_eq!(fixture.status().len(), 2);
+    assert!(fixture.cmd("diagnostics", &[]).status.success());
+    fixture.stop();
+    assert!(!fixture.cmd("start", &[]).status.success());
+}
+
+#[test]
+fn explicit_template_override_rebalances_saved_grid_weights() {
+    let fixture = Fixture::new();
+    fixture.start(&[]);
+    fixture.stop();
+    let path = fixture.state.join("workspace.json");
+    let mut settings = Settings::load(&path).unwrap();
+    settings.grid = (2, 1);
+    settings.grid_weights = [vec![600, 400], vec![1000]];
+    fs::write(&path, serde_json::to_vec(&settings).unwrap()).unwrap();
+    let template = fixture.root.join("template.json");
+    fs::write(&template, b"{\"grid\":[3,2],\"panes\":[]}").unwrap();
+    assert_eq!(
+        fixture
+            .start(&["--template", template.to_str().unwrap()])
+            .len(),
+        6
+    );
+    let saved = Settings::load(&path).unwrap();
+    assert_eq!(saved.grid, (3, 2));
+    assert!(saved.grid_weights.iter().all(Vec::is_empty));
+    fixture.stop();
+}

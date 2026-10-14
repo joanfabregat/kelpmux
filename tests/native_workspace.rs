@@ -211,8 +211,14 @@ fn help_close_button_and_footer_toggle_close_without_application_input() {
     ws.help = true;
     let f = frame(&ws);
     let mut router = Router::default();
-    // Help uses a 76x18 centered rectangle; close is its three rightmost header cells.
-    for point in [Point { x: 86, y: 5 }, Point { x: 98, y: 29 }] {
+    let bounds = kelpmux::native::input::help_bounds(f.cols, f.rows);
+    for point in [
+        Point {
+            x: bounds.x + bounds.cols - 2,
+            y: bounds.y,
+        },
+        Point { x: 98, y: 29 },
+    ] {
         let messages = router.route(mouse(point, MouseKind::Press), &f);
         assert_eq!(action(&messages), vec![Action::Help]);
         assert_eq!(messages.len(), 1);

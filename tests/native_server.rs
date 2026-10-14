@@ -25,6 +25,8 @@ impl Daemon {
         ));
         fs::create_dir(&root).unwrap();
         let config = ServerConfig {
+            initial_weights: Default::default(),
+            template: None,
             socket: root.join("native.sock"),
             state_dir: root.join("state"),
             shell: "/bin/sh".into(),
@@ -90,7 +92,26 @@ impl Drop for Daemon {
     }
 }
 fn next(stream: &mut UnixStream) -> ServerMessage {
-    read_message(stream).unwrap().expect("server disconnected")
+    use std::{cell::RefCell, collections::BTreeMap, os::fd::AsRawFd};
+    thread_local! {static FRAMES:RefCell<BTreeMap<i32,(u64,Frame)>>=const { RefCell::new(BTreeMap::new()) };}
+    let message = read_message(stream).unwrap().expect("server disconnected");
+    FRAMES.with(|frames| {
+        let mut frames = frames.borrow_mut();
+        match message {
+            ServerMessage::Frame(frame) => {
+                frames.insert(stream.as_raw_fd(), (1, frame.clone()));
+                ServerMessage::Frame(frame)
+            }
+            ServerMessage::Patch(patch) => {
+                let (revision, previous) =
+                    frames.get(&stream.as_raw_fd()).expect("patch before frame");
+                let frame = kelpmux::native::delta::apply(previous, *revision, &patch).unwrap();
+                frames.insert(stream.as_raw_fd(), (patch.revision, frame.clone()));
+                ServerMessage::Frame(frame)
+            }
+            other => other,
+        }
+    })
 }
 fn state(stream: &mut UnixStream) -> (Vec<PaneInfo>, Option<u64>) {
     write_message(stream, &ClientMessage::Inspect).unwrap();
@@ -204,6 +225,8 @@ fn malformed_clients_and_unread_observer_do_not_block_server() {
 fn active_server_lock_and_symlink_socket_are_rejected() {
     let daemon = Daemon::start();
     let config = ServerConfig {
+        initial_weights: Default::default(),
+        template: None,
         socket: daemon.root.join("native.sock"),
         state_dir: daemon.root.join("state"),
         shell: "/bin/sh".into(),
@@ -219,6 +242,8 @@ fn active_server_lock_and_symlink_socket_are_rejected() {
     let link = daemon.root.join("link.sock");
     std::os::unix::fs::symlink(&target, &link).unwrap();
     let config = ServerConfig {
+        initial_weights: Default::default(),
+        template: None,
         socket: link,
         state_dir: daemon.root.join("other-state"),
         shell: "/bin/sh".into(),

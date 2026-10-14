@@ -25,9 +25,10 @@ use std::{
 };
 
 pub const HELP: &str = "Owned native terminal workspaces (Linux):
-  kelpmux start [--workspace NAME] [--config PATH] [--shell PATH] [--cwd PATH]
+  kelpmux start [--workspace NAME] [--config PATH] [--template PATH] [--shell PATH] [--cwd PATH]
   kelpmux ssh-entry [--workspace NAME] [--takeover]
-  kelpmux status|stop|recover [--workspace NAME]
+  kelpmux status|stop|recover|diagnostics|templates [--workspace NAME]
+  kelpmux benchmark
   kelpmux server [--socket PATH] [--state-dir PATH] [--shell PATH] [--cwd PATH] [--size CxR] [--config PATH]
   kelpmux attach [--workspace NAME] [--socket PATH] [--takeover]
   kelpmux ctl [--socket PATH] list|layout CxR|focus ID|read ID|fullscreen ID|close|shutdown
@@ -37,7 +38,10 @@ Default workspace: main; socket: $XDG_STATE_HOME/kelpmux/workspaces/main/control
   (falls back to ~/.local/state/kelpmux/workspaces/main/control.sock)
 Grids: 1x1, 2x1, 2x2, 3x2, 2x3, 3x3. Shrinking preserves occupied panes.
 Attach keys: Ctrl-B d detach, z grid/tabs, f full width, g grid picker,
-  a agents, ! attention, n finished, s move, ? help. Configurable in --config JSON.";
+  a agents, ! attention, n finished, s move, ? help, , settings,
+  o overview, b notifications, r recovery, / search, c scratch,
+  N next question, P next completion, Space selection, H/L/K/J resize grid.
+Configurable in --config JSON. Scratch is persistent until explicitly closed.";
 const TIMEOUT: Duration = Duration::from_secs(3);
 const ESCAPE_TIMEOUT: Duration = Duration::from_millis(35);
 // JSON encodes byte arrays as decimal integers: a 64 KiB paste can exceed
@@ -87,6 +91,7 @@ fn options(args: &[String]) -> Result<Options> {
     let mut config_path = None;
     let mut shell_explicit = false;
     let mut cwd_explicit = false;
+    let mut template_path = None;
     while position < args.len() {
         let arg = &args[position];
         position += 1;
@@ -102,6 +107,7 @@ fn options(args: &[String]) -> Result<Options> {
             let value = args.get(position).ok_or("option needs a value")?;
             position += 1;
             match arg.as_str() {
+                "--template" => template_path = Some(PathBuf::from(value)),
                 "--socket" => {
                     result.socket = PathBuf::from(value);
                     socket_explicit = true;
@@ -164,6 +170,12 @@ fn options(args: &[String]) -> Result<Options> {
             Ok(std::env::current_dir()?.join(path))
         }
     };
+    if let Some(path) = template_path {
+        let template = super::templates::Template::load(&absolute(&path)?)?;
+        result.settings.grid = template.grid;
+        result.settings.grid_weights = [Vec::new(), Vec::new()];
+        result.settings.template = Some(template);
+    }
     result.socket = absolute(&result.socket)?;
     result.state = absolute(&result.state)?;
     result.shell = absolute(&result.shell)?;
@@ -186,6 +198,8 @@ pub fn run(args: &[String]) -> Result<()> {
                 return Ok(());
             }
             server::serve(ServerConfig {
+                initial_weights: options.settings.grid_weights,
+                template: options.settings.template,
                 socket: options.socket,
                 state_dir: options.state,
                 shell: options.shell,
@@ -213,11 +227,26 @@ pub fn run(args: &[String]) -> Result<()> {
             }
         }
         "status" => control(&options.socket, &["list".into()]),
+        "diagnostics" => control(&options.socket, &["diagnostics".into()]),
+        "templates" => {
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&super::templates::list(&options.state)?)?
+            );
+            Ok(())
+        }
+        "benchmark" => {
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&super::diagnostics::benchmark()?)?
+            );
+            Ok(())
+        }
         "stop" => control(&options.socket, &["shutdown".into()]),
         "recover" => {
             println!(
                 "{}",
-                serde_json::to_string_pretty(&super::tracking::recovery(&options.state)?)?
+                serde_json::to_string_pretty(&super::recovery::collect(&options.state)?)?
             );
             Ok(())
         }
@@ -316,6 +345,7 @@ fn control(path: &Path, args: &[String]) -> Result<()> {
     };
     let message = match command.as_str() {
         "list" if rest.is_empty() => ClientMessage::Inspect,
+        "diagnostics" if rest.is_empty() => ClientMessage::Diagnostics,
         "layout" if rest.len() == 1 => {
             let (cols, rows) = parse_size(&rest[0])?;
             if cols > u8::MAX.into() || rows > u8::MAX.into() {
@@ -337,7 +367,7 @@ fn control(path: &Path, args: &[String]) -> Result<()> {
     let mut socket = connect(path)?;
     write_message(&mut socket, &message)?;
     match response(&mut socket)? {
-        state @ ServerMessage::State { .. } => {
+        state @ (ServerMessage::State { .. } | ServerMessage::Diagnostics(_)) => {
             println!("{}", serde_json::to_string_pretty(&state)?);
             Ok(())
         }
@@ -576,6 +606,7 @@ impl Channel {
     }
 }
 fn validate_frame(frame: &Frame) -> Result<()> {
+    frame.ui.config.validate()?;
     validate_size(frame.cols, frame.rows)?;
     if frame.cells.len() != usize::from(frame.cols) * usize::from(frame.rows)
         || frame.panes.len() > 10
@@ -765,6 +796,7 @@ fn attach(path: &Path, takeover: bool) -> Result<()> {
     let mut stdout = TerminalWriter;
     let mut notice: Option<String> = None;
     let mut pending = VecDeque::new();
+    let mut revision = 0;
     loop {
         if INTERRUPTED.load(Ordering::Relaxed) {
             return Ok(());
@@ -786,6 +818,17 @@ fn attach(path: &Path, takeover: bool) -> Result<()> {
             match message {
                 ServerMessage::Frame(frame) => {
                     validate_frame(&frame)?;
+                    revision = 1;
+                    newest = Some(frame);
+                }
+                ServerMessage::Patch(patch) => {
+                    let previous = newest
+                        .as_ref()
+                        .or(latest.as_ref())
+                        .ok_or("frame patch arrived before a snapshot")?;
+                    let frame = super::delta::apply(previous, revision, &patch)?;
+                    validate_frame(&frame)?;
+                    revision = patch.revision;
                     newest = Some(frame);
                 }
                 ServerMessage::Clipboard(text) => {
@@ -804,7 +847,18 @@ fn attach(path: &Path, takeover: bool) -> Result<()> {
             }
         }
         if let Some(frame) = newest {
+            let sound = frame.controller
+                && frame.ui.config.notification_sound
+                && latest.as_ref().is_some_and(|old| {
+                    frame.ui.notifications.iter().any(|event| {
+                        !event.read && !old.ui.notifications.iter().any(|seen| seen.id == event.id)
+                    })
+                });
             paint(&mut stdout, &mut painted, &frame, size, notice.as_deref())?;
+            if sound {
+                stdout.write_all(b"\x07")?;
+                stdout.flush()?;
+            }
             latest = Some(frame);
         } else if error_changed {
             if let Some(frame) = latest.as_ref() {
