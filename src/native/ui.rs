@@ -33,6 +33,10 @@ pub enum AgentFilter {
 }
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum DialogKind {
+    Overview,
+    Notifications,
+    Recovery,
+    Search,
     Grid,
     Agents,
     Move,
@@ -49,6 +53,7 @@ pub struct Dialog {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct UiConfig {
+    pub notification_sound:bool,
     pub prefix: u8,
     pub read_width: u16,
     pub read_height_percent: u8,
@@ -58,6 +63,7 @@ pub struct UiConfig {
 impl Default for UiConfig {
     fn default() -> Self {
         Self {
+            notification_sound:false,
             prefix: 2,
             read_width: 120,
             read_height_percent: 95,
@@ -98,6 +104,7 @@ impl UiConfig {
             "unbound",
             "tab-position",
             "config",
+            "overview", "notifications", "recovery", "next-attention", "next-finished", "scratch", "search",
         ];
         if self.bindings.iter().any(|(key, action)| {
             key.len() != 1 || !key.is_ascii() || !ACTIONS.contains(&action.as_str())
@@ -109,6 +116,16 @@ impl UiConfig {
 }
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct UiState {
+    pub notifications:Vec<super::protocol::Notification>,
+    pub recovery:Vec<super::protocol::RecoveryItem>,
+    pub search_query:String,
+    pub search_all:bool,
+    pub search_hits:Vec<super::protocol::SearchHit>,
+    pub scratch:Option<u64>,
+    pub scratch_visible:bool,
+    pub scratch_return:Option<u64>,
+    pub column_weights:Vec<u16>,
+    pub row_weights:Vec<u16>,
     pub dialog: Option<Dialog>,
     pub config: UiConfig,
     pub unused: Vec<u64>,
