@@ -49,7 +49,22 @@ impl Daemon {
         daemon
     }
     fn connect(&self) -> UnixStream {
-        let stream = UnixStream::connect(self.root.join("native.sock")).unwrap();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let stream = loop {
+            match UnixStream::connect(self.root.join("native.sock")) {
+                Ok(stream) => break stream,
+                Err(error)
+                    if matches!(
+                        error.kind(),
+                        std::io::ErrorKind::NotFound | std::io::ErrorKind::ConnectionRefused
+                    ) && Instant::now() < deadline =>
+                {
+                    // bind creates the path just before listen makes it ready.
+                    thread::sleep(Duration::from_millis(10));
+                }
+                Err(error) => panic!("daemon did not accept connections: {error}"),
+            }
+        };
         stream
             .set_read_timeout(Some(Duration::from_secs(5)))
             .unwrap();

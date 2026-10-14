@@ -64,7 +64,21 @@ impl Daemon {
         daemon
     }
     fn connect(&self) -> Peer {
-        Peer::new(UnixStream::connect(&self.socket).unwrap())
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            match UnixStream::connect(&self.socket) {
+                Ok(stream) => return Peer::new(stream),
+                Err(error)
+                    if matches!(
+                        error.kind(),
+                        std::io::ErrorKind::NotFound | std::io::ErrorKind::ConnectionRefused
+                    ) && Instant::now() < deadline =>
+                {
+                    thread::sleep(Duration::from_millis(10));
+                }
+                Err(error) => panic!("server did not accept connections: {error}"),
+            }
+        }
     }
     fn attach(&self) -> Peer {
         let mut peer = self.connect();
@@ -626,8 +640,17 @@ fn incremental_frames_survive_backpressure_takeover_and_metadata_only_diagnostic
             .any(|cell| cell.fg == Color::Indexed(1))
     );
     let patches = observer.patch;
-    controller.input("printf 'PATCH_''AGAIN\\n'\n");
+    // Keep reading while the shell waits, draining both command echo and any
+    // recovery snapshot before a separate output change arrives.
+    controller.input("sleep 1; printf 'PATCH_''AGAIN\\n'\n");
     observer.wait(|frame| text(frame).contains("PATCH_AGAIN"));
+    // The first small update can still replace an in-flight recovery frame.
+    // Keep consuming updates until the queue drains and revisioned patches
+    // resume. The delayed output above separates recovery from new output.
+    let deadline = Instant::now() + Duration::from_secs(6);
+    while observer.patch == patches && Instant::now() < deadline {
+        observer.read();
+    }
     assert!(
         observer.patch > patches,
         "transport did not resume patches after recovery snapshot"
