@@ -110,7 +110,14 @@ impl State {
                 self.vitals = update.vitals;
             }
             Event::Lease { pane, owner } => {
-                if self.epoch.is_empty() || pane == 0 || owner == Some(0) {
+                if self.epoch.is_empty()
+                    || pane == 0
+                    || owner == Some(0)
+                    || !self.panes.is_empty() && !self.panes.iter().any(|info| info.id == pane)
+                    || owner.is_some()
+                        && !self.leases.iter().any(|lease| lease.pane == pane)
+                        && self.leases.len() >= 10
+                {
                     return Err("invalid native lease event".into());
                 }
                 self.leases.retain(|l| l.pane != pane);
@@ -131,7 +138,7 @@ pub fn inspect(mut socket: UnixStream, panes: Vec<PaneId>) -> Result<State> {
     {
         return Err("invalid inspection subscriptions".into());
     }
-    socket.set_read_timeout(Some(Duration::from_secs(5)))?;
+    let deadline = Instant::now() + Duration::from_secs(8);
     socket.set_write_timeout(Some(Duration::from_secs(5)))?;
     write_message(
         &mut socket,
@@ -140,7 +147,7 @@ pub fn inspect(mut socket: UnixStream, panes: Vec<PaneId>) -> Result<State> {
         }),
     )?;
     let mut state = State::default();
-    match read_message(&mut socket)? {
+    match receive(&mut socket, deadline)? {
         Some(ServerMessage::Stream(event @ Event::Welcome { .. })) => state.apply(event)?,
         Some(ServerMessage::Error(message)) => return Err(message.into()),
         _ => return Err("workspace does not support native streams".into()),
@@ -151,12 +158,11 @@ pub fn inspect(mut socket: UnixStream, panes: Vec<PaneId>) -> Result<State> {
             panes: panes.clone(),
         }),
     )?;
-    let deadline = Instant::now() + Duration::from_secs(8);
     loop {
         if Instant::now() >= deadline {
             return Err("native inspection timed out".into());
         }
-        match read_message(&mut socket)? {
+        match receive(&mut socket, deadline)? {
             Some(ServerMessage::Stream(event)) => state.apply(event)?,
             Some(ServerMessage::Error(message)) => return Err(message.into()),
             _ => return Err("native inspection disconnected".into()),
@@ -169,4 +175,25 @@ pub fn inspect(mut socket: UnixStream, panes: Vec<PaneId>) -> Result<State> {
             return Ok(state);
         }
     }
+}
+
+fn receive(socket: &mut UnixStream, deadline: Instant) -> Result<Option<ServerMessage>> {
+    struct Reader<'a> {
+        socket: &'a mut UnixStream,
+        deadline: Instant,
+    }
+    impl std::io::Read for Reader<'_> {
+        fn read(&mut self, buffer: &mut [u8]) -> std::io::Result<usize> {
+            let remaining = self.deadline.saturating_duration_since(Instant::now());
+            if remaining.is_zero() {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::TimedOut,
+                    "native inspection timed out",
+                ));
+            }
+            self.socket.set_read_timeout(Some(remaining))?;
+            std::io::Read::read(self.socket, buffer)
+        }
+    }
+    read_message(&mut Reader { socket, deadline })
 }

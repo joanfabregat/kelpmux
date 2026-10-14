@@ -1,23 +1,68 @@
-# Native client boundary
+# Native client foundation
 
-Kelpmux owns long-running PTYs and terminal interpretation; clients own presentation. Grid and tabs are alternate views of the same stable pane IDs. Dialogs belong to a frontend and do not create another agent terminal. The terminal frontend currently shares workspace presentation with its controller; this is an implementation of a client, not the eventual native-client layout contract.
+Kelpmux owns long-running PTYs and Alacritty terminal interpretation. Clients own presentation. Native mode has no tmux or WezTerm runtime dependency. The composed ANSI frontend remains protocol v4; the separate experimental pane stream is v1. This foundation is part of the unreleased beta.3 code, not the installed beta.2 binary. A graphical desktop/mobile client and MCP/device tools are not implemented.
 
-## Transport direction
+The broader proposed contract is [ADR 0001](adr/0001-native-client-protocol-and-device-capabilities.md). It covers pane lifecycle, independent device sizes, live agent status, notifications, remote Vitals and a future MCP/device request channel. The ADR deliberately distinguishes those proposals from the implemented requests below.
 
-A future desktop, iPad or iPhone client should authenticate through SSH and open a dedicated command channel, for example `kelpmux bridge --workspace main`. This bridge is a planned command, not a command available in this beta. It will forward versioned, length-prefixed Kelpmux messages between SSH standard input/output and the existing private Unix socket. One SSH connection can carry all panes: each terminal message carries a stable pane ID, allowing the native client to demultiplex updates into its own views. SSH handles authentication, encryption and flow control; Kelpmux needs no additional listening network port.
+## SSH command channel
 
-The native channel must use an SSH command request without an outer PTY. Outer PTYs can translate bytes and merge diagnostics into the protocol. Existing terminal clients continue using an interactive SSH PTY and the ANSI frontend. Shell startup scripts must not print anything into a native protocol channel. Diagnostics go to stderr, and the bridge must forward bounded messages, check peer ownership and handle disconnects without terminating terminals.
+`kelpmux bridge --workspace NAME` relays bounded native-stream records between standard input/output and the existing owned private Unix socket. It does not start a workspace or attach an ANSI frontend. A future native client opens it through one authenticated SSH command channel without an outer PTY:
 
-## Independent terminal data
+```sh
+ssh -T HOST kelpmux bridge --workspace NAME
+```
 
-The beta provides `InspectPane { pane }` and `PaneState { pane, screen }` as an initial presentation-independent seam. A screen contains terminal cells with colors and attributes, cursor position and input modes. It is independent of composed terminal UI headers, tabs and footer cells. Inspection does not change control ownership, active pane or terminal dimensions. Unknown pane IDs return an error.
+Use the installed binary's absolute path if it is not in the remote noninteractive PATH. SSH supplies authentication, encryption and transport; there is no additional public port. Shell banners must not appear on stdout. Bridge diagnostics go to stderr, and a TTY endpoint is rejected before terminal-mode changes. EOF detaches that connection and releases its leases, preserving workspace processes. Unacknowledged requests are not automatically replayed. The bridge does not provide mobile roaming or background push delivery.
 
-A complete native-client protocol will add subscriptions, per-pane revisions and cell deltas, pane-addressed input/mouse/resize requests, and paginated history/selection/search. All mutating requests must follow explicit controller ownership, size and input limits. Clients reconnect by requesting a snapshot and then subscribing from its revision. Slow consumers receive bounded queues and resynchronization rather than unbounded retained updates. A client can maintain one subscription for each terminal while rendering only the current tab.
+## Framing and negotiation
 
-Protocol version 4 adds revision-checked patches for composed terminal-frontend frames and a bounded, read-only `History { pane, start, limit }` request (at most 200 lines). Negative line indices refer to scrollback and zero starts the live screen. A full frame resets the frontend revision to 1; a patch is applicable only to its declared base revision. Slow-client replacement uses a full snapshot. These are implemented primitives, but independent per-pane subscriptions and the SSH bridge remain future work; composed frame patches are not yet a native-client stream API.
+Every record has a four-byte unsigned big-endian payload length followed by UTF-8 JSON, with a 16 MiB maximum payload. JSON examples below are payloads, not newline-delimited wire records. Use the same framing over the local Unix socket or SSH bridge.
 
-Decoded cells are the first implementation target. Alacritty on the server remains the authoritative emulator and answers application terminal queries. Sending raw VT bytes into another emulator would require an explicit policy that prevents both emulators from answering the same query. Native scrolling means clients request history ranges and render them locally; it does not require mirroring the terminal frontend's scrolling position.
+```json
+{"Stream":{"type":"hello","version":1}}
+```
 
-## Responsive presentation
+The server responds with `Stream` / `welcome`, containing stream version, connection/client ID, a random server epoch, and supported capabilities. Send Hello exactly once before other stream requests. Legacy TUI/management messages are rejected on a negotiated stream connection and by the bridge. Unsupported versions fail clearly. Current capabilities are `pane-snapshots`, `pane-patches`, `pane-leases`, `metadata`, `notifications` and `vitals`; do not infer support for undeclared future capabilities.
 
-The terminal frontend selects top, left or compact bottom tab navigation from available character dimensions and permits an explicit override. This is a geometry decision rather than device detection. A native client can choose its own adaptive UI from pixel dimensions and platform conventions, retain native scrolling and accessibility, and keep processes alive when views change. These client layouts must never implicitly close hidden terminals.
+Pane IDs are scoped to the Welcome epoch. A new epoch invalidates previous screen baselines and ownership. Clients must negotiate anew, obtain snapshots, and deliberately rebuild desired control state rather than replaying old mutations. Experimental v1 does not yet carry correlation IDs or an expected epoch on every mutation; these remain part of public-contract maturation in the ADR.
+
+## Pane subscriptions and updates
+
+```json
+{"Stream":{"type":"subscribe","panes":[1,2]}}
+```
+
+Subscribe replaces the complete subscription set. Updates contain an authoritative `subscribed` list, full metadata for current panes, leases, notifications, Vitals, and snapshots or patches for subscribed terminal screens. Metadata-only subscriptions use an empty list. The reference client prunes cached screens according to each received update's subscription list, safely processing older in-flight updates before a replacement set arrives.
+
+A full pane snapshot establishes revision 1. A patch names the pane, base revision and resulting revision; it applies only to that exact pane baseline in the current server epoch. Geometry changes, explicit `resync` and backpressure can produce replacement snapshots. Snapshots contain cells with colors/attributes/widths, cursor and input modes; they do not contain native headers, tabs or footer cells. Alacritty remains the only emulator answering application terminal queries.
+
+There are at most ten subscribed panes and 100,000 aggregate subscribed screen cells per connection. Oversized subscriptions are rejected. A later size change exceeding an observer's aggregate budget disconnects that observer instead of retaining unbounded data. The server retains one in-flight packet and one replaceable aggregate update. The bridge has separate bounded queues in each direction and yields between decode batches. A permanently slow client can be disconnected and resynchronize on reconnect.
+
+## Independent ownership and size
+
+`claim {pane,takeover}` explicitly acquires one pane; `release {pane}` relinquishes it. `resize {pane,cols,rows}`, `input {pane,bytes}`, `paste {pane,bytes}` and `mouse {pane,event}` require the caller's lease. Input/paste are bounded to 64 KiB. Paste honors the pane's bracketed-paste mode; native mouse events currently support SGR encoding. An observer cannot write or resize a pane.
+
+Client A can own pane 1 at 240 × 70 cells while client B owns pane 2 at 40 × 12 cells. Native pane sizes permit 2–400 columns and 1–160 rows, independently of the ANSI frontend's 40 × 10 minimum window. Each pane still has exactly one underlying PTY size. Observers of that same pane clip/scale locally and cannot impose a competing size.
+
+Leases last for the connection; release/disconnect restores the current base workspace geometry. Takeover is explicit. The terminal frontend cannot implicitly resize or write to a native-owned pane, and safe grid shrink excludes leased panes. `kelpmux ctl --workspace NAME reclaim ID` explicitly returns a pane to terminal-frontend control. Attached TUI observers cannot bypass control using management messages. Workspace administration and explicit shutdown remain separate same-user local operations; this is not isolation against hostile processes running as that user.
+
+## State, notifications and Vitals
+
+Pane metadata carries identity, agent kind, session ID if known, status, activity times and status observation evidence. Evidence distinguishes process, lifecycle hook, live record, agent-server and transcript observations. `checked_at` records a check; optional `event_at` records an actual known event time. Reading an old transcript again does not invent a new lifecycle event. Unknown or stale evidence remains visible in the overview, and an idle observation does not become a completed turn automatically.
+
+Updates include the latest 128 retained notifications and explicit `acknowledge {notification}`. This is a bounded snapshot of notification history, not exactly-once event delivery or a question/answer RPC. Existing seven-day retention and persisted unread state remain. No native device notification or push service is invoked.
+
+Vitals are typed values from the existing in-process sampler, independent of footer styling: CPU, memory, swap and disk percentages, plus server-local date/time strings. Missing values stay unavailable. Sample timestamps, byte totals, mount labels, timezone-aware conversion and richer metrics are proposed additions; clients must not treat the current clock strings as timezone-independent timestamps.
+
+## Reference client and inspection
+
+The Rust `native::reference::State` validates welcome/epoch, membership, screen/cell bounds, leases and patch baselines before committing changes. Failed updates leave previous baselines intact. `stream-inspect` is a read-only one-shot reference client with an absolute operation deadline:
+
+```sh
+kelpmux stream-inspect --workspace NAME
+kelpmux stream-inspect --workspace NAME 1 2
+```
+
+With no pane IDs it returns metadata only; explicit IDs add those panes' terminal cells to JSON stdout. It does not claim, resize, become the TUI controller, start a server or persist terminal contents. Automated tests use actual bridge subprocess pipes, disposable PTYs and typed reference state; they do not open a real SSH login or access a native device.
+
+The older `InspectPane` and bounded `History {pane,start,limit}` requests remain local inspection seams. Current history uses relative line indices and plain text; stable, styled native-history pagination is not implemented. Native pane create/rename/terminate commands, device capability requests, attachments, MCP, native apps and final public-protocol compatibility guarantees remain future work described in ADR 0001.

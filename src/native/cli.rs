@@ -33,7 +33,7 @@ pub const HELP: &str = "Owned native terminal workspaces (Linux):
   kelpmux stream-inspect [--workspace NAME] [PANE_ID ...]
   kelpmux server [--socket PATH] [--state-dir PATH] [--shell PATH] [--cwd PATH] [--size CxR] [--config PATH]
   kelpmux attach [--workspace NAME] [--socket PATH] [--takeover] [--current-client]
-  kelpmux ctl [--socket PATH] list|layout CxR|focus ID|read ID|fullscreen ID|close|shutdown
+  kelpmux ctl [--socket PATH] list|layout CxR|focus ID|read ID|fullscreen ID|reclaim ID|close|shutdown
 
 start owns a detached server; ssh-entry starts or attaches. stop ends its processes.
 --current-client explicitly skips retained-client selection; the protocol handshake remains mandatory.

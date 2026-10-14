@@ -42,7 +42,7 @@ impl Daemon {
             thread: Some(handle),
         };
         let deadline = Instant::now() + Duration::from_secs(5);
-        while !daemon.root.join("control.sock").exists() {
+        while UnixStream::connect(daemon.root.join("control.sock")).is_err() {
             assert!(Instant::now() < deadline);
             thread::sleep(Duration::from_millis(10));
         }
@@ -311,6 +311,33 @@ fn handshake_bounds_mixed_modes_resync_and_tui_coexistence() {
         }
     }
     assert_eq!(d.inspect(1).cols, 140);
+    let mut observer = d.socket();
+    write_message(
+        &mut observer,
+        &ClientMessage::Attach {
+            version: VERSION,
+            cols: 80,
+            rows: 24,
+            takeover: false,
+        },
+    )
+    .unwrap();
+    loop {
+        if matches!(
+            read_message::<ServerMessage>(&mut observer).unwrap(),
+            Some(ServerMessage::Welcome { .. })
+        ) {
+            break;
+        }
+    }
+    write_message(&mut observer, &ClientMessage::Command(Action::ClaimPane(1))).unwrap();
+    loop {
+        if let Some(ServerMessage::Error(e)) = read_message(&mut observer).unwrap() {
+            assert!(e.contains("observer"));
+            break;
+        }
+    }
+    assert_eq!(d.inspect(1).cols, 140);
     write_message(&mut a.socket, &ClientMessage::Command(Action::Shutdown)).unwrap();
     loop {
         if let Some(ServerMessage::Error(e)) = read_message(&mut a.socket).unwrap() {
@@ -515,11 +542,17 @@ fn snapshots_and_sparse_patches_are_bounded_and_epoch_changes_on_restart() {
     };
     stream::validate(&old).unwrap();
     let mut changed = old.screen.clone();
-    changed.cells[399].text = "界".into();
-    changed.cells[399].width = 2;
+    changed.cells[398].text = "界".into();
+    changed.cells[398].width = 2;
+    changed.cells[399].text.clear();
+    changed.cells[399].width = 0;
     let patch = stream::diff(&old, &changed).unwrap();
     assert_eq!(patch.base, 1);
     assert_eq!(stream::apply(&old, &patch).unwrap().screen, changed);
+    let mut orphan = old.clone();
+    orphan.screen.cells[399].text = "界".into();
+    orphan.screen.cells[399].width = 2;
+    assert!(stream::validate(&orphan).is_err());
     let mut malformed = old.clone();
     malformed.screen.cells.clear();
     assert!(stream::validate(&malformed).is_err());
@@ -541,4 +574,36 @@ fn snapshots_and_sparse_patches_are_bounded_and_epoch_changes_on_restart() {
         read_message::<ServerMessage>(&mut peer).unwrap(),
         Some(ServerMessage::Stream(Event::Error { .. }))
     ));
+}
+
+#[test]
+fn small_panes_and_large_request_batches_preserve_leases_and_processes() {
+    use std::io::Write;
+    let daemon = Daemon::start();
+    let mut peer = daemon.peer();
+    peer.lease(1, false);
+    peer.send(Request::Resize {
+        pane: 1,
+        cols: 12,
+        rows: 3,
+    });
+    peer.send(Request::Subscribe { panes: vec![1] });
+    peer.until(1, |screen| screen.cols == 12 && screen.rows == 3);
+    assert_eq!(daemon.inspect(1).cols, 12);
+    let mut batch = Vec::new();
+    for _ in 0..99 {
+        write_message(
+            &mut batch,
+            &ClientMessage::Stream(Request::Subscribe { panes: vec![] }),
+        )
+        .unwrap();
+    }
+    write_message(
+        &mut batch,
+        &ClientMessage::Stream(Request::Subscribe { panes: vec![2] }),
+    )
+    .unwrap();
+    peer.socket.write_all(&batch).unwrap();
+    peer.until(2, |_| true);
+    assert_eq!(daemon.inspect(1).cols, 12);
 }

@@ -83,6 +83,7 @@ impl Queue {
 struct Incoming {
     bytes: Vec<u8>,
     started: Option<Instant>,
+    initialized: bool,
 }
 impl Incoming {
     fn read(&mut self, fd: i32, client: bool, hello: &mut bool, out: &mut Queue) -> Result<bool> {
@@ -106,7 +107,11 @@ impl Incoming {
         }
         self.started.get_or_insert_with(Instant::now);
         self.bytes.extend_from_slice(&chunk[..count as usize]);
-        loop {
+        self.parse(client, hello, out)?;
+        Ok(false)
+    }
+    fn parse(&mut self, client: bool, hello: &mut bool, out: &mut Queue) -> Result<()> {
+        while out.room() {
             if self.bytes.len() < 4 {
                 break;
             }
@@ -131,11 +136,30 @@ impl Incoming {
                 } else if matches!(request, stream::Request::Hello { .. }) {
                     return Err("duplicate bridge hello".into());
                 }
-            } else if !matches!(
-                serde_json::from_slice::<ServerMessage>(payload)?,
-                ServerMessage::Stream(_) | ServerMessage::Error(_)
-            ) {
-                return Err("workspace did not speak the native stream protocol".into());
+            } else {
+                match serde_json::from_slice::<ServerMessage>(payload)? {
+                    ServerMessage::Stream(stream::Event::Welcome {
+                        version,
+                        client,
+                        epoch,
+                        ..
+                    }) => {
+                        if self.initialized
+                            || version != stream::VERSION
+                            || client == 0
+                            || epoch.is_empty()
+                            || epoch.len() > 128
+                            || epoch.chars().any(char::is_control)
+                        {
+                            return Err("invalid native stream server welcome".into());
+                        }
+                        self.initialized = true;
+                    }
+                    ServerMessage::Stream(stream::Event::Error { .. })
+                    | ServerMessage::Error(_) => {}
+                    ServerMessage::Stream(_) if self.initialized => {}
+                    _ => return Err("workspace did not speak the native stream protocol".into()),
+                }
             }
             out.push(self.bytes.drain(..length + 4).collect())?;
             self.started = if self.bytes.is_empty() {
@@ -144,7 +168,7 @@ impl Incoming {
                 Some(Instant::now())
             };
         }
-        Ok(false)
+        Ok(())
     }
     fn timeout(&self) -> Result<()> {
         if self
@@ -174,6 +198,8 @@ pub fn run(socket: UnixStream) -> Result<()> {
     loop {
         to_server.flush(server)?;
         to_client.flush(1)?;
+        inbound.parse(true, &mut hello, &mut to_server)?;
+        outbound.parse(false, &mut hello, &mut to_client)?;
         inbound.timeout()?;
         outbound.timeout()?;
         let mut poll = [
@@ -212,6 +238,12 @@ pub fn run(socket: UnixStream) -> Result<()> {
         }
         if poll[2].revents & (libc::POLLERR | libc::POLLHUP | libc::POLLNVAL) != 0 {
             return Ok(());
+        }
+        if poll[0].revents & libc::POLLHUP != 0 && !to_server.room() {
+            return Ok(());
+        }
+        if poll[1].revents & libc::POLLHUP != 0 && !to_client.room() {
+            return Err("workspace closed the backpressured native stream".into());
         }
         if poll[0].revents & (libc::POLLIN | libc::POLLHUP) != 0
             && to_server.room()

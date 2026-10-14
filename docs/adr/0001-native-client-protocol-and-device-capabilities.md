@@ -110,3 +110,9 @@ The protocol remains experimental until a real native client validates it. The M
 - [MCP tools, pinned 2025-11-25 reference](https://modelcontextprotocol.io/specification/2025-11-25/server/tools).
 - [MCP elicitation, pinned 2025-11-25 reference](https://modelcontextprotocol.io/specification/2025-11-25/client/elicitation).
 - [MCP transports, pinned 2025-11-25 reference](https://modelcontextprotocol.io/specification/2025-11-25/basic/transports).
+
+## Initial-foundation limits
+
+The first implementation supports subscriptions, snapshots/deltas, per-pane connection-lived ownership, pane input/resize, metadata, notification snapshots/acknowledgement and existing Vitals values. Native pane creation/termination, stable styled-history anchors, request correlation, MCP and device capabilities remain proposed. Current Vitals contain percentages and server-local clock strings; timestamps, explicit units and timezone-aware conversion require additional fields.
+
+Initial v1 records use FIFO transport queues and may be large. The future device-request/attachment phase must introduce bounded bulk chunks and scheduling before claiming responsive control delivery under heavy transfer. Scheduling cannot remove TCP head-of-line blocking. Multiple SSH channels on the same authenticated connection remain an option if profiling justifies separate flow-control windows; no extra authentication or publicly listening port is implied.

@@ -422,17 +422,7 @@ impl Client {
     fn receive(&mut self) -> Result<Vec<ClientMessage>> {
         let mut messages = vec![];
         let mut buf = [0; 8192];
-        for _ in 0..8 {
-            match self.socket.read(&mut buf) {
-                Ok(0) if !messages.is_empty() => break,
-                Ok(0) => return Err("native client closed".into()),
-                Ok(n) => {
-                    self.started.get_or_insert_with(Instant::now);
-                    self.input.extend_from_slice(&buf[..n]);
-                }
-                Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => break,
-                Err(e) => return Err(e.into()),
-            }
+        for pass in 0..=8 {
             loop {
                 if self.input.len() < 4 {
                     break;
@@ -452,11 +442,26 @@ impl Client {
                     Some(Instant::now())
                 };
                 if messages.len() >= 64 {
-                    return Err("native message flood".into());
+                    // Yield to PTYs and other clients; buffered complete records
+                    // are decoded before the next socket read, even without new bytes.
+                    return Ok(messages);
                 }
             }
             if self.input.len() > MAX_MESSAGE + 4 {
                 return Err("native message buffer full".into());
+            }
+            if pass == 8 {
+                break;
+            }
+            match self.socket.read(&mut buf) {
+                Ok(0) if !messages.is_empty() => break,
+                Ok(0) => return Err("native client closed".into()),
+                Ok(n) => {
+                    self.started.get_or_insert_with(Instant::now);
+                    self.input.extend_from_slice(&buf[..n]);
+                }
+                Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => break,
+                Err(e) => return Err(e.into()),
             }
         }
         if self
@@ -757,7 +762,8 @@ impl Server {
     }
     fn stream_frames(&mut self, vitals: super::vitals::Vitals) {
         use super::stream::{Event, Lease, PaneSnapshot, Update};
-        self.leases.retain(|pane, _| self.panes.contains_key(pane));
+        self.leases
+            .retain(|pane, _| self.panes.get(pane).is_some_and(|pty| !pty.dead));
         let mut removed = Vec::new();
         for (id, client) in &mut self.clients {
             let idle =
@@ -2223,10 +2229,11 @@ pub fn serve(config: ServerConfig) -> Result<()> {
                     .panes
                     .iter()
                     .filter(|info| {
-                        server
-                            .panes
-                            .get(&info.id)
-                            .is_some_and(|pane| pane.unused(&tree))
+                        !server.leases.contains_key(&info.id)
+                            && server
+                                .panes
+                                .get(&info.id)
+                                .is_some_and(|pane| pane.unused(&tree))
                     })
                     .map(|info| info.id)
                     .collect();
