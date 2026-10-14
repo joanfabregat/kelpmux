@@ -367,6 +367,10 @@ fn draw_dialog(frame: &mut Frame, workspace: &Workspace, dialog: super::ui::Dial
     fill(frame, bounds, Color::Indexed(236));
     let title = match dialog.kind {
         DialogKind::Grid => " Grid · arrows, Enter or click",
+        DialogKind::Overview => " Workspace overview",
+        DialogKind::Notifications => " Notifications",
+        DialogKind::Recovery => " Recovery",
+        DialogKind::Search => " Search history",
         DialogKind::Move => " Move active pane · choose destination",
         DialogKind::Config => " Settings · tab position",
         DialogKind::CloseConfirm => " Close this tab?",

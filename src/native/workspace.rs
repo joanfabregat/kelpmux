@@ -188,7 +188,7 @@ impl Workspace {
                     let columns = match dialog.kind {
                         DialogKind::Grid => 3,
                         DialogKind::Move => isize::from(self.grid_cols),
-                        DialogKind::Agents | DialogKind::Config | DialogKind::CloseConfirm => 1,
+                        _ => 1,
                     };
                     dialog.selection =
                         (dialog.selection as isize + isize::from(dx) + isize::from(dy) * columns)
@@ -292,6 +292,7 @@ impl Workspace {
                 self.ui.dialog = None;
             }
             Action::Detach | Action::Takeover | Action::Shutdown => {}
+            _ => return Err("phase-two command handler has not been integrated".into()),
         }
         Ok(())
     }
