@@ -7,13 +7,19 @@ on:
   workflow_dispatch:
 permissions:
   contents: read
+concurrency:
+  group: release-${{ github.event.release.tag_name || github.ref }}-${{ github.event_name }}
+  cancel-in-progress: false
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: '0'
 jobs:
   validate:
     uses: ./.github/workflows/ci.yml
   build:
     needs: validate
     permissions:
-      contents: write
+      contents: read
     strategy:
       fail-fast: false
       matrix:
@@ -23,9 +29,22 @@ jobs:
           - runner: ubuntu-24.04-arm
             target: aarch64-unknown-linux-gnu
     runs-on: ${{ matrix.runner }}
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
+      - id: rust-cache
+        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git/db
+            target/release
+          key: rust-release-${{ matrix.runner }}-${{ matrix.target }}-1.99.0-${{ hashFiles('Cargo.lock', 'Cargo.toml', '.cargo/**') }}-${{ github.sha }}
+          restore-keys: rust-release-${{ matrix.runner }}-${{ matrix.target }}-1.99.0-${{ hashFiles('Cargo.lock', 'Cargo.toml', '.cargo/**') }}-
       - run: rustup toolchain install 1.99.0 --profile minimal
+      - run: cargo +1.99.0 fetch --locked
       - name: Check release version
         env:
           TAG: ${{ github.event.release.tag_name || github.ref_name }}
@@ -35,24 +54,25 @@ jobs:
           if [ "$EVENT" != workflow_dispatch ]; then
             test "$TAG" = "v$version"
           fi
-      - run: cargo build --release --locked
-      - name: Build verified upstream tmux 3.8
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y build-essential pkg-config libevent-dev libncurses-dev bison
-          curl -fsSL https://github.com/tmux/tmux/releases/download/3.8/tmux-3.8.tar.gz -o target/tmux-3.8.tar.gz
-          scripts/build-tmux.sh target/tmux-3.8.tar.gz "$PWD/target/tmux-3.8"
+      - run: cargo +1.99.0 build --release --locked --offline
+      - name: Collect locked dependency license texts
+        run: bash scripts/package-licenses.sh target/dependency-licenses
       - name: Package binary, license, and checksum
         env:
           TARGET: ${{ matrix.target }}
         run: |
+          set -euo pipefail
           mkdir -p dist/package
           cp target/release/kelpmux LICENSE NOTICE README.md CONTRIBUTING.md dist/package/
-          cp -R assets docs examples dist/package/
-          cp -R scripts dist/package/
-          cp -R target/tmux-3.8 dist/package/tmux
-          tar -C dist/package -czf "dist/kelpmux-$TARGET.tar.gz" .
-          (cd dist && sha256sum "kelpmux-$TARGET.tar.gz" > "kelpmux-$TARGET.tar.gz.sha256")
+          cp -R assets docs examples scripts dist/package/
+          cp -R target/dependency-licenses dist/package/
+          version=$(sed -n 's/^version = "\(.*\)"$/\1/p' Cargo.toml)
+          archive="kelpmux-$version-$TARGET.tar.gz"
+          tar -C dist/package -czf "dist/$archive" .
+          (cd dist && sha256sum "$archive" > "$archive.sha256" && sha256sum -c "$archive.sha256")
+          tar -tzf "dist/$archive" | grep -Fx './kelpmux'
+          tar -tzf "dist/$archive" | grep -Fx './dependency-licenses/dependencies.json'
+          target/release/kelpmux --help >/dev/null
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: kelpmux-${{ matrix.target }}
@@ -61,9 +81,34 @@ jobs:
             dist/*.sha256
           if-no-files-found: error
           retention-days: 14
-      - name: Attach assets to an already published release
-        if: github.event_name == 'release'
+      - name: Save trusted release compiler and dependency cache
+        if: success() && contains(fromJSON('["push","workflow_dispatch","release"]'), github.event_name) && steps.rust-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git/db
+            target/release
+          key: ${{ steps.rust-cache.outputs.cache-primary-key }}
+  publish:
+    if: github.event_name == 'release'
+    needs: build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          pattern: kelpmux-*
+          path: dist
+          merge-multiple: true
+      - name: Attach verified archives to an already published release
         env:
           GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
           TAG: ${{ github.event.release.tag_name }}
-        run: gh release upload "$TAG" dist/*.tar.gz dist/*.sha256 --clobber
+        run: |
+          set -euo pipefail
+          (cd dist && sha256sum -c ./*.sha256)
+          gh release upload "$TAG" dist/*.tar.gz dist/*.sha256 --clobber

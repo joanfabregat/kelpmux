@@ -7,123 +7,65 @@
 <p align="center">
   <a href="https://github.com/joanfabregat/kelpmux/actions/workflows/ci.yml"><img src="https://github.com/joanfabregat/kelpmux/actions/workflows/ci.yml/badge.svg?branch=main" alt="CI status"></a>
   <a href="https://github.com/joanfabregat/kelpmux/actions/workflows/release-build.yml"><img src="https://github.com/joanfabregat/kelpmux/actions/workflows/release-build.yml/badge.svg?branch=main" alt="Release build status"></a>
-  <a href="https://github.com/joanfabregat/kelpmux/blob/main/Cargo.toml"><img src="https://img.shields.io/badge/version-0.1.0--beta.2-blue" alt="Version 0.1.0-beta.2"></a>
+  <a href="docs/releases.md"><img src="https://img.shields.io/badge/version-0.2.0--beta.1-blue" alt="Version 0.2.0-beta.1"></a>
   <a href="LICENSE"><img src="https://img.shields.io/github/license/joanfabregat/kelpmux" alt="License: Apache-2.0"></a>
   <a href="#build-and-validate"><img src="https://img.shields.io/badge/Rust-1.85%2B-orange?logo=rust" alt="Rust 1.85 or newer"></a>
-  <a href="#native-tmux-scope"><img src="https://img.shields.io/badge/tmux-3.8%2B-green" alt="tmux 3.8 or newer"></a>
-  <a href="docs/releases.md"><img src="https://img.shields.io/badge/Linux-x86__64%20%7C%20ARM64-blue?logo=linux" alt="Linux x86-64 and ARM64"></a>
+  <a href="docs/native.md"><img src="https://img.shields.io/badge/Linux-x86__64%20%7C%20ARM64-blue?logo=linux" alt="Linux x86-64 and ARM64"></a>
 </p>
 
-Agent metadata and safe workspace helpers for tmux, inspired by Monterey's kelp forests. Apache-2.0 licensed.
+Kelpmux is a persistent terminal workspace for coding agents, inspired by Monterey's kelp forests. The native Rust server owns its PTYs, Alacritty terminal emulation, grids, reading views and agent metadata. Detaching a client leaves shells and agents running. Apache-2.0 licensed; native mode needs no tmux.
 
-**tmux owns agent terminals and windowing.** Kelpmux supplies agent metadata, guarded grid changes, a seven-day session journal, a small grid-card dialog, and commands for native floating-pane geometry. Your tmux configuration owns appearance, focus, mouse handling, shortcuts, and help. Agents launch normally; discovery is the default and lifecycle hooks are optional.
+## Native beta
 
-## Native tmux scope
+- Graphical grid selection from `1x1`, `2x1`, `2x2`, `3x2`, `2x3` and `3x3`. Growing creates shells; shrinking refuses to remove foreground, background or stopped jobs.
+- Grid overview and responsive tabs with top, left or compact bottom navigation; capped or full terminal width while preserving every process.
+- Popup configuration and close-tab confirmations, plus a Vitals-derived CPU, memory, swap, disk and clock footer.
+- Stable pane IDs and colors, distinct pane numbers, lifecycle markers and a braille working spinner. Agent selection filters questions and finished sessions; missing session evidence stays unknown.
+- Configurable shortcuts and graphical pane movement, preserving application word-editing keys outside explicit bindings.
+- Named persistent workspaces with explicit start, attach, status and stop commands. One controller, additional observers and explicit takeover.
+- Alacritty application colors, Unicode text, history, alternate screens, terminal query replies, application mouse reporting, local selection and bracketed paste.
+- Claude/Codex discovery without wrappers, optional lifecycle hooks and a seven-day metadata journal. No prompts, responses, credentials or transcripts are stored in the journal.
 
-- Native floating reading view capped at 120 content columns. A process-free black slot keeps the background grid in its original shape; other panes retain their sizes and keep running. Small windows use native fullscreen zoom automatically; larger windows restore the width cap. Explicit fullscreen stays fullscreen until restored.
-- The same pane, process, index, and scrollback remain in the same window. Returning restores its grid position. No nested client, temporary session, sleeping placeholder, separate key table, or reading controller stays running.
-- Agent status, session name and identifiable session ID are written to native pane options. Each pane keeps one of nine palette colors across status changes, agent exits and pane movement, with a bright selected title and a darker unselected shade. Working panes show a braille spinner (`⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏`); static markers show ! input needed, ✓ turn finished, × failed, ○ idle, ■ exited and ? unknown. A distinct number badge and focus arrow identify selection; subdued one-column separators and white/gray default text preserve application colors.
-- Guarded grids: `1x1`, `2x1`, `2x2`, `3x2`, `2x3`, `3x3` (columns × rows). Growing adds shells; shrinking removes only enough unused shells. Foreground, background and stopped jobs all make a pane occupied.
-- Seven-day metadata journal: agent type, session ID when identifiable, name, directory, pane/window IDs, process identity, and lifecycle changes. Resume using the agent's own TUI.
+The server runs on **Linux** with readable `/proc`; CI tests x86-64 and ARM64. The server must stay alive to preserve terminals. A crash or reboot does not recreate terminal processes; the journal identifies sessions for manual resumption in their agent TUIs. Physical RootShell/device validation is separate from automated PTY profiles.
 
-**Linux and tmux 3.8+**, with readable `/proc`. Terminal clients may run on any device. Reading mode changes the native window, so clients viewing that same window share its layout and reading pane; tmux's `window-size` setting decides its dimensions. Scratch-terminal bindings and automatic agent recovery remain deferred.
+## Start an isolated workspace
 
-**Discovery limitation:** some Codex shared-daemon TUIs expose no pane-bound session identity. Their ID and status remain unknown rather than being guessed from a directory or the newest transcript. See [discovery and optional hooks](docs/discovery.md).
+Build or unpack the binary, then use a new workspace name. Existing alpha and tmux workspaces can continue independently:
+
+```sh
+kelpmux start --workspace beta-trial
+kelpmux attach --workspace beta-trial
+```
+
+Inspect it with `kelpmux status --workspace beta-trial`. `Ctrl-B`, then `d` detaches without ending processes. `kelpmux stop --workspace beta-trial` ends that workspace and its owned shells; stop only a disposable trial when finished testing.
+
+`Ctrl-B`, then `g` opens the graphical grid picker; `z` switches grid/tabs; `f` toggles full terminal width; `?` opens help. `Ctrl-B`, then `a` opens the agent switcher, `!` filters attention and `n` filters finished sessions; `s` opens pane movement. Header controls and the footer expose the same views. Use `attach --takeover` or `Ctrl-B`, then `t` to take control from another client. Controller dimensions determine the backend grid; observers see a clipped or padded frame.
+
+`kelpmux ssh-entry --workspace beta-trial` attaches or starts the named workspace from an SSH shell. Automatic SSH routing requires explicit login-hook configuration; a launch command injected into an already running tmux agent is not a shell command. Keep existing SSH authentication unchanged and choose Kelpmux before automatic tmux attachment. See [native commands, configuration and SSH setup](docs/native.md).
+
+The foreground `server --socket PATH --state-dir PATH` and explicit `ctl --socket PATH` interface remain available for controlled development and independent endpoints. Commands never migrate a tmux workspace or install agent hooks automatically.
 
 ## Build and validate
 
-Rust 1.85+ is required; CI pins the development toolchain and tests the minimum version. The three direct Rust dependencies are `serde`, `serde_json`, and `libc`; the lockfile is committed. Run builds and dependency-bearing commands in your approved container workflow where required.
+Rust 1.85+ is required. CI pins development Rust 1.99.0, tests minimum Rust, audits locked dependencies against fresh RustSec advisories, and checks their license expressions. Run dependency-bearing commands in your approved container workflow where required.
 
 ```sh
 cargo fmt --all -- --check
 cargo clippy --locked --all-targets -- -D warnings
 cargo test --locked
 cargo build --locked --release
-cargo test --locked --test tmux -- --ignored --test-threads=1
 ```
 
-Real terminal tests require tmux 3.8+ on PATH, `/bin/bash`, and disposable private sockets. They never attach to your workspace or launch real agents. They cover grid safety, native floating/zoom/restore, pane identity and original layout, keyboard commands, small/large terminal resizing, metadata discovery, and user configuration preservation.
+Native fixtures use disposable PTYs, shells and private sockets/state. They test reconnect identity, controller/observer behavior, malformed/slow clients, ANSI/query handling, fragmented input, paste, geometry and responsive tabs/dialogs, occupied-pane shrink refusal, agent filters, configuration and workspace lifecycle. They do not launch real agents or modify an existing workspace. Small and large terminal profiles check rendering and resize behavior; the [release checklist](docs/releases.md) separately covers hands-on RootShell and display checks.
 
-### Build tmux without replacing the system package
+Quality, native architecture, minimum-Rust, dependency policy and legacy integration jobs run in parallel. Reviewed cache actions restore locked dependency sources and job/toolchain-specific build outputs; only successful trusted events save caches. Current advisories and audit results are never cached. Release jobs produce versioned archives, license texts and verified SHA-256 checksums.
 
-`scripts/build-tmux.sh` builds unmodified upstream tmux 3.8 into an explicit user prefix. It verifies the archive against the SHA-256 digest published for the GitHub release before extracting or building. Build prerequisites are a C compiler, make, pkg-config, bison, libevent development files and ncurses development files. No Rust code is linked into tmux and no patch is applied.
+## Legacy tmux compatibility
 
-Fetch the archive separately, then build offline in your approved container/build environment:
+Older metadata/helper commands remain available for existing tmux 3.8+ workspaces: `daemon`, `scan`, `list`, `tmux-config`, reading helpers and guarded layouts. tmux owns those terminals and their configuration. Review generated configuration before sourcing it; Kelpmux never changes dotfiles or starts discovery automatically. Legacy mode requires a separately installed tmux; native archives do not bundle it. See [hook examples](examples), [discovery details](docs/discovery.md), and `kelpmux --help`. Keep legacy state separate from a native trial.
 
-```sh
-curl -fsSL https://github.com/tmux/tmux/releases/download/3.8/tmux-3.8.tar.gz -o tmux-3.8.tar.gz
-scripts/build-tmux.sh tmux-3.8.tar.gz /absolute/path/to/private-prefix
-```
+## State and releases
 
-Use a disk-backed `TMPDIR` for the build where `/tmp` is size-limited. The output includes `bin/tmux`, upstream copyright/license, source digest, and manual. It does not modify apt, global PATH, or any system tmux server. The binary requires compatible glibc, libevent and libtinfo runtime libraries.
+Native state uses the XDG state directory or `~/.local/state/kelpmux`; workspace names select independent private endpoints. The discovery worker writes its private registry and seven-day journal under each server's state root. Explicit foreground servers can choose a dedicated socket and state directory. See [architecture](docs/architecture.md) for protocol, geometry, discovery and process-safety boundaries.
 
-## Explicit setup
-
-Setup never edits dotfiles, sources configuration, starts a server, or starts discovery automatically. For a private test, use an explicit tmux binary, separate socket, and separate Kelpmux state directory. Clear inherited automation color-disabling variables before creating shells:
-
-```sh
-env -u NO_COLOR /absolute/path/to/tmux/bin/tmux -L kelpmux-preview -f /absolute/path/to/test.tmux.conf new-session -d -s beta
-kelpmux --tmux-binary /absolute/path/to/tmux/bin/tmux --tmux-socket /absolute/path/to/socket --state-dir /absolute/path/to/preview-state daemon
-```
-
-The daemon runs in the foreground and polls metadata every two seconds. A separate UI tick animates visible working headers at approximately eight frames per second without rescanning processes or transcripts and without changing the journal. Frame updates are batched across panes; inactive windows need no animation redraw. Run it in a dedicated tmux window or your chosen supervisor. `Ctrl+C` stops metadata discovery and animation; tmux panes and agents remain. `scan` runs one pass; `list` reads the latest metadata without scanning.
-
-Review the generated example before sourcing it. It uses absolute helper/state paths and preserves an explicitly selected tmux binary/socket:
-
-```sh
-kelpmux tmux-config > kelpmux-example.tmux.conf
-kelpmux tmux-config --bindings-only > kelpmux-bindings.tmux.conf
-```
-
-The full example includes optional header appearance, two joined colored icon buttons on every pane header (↗ for capped reading zoom and ⛶ for fullscreen), and colored ? and Grid buttons in the status bar. The number has a separate blue badge and a text color distinct from the title. Reading views show ↙ to return to the grid and × to close the view without terminating its pane; fullscreen shows ▣ to restore capped reading width. When native fullscreen hides the header, joined ▣ and × controls appear in the status bar, without a duplicate return arrow. The icons use standard Unicode and require no special icon font. `--bindings-only` leaves appearance, pane numbering, mouse settings, status line and text styles under your existing configuration. Both variants explicitly replace the documented keyboard and control-click bindings and install a `window-resized[80]` hook to refit native reading panes. Regenerate after moving the helper or changing the binary/socket/state paths. Nothing enables mouse handling or starts discovery; retain `set -g mouse on` in your own configuration if desired.
-
-The example assumes the default `Ctrl+B` prefix:
-
-| Shortcut | Action |
-| --- | --- |
-| Prefix then `z`, Option/Alt+Tab / Option/Alt+0, or header ↗ / ↙ | Toggle reading view / return to grid |
-| Option/Alt+1…9 | Read a numbered pane |
-| Prefix then `f`, or header ⛶ / ▣ | Toggle native fullscreen / capped reading width |
-| Header × | Return the reading pane to its grid tile |
-| Prefix then uppercase `R` | Explicitly restore capped reading width |
-| Prefix then `g`, or click/tap Grid | Grid-card picker; returns managed reading panes first |
-| Prefix then `s`, then number or click | Native pane map: swap with the destination, keeping focus on the moved pane |
-| Prefix then `?`, or click/tap `?` | Shortcut help |
-
-Normal tmux keyboard and mouse behavior remain in charge. Outside menus, Escape goes to the application. The old numbered prompt on prefix `p` is removed; it resumes tmux's standard previous-window action. Alt+f and Alt+r are unbound so application editing shortcuts pass through; Option+Right often sends Alt+f for forward-word. Modified arrow keys pass to the application. Existing `h`/`v`, pane swap, balance, copy mode, and other bindings can stay in your own configuration. Option must send Meta/Alt sequences for the remaining shortcuts to work.
-
-The grid picker shows six cards in three columns and two rows, with a full-card blue highlight on hover or keyboard selection. Each card labels its diagram as columns x rows. The current shape is marked; unavailable cards remain gray and explain why when selected, for example “Needs 3 unused; 1 available”. Every occupied pane, including background and stopped jobs, requires a retained slot. Choose by number, arrows and Enter, or click/tap. Click outside, the Grid button again, the red ×, or press Escape to cancel. The dialog needs 68 columns and 18 terminal rows, including the status line, and cancels after two minutes without input. Applying a choice waits for the dialog to close and checks pane occupancy again. Help retains its sticky native menu and closes on a second ? click, outside click, or its colored ×.
-
-CLI commands use stable native IDs:
-
-```sh
-kelpmux read --pane %4 --width 120
-kelpmux fullscreen --pane %4
-kelpmux restore --pane %4
-kelpmux grid --window @0
-kelpmux select 2 --window @0
-kelpmux layout 3x2 --window @0 --dry-run
-kelpmux layout 3x2 --window @0
-kelpmux name --pane %4 'Auth migration'
-kelpmux journal
-```
-
-`zoom` remains an alias for `read`. Inspect IDs with `tmux list-panes -F '#{pane_id} #{window_id} #{pane_index}'`. Pass the same `--tmux-binary`, `--tmux-socket` and `--state-dir` to every command controlling a private server.
-
-## Safety and recovery
-
-An unused pane is a recognized interactive shell in its own foreground process group with no descendants. Growing creates shells; shrinking validates the complete removal set, rechecks process identity and occupancy, and performs a final tmux-side shell check. Grid changes refuse floating panes, reading mode and native zoom. Unrelated floating panes are not taken over or removed by reading commands.
-
-**tmux has no atomic “remove only if no jobs exist” operation.** Do not start commands in removal candidates or mutate the same layout concurrently during a shrink. A command can race the final check, and interrupted removals can leave a partially reduced grid. Runnable shells are treated as occupied; blocked shell built-ins may still resemble an idle prompt without shell cooperation.
-
-Reading helpers exit after each action. If interrupted, the pane remains a native tmux pane with its process intact. `kelpmux grid --window @0` returns managed reading panes and removes their empty black slots; native `join-pane -s %ID -t %ID` can also return a floating pane after unzooming. Discovery removes orphaned empty slots after a source pane disappears or is manually returned. A slot repurposed with `respawn-pane` becomes an ordinary pane and is never removed by this cleanup. No separate modal-state file or recovery controller exists. Original geometry is reapplied only if the pane/index inventory still matches and no unrelated floating panes exist; otherwise native reinsertion preserves the changed workspace.
-
-State defaults to `$XDG_STATE_HOME/kelpmux` or `~/.local/state/kelpmux` with private directories/files. Journal entries older than seven days are pruned during scanning or inspection. Live agents remain in the registry even when running longer than seven days. Kelpmux stores no prompts, responses, tool arguments, credentials or transcripts.
-
-## CI and releases
-
-CI checks formatting, Clippy, unit tests, Rust 1.85, release compilation, RustSec advisories and Rust dependency licenses. Native terminal tests build checksum-verified upstream tmux 3.8 on Linux x86-64 and ARM64. Actions are pinned to reviewed commits.
-
-Tags `v*`, published releases and manual dispatch validate and build Linux archives with Kelpmux, the unmodified tmux 3.8 binary, upstream license/source digest, documentation and checksums. These binaries are installed and started explicitly; apt's tmux remains independent. See [release procedure](docs/releases.md).
-
-Main is the **0.1.0-beta.2 development preview**. The published [v0.1.0-beta.1](https://github.com/joanfabregat/kelpmux/releases/tag/v0.1.0-beta.1) still uses the earlier nested-popup implementation. Keep its helper/configuration separate when trying this native version, and do not mix their state directories. Existing legacy tmux sessions can keep running with the old helper while you test a new server.
+Release builds validate the repository and package GNU/Linux x86-64 and ARM64 binaries, documentation, locked dependency licenses and checksums. A version string alone does not publish a release, install a binary or start a service. See the [release procedure](docs/releases.md).

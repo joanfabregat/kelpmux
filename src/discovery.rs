@@ -12,7 +12,7 @@ use std::{
     io::{BufRead, BufReader, Read, Seek, SeekFrom, Write},
     os::unix::net::UnixStream,
     path::{Path, PathBuf},
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 pub struct Discovery {
@@ -127,6 +127,7 @@ impl Discovery {
             agent.source = "process-identity".into();
         }
         let mut rollout = None;
+        let mut open_rollouts = BTreeMap::new();
         for path in process::links(&self.proc_root, proc.pid) {
             if path.extension().is_some_and(|e| e == "jsonl")
                 && path
@@ -141,15 +142,22 @@ impl Discovery {
                             if let Some(id) =
                                 value["payload"]["id"].as_str().filter(|s| session_id(s))
                             {
-                                agent.session_id = Some(id.into());
-                                agent.source = "open-rollout".into();
-                                rollout = Some(path);
-                                break;
+                                open_rollouts.insert(id.to_owned(), path);
                             }
                         }
                     }
                 }
             }
+        }
+        // Several open conversations in a process do not identify the active TUI.
+        // Never let arbitrary descriptor iteration choose an unrelated session.
+        if open_rollouts.len() == 1 {
+            let (id, path) = open_rollouts.into_iter().next().unwrap();
+            agent.session_id = Some(id);
+            agent.source = "open-rollout".into();
+            rollout = Some(path);
+        } else if let Some(id) = &agent.session_id {
+            rollout = open_rollouts.remove(id);
         }
         let Some(id) = agent.session_id.clone() else {
             return;
@@ -359,14 +367,45 @@ fn read_codex_thread(socket: &Path, id: &str) -> Result<Value> {
     )?;
     rpc_result(&mut reader, 2)
 }
-fn rpc_result(reader: &mut impl BufRead, id: u64) -> Result<Value> {
+const RPC_TIMEOUT: Duration = Duration::from_millis(300);
+const MAX_RPC_LINE: usize = 1024 * 1024;
+const MAX_RPC_BYTES: usize = 2 * 1024 * 1024;
+
+fn rpc_result(reader: &mut BufReader<UnixStream>, id: u64) -> Result<Value> {
+    // A per-read timeout alone lets a continuously trickling peer hold this
+    // worker forever. Notifications and partial lines share one fixed deadline.
+    let deadline = Instant::now() + RPC_TIMEOUT;
+    let mut received = 0;
     for _ in 0..32 {
-        let mut line = String::new();
-        reader.take(1024 * 1024).read_line(&mut line)?;
-        if line.is_empty() {
-            return Err("Codex closed discovery connection".into());
+        let mut line = Vec::new();
+        loop {
+            let remaining = deadline
+                .checked_duration_since(Instant::now())
+                .ok_or("Codex metadata request timed out")?;
+            reader.get_ref().set_read_timeout(Some(remaining))?;
+            let bytes = match reader.fill_buf() {
+                Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
+                result => result?,
+            };
+            if bytes.is_empty() {
+                return Err("Codex closed discovery connection".into());
+            }
+            let newline = bytes.iter().position(|byte| *byte == b'\n');
+            let count = newline.map_or(bytes.len(), |position| position + 1);
+            received += count;
+            if line.len() + count > MAX_RPC_LINE || received > MAX_RPC_BYTES {
+                return Err("Codex metadata reply exceeds its size limit".into());
+            }
+            line.extend_from_slice(&bytes[..count]);
+            reader.consume(count);
+            if newline.is_some() {
+                break;
+            }
         }
-        let value: Value = serde_json::from_str(&line)?;
+        if Instant::now() >= deadline {
+            return Err("Codex metadata request timed out".into());
+        }
+        let value: Value = serde_json::from_slice(&line)?;
         if value["id"].as_u64() == Some(id) {
             if value.get("error").is_some() {
                 return Err("Codex rejected metadata request".into());
@@ -375,4 +414,123 @@ fn rpc_result(reader: &mut impl BufRead, id: u64) -> Result<Value> {
         }
     }
     Err("too many Codex notifications".into())
+}
+
+#[cfg(test)]
+mod rpc_tests {
+    use super::*;
+    use std::thread;
+
+    #[test]
+    fn fragmented_reply_and_buffered_following_reply_are_preserved() {
+        let (client, mut peer) = UnixStream::pair().unwrap();
+        let worker = thread::spawn(move || {
+            for bytes in [
+                b"{\"id\":1,".as_slice(),
+                b"\"result\":{\"ok\":true}}\n{\"id\":2,\"result\":\"next\"}\n",
+            ] {
+                peer.write_all(bytes).unwrap();
+                thread::sleep(Duration::from_millis(5));
+            }
+        });
+        let mut reader = BufReader::new(client);
+        assert_eq!(rpc_result(&mut reader, 1).unwrap(), json!({"ok": true}));
+        assert_eq!(rpc_result(&mut reader, 2).unwrap(), json!("next"));
+        worker.join().unwrap();
+    }
+
+    #[test]
+    fn trickling_unterminated_line_cannot_extend_absolute_deadline() {
+        let (client, mut peer) = UnixStream::pair().unwrap();
+        let worker = thread::spawn(move || {
+            let finish = Instant::now() + Duration::from_secs(2);
+            while Instant::now() < finish {
+                if peer.write_all(b" ").is_err() {
+                    break;
+                }
+                thread::sleep(Duration::from_millis(20));
+            }
+        });
+        let begin = Instant::now();
+        let mut reader = BufReader::new(client);
+        assert!(rpc_result(&mut reader, 1).is_err());
+        let elapsed = begin.elapsed();
+        drop(reader);
+        worker.join().unwrap();
+        assert!(
+            elapsed >= Duration::from_millis(200),
+            "timeout occurred unexpectedly early: {elapsed:?}"
+        );
+        assert!(
+            elapsed < Duration::from_secs(1),
+            "trickling reply prolonged timeout: {elapsed:?}"
+        );
+    }
+
+    #[test]
+    fn irrelevant_notifications_cannot_reset_deadline() {
+        let (client, mut peer) = UnixStream::pair().unwrap();
+        let worker = thread::spawn(move || {
+            for _ in 0..20 {
+                if peer.write_all(b"{\"method\":\"notice\"}\n").is_err() {
+                    break;
+                }
+                thread::sleep(Duration::from_millis(25));
+            }
+        });
+        let begin = Instant::now();
+        let mut reader = BufReader::new(client);
+        assert!(rpc_result(&mut reader, 1).is_err());
+        let elapsed = begin.elapsed();
+        drop(reader);
+        worker.join().unwrap();
+        assert!(elapsed >= Duration::from_millis(200));
+        assert!(elapsed < Duration::from_millis(800));
+    }
+
+    #[test]
+    fn malformed_error_closed_and_notification_flood_replies_are_rejected() {
+        for reply in [
+            b"not-json\n".as_slice(),
+            b"{\"id\":1,\"error\":{\"code\":1}}\n",
+            b"{\"id\":1",
+        ] {
+            let (client, mut peer) = UnixStream::pair().unwrap();
+            peer.write_all(reply).unwrap();
+            drop(peer);
+            assert!(rpc_result(&mut BufReader::new(client), 1).is_err());
+        }
+        let (client, mut peer) = UnixStream::pair().unwrap();
+        peer.write_all(b"{\"method\":\"notice\"}\n".repeat(32).as_slice())
+            .unwrap();
+        assert!(
+            rpc_result(&mut BufReader::new(client), 1)
+                .unwrap_err()
+                .to_string()
+                .contains("too many")
+        );
+    }
+
+    #[test]
+    fn oversized_line_and_cumulative_reply_bytes_are_bounded() {
+        for reply in [vec![b' '; MAX_RPC_LINE + 1], {
+            // Valid individual JSON notifications together exceed the RPC budget.
+            let notification = format!("{{\"method\":\"{}\"}}\n", "x".repeat(800_000));
+            notification.repeat(3).into_bytes()
+        }] {
+            let (client, mut peer) = UnixStream::pair().unwrap();
+            let worker = thread::spawn(move || {
+                let _ = peer.write_all(&reply);
+            });
+            let mut reader = BufReader::new(client);
+            assert!(
+                rpc_result(&mut reader, 1)
+                    .unwrap_err()
+                    .to_string()
+                    .contains("size limit")
+            );
+            drop(reader);
+            worker.join().unwrap();
+        }
+    }
 }
