@@ -172,12 +172,21 @@ pub enum Action {
     NextFinished,
     Scratch,
     ScratchClose,
-    Search { query: String, all: bool },
+    Search {
+        query: String,
+        all: bool,
+    },
     SearchOpen,
     SearchSelect(usize),
-    ResizeGrid { column: Option<(u8,u16)>, row: Option<(u8,u16)> },
+    ResizeGrid {
+        column: Option<(u8, u16)>,
+        row: Option<(u8, u16)>,
+    },
     SelectionStart,
-    SelectionMove { dx:i16,dy:i16 },
+    SelectionMove {
+        dx: i16,
+        dy: i16,
+    },
     Config,
     TabPositionSet(super::ui::TabPosition),
     ClosePaneRequest(PaneId),
@@ -231,7 +240,11 @@ pub enum Action {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum ClientMessage {
     Diagnostics,
-    History { pane:PaneId,start:i32,limit:usize },
+    History {
+        pane: PaneId,
+        start: i32,
+        limit: usize,
+    },
     InspectPane {
         pane: PaneId,
     },
@@ -257,7 +270,10 @@ pub enum ClientMessage {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum ServerMessage {
     Diagnostics(super::diagnostics::Report),
-    History { pane:PaneId,lines:Vec<(i32,String)> },
+    History {
+        pane: PaneId,
+        lines: Vec<(i32, String)>,
+    },
     Patch(super::delta::Patch),
     PaneState {
         pane: PaneInfo,
@@ -283,21 +299,25 @@ pub enum ServerMessage {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Notification {
-    pub id:u64,
-    pub pane:PaneId,
-    pub title:String,
-    pub status:Status,
-    pub at:u64,
-    pub read:bool,
-    pub workspace:String,
+    pub id: u64,
+    pub pane: PaneId,
+    pub title: String,
+    pub status: Status,
+    pub at: u64,
+    pub read: bool,
+    pub workspace: String,
 }
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RecoveryItem {
-    pub workspace:String,
-    pub entry:super::tracking::RecoveryEntry,
+    pub workspace: String,
+    pub entry: super::tracking::RecoveryEntry,
 }
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct SearchHit { pub pane:PaneId,pub line:i32,pub text:String }
+pub struct SearchHit {
+    pub pane: PaneId,
+    pub line: i32,
+    pub text: String,
+}
 
 pub fn write_message<T: Serialize>(writer: &mut impl Write, value: &T) -> Result<()> {
     let bytes = serde_json::to_vec(value)?;

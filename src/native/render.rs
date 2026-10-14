@@ -41,6 +41,9 @@ pub fn compose(
             view.modes = screen.modes;
         }
     }
+    if workspace.reading != ReadingMode::Grid {
+        draw_tabs(&mut frame, workspace, spinner);
+    }
     for view in frame.panes.clone() {
         let selected = view.pane.id == workspace.active;
         fill(&mut frame, view.rect, Color::Default);
@@ -80,12 +83,38 @@ pub fn compose(
                 }
             }
         }
-        if workspace.reading == ReadingMode::Grid {
+        if view.overlay && Some(view.pane.id) == workspace.ui.scratch {
+            fill(
+                &mut frame,
+                Rect {
+                    rows: 1,
+                    ..view.rect
+                },
+                Color::Indexed(24),
+            );
+            write_text(
+                &mut frame,
+                view.rect.x,
+                view.rect.y,
+                view.rect.cols - 3,
+                " Scratch terminal",
+                Color::Indexed(231),
+                Color::Indexed(24),
+                true,
+            );
+            write_text(
+                &mut frame,
+                view.rect.x + view.rect.cols - 3,
+                view.rect.y,
+                3,
+                " × ",
+                Color::Indexed(231),
+                Color::Indexed(88),
+                true,
+            );
+        } else if workspace.reading == ReadingMode::Grid {
             header(&mut frame, &view, selected, workspace.reading, spinner);
         }
-    }
-    if workspace.reading != ReadingMode::Grid {
-        draw_tabs(&mut frame, workspace, spinner);
     }
     if frame.rows > 0 {
         let y = frame.rows - 1;
@@ -135,7 +164,7 @@ pub fn compose(
             width,
             y,
             7,
-            " Config",
+            "Config",
             Color::Indexed(231),
             Color::Indexed(60),
             true,
@@ -183,7 +212,11 @@ pub fn compose(
             width + 24,
             y,
             3,
-            " ? ",
+            if workspace.ui.notifications.iter().any(|item| !item.read) {
+                " ! "
+            } else {
+                " ? "
+            },
             Color::Indexed(231),
             Color::Indexed(24),
             true,
@@ -194,7 +227,7 @@ pub fn compose(
     }
     if workspace.help {
         let cols = frame.cols.saturating_sub(4).min(76);
-        let rows = frame.rows.saturating_sub(2).min(18);
+        let rows = frame.rows.saturating_sub(2).min(30);
         let rect = Rect {
             x: (frame.cols - cols) / 2,
             y: (frame.rows.saturating_sub(1) - rows) / 2,
@@ -266,16 +299,45 @@ pub fn compose(
             format!("{}  Scroll: arrows/PgUp/PgDn; q leaves", key("[", "scroll")),
             format!("{}  Copy selection (also drag release)", key("y", "copy")),
             "Wheel/drag Scroll/select; Shift for mouse-aware apps".into(),
+            format!(
+                "{} / {} / {}  Overview / notifications / recovery",
+                key("o", "overview"),
+                key("b", "notifications"),
+                key("r", "recovery")
+            ),
+            format!(
+                "{} / {}  Next attention / next finished",
+                key("N", "next-attention"),
+                key("P", "next-finished")
+            ),
+            format!("{}  Persistent scratch terminal popup", key("c", "scratch")),
+            format!(
+                "{}  Search; Tab scope; Ctrl-Y copies result",
+                key("/", "search")
+            ),
+            format!(
+                "{}  Keyboard selection; arrows, y copies",
+                key(" ", "selection")
+            ),
+            format!(
+                "{} {} {} {}  Resize grid boundaries",
+                key("H", "grid-narrower"),
+                key("L", "grid-wider"),
+                key("K", "grid-shorter"),
+                key("J", "grid-taller")
+            ),
+            "Drag      Pane headers swap; separators resize".into(),
         ];
         for (i, line) in lines
             .iter()
             .enumerate()
+            .skip(usize::from(workspace.ui.help_offset))
             .take(usize::from(rows.saturating_sub(2)))
         {
             write_text(
                 &mut frame,
                 rect.x + 2,
-                rect.y + 2 + i as u16,
+                rect.y + 2 + i as u16 - workspace.ui.help_offset,
                 cols.saturating_sub(4),
                 line,
                 Color::Indexed(252),
@@ -369,7 +431,13 @@ fn draw_dialog(frame: &mut Frame, workspace: &Workspace, dialog: super::ui::Dial
         DialogKind::Grid => " Grid · arrows, Enter or click",
         DialogKind::Overview => " Workspace overview",
         DialogKind::Notifications => " Notifications",
-        DialogKind::Recovery => " Recovery",
+        DialogKind::Recovery => {
+            if workspace.ui.recovery_loading {
+                " Recovery · loading…"
+            } else {
+                " Recovery"
+            }
+        }
         DialogKind::Search => " Search history",
         DialogKind::Move => " Move active pane · choose destination",
         DialogKind::Config => " Settings · tab position",
@@ -421,6 +489,14 @@ fn draw_dialog(frame: &mut Frame, workspace: &Workspace, dialog: super::ui::Dial
                     position
                 )
             })
+            .chain(std::iter::once(format!(
+                "Notification sound: {}",
+                if workspace.ui.config.notification_sound {
+                    "on"
+                } else {
+                    "off"
+                }
+            )))
             .collect()
         } else {
             vec!["Cancel".into(), "Close · stop its running process".into()]
@@ -445,11 +521,20 @@ fn draw_dialog(frame: &mut Frame, workspace: &Workspace, dialog: super::ui::Dial
                 true,
             );
         }
+    } else if matches!(
+        dialog.kind,
+        DialogKind::Overview
+            | DialogKind::Notifications
+            | DialogKind::Recovery
+            | DialogKind::Search
+    ) {
+        draw_dashboard(frame, workspace, dialog, bounds);
     } else if dialog.kind == DialogKind::Grid {
         let occupied = workspace
             .panes
             .iter()
             .filter(|p| !workspace.ui.unused.contains(&p.id))
+            .filter(|p| Some(p.id) != workspace.ui.scratch)
             .count();
         for (index, (rect, &(cols, rows))) in super::workspace::grid_cards(bounds)
             .into_iter()
@@ -543,7 +628,12 @@ fn draw_dialog(frame: &mut Frame, workspace: &Workspace, dialog: super::ui::Dial
                 .into_iter()
                 .enumerate()
         {
-            if let Some(pane) = workspace.panes.get(index) {
+            if let Some(pane) = workspace
+                .panes
+                .iter()
+                .filter(|pane| Some(pane.id) != workspace.ui.scratch)
+                .nth(index)
+            {
                 let bg = Color::Indexed(if index == dialog.selection { 24 } else { 236 });
                 fill(frame, rect, bg);
                 let label = format!(
@@ -867,16 +957,25 @@ fn draw_tabs(frame: &mut Frame, workspace: &Workspace, spinner: usize) {
         },
     };
     fill(frame, area, Color::Indexed(234));
-    let active = workspace
+    let panes: Vec<_> = workspace
         .panes
         .iter()
-        .position(|pane| pane.id == workspace.active)
+        .filter(|pane| Some(pane.id) != workspace.ui.scratch)
+        .collect();
+    let active_id = if workspace.ui.scratch_visible {
+        workspace.ui.scratch_return.unwrap_or(workspace.active)
+    } else {
+        workspace.active
+    };
+    let active = panes
+        .iter()
+        .position(|pane| pane.id == active_id)
         .unwrap_or(0);
     for (target, rect) in tab_targets(
         frame.cols,
         frame.rows,
         &workspace.ui.config,
-        workspace.panes.len(),
+        panes.len(),
         active,
     ) {
         match target {
@@ -902,8 +1001,8 @@ fn draw_tabs(frame: &mut Frame, workspace: &Workspace, spinner: usize) {
                 );
             }
             TabTarget::Pane(index) => {
-                if let Some(pane) = workspace.panes.get(index) {
-                    let selected = pane.id == workspace.active;
+                if let Some(pane) = panes.get(index) {
+                    let selected = pane.id == active_id;
                     let (bright, muted) = PALETTE[usize::from(pane.palette) % 9];
                     let bg = Color::Indexed(if selected { bright } else { muted });
                     fill(frame, rect, bg);
@@ -923,9 +1022,23 @@ fn draw_tabs(frame: &mut Frame, workspace: &Workspace, spinner: usize) {
                     } else {
                         pane.status.marker().to_owned()
                     };
-                    let label = format!("{} {}", marker, pane.title);
+                    let label = format!(
+                        "{}{} {}",
+                        if workspace
+                            .ui
+                            .notifications
+                            .iter()
+                            .any(|item| item.pane == pane.id && !item.read)
+                        {
+                            "● "
+                        } else {
+                            ""
+                        },
+                        marker,
+                        pane.title
+                    );
                     let count = if position == TabPosition::Bottom {
-                        format!(" {}/{} ", index + 1, workspace.panes.len())
+                        format!(" {}/{} ", index + 1, panes.len())
                     } else {
                         String::new()
                     };
@@ -1013,6 +1126,139 @@ fn draw_vitals(frame: &mut Frame, segments: &[(String, u8)]) {
         );
         x = x.saturating_add(width + 1);
     }
+}
+fn draw_dashboard(
+    frame: &mut Frame,
+    workspace: &Workspace,
+    dialog: super::ui::Dialog,
+    bounds: Rect,
+) {
+    use super::ui::DialogKind;
+    let start_row = if dialog.kind == DialogKind::Search {
+        4
+    } else {
+        2
+    };
+    if dialog.kind == DialogKind::Search {
+        write_text(
+            frame,
+            bounds.x + 1,
+            bounds.y + 2,
+            bounds.cols - 2,
+            &format!("Find: {}", workspace.ui.search_query),
+            Color::Indexed(231),
+            Color::Indexed(236),
+            true,
+        );
+        write_text(
+            frame,
+            bounds.x + 1,
+            bounds.y + 3,
+            bounds.cols - 2,
+            if workspace.ui.search_all {
+                "All panes · Tab toggles · Ctrl-Y copies"
+            } else {
+                "This pane · Tab toggles · Ctrl-Y copies"
+            },
+            Color::Indexed(117),
+            Color::Indexed(236),
+            false,
+        );
+    }
+    let labels: Vec<String> = match dialog.kind {
+        DialogKind::Overview => workspace
+            .panes
+            .iter()
+            .filter(|pane| Some(pane.id) != workspace.ui.scratch)
+            .map(|pane| {
+                format!(
+                    "{} {} {} · {} · session {} · {} · {}",
+                    pane.number,
+                    pane.status.marker(),
+                    pane.title,
+                    pane.status.text(),
+                    pane.session_id.as_deref().unwrap_or("unknown"),
+                    pane.cwd,
+                    if pane.last_activity == 0 {
+                        "activity unknown".into()
+                    } else {
+                        format!("{}s ago", crate::now().saturating_sub(pane.last_activity))
+                    }
+                )
+            })
+            .collect(),
+        DialogKind::Notifications => workspace
+            .ui
+            .notifications
+            .iter()
+            .map(|item| {
+                format!(
+                    "{} {} {} · {} · pane {}",
+                    if item.read { "○" } else { "●" },
+                    item.status.marker(),
+                    item.title,
+                    item.workspace,
+                    item.pane
+                )
+            })
+            .collect(),
+        DialogKind::Recovery => workspace
+            .ui
+            .recovery
+            .iter()
+            .map(|item| {
+                format!(
+                    "{} · {} · {} · session {} · Enter/y copies resume",
+                    item.workspace,
+                    item.entry.cwd,
+                    item.entry.name,
+                    item.entry.session_id.as_deref().unwrap_or("unknown")
+                )
+            })
+            .collect(),
+        DialogKind::Search => workspace
+            .ui
+            .search_hits
+            .iter()
+            .map(|hit| format!("{}:{} {}", hit.pane, hit.line, hit.text))
+            .collect(),
+        _ => vec![],
+    };
+    let visible = usize::from(bounds.rows.saturating_sub(start_row));
+    let offset = dialog.selection.saturating_sub(visible.saturating_sub(1));
+    if labels.is_empty() && visible > 0 {
+        write_text(
+            frame,
+            bounds.x + 1,
+            bounds.y + start_row,
+            bounds.cols - 2,
+            "No matching entries",
+            Color::Indexed(245),
+            Color::Indexed(236),
+            false,
+        );
+    }
+    for (index, label) in labels.iter().enumerate().skip(offset).take(visible) {
+        let rect = Rect {
+            x: bounds.x,
+            y: bounds.y + start_row + (index - offset) as u16,
+            cols: bounds.cols,
+            rows: 1,
+        };
+        let bg = Color::Indexed(if index == dialog.selection { 24 } else { 236 });
+        fill(frame, rect, bg);
+        write_text(
+            frame,
+            rect.x + 1,
+            rect.y,
+            rect.cols - 2,
+            label,
+            Color::Indexed(231),
+            bg,
+            index == dialog.selection,
+        );
+    }
+    frame.cursor = None;
 }
 #[cfg(test)]
 mod tests {

@@ -24,6 +24,8 @@ use std::{
 };
 
 pub struct ServerConfig {
+    pub initial_weights: [Vec<u16>; 2],
+    pub template: Option<super::templates::Template>,
     pub socket: PathBuf,
     pub state_dir: PathBuf,
     pub shell: PathBuf,
@@ -113,6 +115,7 @@ fn endpoint(config: &ServerConfig) -> Result<(UnixListener, Endpoint)> {
 }
 
 struct NativePane {
+    size: (u16, u16),
     child: Child,
     master: File,
     start: u64,
@@ -189,6 +192,7 @@ impl NativePane {
         }
         let child = command.spawn()?;
         let mut pane = Self {
+            size: (cols, rows),
             child,
             master,
             start: 0,
@@ -222,6 +226,10 @@ impl NativePane {
         Ok(())
     }
     fn resize(&mut self, cols: u16, rows: u16) {
+        if self.size == (cols, rows) {
+            return;
+        }
+        self.size = (cols, rows);
         self.terminal.resize(cols, rows);
         let size = libc::winsize {
             ws_row: rows,
@@ -303,6 +311,11 @@ impl Drop for NativePane {
 }
 
 struct Client {
+    previous_frame: Option<(u64, Frame)>,
+    full_frames: u64,
+    patch_frames: u64,
+    full_bytes: u64,
+    patch_bytes: u64,
     socket: UnixStream,
     input: Vec<u8>,
     started: Option<Instant>,
@@ -342,6 +355,11 @@ impl Client {
         }
         socket.set_nonblocking(true)?;
         Ok(Self {
+            previous_frame: None,
+            full_frames: 0,
+            patch_frames: 0,
+            full_bytes: 0,
+            patch_bytes: 0,
             socket,
             input: vec![],
             started: None,
@@ -439,7 +457,36 @@ impl Client {
         Ok(messages)
     }
     fn latest(&mut self, frame: &Frame) -> Result<()> {
-        let packet = wire(&ServerMessage::Frame(frame.clone()))?;
+        let idle = self.frame.is_none() && self.writing.is_none() && self.output.is_empty();
+        if idle
+            && self
+                .previous_frame
+                .as_ref()
+                .is_some_and(|(_, old)| old == frame)
+        {
+            return Ok(());
+        }
+        let patch = if idle {
+            self.previous_frame
+                .as_ref()
+                .and_then(|(revision, old)| super::delta::diff(old, frame, *revision))
+        } else {
+            None
+        };
+        let packet = if let Some(patch) = patch {
+            let revision = patch.revision;
+            let bytes = wire(&ServerMessage::Patch(patch))?;
+            self.previous_frame = Some((revision, frame.clone()));
+            self.patch_frames += 1;
+            self.patch_bytes += bytes.len() as u64;
+            bytes
+        } else {
+            let bytes = wire(&ServerMessage::Frame(frame.clone()))?;
+            self.previous_frame = Some((1, frame.clone()));
+            self.full_frames += 1;
+            self.full_bytes += bytes.len() as u64;
+            bytes
+        };
         if let Some(old) = self.frame.take() {
             self.queued = self.queued.saturating_sub(old.len());
         }
@@ -453,7 +500,26 @@ impl Client {
     }
 }
 
+struct RecoveryJob {
+    receiver: std::sync::mpsc::Receiver<Result<Vec<RecoveryItem>>>,
+    cancel: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    worker: Option<std::thread::JoinHandle<()>>,
+}
+impl Drop for RecoveryJob {
+    fn drop(&mut self) {
+        self.cancel
+            .store(true, std::sync::atomic::Ordering::Relaxed);
+        if let Some(worker) = self.worker.take() {
+            let _ = worker.join();
+        }
+    }
+}
 struct Server {
+    recovery_job: Option<RecoveryJob>,
+    aliases: BTreeMap<PaneId, String>,
+    activity: super::activity::Activity,
+    started: Instant,
+    pty_bytes: u64,
     vitals: super::vitals::Sampler,
     config: ServerConfig,
     workspace: Workspace,
@@ -467,6 +533,203 @@ struct Server {
     shutdown: bool,
 }
 impl Server {
+    fn persist_geometry(&mut self) -> Result<()> {
+        let path = self.config.state_dir.join("workspace.json");
+        let mut settings = if path.exists() {
+            super::lifecycle::Settings::load(&path)?
+        } else {
+            super::lifecycle::Settings::default()
+        };
+        settings.ui = self.workspace.ui.config.clone();
+        settings.shell = Some(self.config.shell.clone());
+        settings.cwd = Some(self.config.cwd.clone());
+        settings.grid = (self.workspace.grid_cols, self.workspace.grid_rows);
+        settings.grid_weights = [
+            self.workspace.ui.column_weights.clone(),
+            self.workspace.ui.row_weights.clone(),
+        ];
+        settings.template = self.config.template.clone();
+        journal::atomic(&path, &settings)
+    }
+    fn poll_recovery(&mut self) {
+        let result = self
+            .recovery_job
+            .as_ref()
+            .and_then(|job| match job.receiver.try_recv() {
+                Ok(result) => Some(result),
+                Err(std::sync::mpsc::TryRecvError::Empty) => None,
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                    Some(Err("recovery worker stopped".into()))
+                }
+            });
+        if let Some(result) = result {
+            match result {
+                Ok(mut entries) => {
+                    entries.truncate(256);
+                    self.workspace.ui.recovery = entries;
+                }
+                Err(error) => self.notice = Some(format!("Recovery: {error}")),
+            }
+            self.workspace.ui.recovery_loading = false;
+            self.recovery_job = None;
+            self.dirty = true;
+        }
+    }
+    fn feature_action(&mut self, client: u64, action: &Action) -> Result<bool> {
+        match action {
+            Action::Scratch => {
+                let dead = self
+                    .workspace
+                    .ui
+                    .scratch
+                    .is_some_and(|id| self.panes.get(&id).is_none_or(|pane| pane.dead));
+                if dead {
+                    if let Some(id) = self.workspace.ui.scratch.take() {
+                        self.panes.remove(&id);
+                        self.workspace.panes.retain(|pane| pane.id != id);
+                    }
+                    self.workspace.ui.scratch_visible = false;
+                }
+                if self.workspace.ui.scratch.is_none() {
+                    let active = self.workspace.active;
+                    self.spawn_pane(None)?;
+                    let id = self
+                        .workspace
+                        .panes
+                        .last()
+                        .ok_or("scratch creation failed")?
+                        .id;
+                    self.workspace.ui.scratch = Some(id);
+                    if let Some(pane) = self.workspace.panes.last_mut() {
+                        pane.title = "Scratch terminal".into();
+                    }
+                    self.workspace.active = active;
+                }
+                self.workspace.apply(action)?;
+            }
+            Action::Acknowledge(id) => {
+                self.activity.acknowledge(*id)?;
+                self.workspace.ui.notifications = self.activity.all().to_vec();
+            }
+            Action::Recovery => {
+                if self.recovery_job.is_none() {
+                    let state = self.config.state_dir.clone();
+                    let (sender, receiver) = std::sync::mpsc::sync_channel(1);
+                    let cancel = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+                    let worker_cancel = cancel.clone();
+                    let worker = std::thread::spawn(move || {
+                        let result = super::recovery::collect_cancellable(&state, &worker_cancel);
+                        let _ = sender.send(result);
+                    });
+                    self.recovery_job = Some(RecoveryJob {
+                        receiver,
+                        cancel,
+                        worker: Some(worker),
+                    });
+                    self.workspace.ui.recovery_loading = true;
+                }
+                self.workspace.apply(action)?;
+            }
+            Action::RecoveryCopy(index) => {
+                let command = self
+                    .workspace
+                    .ui
+                    .recovery
+                    .get(*index)
+                    .and_then(|item| item.entry.resume_command.clone())
+                    .ok_or("this session has no known resume command")?;
+                self.clients
+                    .get_mut(&client)
+                    .ok_or("unknown client")?
+                    .send(ServerMessage::Clipboard(command))?;
+            }
+            Action::SearchCopy(index) => {
+                let text = self
+                    .workspace
+                    .ui
+                    .search_hits
+                    .get(*index)
+                    .ok_or("unknown search result")?
+                    .text
+                    .clone();
+                self.clients
+                    .get_mut(&client)
+                    .ok_or("unknown client")?
+                    .send(ServerMessage::Clipboard(text))?;
+            }
+            Action::Search { query, all } => {
+                if query.len() > 256 || query.chars().any(char::is_control) {
+                    return Err(
+                        "search requires at most 256 bytes without control characters".into(),
+                    );
+                }
+                let mut hits = Vec::new();
+                if !query.is_empty() {
+                    for info in &self.workspace.panes {
+                        if !*all && info.id != self.workspace.active {
+                            continue;
+                        }
+                        if let Some(pane) = self.panes.get(&info.id) {
+                            for (line, text) in pane.terminal.search(query, 100 - hits.len()) {
+                                hits.push(SearchHit {
+                                    pane: info.id,
+                                    line,
+                                    text,
+                                });
+                            }
+                        }
+                        if hits.len() >= 100 {
+                            break;
+                        }
+                    }
+                }
+                self.workspace.ui.search_query = query.clone();
+                self.workspace.ui.search_all = *all;
+                self.workspace.ui.search_hits = hits;
+                self.workspace.apply(action)?;
+            }
+            Action::SearchSelect(index) => {
+                let hit = self
+                    .workspace
+                    .ui
+                    .search_hits
+                    .get(*index)
+                    .ok_or("unknown search result")?
+                    .clone();
+                self.panes
+                    .get_mut(&hit.pane)
+                    .ok_or("search pane has closed")?
+                    .terminal
+                    .scroll_to(hit.line)?;
+                self.workspace.apply(&Action::Focus(hit.pane))?;
+                self.workspace.apply(&Action::DialogClose)?;
+            }
+            Action::SelectionStart => {
+                let pane = self
+                    .panes
+                    .get_mut(&self.workspace.active)
+                    .ok_or("no active pane")?;
+                let point = pane
+                    .terminal
+                    .snapshot()
+                    .cursor
+                    .map(|cursor| cursor.position)
+                    .unwrap_or_default();
+                pane.terminal.selection_start(point)?;
+            }
+            Action::SelectionMove { dx, dy } => {
+                self.panes
+                    .get_mut(&self.workspace.active)
+                    .ok_or("no active pane")?
+                    .terminal
+                    .selection_move(i32::from(*dx), i32::from(*dy))?;
+            }
+            _ => return Ok(false),
+        }
+        self.persist_ui()?;
+        self.resize();
+        Ok(true)
+    }
     fn close_pane(&mut self, id: PaneId) -> Result<()> {
         let dialog = self
             .workspace
@@ -481,19 +744,50 @@ impl Server {
         }
         // Preserve an interactive terminal when the last tab is closed. Create
         // its replacement first so spawn failure cannot leave an empty workspace.
-        if self.panes.len() == 1 {
-            self.add_pane()?;
+        let is_scratch = Some(id) == self.workspace.ui.scratch;
+        let main_count = self
+            .workspace
+            .panes
+            .iter()
+            .filter(|pane| Some(pane.id) != self.workspace.ui.scratch)
+            .count();
+        if !is_scratch && main_count == 1 {
+            self.spawn_pane(None)?;
+        }
+        if is_scratch && self.workspace.ui.scratch_visible {
+            self.workspace.apply(&Action::ScratchClose)?;
         }
         self.panes.remove(&id);
         self.workspace.panes.retain(|pane| pane.id != id);
+        self.aliases.remove(&id);
         self.workspace.ui.unused.retain(|pane| *pane != id);
-        if self.workspace.active == id {
-            self.workspace.active = self.workspace.panes[0].id;
+        let fallback = self
+            .workspace
+            .panes
+            .iter()
+            .find(|pane| Some(pane.id) != self.workspace.ui.scratch)
+            .ok_or("workspace has no main terminal")?
+            .id;
+        if is_scratch {
+            self.workspace.ui.scratch = None;
+            self.workspace.ui.scratch_visible = false;
+            self.workspace.ui.scratch_return = None;
+            self.workspace.ui.scratch_reading = None;
+        } else if self.workspace.ui.scratch_return == Some(id) {
+            self.workspace.ui.scratch_return = Some(fallback);
         }
-        self.workspace.reading = match self.workspace.reading {
-            ReadingMode::Grid => ReadingMode::Grid,
-            _ => ReadingMode::Tabs(self.workspace.active),
-        };
+        if self.workspace.active == id {
+            self.workspace.active = fallback;
+        }
+        fn replace(reading:ReadingMode,id:PaneId,fallback:PaneId)->ReadingMode {match reading {
+            ReadingMode::Tabs(pane) | ReadingMode::Capped(pane) if pane == id => {
+                ReadingMode::Tabs(fallback)
+            }
+            ReadingMode::Fullscreen(pane) if pane == id => ReadingMode::Fullscreen(fallback),
+            other => other,
+        }}
+        self.workspace.reading = replace(self.workspace.reading,id,fallback);
+        self.workspace.ui.scratch_reading = self.workspace.ui.scratch_reading.map(|reading|replace(reading,id,fallback));
         self.workspace.ui.dialog = None;
         for (number, pane) in self.workspace.panes.iter_mut().enumerate() {
             pane.number = number + 1;
@@ -519,19 +813,56 @@ impl Server {
         Ok(())
     }
     fn add_pane(&mut self) -> Result<()> {
+        let index = self
+            .workspace
+            .panes
+            .iter()
+            .filter(|pane| Some(pane.id) != self.workspace.ui.scratch)
+            .count();
+        let specification = self
+            .config
+            .template
+            .as_ref()
+            .and_then(|template| template.panes.get(index))
+            .cloned();
+        self.spawn_pane(specification)
+    }
+    fn spawn_pane(&mut self, specification: Option<super::templates::TemplatePane>) -> Result<()> {
         let id = self.next_pane;
+        let original_cwd = self.config.cwd.clone();
+        let original_shell = self.config.shell.clone();
+        if let Some(specification) = &specification {
+            self.config.cwd = specification.cwd.clone();
+            if let Some(shell) = &specification.shell {
+                self.config.shell = shell.clone();
+            }
+        }
         let pane = NativePane::spawn(
             &self.config,
             self.workspace.cols,
             self.workspace.rows.saturating_sub(2),
             id,
-        )?;
+        );
+        self.config.cwd = original_cwd;
+        self.config.shell = original_shell;
+        let pane = pane?;
+        let cwd = specification
+            .as_ref()
+            .map(|specification| specification.cwd.clone())
+            .unwrap_or_else(|| self.config.cwd.clone());
+        let title = specification
+            .as_ref()
+            .map(|specification| specification.name.clone())
+            .unwrap_or_else(|| "shell".into());
+        if specification.is_some() {
+            self.aliases.insert(id, title.clone());
+        }
         self.workspace.panes.push(PaneInfo {
             id,
             number: self.workspace.panes.len() + 1,
             pid: pane.child.id(),
-            cwd: self.config.cwd.to_string_lossy().into_owned(),
-            title: "shell".into(),
+            cwd: cwd.to_string_lossy().into_owned(),
+            title,
             palette: ((id - 1) % 9) as u8,
             status: Status::Unknown,
             session_id: None,
@@ -556,6 +887,36 @@ impl Server {
         self.dirty = true;
     }
     fn grid(&mut self, cols: u8, rows: u8) -> Result<()> {
+        let scratch = self
+            .workspace
+            .ui
+            .scratch
+            .and_then(|id| self.workspace.panes.iter().position(|pane| pane.id == id))
+            .map(|index| self.workspace.panes.remove(index));
+        let active = self.workspace.active;
+        if scratch.as_ref().is_some_and(|pane| pane.id == active) {
+            self.workspace.active = self
+                .workspace
+                .ui
+                .scratch_return
+                .filter(|id| self.workspace.panes.iter().any(|pane| pane.id == *id))
+                .or_else(|| self.workspace.panes.first().map(|pane| pane.id))
+                .unwrap_or(0);
+        }
+        let result = self.grid_inner(cols, rows);
+        if let Some(scratch) = scratch {
+            self.workspace.panes.push(scratch);
+            if self.workspace.ui.scratch_visible {
+                self.workspace.active = active;
+            }
+        }
+        self.resize();
+        if result.is_ok() {
+            self.persist_geometry()?;
+        }
+        result
+    }
+    fn grid_inner(&mut self, cols: u8, rows: u8) -> Result<()> {
         let count = Workspace::grid_count(cols, rows)?;
         let old_len = self.workspace.panes.len();
         if count < old_len {
@@ -602,6 +963,7 @@ impl Server {
             self.workspace = prepared;
             for id in victims {
                 self.panes.remove(&id);
+                self.aliases.remove(&id);
             }
         } else {
             while self.workspace.panes.len() < count {
@@ -629,6 +991,46 @@ impl Server {
     }
     fn message(&mut self, id: u64, message: ClientMessage) -> Result<()> {
         match message {
+            ClientMessage::Diagnostics => {
+                let report = super::diagnostics::Report {
+                    version: env!("CARGO_PKG_VERSION").into(),
+                    protocol: VERSION,
+                    cols: self.workspace.cols,
+                    rows: self.workspace.rows,
+                    grid: (self.workspace.grid_cols, self.workspace.grid_rows),
+                    panes: self.panes.len(),
+                    clients: self.clients.len(),
+                    uptime_seconds: self.started.elapsed().as_secs(),
+                    pty_bytes: self.pty_bytes,
+                    full_frames: self.clients.values().map(|client| client.full_frames).sum(),
+                    patch_frames: self
+                        .clients
+                        .values()
+                        .map(|client| client.patch_frames)
+                        .sum(),
+                    full_bytes: self.clients.values().map(|client| client.full_bytes).sum(),
+                    patch_bytes: self.clients.values().map(|client| client.patch_bytes).sum(),
+                };
+                self.clients
+                    .get_mut(&id)
+                    .unwrap()
+                    .send(ServerMessage::Diagnostics(report))?;
+            }
+            ClientMessage::History { pane, start, limit } => {
+                if limit > 200 {
+                    return Err("history page exceeds 200 lines".into());
+                }
+                let lines = self
+                    .panes
+                    .get(&pane)
+                    .ok_or("unknown pane")?
+                    .terminal
+                    .history(start, limit);
+                self.clients
+                    .get_mut(&id)
+                    .unwrap()
+                    .send(ServerMessage::History { pane, lines })?;
+            }
             ClientMessage::InspectPane { pane } => {
                 let info = self
                     .workspace
@@ -665,37 +1067,46 @@ impl Server {
                 .unwrap()
                 .send(ServerMessage::Pong)?,
             ClientMessage::Command(action) => {
-                match action {
-                    Action::Shutdown => self.shutdown = true,
-                    Action::Grid { cols, rows } => self.grid(cols, rows)?,
-                    Action::ClosePaneConfirm(pane) => self.close_pane(pane)?,
-                    Action::Focus(_)
-                    | Action::Read(_)
-                    | Action::Fullscreen(_)
-                    | Action::CloseReading
-                    | Action::Swap { .. }
-                    | Action::Help => {
-                        self.workspace.apply(&action)?;
-                        self.persist_ui()?;
-                        self.resize();
+                if !self.feature_action(id, &action)? {
+                    match action {
+                        Action::Shutdown => self.shutdown = true,
+                        Action::Grid { cols, rows } => self.grid(cols, rows)?,
+                        Action::ClosePaneConfirm(pane) => self.close_pane(pane)?,
+                        Action::Focus(_)
+                        | Action::Read(_)
+                        | Action::Fullscreen(_)
+                        | Action::CloseReading
+                        | Action::Swap { .. }
+                        | Action::Help => {
+                            self.workspace.apply(&action)?;
+                            self.persist_ui()?;
+                            self.resize();
+                        }
+                        Action::ReadResize { .. }
+                        | Action::Config
+                        | Action::TabPosition
+                        | Action::TabPositionSet(_)
+                        | Action::ClosePaneRequest(_)
+                        | Action::FocusDirection { .. }
+                        | Action::GridPicker
+                        | Action::Agents(_)
+                        | Action::MovePicker
+                        | Action::DialogNavigate { .. }
+                        | Action::DialogPick(_)
+                        | Action::DialogClose => {
+                            self.workspace.apply(&action)?;
+                            self.persist_ui()?;
+                            self.resize();
+                        }
+                        other => {
+                            self.workspace.apply(&other)?;
+                            if matches!(other, Action::ResizeGrid { .. }) {
+                                self.persist_geometry()?;
+                            }
+                            self.persist_ui()?;
+                            self.resize();
+                        }
                     }
-                    Action::ReadResize { .. }
-                    | Action::Config
-                    | Action::TabPosition
-                    | Action::TabPositionSet(_)
-                    | Action::ClosePaneRequest(_)
-                    | Action::FocusDirection { .. }
-                    | Action::GridPicker
-                    | Action::Agents(_)
-                    | Action::MovePicker
-                    | Action::DialogNavigate { .. }
-                    | Action::DialogPick(_)
-                    | Action::DialogClose => {
-                        self.workspace.apply(&action)?;
-                        self.persist_ui()?;
-                        self.resize();
-                    }
-                    _ => return Err("unsupported management command".into()),
                 }
                 self.clients
                     .get_mut(&id)
@@ -822,39 +1233,45 @@ impl Server {
                     }
                     ClientMessage::Mouse(mouse) => self.mouse(mouse)?,
                     ClientMessage::Action(action) => {
-                        match action {
-                            Action::Shutdown => self.shutdown = true,
-                            Action::Grid { cols, rows } => self.grid(cols, rows)?,
-                            Action::ClosePaneConfirm(pane) => self.close_pane(pane)?,
-                            Action::Scroll { pane, lines } => self
-                                .panes
-                                .get_mut(&pane)
-                                .ok_or("unknown pane")?
-                                .terminal
-                                .scroll(lines.clamp(-10000, 10000)),
-                            Action::SelectText { pane, start, end } => {
-                                self.panes
+                        let geometry = matches!(action, Action::ResizeGrid { .. });
+                        if !self.feature_action(id, &action)? {
+                            match action {
+                                Action::Shutdown => self.shutdown = true,
+                                Action::Grid { cols, rows } => self.grid(cols, rows)?,
+                                Action::ClosePaneConfirm(pane) => self.close_pane(pane)?,
+                                Action::Scroll { pane, lines } => self
+                                    .panes
                                     .get_mut(&pane)
                                     .ok_or("unknown pane")?
                                     .terminal
-                                    .select(start, end)?;
+                                    .scroll(lines.clamp(-10000, 10000)),
+                                Action::SelectText { pane, start, end } => {
+                                    self.panes
+                                        .get_mut(&pane)
+                                        .ok_or("unknown pane")?
+                                        .terminal
+                                        .select(start, end)?;
+                                }
+                                Action::Copy(pane) => {
+                                    let text = self
+                                        .panes
+                                        .get(&pane)
+                                        .ok_or("unknown pane")?
+                                        .terminal
+                                        .selection()
+                                        .unwrap_or_default();
+                                    self.clients
+                                        .get_mut(&id)
+                                        .unwrap()
+                                        .send(ServerMessage::Clipboard(text))?;
+                                }
+                                other => self.workspace.apply(&other)?,
                             }
-                            Action::Copy(pane) => {
-                                let text = self
-                                    .panes
-                                    .get(&pane)
-                                    .ok_or("unknown pane")?
-                                    .terminal
-                                    .selection()
-                                    .unwrap_or_default();
-                                self.clients
-                                    .get_mut(&id)
-                                    .unwrap()
-                                    .send(ServerMessage::Clipboard(text))?;
-                            }
-                            other => self.workspace.apply(&other)?,
                         }
                         self.persist_ui()?;
+                        if geometry {
+                            self.persist_geometry()?;
+                        }
                         self.resize();
                     }
                     _ => return Err("invalid native client message".into()),
@@ -957,6 +1374,7 @@ impl Server {
                 match pane.master.read(&mut buf) {
                     Ok(0) => break,
                     Ok(n) => {
+                        self.pty_bytes = self.pty_bytes.saturating_add(n as u64);
                         self.dirty = true;
                         if let Some(info) =
                             self.workspace.panes.iter_mut().find(|info| info.id == *id)
@@ -972,11 +1390,24 @@ impl Server {
                                     if let Some(info) =
                                         self.workspace.panes.iter_mut().find(|p| p.id == *id)
                                     {
-                                        info.title = title.chars().take(1024).collect();
+                                        info.title =
+                                            self.aliases.get(id).cloned().unwrap_or_else(|| {
+                                                title.chars().take(1024).collect()
+                                            });
                                     }
                                 }
                                 Effect::Clipboard(text) if text.len() <= MAX_INPUT => {
                                     clipboard.push(text)
+                                }
+                                Effect::Bell => {
+                                    if let Some(info) =
+                                        self.workspace.panes.iter().find(|info| info.id == *id)
+                                    {
+                                        if let Err(error) = self.activity.bell(info, crate::now()) {
+                                            self.notice =
+                                                Some(format!("Notification history: {error}"));
+                                        }
+                                    }
                                 }
                                 _ => (),
                             }
@@ -1076,14 +1507,22 @@ impl Server {
                 info.status = agent.status;
                 info.kind = Some(agent.kind);
                 info.session_id = agent.session_id.clone();
-                info.title = agent.name.chars().take(1024).collect();
+                info.title = self
+                    .aliases
+                    .get(&info.id)
+                    .cloned()
+                    .unwrap_or_else(|| agent.name.chars().take(1024).collect());
                 if let Some(pane) = self.panes.get_mut(&info.id) {
                     pane.agent_named = true;
                 }
             } else {
                 if let Some(pane) = self.panes.get_mut(&info.id) {
                     if std::mem::take(&mut pane.agent_named) {
-                        info.title = "shell".into();
+                        info.title = self
+                            .aliases
+                            .get(&info.id)
+                            .cloned()
+                            .unwrap_or_else(|| "shell".into());
                     }
                 }
                 info.session_id = None;
@@ -1103,6 +1542,10 @@ impl Server {
         }
     }
     fn frames(&mut self, spinner: usize) {
+        if let Err(error) = self.activity.observe(&self.workspace.panes, crate::now()) {
+            self.notice = Some(format!("Notification history: {error}"));
+        }
+        self.workspace.ui.notifications = self.activity.all().to_vec();
         let vitals = self.vitals.sample();
         self.workspace.ui.vitals = if self.workspace.cols <= 60 {
             let mut compact = Vec::new();
@@ -1227,6 +1670,9 @@ fn discovery_worker(
 }
 
 pub fn serve(config: ServerConfig) -> Result<()> {
+    if let Some(template) = &config.template {
+        template.validate()?;
+    }
     validate_size(config.cols, config.rows)?;
     config.ui.validate()?;
     Workspace::grid_count(config.initial_grid.0, config.initial_grid.1)?;
@@ -1235,6 +1681,18 @@ pub fn serve(config: ServerConfig) -> Result<()> {
     let (listener, _endpoint) = endpoint(&config)?;
     super::lifecycle::save_pid(&config.state_dir)?;
     let mut server = Server {
+        recovery_job: None,
+        aliases: BTreeMap::new(),
+        activity: super::activity::Activity::load(
+            &config.state_dir,
+            config
+                .state_dir
+                .file_name()
+                .and_then(|name| name.to_str())
+                .unwrap_or("workspace"),
+        )?,
+        started: Instant::now(),
+        pty_bytes: 0,
         vitals: super::vitals::Sampler::default(),
         config,
         workspace,
@@ -1249,6 +1707,9 @@ pub fn serve(config: ServerConfig) -> Result<()> {
     };
     server.add_pane()?;
     server.grid(server.config.initial_grid.0, server.config.initial_grid.1)?;
+    server.workspace.ui.column_weights = server.config.initial_weights[0].clone();
+    server.workspace.ui.row_weights = server.config.initial_weights[1].clone();
+    server.persist_geometry()?;
     server.resize();
     let (requests, results, worker) = discovery_worker(server.config.state_dir.clone());
     let mut discovery = Instant::now() - Duration::from_secs(2);
@@ -1297,6 +1758,7 @@ pub fn serve(config: ServerConfig) -> Result<()> {
             }
         }
         server.poll_ptys();
+        server.poll_recovery();
         if idle_poll.elapsed() >= Duration::from_millis(100) {
             for pane in server.panes.values_mut() {
                 if !pane.dead {
@@ -1388,6 +1850,8 @@ pub fn serve(config: ServerConfig) -> Result<()> {
     drop(results);
     let _ = worker.join();
     server.panes.clear();
+    let _ = server.activity.observe(&[], crate::now());
+    server.recovery_job = None;
     if let Ok(mut store) = journal::Store::open_nonblocking(&server.config.state_dir.join("native"))
     {
         let _ = store.reconcile(vec![], crate::now());

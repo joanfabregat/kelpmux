@@ -25,12 +25,25 @@ pub fn private_state(state: &Path) -> Result<()> {
             }
         }
     }
+    if let Some(parent) = state.parent() {
+        if parent.file_name().is_some_and(|name| name == "workspaces") {
+            if let Some(root) = parent
+                .parent()
+                .filter(|root| root.file_name().is_some_and(|name| name == "kelpmux"))
+            {
+                journal::private_dir(root)?;
+                journal::private_dir(parent)?;
+            }
+        }
+    }
     journal::private_dir(state)
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct Settings {
+    pub grid_weights: [Vec<u16>; 2],
+    pub template: Option<super::templates::Template>,
     pub ui: UiConfig,
     pub shell: Option<PathBuf>,
     pub cwd: Option<PathBuf>,
@@ -39,6 +52,8 @@ pub struct Settings {
 impl Default for Settings {
     fn default() -> Self {
         Self {
+            grid_weights: [Vec::new(), Vec::new()],
+            template: None,
             ui: UiConfig::default(),
             shell: None,
             cwd: None,
@@ -54,6 +69,22 @@ impl Settings {
         }
         let settings: Self = serde_json::from_slice(&fs::read(path)?)?;
         settings.ui.validate()?;
+        for (weights, count) in settings
+            .grid_weights
+            .iter()
+            .zip([settings.grid.0, settings.grid.1])
+        {
+            if !weights.is_empty()
+                && (weights.len() != usize::from(count)
+                    || weights.iter().any(|weight| *weight < 50 || *weight > 1000)
+                    || weights.iter().map(|weight| u32::from(*weight)).sum::<u32>() > 1000)
+            {
+                return Err("invalid persistent grid weights".into());
+            }
+        }
+        if let Some(template) = &settings.template {
+            template.validate()?;
+        }
         if ![(1, 1), (2, 1), (2, 2), (3, 2), (2, 3), (3, 3)].contains(&settings.grid) {
             return Err("unsupported startup grid".into());
         }

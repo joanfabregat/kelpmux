@@ -142,6 +142,11 @@ fn decode_mouse(bytes: &[u8]) -> Option<MouseEvent> {
 
 #[derive(Default)]
 pub struct Router {
+    search: Option<(String, bool)>,
+    search_utf8: Vec<u8>,
+    selecting: bool,
+    header_drag: Option<PaneId>,
+    boundary_drag: Option<(Option<u8>, Option<u8>)>,
     prefix: bool,
     pending_modal: bool,
     scrolling: bool,
@@ -151,6 +156,20 @@ pub struct Router {
 }
 impl Router {
     pub fn route(&mut self, event: InputEvent, frame: &Frame) -> Vec<ClientMessage> {
+        if frame.ui.dialog.is_some() {
+            self.header_drag = None;
+            self.boundary_drag = None;
+            self.selecting = false;
+        }
+        if frame
+            .ui
+            .dialog
+            .is_some_and(|d| d.kind == super::ui::DialogKind::Search)
+        {
+            return self.search_event(event, frame);
+        }
+        self.search = None;
+        self.search_utf8.clear();
         if frame.ui.dialog.is_some() || frame.help {
             self.pending_modal = false;
         }
@@ -210,6 +229,21 @@ impl Router {
                         b"g" => Some(Action::GridPicker),
                         b"v" => Some(Action::TabPosition),
                         b"," => Some(Action::Config),
+                        b"o" => Some(Action::Overview),
+                        b"b" => Some(Action::Notifications),
+                        b"r" => Some(Action::Recovery),
+                        b"/" => Some(Action::SearchOpen),
+                        b"c" => Some(Action::Scratch),
+                        b"N" => Some(Action::NextAttention),
+                        b"P" => Some(Action::NextFinished),
+                        b" " => {
+                            self.selecting = true;
+                            Some(Action::SelectionStart)
+                        }
+                        b"H" => self.grid_resize(frame, -40, 0),
+                        b"L" => self.grid_resize(frame, 40, 0),
+                        b"K" => self.grid_resize(frame, 0, -40),
+                        b"J" => self.grid_resize(frame, 0, 40),
                         b"a" => Some(Action::Agents(super::ui::AgentFilter::All)),
                         b"!" => Some(Action::Agents(super::ui::AgentFilter::Attention)),
                         b"n" => Some(Action::Agents(super::ui::AgentFilter::Finished)),
@@ -244,6 +278,10 @@ impl Router {
                                 | Action::Agents(_)
                                 | Action::Config
                                 | Action::ClosePaneRequest(_)
+                                | Action::Overview
+                                | Action::Notifications
+                                | Action::Recovery
+                                | Action::SearchOpen
                         )
                     {
                         self.pending_modal = true;
@@ -265,7 +303,40 @@ impl Router {
             if self.pending_modal {
                 continue;
             }
+            if self.selecting {
+                let action = match key {
+                    b"\x1b[A" => Some(Action::SelectionMove { dx: 0, dy: -1 }),
+                    b"\x1b[B" => Some(Action::SelectionMove { dx: 0, dy: 1 }),
+                    b"\x1b[C" => Some(Action::SelectionMove { dx: 1, dy: 0 }),
+                    b"\x1b[D" => Some(Action::SelectionMove { dx: -1, dy: 0 }),
+                    b"y" => {
+                        self.selecting = false;
+                        Some(Action::Copy(frame.active))
+                    }
+                    b"\x1b" | b"q" => {
+                        self.selecting = false;
+                        None
+                    }
+                    _ => None,
+                };
+                if let Some(action) = action {
+                    emit(&mut output, action, true);
+                }
+                continue;
+            }
             if let Some(dialog) = frame.ui.dialog {
+                if key == b"y" && dialog.kind == super::ui::DialogKind::Recovery {
+                    if frame
+                        .ui
+                        .recovery
+                        .get(dialog.selection)
+                        .is_none_or(|item| item.entry.resume_command.is_none())
+                    {
+                        continue;
+                    }
+                    emit(&mut output, Action::RecoveryCopy(dialog.selection), true);
+                    continue;
+                }
                 let action = match key {
                     b"\x1b" | b"q" => Some(Action::DialogClose),
                     b"\x1b[A" => Some(Action::DialogNavigate { dx: 0, dy: -1 }),
@@ -283,7 +354,7 @@ impl Router {
                         let panes: Vec<_> = frame
                             .panes
                             .iter()
-                            .filter(|v| !v.overlay)
+                            .filter(|v| !v.overlay && Some(v.pane.id) != frame.ui.scratch)
                             .map(|v| v.pane.clone())
                             .collect();
                         super::workspace::dialog_entries(&panes, Some(dialog))
@@ -303,6 +374,16 @@ impl Router {
                 continue;
             }
             if self.help_override.unwrap_or(frame.help) {
+                if let Some(amount) = match key {
+                    b"\x1b[A" => Some(-1),
+                    b"\x1b[B" => Some(1),
+                    b"\x1b[5~" => Some(-8),
+                    b"\x1b[6~" => Some(8),
+                    _ => None,
+                } {
+                    emit(&mut output, Action::HelpScroll(amount), true);
+                    continue;
+                }
                 if matches!(key, b"q" | b"\x1b" | b"?") {
                     self.toggle_help(frame);
                     emit(&mut output, Action::Help, true);
@@ -378,6 +459,71 @@ impl Router {
         if self.pending_modal {
             return output;
         }
+        if let Some((column, row)) = self.boundary_drag {
+            if matches!(event.kind, MouseKind::Move | MouseKind::Release) {
+                emit(
+                    &mut output,
+                    Action::ResizeGrid {
+                        column: column.map(|i| {
+                            (
+                                i,
+                                (u32::from(event.position.x) * 1000 / u32::from(frame.cols)) as u16,
+                            )
+                        }),
+                        row: row.map(|i| {
+                            (
+                                i,
+                                (u32::from(event.position.y) * 1000 / u32::from(frame.rows - 1))
+                                    as u16,
+                            )
+                        }),
+                    },
+                    true,
+                );
+                if event.kind == MouseKind::Release {
+                    self.boundary_drag = None;
+                }
+                return output;
+            }
+        }
+        if let Some(source) = self.header_drag {
+            if matches!(event.kind, MouseKind::Move | MouseKind::Release) {
+                if event.kind == MouseKind::Release {
+                    self.header_drag = None;
+                    if let Some(view) = frame.panes.iter().find(|v| {
+                        v.rect.contains(event.position) && Some(v.pane.id) != frame.ui.scratch
+                    }) {
+                        if view.pane.id != source {
+                            emit(
+                                &mut output,
+                                Action::Swap {
+                                    source,
+                                    target: view.pane.id,
+                                },
+                                true,
+                            );
+                        }
+                    }
+                }
+                return output;
+            }
+        }
+        if frame.ui.scratch_visible {
+            if let Some(view) = frame
+                .panes
+                .iter()
+                .find(|v| Some(v.pane.id) == frame.ui.scratch)
+            {
+                if event.kind == MouseKind::Press
+                    && (event.position.y == view.rect.y
+                        && event.position.x >= view.rect.x + view.rect.cols - 3
+                        || !view.rect.contains(event.position))
+                {
+                    emit(&mut output, Action::ScratchClose, true);
+                    return output;
+                }
+            }
+        }
         if let Some(dialog) = frame.ui.dialog {
             let bounds = super::workspace::dialog_bounds(frame.cols, frame.rows);
             if event.kind == MouseKind::Press
@@ -407,13 +553,7 @@ impl Router {
                 None
             };
             if let Some(index) = index {
-                let panes: Vec<_> = frame
-                    .panes
-                    .iter()
-                    .filter(|v| !v.overlay)
-                    .map(|v| v.pane.clone())
-                    .collect();
-                if index >= super::workspace::dialog_entries(&panes, Some(dialog)).len() {
+                if index >= frame_entries(frame).len() {
                     return output;
                 }
                 if event.kind == MouseKind::Press {
@@ -425,6 +565,18 @@ impl Router {
             return output;
         }
         if self.help_override.unwrap_or(frame.help) {
+            if matches!(event.kind, MouseKind::WheelUp | MouseKind::WheelDown) {
+                emit(
+                    &mut output,
+                    Action::HelpScroll(if event.kind == MouseKind::WheelUp {
+                        -3
+                    } else {
+                        3
+                    }),
+                    true,
+                );
+                return output;
+            }
             let bounds = help_bounds(frame.cols, frame.rows);
             let close = event.position.y == bounds.y
                 && event.position.x >= bounds.x + bounds.cols.saturating_sub(3);
@@ -473,6 +625,11 @@ impl Router {
             && event.position.y == frame.rows.saturating_sub(1)
             && event.position.x >= frame.cols.saturating_sub(3)
         {
+            if frame.ui.notifications.iter().any(|item| !item.read) {
+                self.pending_modal = true;
+                emit(&mut output, Action::Notifications, true);
+                return output;
+            }
             self.toggle_help(frame);
             emit(&mut output, Action::Help, true);
             return output;
@@ -495,9 +652,36 @@ impl Router {
                 return output;
             }
         }
-        if frame.reading != ReadingMode::Grid {
-            let active = frame
+        if frame.reading == ReadingMode::Grid
+            && !frame.ui.scratch_visible
+            && event.kind == MouseKind::Press
+        {
+            for view in frame
                 .panes
+                .iter()
+                .filter(|v| Some(v.pane.id) != frame.ui.scratch)
+            {
+                if view.rect.y == 0 && view.rect.x > 0 && event.position.x == view.rect.x - 1 {
+                    self.boundary_drag = Some((Some((view.pane.number - 1) as u8 - 1), None));
+                    return output;
+                }
+                if view.rect.y > 0 && event.position.y == view.rect.y && event.position.x < 2 {
+                    let rows = frame.ui.grid_shape.0.max(1);
+                    self.boundary_drag = Some((
+                        None,
+                        Some(((view.pane.number - 1) / usize::from(rows)) as u8 - 1),
+                    ));
+                    return output;
+                }
+            }
+        }
+        if frame.reading != ReadingMode::Grid && !frame.ui.scratch_visible {
+            let tabviews: Vec<_> = frame
+                .panes
+                .iter()
+                .filter(|view| Some(view.pane.id) != frame.ui.scratch)
+                .collect();
+            let active = tabviews
                 .iter()
                 .position(|view| view.pane.id == frame.active)
                 .unwrap_or(0);
@@ -505,7 +689,7 @@ impl Router {
                 frame.cols,
                 frame.rows,
                 &frame.ui.config,
-                frame.panes.len(),
+                tabviews.len(),
                 active,
             )
             .into_iter()
@@ -519,19 +703,19 @@ impl Router {
                     let index = match target {
                         _ if event.kind == MouseKind::WheelUp => active.saturating_sub(1),
                         _ if event.kind == MouseKind::WheelDown => {
-                            (active + 1).min(frame.panes.len().saturating_sub(1))
+                            (active + 1).min(tabviews.len().saturating_sub(1))
                         }
                         TabTarget::Pane(index) if event.kind == MouseKind::Press => index,
                         TabTarget::Previous => active.saturating_sub(1),
-                        TabTarget::Next => (active + 1).min(frame.panes.len().saturating_sub(1)),
-                        _ => (active + 1).min(frame.panes.len().saturating_sub(1)),
+                        TabTarget::Next => (active + 1).min(tabviews.len().saturating_sub(1)),
+                        _ => (active + 1).min(tabviews.len().saturating_sub(1)),
                     };
-                    if let Some(view) = frame.panes.get(index) {
+                    if let Some(view) = tabviews.get(index) {
                         let bounds = super::workspace::tab_targets(
                             frame.cols,
                             frame.rows,
                             &frame.ui.config,
-                            frame.panes.len(),
+                            tabviews.len(),
                             active,
                         )
                         .into_iter()
@@ -561,6 +745,9 @@ impl Router {
             return output;
         };
         let id = view.pane.id;
+        if view.overlay && Some(id) == frame.ui.scratch && event.position.y == view.rect.y {
+            return output;
+        }
         if event.position.y == view.rect.y && frame.reading == ReadingMode::Grid {
             if event.kind != MouseKind::Press {
                 return output;
@@ -576,6 +763,7 @@ impl Router {
                     Action::Fullscreen(id)
                 }
             } else {
+                self.header_drag = Some(id);
                 Action::Focus(id)
             };
             emit(&mut output, action, true);
@@ -644,6 +832,21 @@ impl Router {
             "fullscreen" => Action::Fullscreen(frame.active),
             "tab-position" => Action::TabPosition,
             "config" => Action::Config,
+            "overview" => Action::Overview,
+            "notifications" => Action::Notifications,
+            "recovery" => Action::Recovery,
+            "next-attention" => Action::NextAttention,
+            "next-finished" => Action::NextFinished,
+            "scratch" => Action::Scratch,
+            "search" => Action::SearchOpen,
+            "selection" => {
+                self.selecting = true;
+                Action::SelectionStart
+            }
+            "grid-narrower" => return self.grid_resize(frame, -40, 0),
+            "grid-wider" => return self.grid_resize(frame, 40, 0),
+            "grid-shorter" => return self.grid_resize(frame, 0, -40),
+            "grid-taller" => return self.grid_resize(frame, 0, 40),
             "agents" => Action::Agents(super::ui::AgentFilter::All),
             "attention" => Action::Agents(super::ui::AgentFilter::Attention),
             "finished" => Action::Agents(super::ui::AgentFilter::Finished),
@@ -672,7 +875,52 @@ impl Router {
             return vec![];
         };
         let mut actions = vec![];
+        if dialog.kind == DialogKind::Overview {
+            if let Some(&id) = frame_entries(frame).get(index) {
+                return vec![
+                    ClientMessage::Action(Action::Focus(id)),
+                    ClientMessage::Action(Action::DialogClose),
+                ];
+            }
+            return vec![];
+        }
+        if dialog.kind == DialogKind::Notifications {
+            let Some(item) = frame.ui.notifications.get(index) else {
+                return vec![];
+            };
+            let mut actions = vec![ClientMessage::Action(Action::Acknowledge(item.id))];
+            if frame.panes.iter().any(|view| view.pane.id == item.pane) {
+                actions.push(ClientMessage::Action(Action::Focus(item.pane)));
+            }
+            actions.push(ClientMessage::Action(Action::DialogClose));
+            return actions;
+        }
+        if dialog.kind == DialogKind::Recovery {
+            return frame
+                .ui
+                .recovery
+                .get(index)
+                .filter(|item| item.entry.resume_command.is_some())
+                .map(|_| vec![ClientMessage::Action(Action::RecoveryCopy(index))])
+                .unwrap_or_default();
+        }
+        if dialog.kind == DialogKind::Search {
+            return frame
+                .ui
+                .search_hits
+                .get(index)
+                .map(|_| {
+                    vec![
+                        ClientMessage::Action(Action::SearchSelect(index)),
+                        ClientMessage::Action(Action::DialogClose),
+                    ]
+                })
+                .unwrap_or_default();
+        }
         if dialog.kind == DialogKind::Config {
+            if index == 4 {
+                return vec![ClientMessage::Action(Action::NotificationSoundToggle)];
+            }
             let positions = [
                 super::ui::TabPosition::Auto,
                 super::ui::TabPosition::Top,
@@ -712,7 +960,7 @@ impl Router {
             let panes: Vec<_> = frame
                 .panes
                 .iter()
-                .filter(|v| !v.overlay)
+                .filter(|v| !v.overlay && Some(v.pane.id) != frame.ui.scratch)
                 .map(|v| v.pane.clone())
                 .collect();
             let entries = super::workspace::dialog_entries(&panes, Some(dialog));
@@ -761,11 +1009,211 @@ fn push_input(output: &mut Vec<ClientMessage>, bytes: &[u8]) {
 /// Matches the renderer's centered help panel in the work area above the footer.
 pub fn help_bounds(cols: u16, rows: u16) -> Rect {
     let width = cols.saturating_sub(4).min(76);
-    let height = rows.saturating_sub(2).min(18);
+    let height = rows.saturating_sub(2).min(30);
     Rect {
         x: (cols - width) / 2,
         y: (rows.saturating_sub(1) - height) / 2,
         cols: width,
         rows: height,
+    }
+}
+fn frame_entries(frame: &Frame) -> Vec<u64> {
+    use super::ui::DialogKind;
+    match frame.ui.dialog.map(|dialog| dialog.kind) {
+        Some(DialogKind::Notifications) => frame.ui.notifications.iter().map(|n| n.id).collect(),
+        Some(DialogKind::Recovery) => (0..frame.ui.recovery.len() as u64).collect(),
+        Some(DialogKind::Search) => (0..frame.ui.search_hits.len() as u64).collect(),
+        _ => {
+            let panes = frame
+                .panes
+                .iter()
+                .filter(|view| Some(view.pane.id) != frame.ui.scratch)
+                .map(|view| view.pane.clone())
+                .collect::<Vec<_>>();
+            super::workspace::dialog_entries(&panes, frame.ui.dialog)
+        }
+    }
+}
+impl Router {
+    fn search_event(&mut self, event: InputEvent, frame: &Frame) -> Vec<ClientMessage> {
+        if !frame.controller {
+            return vec![];
+        }
+        self.pending_modal = false;
+        if self.search.is_none() {
+            self.search = Some((frame.ui.search_query.clone(), frame.ui.search_all));
+        }
+        let mut output = vec![];
+        match event {
+            InputEvent::Mouse(mouse) => {
+                let bounds = super::workspace::dialog_bounds(frame.cols, frame.rows);
+                if mouse.kind == MouseKind::Press {
+                    if !bounds.contains(mouse.position)
+                        || mouse.position.y == bounds.y
+                            && mouse.position.x >= bounds.x + bounds.cols - 3
+                    {
+                        emit(&mut output, Action::DialogClose, true);
+                    } else if mouse.position.y >= bounds.y + 4 {
+                        let visible = usize::from(bounds.rows.saturating_sub(4));
+                        let selection = frame.ui.dialog.unwrap().selection;
+                        let index = usize::from(mouse.position.y - bounds.y - 4)
+                            + selection.saturating_sub(visible.saturating_sub(1));
+                        output.extend(self.pick_dialog(frame, index));
+                    }
+                }
+            }
+            InputEvent::Paste(bytes) => {
+                let (query, _) = self.search.as_mut().unwrap();
+                for c in String::from_utf8_lossy(&bytes)
+                    .chars()
+                    .filter(|c| !c.is_control())
+                {
+                    if query.chars().count() < 1024 {
+                        query.push(c);
+                    }
+                }
+            }
+            InputEvent::Bytes(bytes) => {
+                match bytes.as_slice() {
+                    b"\x1b" => {
+                        emit(&mut output, Action::DialogClose, true);
+                        return output;
+                    }
+                    b"\r" | b"\n" => {
+                        return self.search_submit(frame);
+                    }
+                    b"\x1b[A" => {
+                        emit(&mut output, Action::DialogNavigate { dx: 0, dy: -1 }, true);
+                        return output;
+                    }
+                    b"\x1b[B" => {
+                        emit(&mut output, Action::DialogNavigate { dx: 0, dy: 1 }, true);
+                        return output;
+                    }
+                    b"\x19" => {
+                        emit(
+                            &mut output,
+                            Action::SearchCopy(frame.ui.dialog.unwrap().selection),
+                            true,
+                        );
+                        return output;
+                    }
+                    _ => {}
+                }
+                for byte in bytes {
+                    match byte {
+                        13 | 10 => {
+                            return self.search_submit(frame);
+                        }
+                        27 => {
+                            emit(&mut output, Action::DialogClose, true);
+                            return output;
+                        }
+                        25 => {
+                            emit(
+                                &mut output,
+                                Action::SearchCopy(frame.ui.dialog.unwrap().selection),
+                                true,
+                            );
+                            return output;
+                        }
+                        1 | 9 => {
+                            let (_, all) = self.search.as_mut().unwrap();
+                            *all = !*all;
+                        }
+                        8 | 127 => {
+                            self.search_utf8.clear();
+                            self.search.as_mut().unwrap().0.pop();
+                        }
+                        21 => {
+                            self.search_utf8.clear();
+                            self.search.as_mut().unwrap().0.clear();
+                        }
+                        0..=31 => {}
+                        _ => {
+                            self.search_utf8.push(byte);
+                            match std::str::from_utf8(&self.search_utf8) {
+                                Ok(text) => {
+                                    if self.search.as_ref().unwrap().0.chars().count()
+                                        + text.chars().count()
+                                        <= 1024
+                                    {
+                                        self.search.as_mut().unwrap().0.push_str(text);
+                                    }
+                                    self.search_utf8.clear();
+                                }
+                                Err(error) if error.error_len().is_some() => {
+                                    self.search_utf8.clear()
+                                }
+                                _ => {}
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        let (query, all) = self.search.as_ref().unwrap();
+        if query != &frame.ui.search_query || *all != frame.ui.search_all {
+            emit(
+                &mut output,
+                Action::Search {
+                    query: query.clone(),
+                    all: *all,
+                },
+                true,
+            );
+        }
+        output
+    }
+    fn search_submit(&self, frame: &Frame) -> Vec<ClientMessage> {
+        let (query, all) = self.search.as_ref().unwrap();
+        if query != &frame.ui.search_query || *all != frame.ui.search_all {
+            vec![
+                ClientMessage::Action(Action::Search {
+                    query: query.clone(),
+                    all: *all,
+                }),
+                ClientMessage::Action(Action::SearchSelect(frame.ui.dialog.unwrap().selection)),
+                ClientMessage::Action(Action::DialogClose),
+            ]
+        } else {
+            self.pick_dialog(frame, frame.ui.dialog.unwrap().selection)
+        }
+    }
+    fn grid_resize(&self, frame: &Frame, dx: i16, dy: i16) -> Option<Action> {
+        if frame.reading != ReadingMode::Grid {
+            return None;
+        }
+        let (cols, rows) = frame.ui.grid_shape;
+        let index = frame
+            .panes
+            .iter()
+            .filter(|view| Some(view.pane.id) != frame.ui.scratch)
+            .position(|view| view.pane.id == frame.active)?;
+        let col = index % usize::from(cols.max(1));
+        let row = index / usize::from(cols.max(1));
+        let column = if dx != 0 && cols > 1 {
+            let boundary = col.min(usize::from(cols) - 2);
+            let current = if frame.ui.column_weights.len() == usize::from(cols) {
+                frame.ui.column_weights[..=boundary].iter().sum()
+            } else {
+                1000 * (boundary as u16 + 1) / u16::from(cols)
+            };
+            Some((boundary as u8, current.saturating_add_signed(dx)))
+        } else {
+            None
+        };
+        let row = if dy != 0 && rows > 1 {
+            let boundary = row.min(usize::from(rows) - 2);
+            let current = if frame.ui.row_weights.len() == usize::from(rows) {
+                frame.ui.row_weights[..=boundary].iter().sum()
+            } else {
+                1000 * (boundary as u16 + 1) / u16::from(rows)
+            };
+            Some((boundary as u8, current.saturating_add_signed(dy)))
+        } else {
+            None
+        };
+        Some(Action::ResizeGrid { column, row })
     }
 }

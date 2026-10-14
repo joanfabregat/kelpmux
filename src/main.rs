@@ -113,7 +113,16 @@ fn run() -> Result<()> {
     if args.first().is_some_and(|arg| {
         matches!(
             arg.as_str(),
-            "server" | "attach" | "ctl" | "start" | "status" | "stop" | "ssh-entry" | "recover"
+            "server"
+                | "attach"
+                | "ctl"
+                | "start"
+                | "status"
+                | "stop"
+                | "ssh-entry"
+                | "recover"
+                | "diagnostics"
+                | "templates"
         )
     }) {
         return kelpmux::native::cli::run(&args);

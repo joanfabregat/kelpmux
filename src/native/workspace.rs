@@ -35,11 +35,91 @@ impl Workspace {
     }
     pub fn resize(&mut self, cols: u16, rows: u16) -> Result<()> {
         validate_size(cols, rows)?;
+        let old_bucket = super::ui::geometry_bucket(self.cols);
+        let prior = self
+            .ui
+            .scratch_reading
+            .filter(|_| self.ui.scratch_visible)
+            .unwrap_or(self.reading);
+        if old_bucket != super::ui::geometry_bucket(cols)
+            && self.ui.config.view_modes[old_bucket].is_none()
+        {
+            self.ui.config.view_modes[old_bucket] = Some(prior != ReadingMode::Grid);
+        }
         self.cols = cols;
         self.rows = rows;
+        let bucket = super::ui::geometry_bucket(cols);
+        let tabs =
+            self.ui.config.view_modes[bucket].unwrap_or(bucket == 0 || prior != ReadingMode::Grid);
+        let normal = self
+            .ui
+            .scratch_return
+            .filter(|_| self.ui.scratch_visible)
+            .unwrap_or(self.active);
+        if self
+            .panes
+            .iter()
+            .any(|pane| pane.id == normal && Some(normal) != self.ui.scratch)
+        {
+            let previous = self
+                .ui
+                .scratch_reading
+                .filter(|_| self.ui.scratch_visible)
+                .unwrap_or(self.reading);
+            let reading = if tabs {
+                if matches!(previous, ReadingMode::Fullscreen(_)) {
+                    ReadingMode::Fullscreen(normal)
+                } else {
+                    ReadingMode::Tabs(normal)
+                }
+            } else {
+                ReadingMode::Grid
+            };
+            if self.ui.scratch_visible {
+                self.ui.scratch_reading = Some(reading);
+                if self.reading != ReadingMode::Fullscreen(self.ui.scratch.unwrap_or(0)) {
+                    self.reading = reading;
+                }
+            } else {
+                self.reading = reading;
+            }
+        }
         Ok(())
     }
     pub fn layout(&self) -> Vec<PaneView> {
+        if let Some(scratch) = self.ui.scratch {
+            let mut base = self.clone();
+            base.panes.retain(|pane| pane.id != scratch);
+            base.ui.scratch = None;
+            if self.ui.scratch_visible {
+                base.active = self.ui.scratch_return.unwrap_or(base.active);
+                base.reading = self.ui.scratch_reading.unwrap_or(ReadingMode::Grid);
+            }
+            let mut views = base.layout();
+            if let Some(pane) = self.panes.iter().find(|pane| pane.id == scratch) {
+                let rect = if self.ui.scratch_visible {
+                    if self.reading == ReadingMode::Fullscreen(scratch) {
+                        Rect {
+                            x: 0,
+                            y: 0,
+                            cols: self.cols,
+                            rows: self.rows - 1,
+                        }
+                    } else {
+                        scratch_rect(self.cols, self.rows)
+                    }
+                } else {
+                    Rect::default()
+                };
+                let mut view = Self::view(pane, views.len(), rect, self.ui.scratch_visible);
+                view.pane.number = 0;
+                if rect.rows == 0 {
+                    view.body = Rect::default();
+                }
+                views.push(view);
+            }
+            return views;
+        }
         if self.reading != ReadingMode::Grid {
             let body = tab_body(
                 self.cols,
@@ -68,20 +148,27 @@ impl Workspace {
     }
     pub fn grid_layout(&self) -> Vec<PaneView> {
         let columns = u16::from(self.grid_cols.max(1));
-        let rows = u16::from(self.grid_rows.max(1));
         let usable_cols = self.cols.saturating_sub(columns - 1);
         let usable_rows = self.rows.saturating_sub(1);
         let mut views = Vec::new();
-        for (index, pane) in self.panes.iter().enumerate() {
+        let x_boundaries =
+            weighted_boundaries(usable_cols, self.grid_cols, &self.ui.column_weights);
+        let y_boundaries = weighted_boundaries(usable_rows, self.grid_rows, &self.ui.row_weights);
+        for (index, pane) in self
+            .panes
+            .iter()
+            .filter(|pane| Some(pane.id) != self.ui.scratch)
+            .enumerate()
+        {
             let col = index as u16 % columns;
             let row = index as u16 / columns;
-            let left = usable_cols * col / columns;
-            let top = usable_rows * row / rows;
+            let left = x_boundaries[usize::from(col)];
+            let top = y_boundaries[usize::from(row)];
             let rect = Rect {
                 x: left + col,
                 y: top,
-                cols: usable_cols * (col + 1) / columns - left,
-                rows: usable_rows * (row + 1) / rows - top,
+                cols: x_boundaries[usize::from(col + 1)] - left,
+                rows: y_boundaries[usize::from(row + 1)] - top,
             };
             views.push(Self::view(pane, index, rect, false));
         }
@@ -106,12 +193,8 @@ impl Workspace {
     pub fn terminal_sizes(&self) -> Vec<(PaneId, u16, u16)> {
         let mut sizes = Vec::new();
         let mut views = self.grid_layout();
-        if self.reading != ReadingMode::Grid {
-            views.extend(
-                self.layout()
-                    .into_iter()
-                    .filter(|view| view.pane.id == self.active),
-            );
+        if self.reading != ReadingMode::Grid || self.ui.scratch_visible {
+            views.extend(self.layout().into_iter().filter(|view| view.body.cols > 0));
         }
         for view in views {
             let entry = (view.pane.id, view.body.cols, view.body.rows);
@@ -124,6 +207,12 @@ impl Workspace {
                 sizes.push(entry);
             }
         }
+        if let Some(id) = self.ui.scratch {
+            if !sizes.iter().any(|entry| entry.0 == id) {
+                let rect = scratch_rect(self.cols, self.rows);
+                sizes.push((id, rect.cols, rect.rows - 1));
+            }
+        }
         sizes
     }
     fn require_pane(&self, id: PaneId) -> Result<usize> {
@@ -134,6 +223,150 @@ impl Workspace {
     }
     pub fn apply(&mut self, action: &Action) -> Result<()> {
         match *action {
+            Action::HelpScroll(amount) => {
+                let visible = self.rows.saturating_sub(4).min(28);
+                self.ui.help_offset = self
+                    .ui
+                    .help_offset
+                    .saturating_add_signed(amount)
+                    .min(23u16.saturating_sub(visible));
+            }
+            Action::Overview | Action::Notifications | Action::Recovery | Action::SearchOpen => {
+                let kind = match action {
+                    Action::Overview => DialogKind::Overview,
+                    Action::Notifications => DialogKind::Notifications,
+                    Action::Recovery => DialogKind::Recovery,
+                    _ => DialogKind::Search,
+                };
+                self.help = false;
+                self.ui.dialog = Some(Dialog {
+                    kind,
+                    selection: 0,
+                    filter: AgentFilter::All,
+                    source: Some(if Some(self.active) == self.ui.scratch {
+                        self.ui.scratch_return.unwrap_or(self.active)
+                    } else {
+                        self.active
+                    }),
+                });
+            }
+            Action::NextAttention | Action::NextFinished => {
+                let panes: Vec<_> = self
+                    .panes
+                    .iter()
+                    .filter(|p| Some(p.id) != self.ui.scratch)
+                    .collect();
+                let start = panes.iter().position(|p| p.id == self.active).unwrap_or(0);
+                let target = (1..=panes.len())
+                    .map(|offset| panes[(start + offset) % panes.len()])
+                    .find(|p| {
+                        if matches!(action, Action::NextAttention) {
+                            matches!(
+                                p.status,
+                                crate::model::Status::InputNeeded | crate::model::Status::Failed
+                            )
+                        } else {
+                            matches!(
+                                p.status,
+                                crate::model::Status::TurnFinished | crate::model::Status::Exited
+                            )
+                        }
+                    })
+                    .map(|p| p.id);
+                if let Some(id) = target {
+                    self.apply(&Action::Focus(id))?;
+                } else {
+                    return Err("no matching agent".into());
+                }
+            }
+            Action::Acknowledge(id) => {
+                if let Some(notification) =
+                    self.ui.notifications.iter_mut().find(|item| item.id == id)
+                {
+                    notification.read = true;
+                }
+            }
+            Action::NotificationSoundToggle => {
+                self.ui.config.notification_sound = !self.ui.config.notification_sound
+            }
+            Action::RecoveryCopy(index) => {
+                self.ui
+                    .recovery
+                    .get(index)
+                    .ok_or("invalid recovery entry")?;
+            }
+            Action::SearchCopy(index) => {
+                self.ui
+                    .search_hits
+                    .get(index)
+                    .ok_or("invalid search result")?;
+            }
+            Action::Scratch => {
+                if self.ui.scratch_visible {
+                    self.apply(&Action::ScratchClose)?;
+                } else {
+                    let id = self
+                        .ui
+                        .scratch
+                        .ok_or("scratch terminal has not been created")?;
+                    self.require_pane(id)?;
+                    self.ui.scratch_return = Some(self.active);
+                    self.ui.scratch_reading = Some(self.reading);
+                    self.ui.scratch_visible = true;
+                    self.active = id;
+                    self.ui.dialog = None;
+                }
+            }
+            Action::ScratchClose => {
+                if self.ui.scratch_visible {
+                    self.active = self
+                        .ui
+                        .scratch_return
+                        .filter(|id| self.panes.iter().any(|p| p.id == *id))
+                        .or_else(|| {
+                            self.panes
+                                .iter()
+                                .find(|p| Some(p.id) != self.ui.scratch)
+                                .map(|p| p.id)
+                        })
+                        .ok_or("no regular terminal")?;
+                    self.reading = self.ui.scratch_reading.take().unwrap_or(ReadingMode::Grid);
+                    self.ui.scratch_visible = false;
+                    self.ui.scratch_return = None;
+                }
+            }
+            Action::Search { ref query, all } => {
+                self.ui.search_query = query
+                    .chars()
+                    .filter(|c| !c.is_control())
+                    .take(1024)
+                    .collect();
+                self.ui.search_all = all;
+            }
+            Action::SearchSelect(index) => {
+                let pane = self
+                    .ui
+                    .search_hits
+                    .get(index)
+                    .ok_or("invalid search result")?
+                    .pane;
+                self.apply(&Action::Focus(pane))?;
+            }
+            Action::ResizeGrid { column, row } => {
+                if self.reading != ReadingMode::Grid {
+                    return Err("grid resizing requires grid view".into());
+                }
+                let mut columns = self.ui.column_weights.clone();
+                let mut rows = self.ui.row_weights.clone();
+                if let Some((index, value)) = column {
+                    set_boundary(&mut columns, self.grid_cols, index, value)?;
+                }
+                if let Some((index, value)) = row {
+                    set_boundary(&mut rows, self.grid_rows, index, value)?;
+                }
+                self.ui.column_weights = columns;
+                self.ui.row_weights = rows;
+            }
             Action::Config => {
                 self.help = false;
                 self.ui.dialog = Some(Dialog {
@@ -178,7 +411,11 @@ impl Workspace {
                     kind,
                     filter,
                     selection: 0,
-                    source: Some(self.active),
+                    source: Some(if Some(self.active) == self.ui.scratch {
+                        self.ui.scratch_return.unwrap_or(self.active)
+                    } else {
+                        self.active
+                    }),
                 });
             }
             Action::DialogClose => self.ui.dialog = None,
@@ -223,9 +460,14 @@ impl Workspace {
                 }
                 self.ui.reading_size =
                     Some((cols.clamp(20, self.cols), rows.clamp(3, self.rows - 1)));
+                self.ui.config.remembered_read_widths[super::ui::geometry_bucket(self.cols)] =
+                    Some(cols.clamp(20, self.cols));
             }
             Action::Focus(id) => {
                 self.require_pane(id)?;
+                if self.ui.scratch_visible && Some(id) != self.ui.scratch {
+                    self.apply(&Action::ScratchClose)?;
+                }
                 self.active = id;
                 self.reading = match self.reading {
                     ReadingMode::Grid => ReadingMode::Grid,
@@ -234,9 +476,14 @@ impl Workspace {
                 };
             }
             Action::Select(number) => {
+                if self.ui.scratch_visible {
+                    self.apply(&Action::ScratchClose)?;
+                }
                 let id = self
                     .panes
-                    .get(number.checked_sub(1).ok_or("invalid pane number")?)
+                    .iter()
+                    .filter(|pane| Some(pane.id) != self.ui.scratch)
+                    .nth(number.checked_sub(1).ok_or("invalid pane number")?)
                     .ok_or("invalid pane number")?
                     .id;
                 self.active = id;
@@ -247,6 +494,12 @@ impl Workspace {
                 };
             }
             Action::Read(id) => {
+                if Some(id) == self.ui.scratch {
+                    return self.apply(&Action::ScratchClose);
+                }
+                if self.ui.scratch_visible {
+                    self.apply(&Action::ScratchClose)?;
+                }
                 self.require_pane(id)?;
                 self.active = id;
                 self.reading = if matches!(self.reading, ReadingMode::Tabs(current) | ReadingMode::Capped(current) | ReadingMode::Fullscreen(current) if current == id)
@@ -257,6 +510,17 @@ impl Workspace {
                 };
             }
             Action::Fullscreen(id) => {
+                if self.ui.scratch_visible && Some(id) != self.ui.scratch {
+                    self.apply(&Action::ScratchClose)?;
+                }
+                if self.ui.scratch_visible && Some(id) == self.ui.scratch {
+                    self.reading = if self.reading == ReadingMode::Fullscreen(id) {
+                        self.ui.scratch_reading.unwrap_or(ReadingMode::Grid)
+                    } else {
+                        ReadingMode::Fullscreen(id)
+                    };
+                    return Ok(());
+                }
                 self.require_pane(id)?;
                 self.active = id;
                 self.reading = if self.reading == ReadingMode::Fullscreen(id) {
@@ -265,18 +529,34 @@ impl Workspace {
                     ReadingMode::Fullscreen(id)
                 };
             }
-            Action::CloseReading => self.reading = ReadingMode::Grid,
+            Action::CloseReading => {
+                if self.ui.scratch_visible {
+                    self.apply(&Action::ScratchClose)?;
+                }
+                self.reading = ReadingMode::Grid;
+            }
             Action::Grid { cols, rows } => {
                 let count = Self::grid_count(cols, rows)?;
-                if self.panes.len() != count {
+                if self
+                    .panes
+                    .iter()
+                    .filter(|pane| Some(pane.id) != self.ui.scratch)
+                    .count()
+                    != count
+                {
                     return Err("grid requires prepared pane count".into());
                 }
                 self.grid_cols = cols;
                 self.grid_rows = rows;
                 self.ui.grid_shape = (cols, rows);
+                self.ui.column_weights.clear();
+                self.ui.row_weights.clear();
                 self.reading = ReadingMode::Grid;
             }
             Action::Swap { source, target } => {
+                if Some(source) == self.ui.scratch || Some(target) == self.ui.scratch {
+                    return Err("scratch terminal is outside the grid".into());
+                }
                 let source = self.require_pane(source)?;
                 let target = self.require_pane(target)?;
                 self.panes.swap(source, target);
@@ -289,10 +569,27 @@ impl Workspace {
             }
             Action::Help => {
                 self.help = !self.help;
+                self.ui.help_offset = 0;
                 self.ui.dialog = None;
             }
             Action::Detach | Action::Takeover | Action::Shutdown => {}
-            _ => return Err("phase-two command handler has not been integrated".into()),
+            Action::SelectionStart | Action::SelectionMove { .. } => {
+                self.require_pane(self.active)?;
+            }
+        }
+        if matches!(
+            action,
+            Action::Read(_)
+                | Action::Fullscreen(_)
+                | Action::Select(_)
+                | Action::CloseReading
+                | Action::Grid { .. }
+        ) {
+            self.ui.config.view_modes[super::ui::geometry_bucket(self.cols)] =
+                Some(self.reading != ReadingMode::Grid);
+            if self.ui.scratch_visible {
+                self.ui.scratch_reading = Some(self.reading);
+            }
         }
         Ok(())
     }
@@ -303,7 +600,21 @@ impl Workspace {
         Ok(cols as usize * rows as usize)
     }
     pub fn dialog_entries(&self) -> Vec<PaneId> {
-        dialog_entries(&self.panes, self.ui.dialog)
+        match self.ui.dialog.map(|dialog| dialog.kind) {
+            Some(DialogKind::Notifications) => {
+                return self.ui.notifications.iter().map(|item| item.id).collect();
+            }
+            Some(DialogKind::Recovery) => return (0..self.ui.recovery.len() as u64).collect(),
+            Some(DialogKind::Search) => return (0..self.ui.search_hits.len() as u64).collect(),
+            _ => {}
+        }
+        let panes = self
+            .panes
+            .iter()
+            .filter(|p| Some(p.id) != self.ui.scratch)
+            .cloned()
+            .collect::<Vec<_>>();
+        dialog_entries(&panes, self.ui.dialog)
     }
 }
 pub fn dialog_entries(panes: &[PaneInfo], dialog: Option<Dialog>) -> Vec<PaneId> {
@@ -311,7 +622,7 @@ pub fn dialog_entries(panes: &[PaneInfo], dialog: Option<Dialog>) -> Vec<PaneId>
         Some(Dialog {
             kind: DialogKind::Config,
             ..
-        }) => (0..4).collect(),
+        }) => (0..5).collect(),
         Some(Dialog {
             kind: DialogKind::CloseConfirm,
             ..
@@ -388,7 +699,7 @@ pub fn tab_body(
     rows: u16,
     config: &super::ui::UiConfig,
     full: bool,
-    size: Option<(u16, u16)>,
+    _size: Option<(u16, u16)>,
 ) -> Rect {
     use super::ui::TabPosition;
     let position = config.tab_position.resolve(cols, rows);
@@ -414,7 +725,7 @@ pub fn tab_body(
     let width = if full {
         area.cols
     } else {
-        size.map(|s| s.0)
+        config.remembered_read_widths[super::ui::geometry_bucket(cols)]
             .unwrap_or(config.read_width)
             .clamp(20, area.cols)
     };
@@ -423,6 +734,54 @@ pub fn tab_body(
         cols: width,
         ..area
     }
+}
+pub fn scratch_rect(cols: u16, rows: u16) -> Rect {
+    let width = cols.saturating_sub(4).min(120);
+    let height = rows.saturating_sub(4).min(30);
+    Rect {
+        x: (cols - width) / 2,
+        y: (rows - 1 - height) / 2,
+        cols: width,
+        rows: height,
+    }
+}
+pub fn weighted_boundaries(extent: u16, count: u8, weights: &[u16]) -> Vec<u16> {
+    let count = usize::from(count.max(1));
+    let min = if usize::from(extent) >= count * 2 {
+        2
+    } else {
+        1
+    };
+    let spare = usize::from(extent).saturating_sub(count * min);
+    let weights: Vec<usize> = if weights.len() == count && weights.iter().all(|w| *w > 0) {
+        weights.iter().map(|w| usize::from(*w)).collect()
+    } else {
+        vec![1; count]
+    };
+    let total = weights.iter().sum::<usize>();
+    let mut sum = 0;
+    let mut output = vec![0];
+    for (index, weight) in weights.iter().enumerate() {
+        sum += weight;
+        output.push(((index + 1) * min + spare * sum / total) as u16);
+    }
+    output
+}
+fn set_boundary(weights: &mut Vec<u16>, count: u8, index: u8, value: u16) -> Result<()> {
+    let count = usize::from(count);
+    let index = usize::from(index);
+    if index + 1 >= count {
+        return Err("invalid grid boundary".into());
+    }
+    if weights.len() != count {
+        *weights = vec![1000 / count as u16; count];
+    }
+    let before = weights[..index].iter().copied().sum::<u16>();
+    let pair = weights[index] + weights[index + 1];
+    let target = value.clamp(before + 50, before + pair - 50);
+    weights[index] = target - before;
+    weights[index + 1] = pair - weights[index];
+    Ok(())
 }
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TabTarget {
