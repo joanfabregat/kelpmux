@@ -626,8 +626,17 @@ fn incremental_frames_survive_backpressure_takeover_and_metadata_only_diagnostic
             .any(|cell| cell.fg == Color::Indexed(1))
     );
     let patches = observer.patch;
-    controller.input("printf 'PATCH_''AGAIN\\n'\n");
+    // Keep reading while the shell waits, draining both command echo and any
+    // recovery snapshot before a separate output change arrives.
+    controller.input("sleep 1; printf 'PATCH_''AGAIN\\n'\n");
     observer.wait(|frame| text(frame).contains("PATCH_AGAIN"));
+    // The first small update can still replace an in-flight recovery frame.
+    // Keep consuming updates until the queue drains and revisioned patches
+    // resume. The delayed output above separates recovery from new output.
+    let deadline = Instant::now() + Duration::from_secs(6);
+    while observer.patch == patches && Instant::now() < deadline {
+        observer.read();
+    }
     assert!(
         observer.patch > patches,
         "transport did not resume patches after recovery snapshot"
