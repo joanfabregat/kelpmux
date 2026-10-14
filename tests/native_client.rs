@@ -611,7 +611,9 @@ impl LiveServer {
             socket,
         };
         let deadline = Instant::now() + Duration::from_secs(5);
-        while !server.socket.exists() {
+        // A socket path becomes visible between bind and listen; wait for an
+        // accepted connection before launching the real attach frontend.
+        while UnixStream::connect(&server.socket).is_err() {
             assert!(
                 server.child.try_wait().unwrap().is_none(),
                 "{}",
