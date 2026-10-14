@@ -7,3 +7,4 @@ pub mod protocol;
 pub mod render;
 pub mod server;
 pub mod workspace;
+pub mod ui;

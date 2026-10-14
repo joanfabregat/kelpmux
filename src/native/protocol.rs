@@ -3,7 +3,7 @@ use crate::{Result, model::Status};
 use serde::{Deserialize, Serialize};
 use std::io::{Read, Write};
 
-pub const VERSION: u16 = 1;
+pub const VERSION: u16 = 2;
 pub const MAX_MESSAGE: usize = 16 * 1024 * 1024;
 pub const MAX_INPUT: usize = 64 * 1024;
 pub type PaneId = u64;
@@ -85,7 +85,7 @@ pub struct Screen {
     pub cursor: Option<Cursor>,
     pub modes: InputModes,
 }
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PaneInfo {
     pub id: PaneId,
     pub number: usize,
@@ -96,6 +96,12 @@ pub struct PaneInfo {
     pub status: Status,
     pub session_id: Option<String>,
     pub dead: bool,
+    #[serde(default)]
+    pub kind: Option<crate::model::Kind>,
+    #[serde(default)]
+    pub last_activity: u64,
+    #[serde(default)]
+    pub status_since: u64,
 }
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub enum ReadingMode {
@@ -124,6 +130,8 @@ pub struct Frame {
     pub controller: bool,
     pub help: bool,
     pub notice: Option<String>,
+    #[serde(default)]
+    pub ui: super::ui::UiState,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -151,6 +159,14 @@ pub enum InputEvent {
 }
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Action {
+    GridPicker,
+    Agents(super::ui::AgentFilter),
+    MovePicker,
+    DialogNavigate { dx: i8, dy: i8 },
+    DialogPick(usize),
+    DialogClose,
+    FocusDirection { dx: i8, dy: i8 },
+    ReadResize { cols: u16, rows: u16 },
     Focus(PaneId),
     Select(usize),
     Read(PaneId),
