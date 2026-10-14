@@ -160,6 +160,7 @@ pub enum InputEvent {
 }
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Action {
+    HelpScroll(i16),
     Overview,
     Notifications,
     Recovery,
