@@ -629,24 +629,29 @@ fn fitted(frame: &Frame, size: (u16, u16), notice: Option<&str>) -> Frame {
     }
     let target = usize::from(size.1 - 1) * usize::from(size.0);
     let source = usize::from(frame.rows - 1) * usize::from(frame.cols);
-    for x in 0..size.0.saturating_sub(3).min(frame.cols.saturating_sub(3)) {
+    let controls = super::ui::FOOTER_COLS.min(size.0).min(frame.cols);
+    for x in 0..size
+        .0
+        .saturating_sub(controls)
+        .min(frame.cols.saturating_sub(controls))
+    {
         let mut cell = frame.cells[source + usize::from(x)].clone();
-        if cell.width == 2 && x + 1 >= size.0.saturating_sub(3) {
+        if cell.width == 2 && x + 1 >= size.0.saturating_sub(controls) {
             cell.width = 1;
             cell.text = " ".into();
         }
         fit.cells[target + usize::from(x)] = cell;
     }
-    if size.0 >= 3 {
-        for x in 0..3usize {
-            fit.cells[target + usize::from(size.0) - 3 + x] =
-                frame.cells[source + usize::from(frame.cols) - 3 + x].clone();
+    if controls > 0 {
+        for x in 0..usize::from(controls) {
+            fit.cells[target + usize::from(size.0 - controls) + x] =
+                frame.cells[source + usize::from(frame.cols - controls) + x].clone();
         }
     }
     if let Some(notice) = notice {
         let text = format!(" {}", super::engine::safe_text(notice));
         let mut x = 0usize;
-        for cell in &mut fit.cells[target..target + usize::from(size.0.saturating_sub(3))] {
+        for cell in &mut fit.cells[target..target + usize::from(size.0.saturating_sub(controls))] {
             *cell = Cell {
                 fg: Color::Indexed(231),
                 bg: Color::Indexed(88),
@@ -655,7 +660,7 @@ fn fitted(frame: &Frame, size: (u16, u16), notice: Option<&str>) -> Frame {
         }
         for c in text.chars() {
             let width = unicode_width::UnicodeWidthChar::width(c).unwrap_or(0);
-            if width == 0 || x + width > usize::from(size.0.saturating_sub(3)) {
+            if width == 0 || x + width > usize::from(size.0.saturating_sub(controls)) {
                 continue;
             }
             fit.cells[target + x] = Cell {
@@ -815,14 +820,14 @@ fn attach(path: &Path, takeover: bool) -> Result<()> {
         }
         if let Some(frame) = latest.as_ref() {
             while let Some(mut event) = pending.pop_front() {
-                // The fitted footer moves; translate only its help hit target.
+                // Preserve every right-aligned footer control when fitted.
                 // Pane and help-panel coordinates stay in backend geometry.
                 if let InputEvent::Mouse(mouse) = &mut event {
                     if mouse.position.y == size.1 - 1
-                        && mouse.position.x >= size.0.saturating_sub(3)
+                        && mouse.position.x >= size.0.saturating_sub(super::ui::FOOTER_COLS)
                     {
                         mouse.position = Point {
-                            x: frame.cols - 2,
+                            x: frame.cols.saturating_sub(size.0 - mouse.position.x),
                             y: frame.rows - 1,
                         };
                     } else if mouse.position.y >= size.1.saturating_sub(1) {

@@ -215,13 +215,13 @@ fn composed_reading_views_replay_colors_unicode_and_background_geometry() {
                 screens.insert(id, terminal.snapshot());
             }
             let frame = compose(&ws, &screens, true, None, 3);
-            assert_eq!(&ws.layout()[..4], &original[..]);
+            assert_eq!(ws.grid_layout(), original);
             display.feed(&terminal_diff(previous.as_ref(), &frame));
             assert_eq!(display.snapshot().cells, frame.cells);
             assert_eq!(display.snapshot().cursor, frame.cursor);
-            let overlay = frame.panes.iter().find(|v| v.overlay);
-            if let Some(overlay) = overlay {
-                assert_eq!(overlay.pane.id, 2);
+            let tab = frame.panes.iter().find(|v| v.pane.id == 2);
+            if ws.reading != ReadingMode::Grid {
+                let overlay = tab.unwrap();
                 let body =
                     usize::from(overlay.body.y) * usize::from(cols) + usize::from(overlay.body.x);
                 assert_eq!(frame.cells[body].fg, Color::Rgb(12, 34, 56));

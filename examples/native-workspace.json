@@ -1,0 +1,14 @@
+{
+  "grid": [2, 2],
+  "ui": {
+    "prefix": 2,
+    "tab_position": "auto",
+    "read_width": 120,
+    "bindings": {
+      "z": "read",
+      "f": "fullscreen",
+      "g": "grid",
+      ",": "config"
+    }
+  }
+}

@@ -18,7 +18,8 @@ Kelpmux is a persistent terminal workspace for coding agents, inspired by Monter
 ## Native beta
 
 - Graphical grid selection from `1x1`, `2x1`, `2x2`, `3x2`, `2x3` and `3x3`. Growing creates shells; shrinking refuses to remove foreground, background or stopped jobs.
-- Adjustable centered reading views, fullscreen and restore, keeping the source slot and background geometry in place.
+- Grid overview and responsive tabs with top, left or compact bottom navigation; capped or full terminal width while preserving every process.
+- Popup configuration and close-tab confirmations, plus a Vitals-derived CPU, memory, swap, disk and clock footer.
 - Stable pane IDs and colors, distinct pane numbers, lifecycle markers and a braille working spinner. Agent selection filters questions and finished sessions; missing session evidence stays unknown.
 - Configurable shortcuts and graphical pane movement, preserving application word-editing keys outside explicit bindings.
 - Named persistent workspaces with explicit start, attach, status and stop commands. One controller, additional observers and explicit takeover.
@@ -38,7 +39,7 @@ kelpmux attach --workspace beta-trial
 
 Inspect it with `kelpmux status --workspace beta-trial`. `Ctrl-B`, then `d` detaches without ending processes. `kelpmux stop --workspace beta-trial` ends that workspace and its owned shells; stop only a disposable trial when finished testing.
 
-`Ctrl-B`, then `g` opens the graphical grid picker; `z` opens reading mode; `f` toggles fullscreen; `?` opens help. `Ctrl-B`, then `a` opens the agent switcher, `!` filters attention and `n` filters finished sessions; `s` opens pane movement. Header controls and the footer expose the same views. Use `attach --takeover` or `Ctrl-B`, then `t` to take control from another client. Controller dimensions determine the backend grid; observers see a clipped or padded frame.
+`Ctrl-B`, then `g` opens the graphical grid picker; `z` switches grid/tabs; `f` toggles full terminal width; `?` opens help. `Ctrl-B`, then `a` opens the agent switcher, `!` filters attention and `n` filters finished sessions; `s` opens pane movement. Header controls and the footer expose the same views. Use `attach --takeover` or `Ctrl-B`, then `t` to take control from another client. Controller dimensions determine the backend grid; observers see a clipped or padded frame.
 
 `kelpmux ssh-entry --workspace beta-trial` attaches or starts the named workspace from an SSH shell. Automatic SSH routing requires explicit login-hook configuration; a launch command injected into an already running tmux agent is not a shell command. Keep existing SSH authentication unchanged and choose Kelpmux before automatic tmux attachment. See [native commands, configuration and SSH setup](docs/native.md).
 
@@ -55,7 +56,7 @@ cargo test --locked
 cargo build --locked --release
 ```
 
-Native fixtures use disposable PTYs, shells and private sockets/state. They test reconnect identity, controller/observer behavior, malformed/slow clients, ANSI/query handling, fragmented input, paste, geometry and overlays, occupied-pane shrink refusal, agent filters, configuration and workspace lifecycle. They do not launch real agents or modify an existing workspace. Small and large terminal profiles check rendering and resize behavior; the [release checklist](docs/releases.md) separately covers hands-on RootShell and display checks.
+Native fixtures use disposable PTYs, shells and private sockets/state. They test reconnect identity, controller/observer behavior, malformed/slow clients, ANSI/query handling, fragmented input, paste, geometry and responsive tabs/dialogs, occupied-pane shrink refusal, agent filters, configuration and workspace lifecycle. They do not launch real agents or modify an existing workspace. Small and large terminal profiles check rendering and resize behavior; the [release checklist](docs/releases.md) separately covers hands-on RootShell and display checks.
 
 Quality, native architecture, minimum-Rust, dependency policy and legacy integration jobs run in parallel. Reviewed cache actions restore locked dependency sources and job/toolchain-specific build outputs; only successful trusted events save caches. Current advisories and audit results are never cached. Release jobs produce versioned archives, license texts and verified SHA-256 checksums.
 

@@ -3,7 +3,7 @@ use crate::{Result, model::Status};
 use serde::{Deserialize, Serialize};
 use std::io::{Read, Write};
 
-pub const VERSION: u16 = 2;
+pub const VERSION: u16 = 3;
 pub const MAX_MESSAGE: usize = 16 * 1024 * 1024;
 pub const MAX_INPUT: usize = 64 * 1024;
 pub type PaneId = u64;
@@ -107,6 +107,7 @@ pub struct PaneInfo {
 pub enum ReadingMode {
     #[default]
     Grid,
+    Tabs(PaneId),
     Capped(PaneId),
     Fullscreen(PaneId),
 }
@@ -159,6 +160,11 @@ pub enum InputEvent {
 }
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Action {
+    Config,
+    TabPositionSet(super::ui::TabPosition),
+    ClosePaneRequest(PaneId),
+    ClosePaneConfirm(PaneId),
+    TabPosition,
     GridPicker,
     Agents(super::ui::AgentFilter),
     MovePicker,
@@ -206,6 +212,9 @@ pub enum Action {
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum ClientMessage {
+    InspectPane {
+        pane: PaneId,
+    },
     Attach {
         version: u16,
         cols: u16,
@@ -227,6 +236,10 @@ pub enum ClientMessage {
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum ServerMessage {
+    PaneState {
+        pane: PaneInfo,
+        screen: Screen,
+    },
     Welcome {
         version: u16,
         client_id: u64,

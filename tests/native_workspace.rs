@@ -97,14 +97,18 @@ fn every_grid_balances_cells_keeps_header_footer_and_all_panes() {
     }
 }
 #[test]
-fn overlays_resize_only_selected_terminal_and_restore_grid() {
+fn tabs_resize_only_selected_terminal_and_restore_grid() {
     let mut ws = workspace(200, 80, (2, 2));
     let base = ws.terminal_sizes();
     ws.apply(&Action::Read(2)).unwrap();
     let views = ws.layout();
-    assert_eq!(views.len(), 5);
-    assert_eq!(views.last().unwrap().body.cols, 120);
-    assert!(views.last().unwrap().overlay);
+    assert_eq!(views.len(), 4);
+    assert_eq!(
+        views.iter().find(|v| v.pane.id == 2).unwrap().body.cols,
+        120
+    );
+    assert!(views.iter().all(|view| !view.overlay));
+    assert_eq!(views.iter().filter(|view| view.body.cols > 0).count(), 1);
     let capped = ws.terminal_sizes();
     assert_eq!(capped.len(), 4);
     for old in &base {
@@ -113,8 +117,24 @@ fn overlays_resize_only_selected_terminal_and_restore_grid() {
         }
     }
     ws.apply(&Action::Fullscreen(2)).unwrap();
-    assert_eq!(ws.layout().last().unwrap().body.cols, 200);
-    assert_eq!(ws.layout().last().unwrap().body.rows, 78);
+    assert_eq!(
+        ws.layout()
+            .iter()
+            .find(|v| v.pane.id == 2)
+            .unwrap()
+            .body
+            .cols,
+        172
+    );
+    assert_eq!(
+        ws.layout()
+            .iter()
+            .find(|v| v.pane.id == 2)
+            .unwrap()
+            .body
+            .rows,
+        79
+    );
     ws.apply(&Action::Fullscreen(2)).unwrap();
     assert_eq!(ws.terminal_sizes(), capped);
     ws.apply(&Action::CloseReading).unwrap();
@@ -124,11 +144,11 @@ fn overlays_resize_only_selected_terminal_and_restore_grid() {
 fn selection_focus_swap_and_invalid_actions_preserve_identity() {
     let mut ws = workspace(80, 24, (2, 2));
     ws.apply(&Action::Select(2)).unwrap();
-    assert_eq!(ws.reading, ReadingMode::Capped(2));
+    assert_eq!(ws.reading, ReadingMode::Tabs(2));
     ws.apply(&Action::Focus(3)).unwrap();
-    assert_eq!(ws.reading, ReadingMode::Capped(3));
+    assert_eq!(ws.reading, ReadingMode::Tabs(3));
     ws.apply(&Action::Select(3)).unwrap();
-    assert_eq!(ws.reading, ReadingMode::Grid);
+    assert_eq!(ws.reading, ReadingMode::Tabs(3));
     ws.apply(&Action::Swap {
         source: 1,
         target: 4,
@@ -162,19 +182,22 @@ fn selection_focus_swap_and_invalid_actions_preserve_identity() {
 }
 
 #[test]
-fn reading_toggle_exits_fullscreen_and_background_focus_does_not_select_old_coordinates() {
+fn tabs_toggle_exits_fullscreen_and_navigation_never_sends_application_clicks() {
     let mut ws = workspace(240, 40, (2, 1));
     ws.apply(&Action::Fullscreen(1)).unwrap();
     ws.apply(&Action::Read(1)).unwrap();
     assert_eq!(ws.reading, ReadingMode::Grid);
     ws.apply(&Action::Read(1)).unwrap();
     let f = frame(&ws);
-    let background = &f.panes[1];
+    let (_, rect) =
+        kelpmux::native::workspace::tab_targets(f.cols, f.rows, &f.ui.config, f.panes.len(), 0)
+            .into_iter()
+            .find(|(target, _)| *target == kelpmux::native::workspace::TabTarget::Pane(1))
+            .unwrap();
     let point = Point {
-        x: background.body.x + background.body.cols - 1,
-        y: 1,
+        x: rect.x + 1,
+        y: rect.y,
     };
-    assert!(!f.panes.last().unwrap().rect.contains(point));
     let mut router = Router::default();
     assert_eq!(
         action(&router.route(mouse(point, MouseKind::Press), &f)),
@@ -321,7 +344,7 @@ fn prefix_sequences_and_application_editing_keys_are_separate() {
     );
 }
 #[test]
-fn headers_hit_their_own_pane_and_overlay_wins() {
+fn grid_headers_and_tab_footer_have_distinct_hit_targets() {
     let mut ws = workspace(160, 40, (2, 1));
     let mut router = Router::default();
     let f = frame(&ws);
@@ -341,13 +364,12 @@ fn headers_hit_their_own_pane_and_overlay_wins() {
     );
     ws.apply(&Action::Read(1)).unwrap();
     let f = frame(&ws);
-    let overlay = f.panes.last().unwrap();
     assert_eq!(
         action(&router.route(
             mouse(
                 Point {
-                    x: overlay.rect.x + overlay.rect.cols - 5,
-                    y: overlay.rect.y
+                    x: f.cols - 11,
+                    y: f.rows - 1
                 },
                 MouseKind::Press
             ),

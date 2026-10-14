@@ -454,6 +454,7 @@ impl Client {
 }
 
 struct Server {
+    vitals: super::vitals::Sampler,
     config: ServerConfig,
     workspace: Workspace,
     panes: BTreeMap<PaneId, NativePane>,
@@ -467,7 +468,11 @@ struct Server {
 }
 impl Server {
     fn close_pane(&mut self, id: PaneId) -> Result<()> {
-        let dialog = self.workspace.ui.dialog.ok_or("closing a pane requires confirmation")?;
+        let dialog = self
+            .workspace
+            .ui
+            .dialog
+            .ok_or("closing a pane requires confirmation")?;
         if dialog.kind != super::ui::DialogKind::CloseConfirm || dialog.source != Some(id) {
             return Err("closing a pane requires its confirmation dialog".into());
         }
@@ -625,10 +630,23 @@ impl Server {
     fn message(&mut self, id: u64, message: ClientMessage) -> Result<()> {
         match message {
             ClientMessage::InspectPane { pane } => {
-                let info = self.workspace.panes.iter().find(|info| info.id == pane)
-                    .ok_or("unknown pane")?.clone();
-                let screen = self.panes.get(&pane).ok_or("unknown pane")?.terminal.snapshot();
-                self.clients.get_mut(&id).unwrap().send(ServerMessage::PaneState { pane: info, screen })?;
+                let info = self
+                    .workspace
+                    .panes
+                    .iter()
+                    .find(|info| info.id == pane)
+                    .ok_or("unknown pane")?
+                    .clone();
+                let screen = self
+                    .panes
+                    .get(&pane)
+                    .ok_or("unknown pane")?
+                    .terminal
+                    .snapshot();
+                self.clients
+                    .get_mut(&id)
+                    .unwrap()
+                    .send(ServerMessage::PaneState { pane: info, screen })?;
             }
             ClientMessage::Inspect => {
                 self.clients
@@ -1085,6 +1103,22 @@ impl Server {
         }
     }
     fn frames(&mut self, spinner: usize) {
+        let vitals = self.vitals.sample();
+        self.workspace.ui.vitals = if self.workspace.cols <= 60 {
+            let mut compact = Vec::new();
+            if let Some(cpu) = vitals.cpu {
+                compact.push((format!("C{cpu}"), 114));
+            }
+            if let Some(memory) = vitals.memory {
+                compact.push((format!("M{memory}"), 141));
+            }
+            if let Some(time) = vitals.time {
+                compact.push((time, 250));
+            }
+            compact
+        } else {
+            super::vitals::render_segments(&vitals)
+        };
         let screens = self
             .panes
             .iter()
@@ -1201,6 +1235,7 @@ pub fn serve(config: ServerConfig) -> Result<()> {
     let (listener, _endpoint) = endpoint(&config)?;
     super::lifecycle::save_pid(&config.state_dir)?;
     let mut server = Server {
+        vitals: super::vitals::Sampler::default(),
         config,
         workspace,
         panes: BTreeMap::new(),
@@ -1218,6 +1253,7 @@ pub fn serve(config: ServerConfig) -> Result<()> {
     let (requests, results, worker) = discovery_worker(server.config.state_dir.clone());
     let mut discovery = Instant::now() - Duration::from_secs(2);
     let mut render_time = Instant::now() - Duration::from_secs(1);
+    let mut metrics_time = Instant::now();
     let mut animation = Instant::now();
     let mut spinner = 0;
     let mut idle_poll = Instant::now() - Duration::from_millis(100);
@@ -1302,6 +1338,10 @@ pub fn serve(config: ServerConfig) -> Result<()> {
                 .panes
                 .iter()
                 .any(|p| p.status == Status::Working);
+        }
+        if metrics_time.elapsed() >= Duration::from_secs(1) {
+            server.dirty = true;
+            metrics_time = Instant::now();
         }
         if server.dirty && render_time.elapsed() >= Duration::from_millis(33) {
             server.frames(spinner);

@@ -66,15 +66,15 @@ fn six_grids_fit_device_profiles_and_preserve_other_terminals() {
             ws.apply(&Action::Read(1)).unwrap();
             ws.apply(&Action::ReadResize { cols: 85, rows: 21 })
                 .unwrap();
-            assert_eq!(&ws.layout()[..original.len()], original);
+            assert_eq!(ws.grid_layout(), original);
             for item in sizes.iter().skip(1) {
                 assert!(ws.terminal_sizes().contains(item));
             }
-            let cap = ws.layout().last().unwrap().rect;
+            let cap = ws.layout()[0].rect;
             ws.apply(&Action::Fullscreen(1)).unwrap();
-            assert_eq!(ws.layout().last().unwrap().rect.cols, size.0);
+            assert!(ws.layout()[0].rect.cols >= cap.cols);
             ws.apply(&Action::Fullscreen(1)).unwrap();
-            assert_eq!(ws.layout().last().unwrap().rect, cap);
+            assert_eq!(ws.layout()[0].rect, cap);
         }
     }
 }
@@ -220,24 +220,25 @@ fn full_card_highlight_and_unicode_roundtrip() {
     assert_eq!(terminal.snapshot().cells, f.cells);
 }
 #[test]
-fn reading_grip_consumes_mouse_and_help_dialog_close_do_not_leak() {
+fn tab_body_mouse_and_dialog_close_have_separate_hit_targets() {
     let mut ws = workspace((160, 50), (2, 2));
     ws.apply(&Action::Read(1)).unwrap();
     let mut f = frame(&ws);
-    f.panes.last_mut().unwrap().modes.mouse_click = true;
-    let rect = f.panes.last().unwrap().rect;
+    f.panes[0].modes.mouse_click = true;
+    let rect = f.panes[0].rect;
     let mut router = Router::default();
-    assert!(
+    assert!(matches!(
         router
             .route(
                 click(Point {
-                    x: rect.x + rect.cols - 1,
-                    y: rect.y + rect.rows - 1
+                    x: rect.x,
+                    y: rect.y
                 }),
                 &f
             )
-            .is_empty()
-    );
+            .last(),
+        Some(ClientMessage::Mouse(_))
+    ));
     let event = InputEvent::Mouse(MouseEvent {
         position: Point {
             x: rect.x + rect.cols + 4,
@@ -249,10 +250,7 @@ fn reading_grip_consumes_mouse_and_help_dialog_close_do_not_leak() {
         alt: false,
         ctrl: false,
     });
-    assert!(matches!(
-        &actions(router.route(event, &f))[..],
-        [Action::ReadResize { .. }]
-    ));
+    assert!(router.route(event, &f).is_empty());
     ws.apply(&Action::GridPicker).unwrap();
     let f = frame(&ws);
     let bounds = dialog_bounds(f.cols, f.rows);
@@ -312,5 +310,173 @@ fn agent_picker_scrolls_to_selection_on_small_tablet() {
             &f
         )),
         vec![Action::Focus(9), Action::DialogClose]
+    );
+}
+#[test]
+fn responsive_tabs_keep_all_panes_without_overlays_and_mouse_selects_tabs() {
+    use kelpmux::native::{
+        ui::TabPosition,
+        workspace::{TabTarget, tab_targets},
+    };
+    for size in [(40, 10), (80, 30), (160, 50), (240, 70)] {
+        for position in [
+            TabPosition::Auto,
+            TabPosition::Top,
+            TabPosition::Left,
+            TabPosition::Bottom,
+        ] {
+            let mut ws = workspace(size, (3, 3));
+            ws.ui.config.tab_position = position;
+            ws.apply(&Action::Select(9)).unwrap();
+            let views = ws.layout();
+            assert_eq!(views.len(), 9);
+            assert!(views.iter().all(|v| !v.overlay));
+            assert_eq!(views.iter().filter(|v| v.body.cols > 0).count(), 1);
+            let body = views[8].body;
+            assert!(body.cols >= 12 && body.rows > 0);
+            assert!(body.x + body.cols <= size.0 && body.y + body.rows < size.1);
+            assert_eq!(ws.terminal_sizes().len(), 9);
+            let f = frame(&ws);
+            let targets = tab_targets(f.cols, f.rows, &f.ui.config, 9, 8);
+            let (_, rect) = targets
+                .iter()
+                .find(|(target, _)| *target == TabTarget::Pane(8))
+                .unwrap();
+            let mut router = Router::default();
+            assert_eq!(
+                actions(router.route(
+                    click(Point {
+                        x: rect.x,
+                        y: rect.y
+                    }),
+                    &f
+                )),
+                vec![Action::Focus(9)]
+            );
+            let messages = router.route(
+                click(Point {
+                    x: rect.x + rect.cols - 1,
+                    y: rect.y,
+                }),
+                &f,
+            );
+            assert_eq!(actions(messages), vec![Action::ClosePaneRequest(9)]);
+            let mut term = Terminal::new(f.cols, f.rows);
+            term.feed(&terminal_diff(None, &f));
+            assert_eq!(term.snapshot().cells, f.cells);
+        }
+    }
+    assert_eq!(TabPosition::Auto.resolve(40, 10), TabPosition::Bottom);
+    assert_eq!(TabPosition::Auto.resolve(120, 40), TabPosition::Left);
+    assert_eq!(TabPosition::Auto.resolve(240, 70), TabPosition::Top);
+}
+#[test]
+fn config_position_choices_and_close_confirmation_require_explicit_consent() {
+    use kelpmux::native::{ui::TabPosition, workspace::dialog_bounds};
+    let mut ws = workspace((120, 40), (2, 2));
+    ws.apply(&Action::Config).unwrap();
+    let f = frame(&ws);
+    let bounds = dialog_bounds(f.cols, f.rows);
+    assert_eq!(
+        actions(Router::default().route(
+            click(Point {
+                x: bounds.x + 1,
+                y: bounds.y + 4
+            }),
+            &f
+        )),
+        vec![Action::TabPositionSet(TabPosition::Left)]
+    );
+    ws.apply(&Action::ClosePaneRequest(2)).unwrap();
+    assert_eq!(ws.ui.dialog.unwrap().selection, 0);
+    let f = frame(&ws);
+    assert_eq!(
+        actions(Router::default().route(InputEvent::Bytes(b"\r".to_vec()), &f)),
+        vec![Action::DialogClose]
+    );
+    assert_eq!(
+        actions(Router::default().route(InputEvent::Bytes(vec![27]), &f)),
+        vec![Action::DialogClose]
+    );
+    ws.apply(&Action::DialogNavigate { dx: 0, dy: 1 }).unwrap();
+    let f = frame(&ws);
+    assert_eq!(
+        actions(Router::default().route(InputEvent::Bytes(b"\r".to_vec()), &f)),
+        vec![Action::ClosePaneConfirm(2), Action::DialogClose]
+    );
+}
+#[test]
+fn selecting_same_tab_does_not_toggle_back_to_grid_and_width_is_inline() {
+    let mut ws = workspace((240, 70), (3, 3));
+    ws.apply(&Action::Select(5)).unwrap();
+    ws.apply(&Action::Select(5)).unwrap();
+    assert_eq!(ws.reading, ReadingMode::Tabs(5));
+    ws.apply(&Action::ReadResize { cols: 90, rows: 3 }).unwrap();
+    let cap = ws.layout()[4].body;
+    assert_eq!(cap.cols, 90);
+    assert_eq!(cap.rows, 68);
+    assert_eq!(cap.y, 1);
+    assert_eq!(cap.x, 75);
+    ws.apply(&Action::Fullscreen(5)).unwrap();
+    assert_eq!(ws.layout()[4].body.cols, 240);
+    ws.apply(&Action::Fullscreen(5)).unwrap();
+    assert_eq!(ws.layout()[4].body, cap);
+    ws.apply(&Action::Read(5)).unwrap();
+    assert_eq!(ws.reading, ReadingMode::Grid);
+}
+#[test]
+fn footer_buttons_and_compact_vitals_have_disjoint_hit_targets() {
+    let mut ws = workspace((40, 10), (3, 3));
+    ws.ui.vitals = vec![
+        ("C0".into(), 114),
+        ("M52".into(), 141),
+        ("14:49".into(), 250),
+    ];
+    let f = frame(&ws);
+    let footer = f.cells[usize::from(f.rows - 1) * usize::from(f.cols)..]
+        .iter()
+        .map(|c| c.text.as_str())
+        .collect::<String>();
+    assert!(footer.contains("14:49"));
+    assert!(footer.contains("Layout"));
+    assert_eq!(
+        actions(Router::default().route(
+            click(Point {
+                x: f.cols - 26,
+                y: f.rows - 1
+            }),
+            &f
+        )),
+        vec![Action::Config]
+    );
+    assert_eq!(
+        actions(Router::default().route(
+            click(Point {
+                x: f.cols - 19,
+                y: f.rows - 1
+            }),
+            &f
+        )),
+        vec![Action::Read(1)]
+    );
+    assert_eq!(
+        actions(Router::default().route(
+            click(Point {
+                x: f.cols - 11,
+                y: f.rows - 1
+            }),
+            &f
+        )),
+        vec![Action::Fullscreen(1)]
+    );
+    assert_eq!(
+        actions(Router::default().route(
+            click(Point {
+                x: f.cols - 9,
+                y: f.rows - 1
+            }),
+            &f
+        )),
+        vec![Action::GridPicker]
     );
 }

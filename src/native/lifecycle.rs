@@ -138,8 +138,41 @@ pub struct StartRequest<'a> {
 }
 pub fn start(request: StartRequest<'_>) -> Result<()> {
     private_state(request.state)?;
+    // Serialize the entire readiness/configuration transaction. Locking only
+    // the eventual server endpoint is too late: competing starters could
+    // overwrite workspace.json while the winning server reads it.
+    let startup_lock = OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .mode(0o600)
+        .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
+        .open(request.state.join("startup.lock"))?;
+    let meta = startup_lock.metadata()?;
+    if !meta.is_file() || meta.uid() != unsafe { libc::geteuid() } || meta.mode() & 0o077 != 0 {
+        return Err("workspace startup lock must be an owned private regular file".into());
+    }
+    if unsafe { libc::flock(startup_lock.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } != 0 {
+        let error = std::io::Error::last_os_error();
+        if error.kind() != std::io::ErrorKind::WouldBlock {
+            return Err(error.into());
+        }
+        return Err("workspace startup is already in progress; retry when ready".into());
+    }
     if matches!(inspect(request.socket), Ok(ServerMessage::State { .. })) {
         return Ok(());
+    }
+    // Fail obvious configuration mistakes before persisting or forking. The
+    // server still handles races and relative shell names resolved through PATH.
+    if !request.cwd.is_dir() {
+        return Err("workspace working directory does not exist or is not a directory".into());
+    }
+    if request.shell.is_absolute() {
+        let shell = fs::metadata(request.shell)?;
+        if !shell.is_file() || shell.mode() & 0o111 == 0 {
+            return Err("workspace shell must be an executable file".into());
+        }
     }
     let mut persisted = request.settings.clone();
     persisted.shell = Some(request.shell.to_path_buf());
@@ -181,6 +214,8 @@ pub fn start(request: StartRequest<'_>) -> Result<()> {
             }
         }
         if Instant::now() >= deadline {
+            let _ = child.kill();
+            let _ = child.wait();
             return Err(format!(
                 "workspace did not become ready; inspect {}/server.log",
                 request.state.display()

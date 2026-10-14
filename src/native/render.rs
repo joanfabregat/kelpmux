@@ -1,5 +1,5 @@
-//! Native composition and ANSI damage output. Header hit targets are 3 columns
-//! each, aligned to the right edge: grid=6, capped=9, fullscreen=6.
+//! Native grid/tab composition and ANSI damage output. Grid header controls
+//! occupy six columns; tab navigation uses shared geometry from workspace.
 use super::{engine::safe_text, protocol::*, workspace::Workspace};
 use std::{collections::BTreeMap, fmt::Write};
 use unicode_width::UnicodeWidthChar;
@@ -43,12 +43,8 @@ pub fn compose(
     }
     for view in frame.panes.clone() {
         let selected = view.pane.id == workspace.active;
-        let covered_source = matches!(workspace.reading, ReadingMode::Capped(id) if id == view.pane.id)
-            && !view.overlay;
         fill(&mut frame, view.rect, Color::Default);
-        if covered_source {
-            fill(&mut frame, view.body, Color::Rgb(0, 0, 0));
-        } else if let Some(screen) = screens.get(&view.pane.id) {
+        if let Some(screen) = screens.get(&view.pane.id) {
             for y in 0..view.body.rows.min(screen.rows) {
                 for x in 0..view.body.cols.min(screen.cols) {
                     if let Some(cell) = screen
@@ -84,19 +80,12 @@ pub fn compose(
                 }
             }
         }
-        header(&mut frame, &view, selected, workspace.reading, spinner);
-        if view.overlay && matches!(workspace.reading, ReadingMode::Capped(_)) {
-            write_text(
-                &mut frame,
-                view.rect.x + view.rect.cols - 1,
-                view.rect.y + view.rect.rows - 1,
-                1,
-                "◢",
-                Color::Indexed(231),
-                Color::Indexed(24),
-                true,
-            );
+        if workspace.reading == ReadingMode::Grid {
+            header(&mut frame, &view, selected, workspace.reading, spinner);
         }
+    }
+    if workspace.reading != ReadingMode::Grid {
+        draw_tabs(&mut frame, workspace, spinner);
     }
     if frame.rows > 0 {
         let y = frame.rows - 1;
@@ -130,7 +119,7 @@ pub fn compose(
             text.push_str(" · ");
             text.push_str(&safe_text(notice));
         }
-        let width = frame.cols.saturating_sub(10);
+        let width = frame.cols.saturating_sub(27);
         write_text(
             &mut frame,
             0,
@@ -146,14 +135,52 @@ pub fn compose(
             width,
             y,
             7,
-            " Grid ",
+            " Config",
+            Color::Indexed(231),
+            Color::Indexed(60),
+            true,
+        );
+        write_text(
+            &mut frame,
+            width + 7,
+            y,
+            7,
+            if workspace.reading == ReadingMode::Grid {
+                " Tabs "
+            } else {
+                " Grid "
+            },
             Color::Indexed(231),
             Color::Indexed(24),
             true,
         );
         write_text(
             &mut frame,
-            width + 7,
+            width + 14,
+            y,
+            3,
+            if matches!(workspace.reading, ReadingMode::Fullscreen(_)) {
+                " ▣ "
+            } else {
+                " ⛶ "
+            },
+            Color::Indexed(231),
+            Color::Indexed(30),
+            true,
+        );
+        write_text(
+            &mut frame,
+            width + 17,
+            y,
+            7,
+            "Layout ",
+            Color::Indexed(231),
+            Color::Indexed(24),
+            true,
+        );
+        write_text(
+            &mut frame,
+            width + 24,
             y,
             3,
             " ? ",
@@ -161,6 +188,9 @@ pub fn compose(
             Color::Indexed(24),
             true,
         );
+    }
+    if !workspace.ui.vitals.is_empty() && notice.is_none() {
+        draw_vitals(&mut frame, &workspace.ui.vitals);
     }
     if workspace.help {
         let cols = frame.cols.saturating_sub(4).min(76);
@@ -200,11 +230,8 @@ pub fn compose(
                 "Ctrl-{}, then:",
                 char::from(b'A' + workspace.ui.config.prefix - 1)
             ),
-            "1–9       Read a numbered pane (also Alt+1–9)".into(),
-            format!(
-                "{}  Reading / grid (also Alt+Tab / Alt+0)",
-                key("z", "read")
-            ),
+            "1–9       Select a tab (also Alt+1–9)".into(),
+            format!("{}  Tabs / grid (also Alt+Tab / Alt+0)", key("z", "read")),
             format!("{}  Full width / capped reading", key("f", "fullscreen")),
             format!(
                 "{}  Grid picker (occupied panes protected)",
@@ -228,12 +255,11 @@ pub fn compose(
                 key("l", "focus-right")
             ),
             format!(
-                "{} {} {} {}  Read width +10/-10; height +2/-2",
+                "{} {}  Text width +10 / -10",
                 key("+", "read-wider"),
-                key("-", "read-narrower"),
-                key(">", "read-taller"),
-                key("<", "read-shorter")
+                key("-", "read-narrower")
             ),
+            format!("{}  Settings (tab placement)", key(",", "config")),
             format!("{}  Detach", key("d", "detach")),
             format!("{}  Take control", key("tT", "takeover")),
             format!("{}  Toggle help", key("?", "help")),
@@ -269,7 +295,7 @@ fn header(
     frame: &mut Frame,
     view: &PaneView,
     selected: bool,
-    reading: ReadingMode,
+    _reading: ReadingMode,
     spinner: usize,
 ) {
     if view.rect.rows == 0 {
@@ -302,13 +328,7 @@ fn header(
         Color::Indexed(if selected { 24 } else { 17 }),
         true,
     );
-    let buttons: &[(&str, u8, u8)] = match reading {
-        ReadingMode::Fullscreen(id) if id == view.pane.id => &[(" ▣ ", 16, 39), (" × ", 231, 88)],
-        ReadingMode::Capped(id) if id == view.pane.id && view.overlay => {
-            &[(" ↙ ", 231, 24), (" ⛶ ", 16, 39), (" × ", 231, 88)]
-        }
-        _ => &[(" ↗ ", 231, 24), (" ⛶ ", 16, 39)],
-    };
+    let buttons: &[(&str, u8, u8)] = &[(" ↗ ", 231, 24), (" ⛶ ", 16, 39)];
     let button_width = buttons.len() as u16 * 3;
     let title_width = view.rect.cols.saturating_sub(badge_width + button_width);
     let marker = if view.pane.status == crate::model::Status::Working {
@@ -348,6 +368,8 @@ fn draw_dialog(frame: &mut Frame, workspace: &Workspace, dialog: super::ui::Dial
     let title = match dialog.kind {
         DialogKind::Grid => " Grid · arrows, Enter or click",
         DialogKind::Move => " Move active pane · choose destination",
+        DialogKind::Config => " Settings · tab position",
+        DialogKind::CloseConfirm => " Close this tab?",
         DialogKind::Agents => match dialog.filter {
             AgentFilter::All => " Agents",
             AgentFilter::Attention => " Agents needing attention",
@@ -374,7 +396,52 @@ fn draw_dialog(frame: &mut Frame, workspace: &Workspace, dialog: super::ui::Dial
         Color::Indexed(88),
         true,
     );
-    if dialog.kind == DialogKind::Grid {
+    if dialog.kind == DialogKind::Config || dialog.kind == DialogKind::CloseConfirm {
+        let labels: Vec<String> = if dialog.kind == DialogKind::Config {
+            use super::ui::TabPosition;
+            [
+                TabPosition::Auto,
+                TabPosition::Top,
+                TabPosition::Left,
+                TabPosition::Bottom,
+            ]
+            .iter()
+            .map(|position| {
+                format!(
+                    "{} {:?}",
+                    if *position == workspace.ui.config.tab_position {
+                        "●"
+                    } else {
+                        "○"
+                    },
+                    position
+                )
+            })
+            .collect()
+        } else {
+            vec!["Cancel".into(), "Close · stop its running process".into()]
+        };
+        for (index, label) in labels.iter().enumerate() {
+            let rect = Rect {
+                x: bounds.x,
+                y: bounds.y + 2 + index as u16,
+                cols: bounds.cols,
+                rows: 1,
+            };
+            let bg = Color::Indexed(if index == dialog.selection { 24 } else { 236 });
+            fill(frame, rect, bg);
+            write_text(
+                frame,
+                rect.x + 1,
+                rect.y,
+                rect.cols - 2,
+                label,
+                Color::Indexed(231),
+                bg,
+                true,
+            );
+        }
+    } else if dialog.kind == DialogKind::Grid {
         let occupied = workspace
             .panes
             .iter()
@@ -765,6 +832,184 @@ fn repair_wide_edges(frame: &mut Frame) {
     }
 }
 
+fn draw_tabs(frame: &mut Frame, workspace: &Workspace, spinner: usize) {
+    use super::{
+        ui::TabPosition,
+        workspace::{TabTarget, tab_targets},
+    };
+    let position = workspace
+        .ui
+        .config
+        .tab_position
+        .resolve(frame.cols, frame.rows);
+    let area = match position {
+        TabPosition::Left => Rect {
+            x: 0,
+            y: 0,
+            cols: (frame.cols / 5).clamp(18, 28),
+            rows: frame.rows - 1,
+        },
+        TabPosition::Bottom => Rect {
+            x: 0,
+            y: frame.rows - 2,
+            cols: frame.cols,
+            rows: 1,
+        },
+        _ => Rect {
+            x: 0,
+            y: 0,
+            cols: frame.cols,
+            rows: 1,
+        },
+    };
+    fill(frame, area, Color::Indexed(234));
+    let active = workspace
+        .panes
+        .iter()
+        .position(|pane| pane.id == workspace.active)
+        .unwrap_or(0);
+    for (target, rect) in tab_targets(
+        frame.cols,
+        frame.rows,
+        &workspace.ui.config,
+        workspace.panes.len(),
+        active,
+    ) {
+        match target {
+            TabTarget::Previous | TabTarget::Next => {
+                let label = if position == TabPosition::Left && target == TabTarget::Previous {
+                    " ↑ "
+                } else if position == TabPosition::Left {
+                    " ↓ "
+                } else if target == TabTarget::Previous {
+                    " ‹ "
+                } else {
+                    " › "
+                };
+                write_text(
+                    frame,
+                    rect.x,
+                    rect.y,
+                    rect.cols,
+                    label,
+                    Color::Indexed(231),
+                    Color::Indexed(24),
+                    true,
+                );
+            }
+            TabTarget::Pane(index) => {
+                if let Some(pane) = workspace.panes.get(index) {
+                    let selected = pane.id == workspace.active;
+                    let (bright, muted) = PALETTE[usize::from(pane.palette) % 9];
+                    let bg = Color::Indexed(if selected { bright } else { muted });
+                    fill(frame, rect, bg);
+                    let number = format!(" {} ", pane.number);
+                    write_text(
+                        frame,
+                        rect.x,
+                        rect.y,
+                        3,
+                        &number,
+                        Color::Indexed(if selected { 226 } else { 117 }),
+                        Color::Indexed(24),
+                        true,
+                    );
+                    let marker = if pane.status == crate::model::Status::Working {
+                        SPINNER[spinner % 8].to_string()
+                    } else {
+                        pane.status.marker().to_owned()
+                    };
+                    let label = format!("{} {}", marker, pane.title);
+                    let count = if position == TabPosition::Bottom {
+                        format!(" {}/{} ", index + 1, workspace.panes.len())
+                    } else {
+                        String::new()
+                    };
+                    let count_width = count.len() as u16;
+                    write_text(
+                        frame,
+                        rect.x + 3,
+                        rect.y,
+                        rect.cols.saturating_sub(6 + count_width),
+                        &label,
+                        Color::Indexed(if selected { 231 } else { 245 }),
+                        bg,
+                        false,
+                    );
+                    if count_width > 0 {
+                        write_text(
+                            frame,
+                            rect.x + rect.cols - 3 - count_width,
+                            rect.y,
+                            count_width,
+                            &count,
+                            Color::Indexed(231),
+                            bg,
+                            true,
+                        );
+                    }
+                    write_text(
+                        frame,
+                        rect.x + rect.cols - 3,
+                        rect.y,
+                        3,
+                        " × ",
+                        Color::Indexed(231),
+                        Color::Indexed(88),
+                        true,
+                    );
+                }
+            }
+        }
+    }
+}
+fn draw_vitals(frame: &mut Frame, segments: &[(String, u8)]) {
+    let start = if frame.controller { 0 } else { 10 };
+    let end = frame.cols.saturating_sub(super::ui::FOOTER_COLS);
+    let available = end.saturating_sub(start);
+    let selected: Vec<_> = if available < 50 {
+        segments
+            .iter()
+            .enumerate()
+            .filter(|(index, _)| *index < 2 || *index == segments.len() - 1)
+            .map(|(_, segment)| segment)
+            .collect()
+    } else {
+        segments.iter().collect()
+    };
+    let total: u16 = selected
+        .iter()
+        .map(|(text, _)| text.chars().map(char_width).sum::<u16>() + 1)
+        .sum();
+    let mut x = start + available.saturating_sub(total);
+    fill(
+        frame,
+        Rect {
+            x: start,
+            y: frame.rows - 1,
+            cols: available,
+            rows: 1,
+        },
+        Color::Indexed(234),
+    );
+    for (text, color) in selected {
+        if x >= end {
+            break;
+        }
+        let width = text.chars().map(char_width).sum::<u16>();
+        write_text(
+            frame,
+            x,
+            frame.rows - 1,
+            (end - x).min(width),
+            text,
+            Color::Indexed(*color),
+            Color::Indexed(234),
+            false,
+        );
+        x = x.saturating_add(width + 1);
+    }
+}
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -804,7 +1049,7 @@ mod tests {
         for cols in [40, 80, 120, 240, 400] {
             for (reading, overlay, buttons) in [
                 (ReadingMode::Grid, false, 6),
-                (ReadingMode::Capped(1), true, 9),
+                (ReadingMode::Capped(1), true, 6),
                 (ReadingMode::Fullscreen(1), true, 6),
             ] {
                 let workspace = Workspace::new(cols, 10).unwrap();

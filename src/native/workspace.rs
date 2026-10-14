@@ -27,7 +27,10 @@ impl Workspace {
             grid_cols: 1,
             grid_rows: 1,
             help: false,
-            ui: UiState::default(),
+            ui: UiState {
+                grid_shape: (1, 1),
+                ..Default::default()
+            },
         })
     }
     pub fn resize(&mut self, cols: u16, rows: u16) -> Result<()> {
@@ -37,6 +40,33 @@ impl Workspace {
         Ok(())
     }
     pub fn layout(&self) -> Vec<PaneView> {
+        if self.reading != ReadingMode::Grid {
+            let body = tab_body(
+                self.cols,
+                self.rows,
+                &self.ui.config,
+                matches!(self.reading, ReadingMode::Fullscreen(_)),
+                self.ui.reading_size,
+            );
+            return self
+                .panes
+                .iter()
+                .enumerate()
+                .map(|(index, pane)| {
+                    let mut view = Self::view(pane, index, Rect::default(), false);
+                    if pane.id == self.active {
+                        view.rect = body;
+                        view.body = body;
+                    } else {
+                        view.body = Rect::default();
+                    }
+                    view
+                })
+                .collect();
+        }
+        self.grid_layout()
+    }
+    pub fn grid_layout(&self) -> Vec<PaneView> {
         let columns = u16::from(self.grid_cols.max(1));
         let rows = u16::from(self.grid_rows.max(1));
         let usable_cols = self.cols.saturating_sub(columns - 1);
@@ -54,36 +84,6 @@ impl Workspace {
                 rows: usable_rows * (row + 1) / rows - top,
             };
             views.push(Self::view(pane, index, rect, false));
-        }
-        let selected = match self.reading {
-            ReadingMode::Grid => None,
-            ReadingMode::Capped(id) | ReadingMode::Fullscreen(id) => Some(id),
-        };
-        if let Some((index, pane)) =
-            selected.and_then(|id| self.panes.iter().enumerate().find(|(_, p)| p.id == id))
-        {
-            let rect = if matches!(self.reading, ReadingMode::Fullscreen(_)) {
-                Rect {
-                    x: 0,
-                    y: 0,
-                    cols: self.cols,
-                    rows: usable_rows,
-                }
-            } else {
-                let (width, height) = self.ui.reading_size.unwrap_or((
-                    self.ui.config.read_width,
-                    (usable_rows * u16::from(self.ui.config.read_height_percent) / 100).max(3),
-                ));
-                let width = width.clamp(20, self.cols);
-                let height = height.clamp(3, usable_rows);
-                Rect {
-                    x: (self.cols - width) / 2,
-                    y: (usable_rows - height) / 2,
-                    cols: width,
-                    rows: height,
-                }
-            };
-            views.push(Self::view(pane, index, rect, true));
         }
         views
     }
@@ -105,7 +105,15 @@ impl Workspace {
     }
     pub fn terminal_sizes(&self) -> Vec<(PaneId, u16, u16)> {
         let mut sizes = Vec::new();
-        for view in self.layout() {
+        let mut views = self.grid_layout();
+        if self.reading != ReadingMode::Grid {
+            views.extend(
+                self.layout()
+                    .into_iter()
+                    .filter(|view| view.pane.id == self.active),
+            );
+        }
+        for view in views {
             let entry = (view.pane.id, view.body.cols, view.body.rows);
             if let Some(existing) = sizes
                 .iter_mut()
@@ -126,6 +134,38 @@ impl Workspace {
     }
     pub fn apply(&mut self, action: &Action) -> Result<()> {
         match *action {
+            Action::Config => {
+                self.help = false;
+                self.ui.dialog = Some(Dialog {
+                    kind: DialogKind::Config,
+                    filter: AgentFilter::All,
+                    selection: 0,
+                    source: None,
+                });
+            }
+            Action::TabPositionSet(position) => self.ui.config.tab_position = position,
+            Action::ClosePaneRequest(id) => {
+                self.require_pane(id)?;
+                self.help = false;
+                self.ui.dialog = Some(Dialog {
+                    kind: DialogKind::CloseConfirm,
+                    filter: AgentFilter::All,
+                    selection: 0,
+                    source: Some(id),
+                });
+            }
+            Action::ClosePaneConfirm(id) => {
+                self.require_pane(id)?;
+            }
+            Action::TabPosition => {
+                use super::ui::TabPosition;
+                self.ui.config.tab_position = match self.ui.config.tab_position {
+                    TabPosition::Auto => TabPosition::Top,
+                    TabPosition::Top => TabPosition::Left,
+                    TabPosition::Left => TabPosition::Bottom,
+                    TabPosition::Bottom => TabPosition::Auto,
+                };
+            }
             Action::GridPicker | Action::MovePicker | Action::Agents(_) => {
                 let (kind, filter) = match *action {
                     Action::GridPicker => (DialogKind::Grid, AgentFilter::All),
@@ -148,7 +188,7 @@ impl Workspace {
                     let columns = match dialog.kind {
                         DialogKind::Grid => 3,
                         DialogKind::Move => isize::from(self.grid_cols),
-                        DialogKind::Agents => 1,
+                        DialogKind::Agents | DialogKind::Config | DialogKind::CloseConfirm => 1,
                     };
                     dialog.selection =
                         (dialog.selection as isize + isize::from(dx) + isize::from(dy) * columns)
@@ -189,7 +229,7 @@ impl Workspace {
                 self.active = id;
                 self.reading = match self.reading {
                     ReadingMode::Grid => ReadingMode::Grid,
-                    ReadingMode::Capped(_) => ReadingMode::Capped(id),
+                    ReadingMode::Tabs(_) | ReadingMode::Capped(_) => ReadingMode::Tabs(id),
                     ReadingMode::Fullscreen(_) => ReadingMode::Fullscreen(id),
                 };
             }
@@ -200,28 +240,27 @@ impl Workspace {
                     .ok_or("invalid pane number")?
                     .id;
                 self.active = id;
-                self.reading = if matches!(self.reading, ReadingMode::Capped(p) | ReadingMode::Fullscreen(p) if p == id)
-                {
-                    ReadingMode::Grid
+                self.reading = if matches!(self.reading, ReadingMode::Fullscreen(_)) {
+                    ReadingMode::Fullscreen(id)
                 } else {
-                    ReadingMode::Capped(id)
+                    ReadingMode::Tabs(id)
                 };
             }
             Action::Read(id) => {
                 self.require_pane(id)?;
                 self.active = id;
-                self.reading = if matches!(self.reading, ReadingMode::Capped(current) | ReadingMode::Fullscreen(current) if current == id)
+                self.reading = if matches!(self.reading, ReadingMode::Tabs(current) | ReadingMode::Capped(current) | ReadingMode::Fullscreen(current) if current == id)
                 {
                     ReadingMode::Grid
                 } else {
-                    ReadingMode::Capped(id)
+                    ReadingMode::Tabs(id)
                 };
             }
             Action::Fullscreen(id) => {
                 self.require_pane(id)?;
                 self.active = id;
                 self.reading = if self.reading == ReadingMode::Fullscreen(id) {
-                    ReadingMode::Capped(id)
+                    ReadingMode::Tabs(id)
                 } else {
                     ReadingMode::Fullscreen(id)
                 };
@@ -234,6 +273,7 @@ impl Workspace {
                 }
                 self.grid_cols = cols;
                 self.grid_rows = rows;
+                self.ui.grid_shape = (cols, rows);
                 self.reading = ReadingMode::Grid;
             }
             Action::Swap { source, target } => {
@@ -267,6 +307,14 @@ impl Workspace {
 }
 pub fn dialog_entries(panes: &[PaneInfo], dialog: Option<Dialog>) -> Vec<PaneId> {
     match dialog {
+        Some(Dialog {
+            kind: DialogKind::Config,
+            ..
+        }) => (0..4).collect(),
+        Some(Dialog {
+            kind: DialogKind::CloseConfirm,
+            ..
+        }) => (0..2).collect(),
         Some(Dialog {
             kind: DialogKind::Grid,
             ..
@@ -332,4 +380,173 @@ pub fn move_cards(bounds: Rect, columns: u8, rows: u8) -> Vec<Rect> {
             }
         })
         .collect()
+}
+/// Content is a single terminal with blank margins, never a floating pane.
+pub fn tab_body(
+    cols: u16,
+    rows: u16,
+    config: &super::ui::UiConfig,
+    full: bool,
+    size: Option<(u16, u16)>,
+) -> Rect {
+    use super::ui::TabPosition;
+    let position = config.tab_position.resolve(cols, rows);
+    let mut area = Rect {
+        x: 0,
+        y: 0,
+        cols,
+        rows: rows.saturating_sub(1),
+    };
+    match position {
+        TabPosition::Top => {
+            area.y = 1;
+            area.rows = area.rows.saturating_sub(1);
+        }
+        TabPosition::Left => {
+            let sidebar = (cols / 5).clamp(18, 28);
+            area.x = sidebar;
+            area.cols = cols - sidebar;
+        }
+        TabPosition::Bottom => area.rows = area.rows.saturating_sub(1),
+        TabPosition::Auto => unreachable!(),
+    }
+    let width = if full {
+        area.cols
+    } else {
+        size.map(|s| s.0)
+            .unwrap_or(config.read_width)
+            .clamp(20, area.cols)
+    };
+    Rect {
+        x: area.x + (area.cols - width) / 2,
+        cols: width,
+        ..area
+    }
+}
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TabTarget {
+    Pane(usize),
+    Previous,
+    Next,
+}
+pub fn tab_targets(
+    cols: u16,
+    rows: u16,
+    config: &super::ui::UiConfig,
+    count: usize,
+    active: usize,
+) -> Vec<(TabTarget, Rect)> {
+    use super::ui::TabPosition;
+    if count == 0 {
+        return vec![];
+    }
+    let position = config.tab_position.resolve(cols, rows);
+    match position {
+        TabPosition::Bottom => vec![
+            (
+                TabTarget::Previous,
+                Rect {
+                    x: 0,
+                    y: rows - 2,
+                    cols: 3,
+                    rows: 1,
+                },
+            ),
+            (
+                TabTarget::Pane(active),
+                Rect {
+                    x: 3,
+                    y: rows - 2,
+                    cols: cols - 6,
+                    rows: 1,
+                },
+            ),
+            (
+                TabTarget::Next,
+                Rect {
+                    x: cols - 3,
+                    y: rows - 2,
+                    cols: 3,
+                    rows: 1,
+                },
+            ),
+        ],
+        TabPosition::Top => {
+            let capacity = usize::from(cols.saturating_sub(6) / 12).max(1).min(count);
+            let start = active.saturating_sub(capacity - 1);
+            let width = (cols - 6) / capacity as u16;
+            let mut tabs: Vec<_> = (start..(start + capacity).min(count))
+                .enumerate()
+                .map(|(i, index)| {
+                    (
+                        TabTarget::Pane(index),
+                        Rect {
+                            x: 3 + i as u16 * width,
+                            y: 0,
+                            cols: width,
+                            rows: 1,
+                        },
+                    )
+                })
+                .collect();
+            tabs.push((
+                TabTarget::Previous,
+                Rect {
+                    x: 0,
+                    y: 0,
+                    cols: 3,
+                    rows: 1,
+                },
+            ));
+            tabs.push((
+                TabTarget::Next,
+                Rect {
+                    x: cols - 3,
+                    y: 0,
+                    cols: 3,
+                    rows: 1,
+                },
+            ));
+            tabs
+        }
+        TabPosition::Left => {
+            let width = (cols / 5).clamp(18, 28);
+            let capacity = usize::from(rows.saturating_sub(3)).max(1);
+            let start = active.saturating_sub(capacity - 1);
+            let mut tabs: Vec<_> = (start..(start + capacity).min(count))
+                .enumerate()
+                .map(|(i, index)| {
+                    (
+                        TabTarget::Pane(index),
+                        Rect {
+                            x: 0,
+                            y: 1 + i as u16,
+                            cols: width,
+                            rows: 1,
+                        },
+                    )
+                })
+                .collect();
+            tabs.push((
+                TabTarget::Previous,
+                Rect {
+                    x: 0,
+                    y: 0,
+                    cols: width,
+                    rows: 1,
+                },
+            ));
+            tabs.push((
+                TabTarget::Next,
+                Rect {
+                    x: 0,
+                    y: rows - 2,
+                    cols: width,
+                    rows: 1,
+                },
+            ));
+            tabs
+        }
+        TabPosition::Auto => unreachable!(),
+    }
 }

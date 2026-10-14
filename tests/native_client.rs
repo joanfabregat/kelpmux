@@ -667,6 +667,17 @@ fn wait_state(
         if condition(&panes, reading, controller) {
             return panes;
         }
+        if Instant::now() >= deadline {
+            let mut display = kelpmux::native::engine::Terminal::new(80, 24);
+            display.feed(&tty.output);
+            let text: String = display
+                .snapshot()
+                .cells
+                .iter()
+                .map(|cell| cell.text.as_str())
+                .collect();
+            panic!("live state did not converge: {reading:?}, terminal: {text}");
+        }
         assert!(
             Instant::now() < deadline,
             "live state did not converge: panes={} reading={reading:?} controller={controller:?}",
@@ -730,18 +741,41 @@ fn live_server_attach_layout_read_fullscreen_detach_reconnect_preserves_shell() 
     );
     tty.input(format!("\x1b[<0;{};{}M", read.x + 1, read.y + 1).as_bytes());
     wait_state(&server, &mut tty, |_, reading, _| {
-        reading == ReadingMode::Capped(original.id)
+        reading == ReadingMode::Tabs(original.id)
     });
-    let full = header_button(&server, original.id, ReadingMode::Capped(original.id), 1);
+    // The footer exposes full width while tabs remain visible.
+    let full = Point { x: 80 - 12, y: 23 };
     wait_header(
         &mut tty,
-        usize::from(full.y) * 80 + usize::from(full.x) - 3,
-        "↙",
+        usize::from(full.y) * 80 + usize::from(full.x),
+        "⛶",
     );
     tty.input(format!("\x1b[<0;{};{}M", full.x + 1, full.y + 1).as_bytes());
     wait_state(&server, &mut tty, |_, reading, _| {
         reading == ReadingMode::Fullscreen(original.id)
     });
+    // Exercise the real frontend footer translation, not just router helpers.
+    tty.input(b"\x1b[<0;55;24M");
+    wait_text(&mut tty, "Settings · tab position");
+    let bounds = kelpmux::native::workspace::dialog_bounds(80, 24);
+    tty.input(format!("\x1b[<0;{};{}M", bounds.x + 2, bounds.y + 5).as_bytes());
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        tty.drain();
+        if kelpmux::native::lifecycle::Settings::load(&server.root.join("state/workspace.json"))
+            .is_ok_and(|settings| {
+                settings.ui.tab_position == kelpmux::native::ui::TabPosition::Left
+            })
+        {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "click did not save tab placement"
+        );
+        thread::sleep(Duration::from_millis(10));
+    }
+    tty.input(b"\x1b[<0;1;1M");
     tty.drain();
     server.ctl(&["close"]);
     wait_state(&server, &mut tty, |_, reading, _| {
@@ -802,6 +836,28 @@ fn wait_header(tty: &mut Pty, index: usize, label: &str) {
         thread::sleep(Duration::from_millis(10));
     }
 }
+fn wait_text(tty: &mut Pty, expected: &str) {
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        tty.drain();
+        let mut display = kelpmux::native::engine::Terminal::new(80, 24);
+        display.feed(&tty.output);
+        let text: String = display
+            .snapshot()
+            .cells
+            .iter()
+            .map(|cell| cell.text.as_str())
+            .collect();
+        if text.contains(expected) {
+            return;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "frontend text missing: {expected}"
+        );
+        thread::sleep(Duration::from_millis(10));
+    }
+}
 fn header_button(server: &LiveServer, id: PaneId, reading: ReadingMode, slot: u16) -> Point {
     let (panes, _, _) = server.state();
     let mut workspace = kelpmux::native::workspace::Workspace::new(80, 24).unwrap();
@@ -810,17 +866,12 @@ fn header_button(server: &LiveServer, id: PaneId, reading: ReadingMode, slot: u1
     workspace.grid_cols = 2;
     workspace.reading = reading;
     let views = workspace.layout();
-    let overlay = reading != ReadingMode::Grid;
     let view = views
         .iter()
         .rev()
-        .find(|view| view.pane.id == id && view.overlay == overlay)
+        .find(|view| view.pane.id == id && view.rect.cols > 0)
         .unwrap();
-    let buttons = if matches!(reading, ReadingMode::Capped(_)) {
-        3
-    } else {
-        2
-    };
+    let buttons = 2;
     Point {
         x: view.rect.x + view.rect.cols - buttons * 3 + slot * 3 + 1,
         y: view.rect.y,

@@ -143,7 +143,6 @@ fn decode_mouse(bytes: &[u8]) -> Option<MouseEvent> {
 #[derive(Default)]
 pub struct Router {
     prefix: bool,
-    resizing: bool,
     pending_modal: bool,
     scrolling: bool,
     selection: Option<(PaneId, Point, Point)>,
@@ -209,6 +208,8 @@ impl Router {
                         b"f" => Some(Action::Fullscreen(frame.active)),
                         b"?" => Some(Action::Help),
                         b"g" => Some(Action::GridPicker),
+                        b"v" => Some(Action::TabPosition),
+                        b"," => Some(Action::Config),
                         b"a" => Some(Action::Agents(super::ui::AgentFilter::All)),
                         b"!" => Some(Action::Agents(super::ui::AgentFilter::Attention)),
                         b"n" => Some(Action::Agents(super::ui::AgentFilter::Finished)),
@@ -238,7 +239,11 @@ impl Router {
                     if frame.controller
                         && matches!(
                             action,
-                            Action::GridPicker | Action::MovePicker | Action::Agents(_)
+                            Action::GridPicker
+                                | Action::MovePicker
+                                | Action::Agents(_)
+                                | Action::Config
+                                | Action::ClosePaneRequest(_)
                         )
                     {
                         self.pending_modal = true;
@@ -373,28 +378,6 @@ impl Router {
         if self.pending_modal {
             return output;
         }
-        if self.resizing && matches!(event.kind, MouseKind::Move | MouseKind::Release) {
-            if let Some(view) = frame.panes.iter().rev().find(|v| v.overlay) {
-                let cols = (event.position.x.saturating_sub(view.rect.x) + 1)
-                    .saturating_mul(2)
-                    .saturating_sub(view.rect.cols);
-                let rows = (event.position.y.saturating_sub(view.rect.y) + 1)
-                    .saturating_mul(2)
-                    .saturating_sub(view.rect.rows);
-                emit(
-                    &mut output,
-                    Action::ReadResize {
-                        cols: cols.clamp(20, frame.cols),
-                        rows: rows.clamp(3, frame.rows - 1),
-                    },
-                    true,
-                );
-            }
-            if event.kind == MouseKind::Release {
-                self.resizing = false;
-            }
-            return output;
-        }
         if let Some(dialog) = frame.ui.dialog {
             let bounds = super::workspace::dialog_bounds(frame.cols, frame.rows);
             if event.kind == MouseKind::Press
@@ -410,9 +393,7 @@ impl Router {
                     .iter()
                     .position(|rect| rect.contains(event.position))
             } else if dialog.kind == super::ui::DialogKind::Move {
-                let views: Vec<_> = frame.panes.iter().filter(|v| !v.overlay).collect();
-                let columns = views.iter().filter(|v| v.rect.y == 0).count().max(1) as u8;
-                let rows = views.len().div_ceil(usize::from(columns)) as u8;
+                let (columns, rows) = frame.ui.grid_shape;
                 super::workspace::move_cards(bounds, columns, rows)
                     .iter()
                     .position(|rect| rect.contains(event.position))
@@ -458,6 +439,28 @@ impl Router {
             return output;
         }
         if event.kind == MouseKind::Press
+            && event.position.y == frame.rows - 1
+            && event.position.x >= frame.cols.saturating_sub(27)
+            && event.position.x < frame.cols.saturating_sub(20)
+        {
+            self.pending_modal = true;
+            emit(&mut output, Action::Config, true);
+            return output;
+        }
+        if event.kind == MouseKind::Press
+            && event.position.y == frame.rows - 1
+            && event.position.x >= frame.cols.saturating_sub(20)
+            && event.position.x < frame.cols.saturating_sub(10)
+        {
+            let action = if event.position.x < frame.cols - 13 {
+                Action::Read(frame.active)
+            } else {
+                Action::Fullscreen(frame.active)
+            };
+            emit(&mut output, action, true);
+            return output;
+        }
+        if event.kind == MouseKind::Press
             && event.position.y == frame.rows.saturating_sub(1)
             && event.position.x >= frame.cols.saturating_sub(10)
             && event.position.x < frame.cols.saturating_sub(3)
@@ -492,6 +495,63 @@ impl Router {
                 return output;
             }
         }
+        if frame.reading != ReadingMode::Grid {
+            let active = frame
+                .panes
+                .iter()
+                .position(|view| view.pane.id == frame.active)
+                .unwrap_or(0);
+            if let Some((target, _)) = super::workspace::tab_targets(
+                frame.cols,
+                frame.rows,
+                &frame.ui.config,
+                frame.panes.len(),
+                active,
+            )
+            .into_iter()
+            .find(|(_, rect)| rect.contains(event.position))
+            {
+                if matches!(
+                    event.kind,
+                    MouseKind::Press | MouseKind::WheelUp | MouseKind::WheelDown
+                ) {
+                    use super::workspace::TabTarget;
+                    let index = match target {
+                        _ if event.kind == MouseKind::WheelUp => active.saturating_sub(1),
+                        _ if event.kind == MouseKind::WheelDown => {
+                            (active + 1).min(frame.panes.len().saturating_sub(1))
+                        }
+                        TabTarget::Pane(index) if event.kind == MouseKind::Press => index,
+                        TabTarget::Previous => active.saturating_sub(1),
+                        TabTarget::Next => (active + 1).min(frame.panes.len().saturating_sub(1)),
+                        _ => (active + 1).min(frame.panes.len().saturating_sub(1)),
+                    };
+                    if let Some(view) = frame.panes.get(index) {
+                        let bounds = super::workspace::tab_targets(
+                            frame.cols,
+                            frame.rows,
+                            &frame.ui.config,
+                            frame.panes.len(),
+                            active,
+                        )
+                        .into_iter()
+                        .find(|(item, _)| *item == target)
+                        .map(|(_, rect)| rect)
+                        .unwrap();
+                        let close = matches!(target, TabTarget::Pane(_))
+                            && event.kind == MouseKind::Press
+                            && event.position.x >= bounds.x + bounds.cols - 3;
+                        if close {
+                            self.pending_modal = true;
+                            emit(&mut output, Action::ClosePaneRequest(view.pane.id), true);
+                        } else {
+                            emit(&mut output, Action::Focus(view.pane.id), true);
+                        }
+                    }
+                }
+                return output;
+            }
+        }
         let Some(view) = frame
             .panes
             .iter()
@@ -501,45 +561,16 @@ impl Router {
             return output;
         };
         let id = view.pane.id;
-        if event.kind == MouseKind::Press
-            && view.overlay
-            && matches!(frame.reading, ReadingMode::Capped(_))
-            && event.position.x == view.rect.x + view.rect.cols - 1
-            && event.position.y == view.rect.y + view.rect.rows - 1
-        {
-            self.resizing = true;
-            return output;
-        }
-        if event.kind == MouseKind::Press
-            && !view.overlay
-            && frame.reading != ReadingMode::Grid
-            && id != frame.active
-        {
-            // Focusing a background tile moves the overlay. Its old body coordinates
-            // must not also become a click or selection in the newly moved terminal.
-            emit(&mut output, Action::Focus(id), true);
-            return output;
-        }
-        if event.position.y == view.rect.y {
+        if event.position.y == view.rect.y && frame.reading == ReadingMode::Grid {
             if event.kind != MouseKind::Press {
                 return output;
             }
-            let buttons = if view.overlay && matches!(frame.reading, ReadingMode::Capped(_)) {
-                3
-            } else {
-                2
-            };
+            let buttons = 2;
             let right = view.rect.x + view.rect.cols;
             let first = right.saturating_sub(buttons * 3);
             let action = if event.position.x >= first {
                 let slot = (event.position.x - first) / 3;
-                if view.overlay {
-                    match (buttons, slot) {
-                        (3, 0) => Action::CloseReading,
-                        (3, 1) | (2, 0) => Action::Fullscreen(id),
-                        _ => Action::CloseReading,
-                    }
-                } else if slot == 0 {
+                if slot == 0 {
                     Action::Read(id)
                 } else {
                     Action::Fullscreen(id)
@@ -588,7 +619,10 @@ impl Router {
         self.help_override = Some(!self.help_override.unwrap_or(frame.help));
     }
     fn resize_action(&self, frame: &Frame, dx: i16, dy: i16) -> Option<Action> {
-        let view = frame.panes.iter().rev().find(|v| v.overlay)?;
+        if frame.reading == ReadingMode::Grid {
+            return None;
+        }
+        let view = frame.panes.iter().find(|v| v.pane.id == frame.active)?;
         Some(Action::ReadResize {
             cols: view
                 .rect
@@ -608,6 +642,8 @@ impl Router {
             "grid" => Action::GridPicker,
             "read" => Action::Read(frame.active),
             "fullscreen" => Action::Fullscreen(frame.active),
+            "tab-position" => Action::TabPosition,
+            "config" => Action::Config,
             "agents" => Action::Agents(super::ui::AgentFilter::All),
             "attention" => Action::Agents(super::ui::AgentFilter::Attention),
             "finished" => Action::Agents(super::ui::AgentFilter::Finished),
@@ -636,6 +672,28 @@ impl Router {
             return vec![];
         };
         let mut actions = vec![];
+        if dialog.kind == DialogKind::Config {
+            let positions = [
+                super::ui::TabPosition::Auto,
+                super::ui::TabPosition::Top,
+                super::ui::TabPosition::Left,
+                super::ui::TabPosition::Bottom,
+            ];
+            let Some(&position) = positions.get(index) else {
+                return vec![];
+            };
+            return vec![ClientMessage::Action(Action::TabPositionSet(position))];
+        }
+        if dialog.kind == DialogKind::CloseConfirm {
+            return match (index, dialog.source) {
+                (0, _) => vec![ClientMessage::Action(Action::DialogClose)],
+                (1, Some(id)) => vec![
+                    ClientMessage::Action(Action::ClosePaneConfirm(id)),
+                    ClientMessage::Action(Action::DialogClose),
+                ],
+                _ => vec![],
+            };
+        }
         if dialog.kind == DialogKind::Grid {
             if let Some(&(cols, rows)) = super::workspace::GRIDS.get(index) {
                 let occupied = frame

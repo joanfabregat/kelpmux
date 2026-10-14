@@ -9,4 +9,5 @@ pub mod render;
 pub mod server;
 pub mod tracking;
 pub mod ui;
+pub mod vitals;
 pub mod workspace;

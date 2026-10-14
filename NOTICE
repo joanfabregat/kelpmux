@@ -6,3 +6,7 @@ Native release archives use Alacritty's terminal engine and other Rust
 dependencies, copyright their respective authors. Exact versions, license
 expressions and upstream license texts are included under dependency-licenses/.
 Kelpmux's Apache-2.0 license does not replace those dependencies' licenses.
+
+Native status-bar metrics incorporate code adapted from Vitals
+(https://github.com/joanfabregat/vitals), Copyright (c) 2026 Joan Fabrégat,
+licensed under MIT. The complete license is in assets/licenses/vitals-MIT.txt.
