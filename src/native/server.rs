@@ -466,6 +466,53 @@ struct Server {
     shutdown: bool,
 }
 impl Server {
+    fn close_pane(&mut self, id: PaneId) -> Result<()> {
+        let dialog = self.workspace.ui.dialog.ok_or("closing a pane requires confirmation")?;
+        if dialog.kind != super::ui::DialogKind::CloseConfirm || dialog.source != Some(id) {
+            return Err("closing a pane requires its confirmation dialog".into());
+        }
+        if !self.panes.contains_key(&id) {
+            return Err("unknown pane".into());
+        }
+        // Preserve an interactive terminal when the last tab is closed. Create
+        // its replacement first so spawn failure cannot leave an empty workspace.
+        if self.panes.len() == 1 {
+            self.add_pane()?;
+        }
+        self.panes.remove(&id);
+        self.workspace.panes.retain(|pane| pane.id != id);
+        self.workspace.ui.unused.retain(|pane| *pane != id);
+        if self.workspace.active == id {
+            self.workspace.active = self.workspace.panes[0].id;
+        }
+        self.workspace.reading = match self.workspace.reading {
+            ReadingMode::Grid => ReadingMode::Grid,
+            _ => ReadingMode::Tabs(self.workspace.active),
+        };
+        self.workspace.ui.dialog = None;
+        for (number, pane) in self.workspace.panes.iter_mut().enumerate() {
+            pane.number = number + 1;
+        }
+        self.resize();
+        Ok(())
+    }
+    fn persist_ui(&mut self) -> Result<()> {
+        if self.config.ui != self.workspace.ui.config {
+            let path = self.config.state_dir.join("workspace.json");
+            let mut settings = if path.exists() {
+                super::lifecycle::Settings::load(&path)?
+            } else {
+                super::lifecycle::Settings::default()
+            };
+            settings.ui = self.workspace.ui.config.clone();
+            settings.shell = Some(self.config.shell.clone());
+            settings.cwd = Some(self.config.cwd.clone());
+            settings.grid = (self.workspace.grid_cols, self.workspace.grid_rows);
+            journal::atomic(&path, &settings)?;
+            self.config.ui = settings.ui;
+        }
+        Ok(())
+    }
     fn add_pane(&mut self) -> Result<()> {
         let id = self.next_pane;
         let pane = NativePane::spawn(
@@ -542,7 +589,7 @@ impl Server {
             if victims.contains(&prepared.active) {
                 prepared.active = prepared.panes[0].id;
             }
-            if matches!(prepared.reading, ReadingMode::Capped(id) | ReadingMode::Fullscreen(id) if victims.contains(&id))
+            if matches!(prepared.reading, ReadingMode::Capped(id) | ReadingMode::Fullscreen(id) | ReadingMode::Tabs(id) if victims.contains(&id))
             {
                 prepared.reading = ReadingMode::Grid;
             }
@@ -577,6 +624,12 @@ impl Server {
     }
     fn message(&mut self, id: u64, message: ClientMessage) -> Result<()> {
         match message {
+            ClientMessage::InspectPane { pane } => {
+                let info = self.workspace.panes.iter().find(|info| info.id == pane)
+                    .ok_or("unknown pane")?.clone();
+                let screen = self.panes.get(&pane).ok_or("unknown pane")?.terminal.snapshot();
+                self.clients.get_mut(&id).unwrap().send(ServerMessage::PaneState { pane: info, screen })?;
+            }
             ClientMessage::Inspect => {
                 self.clients
                     .get_mut(&id)
@@ -597,6 +650,7 @@ impl Server {
                 match action {
                     Action::Shutdown => self.shutdown = true,
                     Action::Grid { cols, rows } => self.grid(cols, rows)?,
+                    Action::ClosePaneConfirm(pane) => self.close_pane(pane)?,
                     Action::Focus(_)
                     | Action::Read(_)
                     | Action::Fullscreen(_)
@@ -604,9 +658,14 @@ impl Server {
                     | Action::Swap { .. }
                     | Action::Help => {
                         self.workspace.apply(&action)?;
+                        self.persist_ui()?;
                         self.resize();
                     }
                     Action::ReadResize { .. }
+                    | Action::Config
+                    | Action::TabPosition
+                    | Action::TabPositionSet(_)
+                    | Action::ClosePaneRequest(_)
                     | Action::FocusDirection { .. }
                     | Action::GridPicker
                     | Action::Agents(_)
@@ -615,6 +674,7 @@ impl Server {
                     | Action::DialogPick(_)
                     | Action::DialogClose => {
                         self.workspace.apply(&action)?;
+                        self.persist_ui()?;
                         self.resize();
                     }
                     _ => return Err("unsupported management command".into()),
@@ -747,6 +807,7 @@ impl Server {
                         match action {
                             Action::Shutdown => self.shutdown = true,
                             Action::Grid { cols, rows } => self.grid(cols, rows)?,
+                            Action::ClosePaneConfirm(pane) => self.close_pane(pane)?,
                             Action::Scroll { pane, lines } => self
                                 .panes
                                 .get_mut(&pane)
@@ -775,6 +836,7 @@ impl Server {
                             }
                             other => self.workspace.apply(&other)?,
                         }
+                        self.persist_ui()?;
                         self.resize();
                     }
                     _ => return Err("invalid native client message".into()),

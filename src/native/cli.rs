@@ -25,14 +25,19 @@ use std::{
 };
 
 pub const HELP: &str = "Owned native terminal workspaces (Linux):
-  kelpmux server [--socket PATH] [--state-dir PATH] [--shell PATH] [--cwd PATH] [--size CxR]
-  kelpmux attach [--socket PATH] [--takeover]
+  kelpmux start [--workspace NAME] [--config PATH] [--shell PATH] [--cwd PATH]
+  kelpmux ssh-entry [--workspace NAME] [--takeover]
+  kelpmux status|stop|recover [--workspace NAME]
+  kelpmux server [--socket PATH] [--state-dir PATH] [--shell PATH] [--cwd PATH] [--size CxR] [--config PATH]
+  kelpmux attach [--workspace NAME] [--socket PATH] [--takeover]
   kelpmux ctl [--socket PATH] list|layout CxR|focus ID|read ID|fullscreen ID|close|shutdown
 
-The server stays in the foreground; attach/detach never owns shell lifetimes.
-Default socket: $XDG_STATE_HOME/kelpmux/native/control.sock
-  (falls back to ~/.local/state/kelpmux/native/control.sock)
-Attach keys: Ctrl-B d detach, Ctrl-B z read, Ctrl-B f full, Ctrl-B ? help.";
+start owns a detached server; ssh-entry starts or attaches. stop ends its processes.
+Default workspace: main; socket: $XDG_STATE_HOME/kelpmux/workspaces/main/control.sock
+  (falls back to ~/.local/state/kelpmux/workspaces/main/control.sock)
+Grids: 1x1, 2x1, 2x2, 3x2, 2x3, 3x3. Shrinking preserves occupied panes.
+Attach keys: Ctrl-B d detach, z grid/tabs, f full width, g grid picker,
+  a agents, ! attention, n finished, s move, ? help. Configurable in --config JSON.";
 const TIMEOUT: Duration = Duration::from_secs(3);
 const ESCAPE_TIMEOUT: Duration = Duration::from_millis(35);
 // JSON encodes byte arrays as decimal integers: a 64 KiB paste can exceed

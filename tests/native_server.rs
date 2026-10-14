@@ -638,3 +638,70 @@ fn child_shell_has_native_color_environment_without_ssh_autoattach_markers() {
             .contains("ENV:xterm-256color:truecolor:unset:unset:unset:unset:1:%1")
     });
 }
+
+#[test]
+fn every_grid_preserves_the_busy_last_pane_when_unused_slots_are_removed() {
+    let daemon = Daemon::start();
+    let (mut stream, _, _) = daemon.attach();
+    let panes = grid_when_idle(&mut stream, 3, 3);
+    let busy = panes[8].clone();
+    command(&mut stream, Action::Focus(busy.id)).unwrap();
+    write_message(&mut stream, &ClientMessage::Input(b"sleep 60\n".to_vec())).unwrap();
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        let tree = kelpmux::process::snapshot(std::path::Path::new("/proc")).unwrap();
+        if !kelpmux::process::descendants(&tree, busy.pid).is_empty() { break; }
+        assert!(Instant::now() < deadline); thread::sleep(Duration::from_millis(10));
+    }
+    for (cols, rows) in [(2,3),(3,2),(2,2),(2,1),(1,1)] {
+        let after = grid_when_idle(&mut stream, cols, rows);
+        assert_eq!(after.len(), usize::from(cols)*usize::from(rows));
+        let retained = after.iter().find(|pane| pane.id == busy.id).unwrap();
+        assert_eq!(retained.pid, busy.pid); assert!(!retained.dead);
+    }
+}
+
+#[test]
+fn pane_screen_inspection_is_independent_of_tabs_and_does_not_take_control() {
+    let daemon=Daemon::start();
+    let(mut controller,owner,_)=daemon.attach();
+    let panes=grid_when_idle(&mut controller,2,1);
+    command(&mut controller,Action::Read(panes[0].id)).unwrap();
+    let mut inspector=daemon.connect();
+    write_message(&mut inspector,&ClientMessage::InspectPane{pane:panes[1].id}).unwrap();
+    match next(&mut inspector) {
+        ServerMessage::PaneState{pane,screen}=>{
+            assert_eq!(pane.id,panes[1].id); assert!(screen.cols>0&&screen.rows>0);
+            assert_eq!(screen.cells.len(),usize::from(screen.cols)*usize::from(screen.rows));
+            let text:String=screen.cells.iter().map(|cell|cell.text.as_str()).collect();
+            assert!(!text.contains("Grid ·"));
+        },other=>panic!("unexpected pane response: {other:?}")
+    }
+    assert_eq!(state(&mut inspector).1,Some(owner));
+    write_message(&mut inspector,&ClientMessage::InspectPane{pane:u64::MAX}).unwrap();
+    assert!(matches!(next(&mut inspector),ServerMessage::Error(_)));
+}
+
+#[test]
+fn close_tab_requires_matching_confirmation_and_preserves_other_processes() {
+    let daemon=Daemon::start(); let(mut stream,_,_)=daemon.attach();
+    let panes=grid_when_idle(&mut stream,2,1);
+    assert!(command(&mut stream,Action::ClosePaneConfirm(panes[0].id)).unwrap_err().contains("confirmation"));
+    assert_eq!(state(&mut stream).0.len(),2);
+    command(&mut stream,Action::ClosePaneRequest(panes[0].id)).unwrap();
+    assert!(command(&mut stream,Action::ClosePaneConfirm(panes[1].id)).is_err());
+    let (remaining,_)=command(&mut stream,Action::ClosePaneConfirm(panes[0].id)).unwrap();
+    assert_eq!(remaining.len(),1); assert_eq!(remaining[0].pid,panes[1].pid);
+    command(&mut stream,Action::ClosePaneRequest(panes[1].id)).unwrap();
+    let (replacement,_)=command(&mut stream,Action::ClosePaneConfirm(panes[1].id)).unwrap();
+    assert_eq!(replacement.len(),1); assert_ne!(replacement[0].id,panes[1].id);
+}
+
+#[test]
+fn configuration_tab_position_persists_for_the_named_workspace() {
+    let daemon=Daemon::start(); let(mut stream,_,_)=daemon.attach();
+    command(&mut stream,Action::Config).unwrap();
+    command(&mut stream,Action::TabPositionSet(kelpmux::native::ui::TabPosition::Left)).unwrap();
+    let settings=kelpmux::native::lifecycle::Settings::load(&daemon.root.join("state/workspace.json")).unwrap();
+    assert_eq!(settings.ui.tab_position,kelpmux::native::ui::TabPosition::Left);
+}
