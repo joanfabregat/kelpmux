@@ -1,6 +1,7 @@
 //! Owned Linux multiplexer. The legacy tmux adapter remains independent.
 pub mod cli;
 pub mod delta;
+pub mod diagnostics;
 pub mod engine;
 pub mod hooks;
 pub mod input;

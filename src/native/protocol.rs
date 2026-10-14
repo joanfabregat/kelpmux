@@ -229,6 +229,8 @@ pub enum Action {
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum ClientMessage {
+    Diagnostics,
+    History { pane:PaneId,start:i32,limit:usize },
     InspectPane {
         pane: PaneId,
     },
@@ -253,6 +255,8 @@ pub enum ClientMessage {
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum ServerMessage {
+    Diagnostics(super::diagnostics::Report),
+    History { pane:PaneId,lines:Vec<(i32,String)> },
     Patch(super::delta::Patch),
     PaneState {
         pane: PaneInfo,
