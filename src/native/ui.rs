@@ -3,6 +3,20 @@ use crate::Result;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 pub const FOOTER_COLS: u16 = 27;
+pub const PALETTE: [(u8, u8); 9] = [
+    (39, 24),
+    (42, 29),
+    (141, 60),
+    (214, 94),
+    (80, 30),
+    (205, 89),
+    (185, 58),
+    (209, 95),
+    (111, 67),
+];
+pub const COLOR_NAMES: [&str; 9] = [
+    "Blue", "Green", "Purple", "Amber", "Teal", "Pink", "Lime", "Coral", "Slate",
+];
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum TabPosition {
@@ -42,6 +56,7 @@ pub enum DialogKind {
     Move,
     Config,
     CloseConfirm,
+    Color,
 }
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Dialog {
@@ -58,6 +73,7 @@ pub struct UiConfig {
     pub prefix: u8,
     pub read_width: u16,
     pub wrap_lines: bool,
+    pub pane_colors: BTreeMap<u64, u8>,
     pub read_height_percent: u8,
     pub bindings: BTreeMap<String, String>,
     pub tab_position: TabPosition,
@@ -71,6 +87,7 @@ impl Default for UiConfig {
             prefix: 2,
             read_width: 120,
             wrap_lines: true,
+            pane_colors: BTreeMap::new(),
             read_height_percent: 95,
             bindings: BTreeMap::new(),
             tab_position: TabPosition::Auto,
@@ -81,6 +98,11 @@ impl Default for UiConfig {
 impl UiConfig {
     pub fn validate(&self) -> Result<()> {
         if !(1..=26).contains(&self.prefix)
+            || self.pane_colors.len() > 10
+            || self
+                .pane_colors
+                .iter()
+                .any(|(&pane, &color)| pane == 0 || usize::from(color) >= PALETTE.len())
             || !(20..=400).contains(&self.read_width)
             || !(20..=100).contains(&self.read_height_percent)
             || self

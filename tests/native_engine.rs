@@ -252,6 +252,8 @@ fn hyperlinks_survive_fragmentation_composition_patches_and_erasure() {
     }];
     ws.active = 1;
     let first = compose(&ws, &BTreeMap::from([(1, screen)]), true, None, 0);
+    let body = first.panes[0].body;
+    let base = usize::from(body.y * first.cols + body.x);
     let bytes = terminal_diff(None, &first);
     let mut display = Terminal::new(40, 10);
     display.feed(&bytes);
@@ -264,8 +266,8 @@ fn hyperlinks_survive_fragmentation_composition_patches_and_erasure() {
 
     // Changing only the target must redraw the link and travel in a delta.
     let mut next = first.clone();
-    next.cells[40].hyperlink = Some("https://example.org/new".into());
-    next.cells[41].hyperlink = next.cells[40].hyperlink.clone();
+    next.cells[base].hyperlink = Some("https://example.org/new".into());
+    next.cells[base + 1].hyperlink = next.cells[base].hyperlink.clone();
     let patch = kelpmux::native::delta::diff(&first, &next, 1).unwrap();
     assert_eq!(
         kelpmux::native::delta::apply(&first, 1, &patch).unwrap(),
@@ -274,15 +276,15 @@ fn hyperlinks_survive_fragmentation_composition_patches_and_erasure() {
     display.feed(&terminal_diff(Some(&first), &next));
     assert_eq!(display.snapshot().cells, next.cells);
     let mut cleared = next.clone();
-    cleared.cells[40] = Cell::default();
-    cleared.cells[41] = Cell::default();
+    cleared.cells[base] = Cell::default();
+    cleared.cells[base + 1] = Cell::default();
     display.feed(&terminal_diff(Some(&next), &cleared));
     assert_eq!(display.snapshot().cells, cleared.cells);
 
     // Targets cannot inject terminal commands, and old cells decode without links.
     assert!(!valid_hyperlink("https://example.com/\x1b]52;c;bad\x07"));
     let mut malicious = first.clone();
-    malicious.cells[40].hyperlink = Some("https://example.com/\x1b]52;c;bad\x07".into());
+    malicious.cells[base].hyperlink = Some("https://example.com/\x1b]52;c;bad\x07".into());
     assert!(kelpmux::native::delta::diff(&first, &malicious, 1).is_none());
     let output = String::from_utf8(terminal_diff(None, &malicious)).unwrap();
     assert!(!output.contains("52;c;bad"));
