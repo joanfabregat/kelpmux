@@ -779,3 +779,32 @@ fn configuration_tab_position_persists_for_the_named_workspace() {
         kelpmux::native::ui::TabPosition::Left
     );
 }
+
+#[test]
+fn new_tabs_create_one_pty_preserve_existing_jobs_and_stop_at_nine() {
+    let daemon = Daemon::start();
+    let mut admin = daemon.connect();
+    let (initial, _) = command(&mut admin, Action::WrapToggle).unwrap();
+    let original = (initial[0].id, initial[0].pid);
+    let settings: serde_json::Value =
+        serde_json::from_slice(&fs::read(daemon.root.join("state/workspace.json")).unwrap())
+            .unwrap();
+    assert_eq!(settings["ui"]["wrap_lines"], false);
+    for count in 2..=9 {
+        let (panes, _) = command(&mut admin, Action::NewTab).unwrap();
+        assert_eq!(panes.len(), count);
+        assert_eq!((panes[0].id, panes[0].pid), original);
+        for (index, pane) in panes.iter().enumerate() {
+            assert_eq!(pane.number, index + 1);
+            assert!(std::path::Path::new(&format!("/proc/{}", pane.pid)).exists());
+        }
+    }
+    assert!(
+        command(&mut admin, Action::NewTab)
+            .unwrap_err()
+            .contains("nine")
+    );
+    let (panes, _) = command(&mut admin, Action::Config).unwrap();
+    assert_eq!(panes.len(), 9);
+    assert_eq!((panes[0].id, panes[0].pid), original);
+}

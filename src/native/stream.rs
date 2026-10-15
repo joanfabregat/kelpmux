@@ -44,6 +44,7 @@ pub const CAPABILITIES: &[&str] = &[
     "metadata",
     "notifications",
     "vitals",
+    "hyperlinks",
 ];
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

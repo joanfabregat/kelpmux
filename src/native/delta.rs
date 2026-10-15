@@ -60,7 +60,14 @@ fn shape(frame: &Frame) -> Result<usize> {
     Ok(cells)
 }
 pub(crate) fn cell_valid(cell: &Cell) -> bool {
-    if cell.width > 2 || cell.text.len() > 1024 || cell.text.chars().any(char::is_control) {
+    if cell.width > 2
+        || cell.text.len() > 1024
+        || cell.text.chars().any(char::is_control)
+        || cell
+            .hyperlink
+            .as_ref()
+            .is_some_and(|uri| !super::protocol::valid_hyperlink(uri))
+    {
         return false;
     }
     let mut chars = cell.text.chars();

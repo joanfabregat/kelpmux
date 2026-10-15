@@ -232,3 +232,87 @@ fn composed_reading_views_replay_colors_unicode_and_background_geometry() {
         assert_eq!(ws.reading, ReadingMode::Grid);
     }
 }
+
+#[test]
+fn hyperlinks_survive_fragmentation_composition_patches_and_erasure() {
+    let uri = "https://example.com/path?q=one&v=two";
+    let input = format!("\x1b]8;id=source;{uri}\x1b\\界e\u{301}\x1b]8;;\x1b\\ plain");
+    let mut source = Terminal::new(40, 4);
+    for byte in input.bytes() {
+        source.feed(&[byte]);
+    }
+    let screen = source.snapshot();
+    assert_eq!(screen.cells[0].hyperlink.as_deref(), Some(uri));
+    assert_eq!(screen.cells[2].hyperlink.as_deref(), Some(uri));
+    assert_eq!(screen.cells[3].hyperlink, None);
+    let mut ws = Workspace::new(40, 10).unwrap();
+    ws.panes = vec![PaneInfo {
+        id: 1,
+        ..Default::default()
+    }];
+    ws.active = 1;
+    let first = compose(&ws, &BTreeMap::from([(1, screen)]), true, None, 0);
+    let bytes = terminal_diff(None, &first);
+    let mut display = Terminal::new(40, 10);
+    display.feed(&bytes);
+    assert_eq!(display.snapshot().cells, first.cells);
+    assert!(
+        first.cells[..40]
+            .iter()
+            .all(|cell| cell.hyperlink.is_none())
+    );
+
+    // Changing only the target must redraw the link and travel in a delta.
+    let mut next = first.clone();
+    next.cells[40].hyperlink = Some("https://example.org/new".into());
+    next.cells[41].hyperlink = next.cells[40].hyperlink.clone();
+    let patch = kelpmux::native::delta::diff(&first, &next, 1).unwrap();
+    assert_eq!(
+        kelpmux::native::delta::apply(&first, 1, &patch).unwrap(),
+        next
+    );
+    display.feed(&terminal_diff(Some(&first), &next));
+    assert_eq!(display.snapshot().cells, next.cells);
+    let mut cleared = next.clone();
+    cleared.cells[40] = Cell::default();
+    cleared.cells[41] = Cell::default();
+    display.feed(&terminal_diff(Some(&next), &cleared));
+    assert_eq!(display.snapshot().cells, cleared.cells);
+
+    // Targets cannot inject terminal commands, and old cells decode without links.
+    assert!(!valid_hyperlink("https://example.com/\x1b]52;c;bad\x07"));
+    let mut malicious = first.clone();
+    malicious.cells[40].hyperlink = Some("https://example.com/\x1b]52;c;bad\x07".into());
+    assert!(kelpmux::native::delta::diff(&first, &malicious, 1).is_none());
+    let output = String::from_utf8(terminal_diff(None, &malicious)).unwrap();
+    assert!(!output.contains("52;c;bad"));
+    let mut legacy = serde_json::to_value(Cell::default()).unwrap();
+    legacy.as_object_mut().unwrap().remove("hyperlink");
+    assert_eq!(
+        serde_json::from_value::<Cell>(legacy).unwrap().hyperlink,
+        None
+    );
+}
+
+#[test]
+fn plain_urls_span_soft_wraps_but_not_separate_lines_and_keep_explicit_targets() {
+    let mut source = Terminal::new(20, 6);
+    source.feed(b"(https://example.com/a(b)).\r\nhttps://a.test\r\nnext");
+    let screen = source.snapshot();
+    assert_eq!(
+        screen.cells[1].hyperlink.as_deref(),
+        Some("https://example.com/a(b)")
+    );
+    assert_eq!(screen.cells[20].hyperlink, screen.cells[1].hyperlink);
+    assert_eq!(
+        screen.cells[40].hyperlink.as_deref(),
+        Some("https://a.test")
+    );
+    assert_eq!(screen.cells[60].hyperlink, None);
+    let mut source = Terminal::new(60, 2);
+    source.feed(b"\x1b]8;;https://target.test\x1b\\https://label.test\x1b]8;;\x1b\\");
+    assert_eq!(
+        source.snapshot().cells[0].hyperlink.as_deref(),
+        Some("https://target.test")
+    );
+}

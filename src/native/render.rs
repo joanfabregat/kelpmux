@@ -43,6 +43,8 @@ pub fn compose(
     }
     if workspace.reading != ReadingMode::Grid {
         draw_tabs(&mut frame, workspace, spinner);
+    } else {
+        draw_grid_separators(&mut frame, workspace);
     }
     for view in frame.panes.clone() {
         let selected = view.pane.id == workspace.active;
@@ -353,6 +355,40 @@ pub fn compose(
     repair_wide_edges(&mut frame);
     frame
 }
+
+fn draw_grid_separators(frame: &mut Frame, workspace: &Workspace) {
+    let views = workspace.grid_layout();
+    let columns: std::collections::BTreeSet<_> = views
+        .iter()
+        .filter(|view| view.rect.x > 0)
+        .map(|view| view.rect.x - 1)
+        .collect();
+    let rows: std::collections::BTreeSet<_> = views
+        .iter()
+        .filter(|view| view.rect.y > 0)
+        .map(|view| view.rect.y - 1)
+        .collect();
+    for y in 0..frame.rows.saturating_sub(1) {
+        for x in 0..frame.cols {
+            let glyph = match (columns.contains(&x), rows.contains(&y)) {
+                (true, true) => "┼",
+                (true, false) => "│",
+                (false, true) => "─",
+                _ => continue,
+            };
+            put(
+                frame,
+                x,
+                y,
+                Cell {
+                    text: glyph.into(),
+                    fg: Color::Indexed(245),
+                    ..Cell::default()
+                },
+            );
+        }
+    }
+}
 fn header(
     frame: &mut Frame,
     view: &PaneView,
@@ -468,8 +504,60 @@ fn draw_dialog(frame: &mut Frame, workspace: &Workspace, dialog: super::ui::Dial
         Color::Indexed(88),
         true,
     );
-    if dialog.kind == DialogKind::Config || dialog.kind == DialogKind::CloseConfirm {
-        let labels: Vec<String> = if dialog.kind == DialogKind::Config {
+    if dialog.kind == DialogKind::CloseConfirm {
+        write_text(
+            frame,
+            bounds.x + 2,
+            bounds.y + 2,
+            bounds.cols - 4,
+            "Closing stops this terminal and its running jobs.",
+            Color::Indexed(231),
+            Color::Indexed(236),
+            true,
+        );
+        if let Some(pane) = workspace
+            .panes
+            .iter()
+            .find(|pane| Some(pane.id) == dialog.source)
+        {
+            write_text(
+                frame,
+                bounds.x + 2,
+                bounds.y + 3,
+                bounds.cols - 4,
+                &format!("{}  {}", pane.number, pane.title),
+                Color::Indexed(250),
+                Color::Indexed(236),
+                false,
+            );
+        }
+        for (index, rect) in super::workspace::close_buttons(bounds)
+            .into_iter()
+            .enumerate()
+        {
+            let selected = index == dialog.selection;
+            let bg = Color::Indexed(match (index, selected) {
+                (0, true) => 27,
+                (0, false) => 24,
+                (_, true) => 196,
+                _ => 88,
+            });
+            fill(frame, rect, bg);
+            let label = if index == 0 { "Cancel" } else { "Close tab" };
+            let label = format!("{} {label}", if selected { "›" } else { " " });
+            write_text(
+                frame,
+                rect.x + 1,
+                rect.y + rect.rows / 2,
+                rect.cols.saturating_sub(2),
+                &label,
+                Color::Indexed(231),
+                bg,
+                true,
+            );
+        }
+    } else if dialog.kind == DialogKind::Config {
+        let labels: Vec<String> = {
             use super::ui::TabPosition;
             [
                 TabPosition::Auto,
@@ -497,9 +585,15 @@ fn draw_dialog(frame: &mut Frame, workspace: &Workspace, dialog: super::ui::Dial
                     "off"
                 }
             )))
+            .chain(std::iter::once(format!(
+                "Wrap at reading width: {}",
+                if workspace.ui.config.wrap_lines {
+                    "on"
+                } else {
+                    "off"
+                }
+            )))
             .collect()
-        } else {
-            vec!["Cancel".into(), "Close · stop its running process".into()]
         };
         for (index, label) in labels.iter().enumerate() {
             let rect = Rect {
@@ -822,7 +916,7 @@ pub fn terminal_diff(previous: Option<&Frame>, frame: &Frame) -> Vec<u8> {
     if previous.is_some_and(|p| p.cells == frame.cells && p.cursor == frame.cursor) {
         return vec![];
     }
-    let mut output = String::from("\x1b[?25l");
+    let mut output = String::from("\x1b]8;;\x1b\\\x1b[?25l");
     if previous.is_none() {
         output.push_str("\x1b[0m\x1b[2J");
     }
@@ -838,6 +932,7 @@ pub fn terminal_diff(previous: Option<&Frame>, frame: &Frame) -> Vec<u8> {
                 continue;
             }
             let _ = write!(output, "\x1b[{};{}H", y + 1, x + 1);
+            let mut hyperlink: Option<&str> = None;
             loop {
                 let index = usize::from(y) * usize::from(frame.cols) + usize::from(x);
                 let Some(cell) = frame.cells.get(index) else {
@@ -852,6 +947,16 @@ pub fn terminal_diff(previous: Option<&Frame>, frame: &Frame) -> Vec<u8> {
                 }
                 if previous.is_some_and(|p| p.cells[index] == *cell) {
                     break;
+                }
+                let target = cell.hyperlink.as_deref().filter(|uri| valid_hyperlink(uri));
+                if target != hyperlink {
+                    if hyperlink.is_some() {
+                        output.push_str("\x1b]8;;\x1b\\");
+                    }
+                    if let Some(uri) = target {
+                        let _ = write!(output, "\x1b]8;;{uri}\x1b\\");
+                    }
+                    hyperlink = target;
                 }
                 output.push_str("\x1b[0m");
                 sgr_color(&mut output, cell.fg, true);
@@ -871,6 +976,9 @@ pub fn terminal_diff(previous: Option<&Frame>, frame: &Frame) -> Vec<u8> {
                 if x >= frame.cols {
                     break;
                 }
+            }
+            if hyperlink.is_some() {
+                output.push_str("\x1b]8;;\x1b\\");
             }
         }
     }
@@ -979,6 +1087,34 @@ fn draw_tabs(frame: &mut Frame, workspace: &Workspace, spinner: usize) {
         active,
     ) {
         match target {
+            TabTarget::New | TabTarget::Wrap => {
+                let wrapping = workspace.ui.config.wrap_lines
+                    && !matches!(workspace.reading, ReadingMode::Fullscreen(_));
+                let label = if target == TabTarget::Wrap {
+                    if wrapping {
+                        " Wrap: on "
+                    } else {
+                        " Wrap: off "
+                    }
+                } else if position == TabPosition::Left {
+                    " + New tab "
+                } else {
+                    " + "
+                };
+                let enabled = target != TabTarget::New || panes.len() < 9;
+                let bg = Color::Indexed(if enabled { 24 } else { 236 });
+                fill(frame, rect, bg);
+                write_text(
+                    frame,
+                    rect.x,
+                    rect.y,
+                    rect.cols,
+                    label,
+                    Color::Indexed(if enabled { 231 } else { 245 }),
+                    bg,
+                    true,
+                );
+            }
             TabTarget::Previous | TabTarget::Next => {
                 let label = if position == TabPosition::Left && target == TabTarget::Previous {
                     " ↑ "
@@ -1006,11 +1142,12 @@ fn draw_tabs(frame: &mut Frame, workspace: &Workspace, spinner: usize) {
                     let (bright, muted) = PALETTE[usize::from(pane.palette) % 9];
                     let bg = Color::Indexed(if selected { bright } else { muted });
                     fill(frame, rect, bg);
+                    let text_y = rect.y + rect.rows / 2;
                     let number = format!(" {} ", pane.number);
                     write_text(
                         frame,
                         rect.x,
-                        rect.y,
+                        text_y,
                         3,
                         &number,
                         Color::Indexed(if selected { 226 } else { 117 }),
@@ -1022,8 +1159,8 @@ fn draw_tabs(frame: &mut Frame, workspace: &Workspace, spinner: usize) {
                     } else {
                         pane.status.marker().to_owned()
                     };
-                    let label = format!(
-                        "{}{} {}",
+                    let prefix = format!(
+                        "{}{} ",
                         if workspace
                             .ui
                             .notifications
@@ -1035,7 +1172,6 @@ fn draw_tabs(frame: &mut Frame, workspace: &Workspace, spinner: usize) {
                             ""
                         },
                         marker,
-                        pane.title
                     );
                     let count = if position == TabPosition::Bottom {
                         format!(" {}/{} ", index + 1, panes.len())
@@ -1043,11 +1179,22 @@ fn draw_tabs(frame: &mut Frame, workspace: &Workspace, spinner: usize) {
                         String::new()
                     };
                     let count_width = count.len() as u16;
+                    let label_width = rect.cols.saturating_sub(6 + count_width);
+                    let title_width =
+                        label_width.saturating_sub(prefix.chars().map(char_width).sum());
+                    let label = format!(
+                        "{prefix}{}",
+                        marquee_title(
+                            &pane.title,
+                            title_width,
+                            workspace.ui.title_ticks.get(&pane.id).copied().unwrap_or(0)
+                        )
+                    );
                     write_text(
                         frame,
                         rect.x + 3,
-                        rect.y,
-                        rect.cols.saturating_sub(6 + count_width),
+                        text_y,
+                        label_width,
                         &label,
                         Color::Indexed(if selected { 231 } else { 245 }),
                         bg,
@@ -1057,7 +1204,7 @@ fn draw_tabs(frame: &mut Frame, workspace: &Workspace, spinner: usize) {
                         write_text(
                             frame,
                             rect.x + rect.cols - 3 - count_width,
-                            rect.y,
+                            text_y,
                             count_width,
                             &count,
                             Color::Indexed(231),
@@ -1068,7 +1215,7 @@ fn draw_tabs(frame: &mut Frame, workspace: &Workspace, spinner: usize) {
                     write_text(
                         frame,
                         rect.x + rect.cols - 3,
-                        rect.y,
+                        text_y,
                         3,
                         " × ",
                         Color::Indexed(231),
@@ -1079,6 +1226,54 @@ fn draw_tabs(frame: &mut Frame, workspace: &Workspace, spinner: usize) {
             }
         }
     }
+    let body = super::workspace::tab_body(
+        frame.cols,
+        frame.rows,
+        &workspace.ui.config,
+        matches!(workspace.reading, ReadingMode::Fullscreen(_)),
+        workspace.ui.reading_size,
+    );
+    let x = body.x + body.cols;
+    if x < frame.cols {
+        for y in body.y..body.y + body.rows {
+            write_text(
+                frame,
+                x,
+                y,
+                1,
+                if y == body.y { "+" } else { "│" },
+                Color::Indexed(245),
+                Color::Default,
+                y == body.y,
+            );
+        }
+    }
+}
+
+fn marquee_title(title: &str, width: u16, ticks: u16) -> String {
+    let title = safe_text(title);
+    let chars: Vec<_> = title.chars().take(512).collect();
+    let total: u16 = chars.iter().map(|&c| char_width(c)).sum();
+    let overflow = total.saturating_sub(width);
+    let travel = u32::from(overflow) * 3;
+    let elapsed = u32::from(ticks);
+    let offset = if width == 0 || overflow == 0 || elapsed <= 12 || elapsed > travel + 28 {
+        0
+    } else {
+        ((elapsed - 12) / 3).min(u32::from(overflow)) as u16
+    };
+    let mut skipped = 0;
+    chars
+        .into_iter()
+        .skip_while(|&c| {
+            if skipped < offset {
+                skipped += char_width(c);
+                true
+            } else {
+                false
+            }
+        })
+        .collect()
 }
 fn draw_vitals(frame: &mut Frame, segments: &[(String, u8)]) {
     let start = if frame.controller { 0 } else { 10 };

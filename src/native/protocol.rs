@@ -25,6 +25,8 @@ pub struct Cell {
     pub bold: bool,
     pub italic: bool,
     pub underline: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hyperlink: Option<String>,
 }
 impl Default for Cell {
     fn default() -> Self {
@@ -36,8 +38,26 @@ impl Default for Cell {
             bold: false,
             italic: false,
             underline: false,
+            hyperlink: None,
         }
     }
+}
+
+/// OSC 8 parameters must never contain terminal controls or unbounded payloads.
+pub fn valid_hyperlink(uri: &str) -> bool {
+    if uri.len() > 2048 || uri.chars().any(|c| c.is_control() || c.is_whitespace()) {
+        return false;
+    }
+    uri.split_once(':').is_some_and(|(scheme, rest)| {
+        !rest.is_empty()
+            && scheme
+                .as_bytes()
+                .first()
+                .is_some_and(u8::is_ascii_alphabetic)
+            && scheme
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b"+.-".contains(&b))
+    })
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
@@ -192,6 +212,8 @@ pub enum Action {
         dy: i16,
     },
     Config,
+    WrapToggle,
+    NewTab,
     TabPositionSet(super::ui::TabPosition),
     ClosePaneRequest(PaneId),
     ClosePaneConfirm(PaneId),
