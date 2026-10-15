@@ -36,6 +36,10 @@ jobs:
       - name: Fetch all locked platform sources for license collection
         run: cargo fetch --locked
       - run: cargo +1.99.0 fmt --all -- --check
+      - name: Stable demo launcher contracts (no real workspace)
+        run: |
+          bash -n scripts/demo.sh scripts/test-demo.sh
+          bash scripts/test-demo.sh
       - run: cargo +1.99.0 clippy --locked --offline --all-targets -- -D warnings
       - name: Unit, metadata, protocol and hook contracts (PTY suites run in the architecture matrix)
         run: cargo +1.99.0 test --locked --offline --lib --test core --test native_protocol --test native_hooks --test native_activity --test native_recovery --test native_delta --test native_templates
