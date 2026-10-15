@@ -149,7 +149,8 @@ impl Workspace {
     pub fn grid_layout(&self) -> Vec<PaneView> {
         let columns = u16::from(self.grid_cols.max(1));
         let usable_cols = self.cols.saturating_sub(columns - 1);
-        let usable_rows = self.rows.saturating_sub(1);
+        // Reserve the footer and one separator between neighboring rows.
+        let usable_rows = self.rows.saturating_sub(u16::from(self.grid_rows.max(1)));
         let mut views = Vec::new();
         let x_boundaries =
             weighted_boundaries(usable_cols, self.grid_cols, &self.ui.column_weights);
@@ -166,7 +167,7 @@ impl Workspace {
             let top = y_boundaries[usize::from(row)];
             let rect = Rect {
                 x: left + col,
-                y: top,
+                y: top + row,
                 cols: x_boundaries[usize::from(col + 1)] - left,
                 rows: y_boundaries[usize::from(row + 1)] - top,
             };
@@ -224,6 +225,7 @@ impl Workspace {
     pub fn apply(&mut self, action: &Action) -> Result<()> {
         match *action {
             Action::ClaimPane(_) => {}
+            Action::NewTab => return Err("new tabs require the PTY server".into()),
             Action::HelpScroll(amount) => {
                 let visible = self.rows.saturating_sub(4).min(28);
                 self.ui.help_offset = self
@@ -378,6 +380,13 @@ impl Workspace {
                 });
             }
             Action::TabPositionSet(position) => self.ui.config.tab_position = position,
+            Action::WrapToggle => {
+                self.ui.config.wrap_lines = !(self.ui.config.wrap_lines
+                    && !matches!(self.reading, ReadingMode::Fullscreen(_)));
+                if self.reading != ReadingMode::Grid {
+                    self.reading = ReadingMode::Tabs(self.active);
+                }
+            }
             Action::ClosePaneRequest(id) => {
                 self.require_pane(id)?;
                 self.help = false;
@@ -631,7 +640,7 @@ pub fn dialog_entries(panes: &[PaneInfo], dialog: Option<Dialog>) -> Vec<PaneId>
         Some(Dialog {
             kind: DialogKind::Config,
             ..
-        }) => (0..5).collect(),
+        }) => (0..6).collect(),
         Some(Dialog {
             kind: DialogKind::CloseConfirm,
             ..
@@ -731,7 +740,7 @@ pub fn tab_body(
         TabPosition::Bottom => area.rows = area.rows.saturating_sub(1),
         TabPosition::Auto => unreachable!(),
     }
-    let width = if full {
+    let width = if full || !config.wrap_lines {
         area.cols
     } else {
         config.remembered_read_widths[super::ui::geometry_bucket(cols)]
@@ -739,7 +748,7 @@ pub fn tab_body(
             .clamp(20, area.cols)
     };
     Rect {
-        x: area.x + (area.cols - width) / 2,
+        x: area.x,
         cols: width,
         ..area
     }
@@ -797,6 +806,28 @@ pub enum TabTarget {
     Pane(usize),
     Previous,
     Next,
+    New,
+    Wrap,
+}
+
+pub fn close_buttons(bounds: Rect) -> [Rect; 2] {
+    let width = bounds.cols.saturating_sub(6) / 2;
+    let height = if bounds.rows >= 10 { 3 } else { 1 };
+    let y = bounds.y + bounds.rows.saturating_sub(height + 1);
+    [
+        Rect {
+            x: bounds.x + 2,
+            y,
+            cols: width,
+            rows: height,
+        },
+        Rect {
+            x: bounds.x + bounds.cols - width - 2,
+            y,
+            cols: width,
+            rows: height,
+        },
+    ]
 }
 pub fn tab_targets(
     cols: u16,
@@ -826,12 +857,21 @@ pub fn tab_targets(
                 Rect {
                     x: 3,
                     y: rows - 2,
-                    cols: cols - 6,
+                    cols: cols - 9,
                     rows: 1,
                 },
             ),
             (
                 TabTarget::Next,
+                Rect {
+                    x: cols - 6,
+                    y: rows - 2,
+                    cols: 3,
+                    rows: 1,
+                },
+            ),
+            (
+                TabTarget::New,
                 Rect {
                     x: cols - 3,
                     y: rows - 2,
@@ -841,9 +881,9 @@ pub fn tab_targets(
             ),
         ],
         TabPosition::Top => {
-            let capacity = usize::from(cols.saturating_sub(6) / 12).max(1).min(count);
+            let capacity = usize::from(cols.saturating_sub(9) / 12).max(1).min(count);
             let start = active.saturating_sub(capacity - 1);
-            let width = (cols - 6) / capacity as u16;
+            let width = ((cols - 9) / capacity as u16).min(32);
             let mut tabs: Vec<_> = (start..(start + capacity).min(count))
                 .enumerate()
                 .map(|(i, index)| {
@@ -858,6 +898,15 @@ pub fn tab_targets(
                     )
                 })
                 .collect();
+            tabs.push((
+                TabTarget::New,
+                Rect {
+                    x: 3 + tabs.len() as u16 * width,
+                    y: 0,
+                    cols: 3,
+                    rows: 1,
+                },
+            ));
             tabs.push((
                 TabTarget::Previous,
                 Rect {
@@ -880,7 +929,9 @@ pub fn tab_targets(
         }
         TabPosition::Left => {
             let width = (cols / 5).clamp(18, 28);
-            let capacity = usize::from(rows.saturating_sub(3)).max(1);
+            let available = rows.saturating_sub(4);
+            let height = (available / count as u16).clamp(1, 3);
+            let capacity = usize::from(available / height).max(1);
             let start = active.saturating_sub(capacity - 1);
             let mut tabs: Vec<_> = (start..(start + capacity).min(count))
                 .enumerate()
@@ -889,24 +940,42 @@ pub fn tab_targets(
                         TabTarget::Pane(index),
                         Rect {
                             x: 0,
-                            y: 1 + i as u16,
+                            y: 1 + i as u16 * height,
                             cols: width,
-                            rows: 1,
+                            rows: height,
                         },
                     )
                 })
                 .collect();
             tabs.push((
-                TabTarget::Previous,
+                TabTarget::New,
                 Rect {
                     x: 0,
-                    y: 0,
+                    y: 1 + tabs.len() as u16 * height,
                     cols: width,
                     rows: 1,
                 },
             ));
             tabs.push((
+                TabTarget::Previous,
+                Rect {
+                    x: 0,
+                    y: 0,
+                    cols: width / 2,
+                    rows: 1,
+                },
+            ));
+            tabs.push((
                 TabTarget::Next,
+                Rect {
+                    x: width / 2,
+                    y: 0,
+                    cols: width - width / 2,
+                    rows: 1,
+                },
+            ));
+            tabs.push((
+                TabTarget::Wrap,
                 Rect {
                     x: 0,
                     y: rows - 2,

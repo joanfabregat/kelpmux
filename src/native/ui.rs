@@ -57,6 +57,7 @@ pub struct UiConfig {
     pub notification_sound: bool,
     pub prefix: u8,
     pub read_width: u16,
+    pub wrap_lines: bool,
     pub read_height_percent: u8,
     pub bindings: BTreeMap<String, String>,
     pub tab_position: TabPosition,
@@ -69,6 +70,7 @@ impl Default for UiConfig {
             notification_sound: false,
             prefix: 2,
             read_width: 120,
+            wrap_lines: true,
             read_height_percent: 95,
             bindings: BTreeMap::new(),
             tab_position: TabPosition::Auto,
@@ -136,6 +138,8 @@ impl UiConfig {
 }
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct UiState {
+    #[serde(default)]
+    pub title_ticks: BTreeMap<u64, u16>,
     pub recovery_loading: bool,
     pub notifications: Vec<super::protocol::Notification>,
     pub recovery: Vec<super::protocol::RecoveryItem>,

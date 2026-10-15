@@ -226,6 +226,7 @@ impl Terminal {
         let rows = self.term.screen_lines() as u16;
         let content = self.term.renderable_content();
         let mut cells = vec![Cell::default(); usize::from(cols) * usize::from(rows)];
+        let mut wraps = vec![false; usize::from(rows)];
         for indexed in content.display_iter {
             let Some(point) = point_to_viewport(content.display_offset, indexed.point) else {
                 continue;
@@ -235,6 +236,9 @@ impl Terminal {
             }
             let source = indexed.cell;
             let flags = source.flags;
+            if point.column.0 + 1 == usize::from(cols) {
+                wraps[point.line] = flags.contains(Flags::WRAPLINE);
+            }
             let mut fg = color(source.fg, content.colors);
             let mut bg = color(source.bg, content.colors);
             if flags.contains(Flags::INVERSE) {
@@ -280,8 +284,13 @@ impl Terminal {
                 bold: flags.contains(Flags::BOLD),
                 italic: flags.contains(Flags::ITALIC),
                 underline: flags.intersects(Flags::ALL_UNDERLINES),
+                hyperlink: source
+                    .hyperlink()
+                    .map(|link| link.uri().to_owned())
+                    .filter(|uri| valid_hyperlink(uri) && !flags.contains(Flags::HIDDEN)),
             };
         }
+        link_plain_urls(&mut cells, usize::from(cols), &wraps);
         let mode = content.mode;
         let cursor = point_to_viewport(content.display_offset, content.cursor.point)
             .filter(|p| p.line < usize::from(rows) && p.column.0 < usize::from(cols))
@@ -527,6 +536,51 @@ impl Terminal {
             text.truncate(end);
             text
         })
+    }
+}
+
+/// Ordinary URLs need explicit links once separate pane streams are composed:
+/// an outer terminal cannot reconstruct wrapping inside one grid column.
+fn link_plain_urls(cells: &mut [Cell], cols: usize, wraps: &[bool]) {
+    let mut start = 0;
+    for (row, wrapped) in wraps.iter().enumerate() {
+        if *wrapped && row + 1 < wraps.len() {
+            continue;
+        }
+        let end = (row + 1) * cols;
+        let mut text = String::new();
+        let mut spans = Vec::new();
+        for (offset, cell) in cells[start..end].iter().enumerate() {
+            let from = text.len();
+            text.push_str(&cell.text);
+            spans.push((start + offset, from, text.len()));
+        }
+        for (begin, _) in text.match_indices("http") {
+            let tail = &text[begin..];
+            if !tail.starts_with("http://") && !tail.starts_with("https://") {
+                continue;
+            }
+            let length = tail
+                .find(|c: char| c.is_control() || c.is_whitespace() || matches!(c, '<' | '>' | '"'))
+                .unwrap_or(tail.len());
+            let mut uri = tail[..length].trim_end_matches(['.', ',', ';', ':', '!', '?']);
+            for (open, close) in [('(', ')'), ('[', ']'), ('{', '}')] {
+                while uri.ends_with(close) && uri.matches(close).count() > uri.matches(open).count()
+                {
+                    uri = &uri[..uri.len() - 1];
+                }
+            }
+            if !valid_hyperlink(uri) {
+                continue;
+            }
+            let end = begin + uri.len();
+            for &(index, from, to) in &spans {
+                if from < end && to > begin && cells[index].hyperlink.is_none() {
+                    cells[index].hyperlink = Some(uri.to_owned());
+                }
+            }
+        }
+        start = end;
     }
 }
 
