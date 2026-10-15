@@ -704,6 +704,19 @@ pub fn dialog_bounds(cols: u16, rows: u16) -> Rect {
         rows: height,
     }
 }
+pub fn dialog_bounds_for(cols: u16, rows: u16, kind: super::ui::DialogKind) -> Rect {
+    if kind != super::ui::DialogKind::CloseConfirm {
+        return dialog_bounds(cols, rows);
+    }
+    let width = cols.saturating_sub(4).min(52);
+    let height = rows.saturating_sub(2).min(8);
+    Rect {
+        x: (cols - width) / 2,
+        y: (rows - 1 - height) / 2,
+        cols: width,
+        rows: height,
+    }
+}
 pub fn grid_cards(bounds: Rect) -> Vec<Rect> {
     let width = bounds.cols / 3;
     let height = bounds.rows.saturating_sub(2) / 2;
@@ -763,7 +776,8 @@ pub fn tab_body(
         TabPosition::Auto => unreachable!(),
     }
     area.x += 1;
-    area.cols = area.cols.saturating_sub(2);
+    // Blank terminal margins plus a permanently reachable width divider.
+    area.cols = area.cols.saturating_sub(3);
     let width = if full || !config.wrap_lines {
         area.cols
     } else {
@@ -831,7 +845,6 @@ pub enum TabTarget {
     Previous,
     Next,
     New,
-    Wrap,
 }
 pub fn tab_number(rect: Rect) -> Rect {
     Rect {
@@ -854,7 +867,7 @@ pub fn tab_close(rect: Rect) -> Rect {
 
 pub fn close_buttons(bounds: Rect) -> [Rect; 2] {
     let width = bounds.cols.saturating_sub(6) / 2;
-    let height = if bounds.rows >= 10 { 3 } else { 1 };
+    let height = if bounds.rows >= 8 { 2 } else { 1 };
     let y = bounds.y + bounds.rows.saturating_sub(height + 1);
     [
         Rect {
@@ -899,56 +912,32 @@ pub fn tab_targets(
     }
     let position = config.tab_position.resolve(cols, rows);
     match position {
-        TabPosition::Bottom => vec![
-            (
-                TabTarget::Previous,
-                Rect {
-                    x: 0,
-                    y: rows - 2,
-                    cols: 3,
-                    rows: 1,
-                },
-            ),
-            (
-                TabTarget::Pane(active),
-                Rect {
-                    x: 3,
-                    y: rows - 2,
-                    cols: cols - 9,
-                    rows: 1,
-                },
-            ),
-            (
-                TabTarget::Next,
-                Rect {
-                    x: cols - 6,
-                    y: rows - 2,
-                    cols: 3,
-                    rows: 1,
-                },
-            ),
-            (
-                TabTarget::New,
-                Rect {
-                    x: cols - 3,
-                    y: rows - 2,
-                    cols: 3,
-                    rows: 1,
-                },
-            ),
-        ],
-        TabPosition::Top => {
-            let capacity = usize::from(cols.saturating_sub(9) / 18).max(1).min(count);
-            let start = active.saturating_sub(capacity - 1);
-            let width = ((cols - 9) / capacity as u16).min(40);
+        TabPosition::Top | TabPosition::Bottom => {
+            let overflow = count * 18 + 3 > usize::from(cols);
+            let reserve = if overflow { 9 } else { 3 };
+            let capacity = usize::from(cols.saturating_sub(reserve) / 18)
+                .max(1)
+                .min(count);
+            let start = if overflow {
+                active.saturating_sub(capacity - 1)
+            } else {
+                0
+            };
+            let width = ((cols - reserve) / capacity as u16).min(40);
+            let x = if overflow { 3 } else { 0 };
+            let y = if position == TabPosition::Bottom {
+                rows - 2
+            } else {
+                0
+            };
             let mut tabs: Vec<_> = (start..(start + capacity).min(count))
                 .enumerate()
                 .map(|(i, index)| {
                     (
                         TabTarget::Pane(index),
                         Rect {
-                            x: 3 + i as u16 * width,
-                            y: 0,
+                            x: x + i as u16 * width,
+                            y,
                             cols: width,
                             rows: 1,
                         },
@@ -958,38 +947,46 @@ pub fn tab_targets(
             tabs.push((
                 TabTarget::New,
                 Rect {
-                    x: 3 + tabs.len() as u16 * width,
-                    y: 0,
+                    x: x + tabs.len() as u16 * width,
+                    y,
                     cols: 3,
                     rows: 1,
                 },
             ));
-            tabs.push((
-                TabTarget::Previous,
-                Rect {
-                    x: 0,
-                    y: 0,
-                    cols: 3,
-                    rows: 1,
-                },
-            ));
-            tabs.push((
-                TabTarget::Next,
-                Rect {
-                    x: cols - 3,
-                    y: 0,
-                    cols: 3,
-                    rows: 1,
-                },
-            ));
+            if overflow {
+                tabs.push((
+                    TabTarget::Previous,
+                    Rect {
+                        x: 0,
+                        y,
+                        cols: 3,
+                        rows: 1,
+                    },
+                ));
+                tabs.push((
+                    TabTarget::Next,
+                    Rect {
+                        x: cols - 3,
+                        y,
+                        cols: 3,
+                        rows: 1,
+                    },
+                ));
+            }
             tabs
         }
         TabPosition::Left => {
             let width = (cols / 5).clamp(18, 28);
-            let available = rows.saturating_sub(4);
+            let overflow = count > usize::from(rows.saturating_sub(3));
+            let available = rows.saturating_sub(if overflow { 5 } else { 3 });
             let height = (available / count as u16).clamp(1, 4);
             let capacity = usize::from(available / height).max(1);
-            let start = active.saturating_sub(capacity - 1);
+            let start = if overflow {
+                active.saturating_sub(capacity - 1)
+            } else {
+                0
+            };
+            let top = u16::from(overflow);
             let mut tabs: Vec<_> = (start..(start + capacity).min(count))
                 .enumerate()
                 .map(|(i, index)| {
@@ -997,45 +994,39 @@ pub fn tab_targets(
                         TabTarget::Pane(index),
                         Rect {
                             x: 0,
-                            y: 1 + i as u16 * height,
+                            y: top + i as u16 * height,
                             cols: width,
                             rows: height,
                         },
                     )
                 })
                 .collect();
+            let end = top + tabs.len() as u16 * height;
+            if overflow {
+                tabs.push((
+                    TabTarget::Previous,
+                    Rect {
+                        x: 0,
+                        y: 0,
+                        cols: width,
+                        rows: 1,
+                    },
+                ));
+                tabs.push((
+                    TabTarget::Next,
+                    Rect {
+                        x: 0,
+                        y: end,
+                        cols: width,
+                        rows: 1,
+                    },
+                ));
+            }
             tabs.push((
                 TabTarget::New,
                 Rect {
                     x: 0,
-                    y: 1 + tabs.len() as u16 * height,
-                    cols: width,
-                    rows: 1,
-                },
-            ));
-            tabs.push((
-                TabTarget::Previous,
-                Rect {
-                    x: 0,
-                    y: 0,
-                    cols: width / 2,
-                    rows: 1,
-                },
-            ));
-            tabs.push((
-                TabTarget::Next,
-                Rect {
-                    x: width / 2,
-                    y: 0,
-                    cols: width - width / 2,
-                    rows: 1,
-                },
-            ));
-            tabs.push((
-                TabTarget::Wrap,
-                Rect {
-                    x: 0,
-                    y: rows - 2,
+                    y: end + u16::from(overflow) + 1,
                     cols: width,
                     rows: 1,
                 },
