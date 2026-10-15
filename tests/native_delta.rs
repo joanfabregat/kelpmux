@@ -47,6 +47,7 @@ fn patches_preserve_wide_glyph_styles_and_metadata_and_reject_revision_gaps() {
         bold: true,
         italic: true,
         underline: true,
+        hyperlink: Some("https://example.com/wide".into()),
     };
     new.cells[1] = Cell {
         text: String::new(),

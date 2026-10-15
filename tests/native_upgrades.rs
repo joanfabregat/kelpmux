@@ -213,7 +213,7 @@ fn new_client_uses_running_installed_client_without_restarting_workspace() {
         .output()
         .unwrap();
     assert!(status.status.success());
-    assert!(String::from_utf8_lossy(&status.stderr).contains("protocol 4"));
+    assert!(String::from_utf8_lossy(&status.stderr).contains(&format!("protocol {VERSION}")));
     assert!(matches!(
         serde_json::from_slice::<ServerMessage>(&status.stdout).unwrap(),
         ServerMessage::State { .. }
