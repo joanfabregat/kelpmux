@@ -1,0 +1,9 @@
+{
+  "grid": [2, 1],
+  "ui": {
+    "tab_position": "left",
+    "view_modes": [true, true, true],
+    "read_width": 120,
+    "wrap_lines": true
+  }
+}
