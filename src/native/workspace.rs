@@ -182,9 +182,9 @@ impl Workspace {
             pane,
             rect,
             body: Rect {
-                x: rect.x,
+                x: rect.x + 1,
                 y: rect.y + 1,
-                cols: rect.cols,
+                cols: rect.cols.saturating_sub(2),
                 rows: rect.rows.saturating_sub(1),
             },
             overlay,
@@ -380,6 +380,24 @@ impl Workspace {
                 });
             }
             Action::TabPositionSet(position) => self.ui.config.tab_position = position,
+            Action::TabColor(id) => {
+                let index = self.require_pane(id)?;
+                self.help = false;
+                self.ui.dialog = Some(Dialog {
+                    kind: DialogKind::Color,
+                    selection: usize::from(self.panes[index].palette),
+                    source: Some(id),
+                    filter: AgentFilter::All,
+                });
+            }
+            Action::TabColorSet { pane, color } => {
+                let index = self.require_pane(pane)?;
+                if usize::from(color) >= super::ui::PALETTE.len() {
+                    return Err("unknown tab color".into());
+                }
+                self.panes[index].palette = color;
+                self.ui.config.pane_colors.insert(pane, color);
+            }
             Action::WrapToggle => {
                 self.ui.config.wrap_lines = !(self.ui.config.wrap_lines
                     && !matches!(self.reading, ReadingMode::Fullscreen(_)));
@@ -433,7 +451,7 @@ impl Workspace {
                 let count = self.dialog_entries().len();
                 if let Some(dialog) = self.ui.dialog.as_mut() {
                     let columns = match dialog.kind {
-                        DialogKind::Grid => 3,
+                        DialogKind::Grid | DialogKind::Color => 3,
                         DialogKind::Move => isize::from(self.grid_cols),
                         _ => 1,
                     };
@@ -638,6 +656,10 @@ impl Workspace {
 pub fn dialog_entries(panes: &[PaneInfo], dialog: Option<Dialog>) -> Vec<PaneId> {
     match dialog {
         Some(Dialog {
+            kind: DialogKind::Color,
+            ..
+        }) => (0..9).collect(),
+        Some(Dialog {
             kind: DialogKind::Config,
             ..
         }) => (0..6).collect(),
@@ -740,12 +762,14 @@ pub fn tab_body(
         TabPosition::Bottom => area.rows = area.rows.saturating_sub(1),
         TabPosition::Auto => unreachable!(),
     }
+    area.x += 1;
+    area.cols = area.cols.saturating_sub(2);
     let width = if full || !config.wrap_lines {
         area.cols
     } else {
         config.remembered_read_widths[super::ui::geometry_bucket(cols)]
             .unwrap_or(config.read_width)
-            .clamp(20, area.cols)
+            .clamp(20.min(area.cols), area.cols)
     };
     Rect {
         x: area.x,
@@ -809,6 +833,24 @@ pub enum TabTarget {
     New,
     Wrap,
 }
+pub fn tab_number(rect: Rect) -> Rect {
+    Rect {
+        x: rect.x + 1,
+        y: if rect.rows >= 4 {
+            rect.y + 1
+        } else {
+            rect.y + rect.rows / 2
+        },
+        cols: 3,
+        rows: 1,
+    }
+}
+pub fn tab_close(rect: Rect) -> Rect {
+    Rect {
+        x: rect.x + rect.cols.saturating_sub(4),
+        ..tab_number(rect)
+    }
+}
 
 pub fn close_buttons(bounds: Rect) -> [Rect; 2] {
     let width = bounds.cols.saturating_sub(6) / 2;
@@ -828,6 +870,21 @@ pub fn close_buttons(bounds: Rect) -> [Rect; 2] {
             rows: height,
         },
     ]
+}
+pub fn color_cards(bounds: Rect) -> Vec<Rect> {
+    let height = bounds.rows.saturating_sub(2) / 3;
+    (0..9u16)
+        .map(|index| {
+            let col = index % 3;
+            let row = index / 3;
+            Rect {
+                x: bounds.x + bounds.cols * col / 3,
+                y: bounds.y + 2 + row * height,
+                cols: bounds.cols * (col + 1) / 3 - bounds.cols * col / 3,
+                rows: height,
+            }
+        })
+        .collect()
 }
 pub fn tab_targets(
     cols: u16,
@@ -881,9 +938,9 @@ pub fn tab_targets(
             ),
         ],
         TabPosition::Top => {
-            let capacity = usize::from(cols.saturating_sub(9) / 12).max(1).min(count);
+            let capacity = usize::from(cols.saturating_sub(9) / 18).max(1).min(count);
             let start = active.saturating_sub(capacity - 1);
-            let width = ((cols - 9) / capacity as u16).min(32);
+            let width = ((cols - 9) / capacity as u16).min(40);
             let mut tabs: Vec<_> = (start..(start + capacity).min(count))
                 .enumerate()
                 .map(|(i, index)| {
@@ -930,7 +987,7 @@ pub fn tab_targets(
         TabPosition::Left => {
             let width = (cols / 5).clamp(18, 28);
             let available = rows.saturating_sub(4);
-            let height = (available / count as u16).clamp(1, 3);
+            let height = (available / count as u16).clamp(1, 4);
             let capacity = usize::from(available / height).max(1);
             let start = active.saturating_sub(capacity - 1);
             let mut tabs: Vec<_> = (start..(start + capacity).min(count))

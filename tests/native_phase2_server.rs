@@ -476,6 +476,49 @@ fn search_unicode_history_clipboard_selection_and_alternate_reveal_use_real_ptys
 }
 
 #[test]
+fn codex_tab_uses_application_title_until_verified_metadata_owns_the_name() {
+    let daemon = Daemon::start();
+    let executable = daemon.root.join("codex");
+    fs::copy("/bin/bash", &executable).unwrap();
+    let mut peer = daemon.attach();
+    let pane = peer.panes()[0].id;
+    peer.input(&format!(
+        "{} -c {}\n",
+        shell_quote(executable.to_str().unwrap()),
+        shell_quote("while :; do printf '\\033]0;Application conversation\\007'; sleep 0.1; done")
+    ));
+    peer.wait(|frame| {
+        frame.panes.iter().any(|view| {
+            view.pane.id == pane
+                && view.pane.kind == Some(Kind::Codex)
+                && view.pane.session_id.is_none()
+                && view.pane.title == "Application conversation"
+        })
+    });
+    // Exercise several discovery passes while the application keeps sending OSC.
+    let deadline = Instant::now() + Duration::from_secs(2);
+    while Instant::now() < deadline {
+        assert_eq!(peer.panes()[0].title, "Application conversation");
+        thread::sleep(Duration::from_millis(100));
+    }
+    Store::open(&daemon.state.join("native"))
+        .unwrap()
+        .rename(&format!("%{pane}"), "Verified conversation")
+        .unwrap();
+    peer.wait(|frame| {
+        frame
+            .panes
+            .iter()
+            .any(|view| view.pane.title == "Verified conversation")
+    });
+    let deadline = Instant::now() + Duration::from_secs(2);
+    while Instant::now() < deadline {
+        assert_eq!(peer.panes()[0].title, "Verified conversation");
+        thread::sleep(Duration::from_millis(100));
+    }
+}
+
+#[test]
 fn fake_codex_lifecycle_notifications_deduplicate_acknowledge_reconnect_and_bell() {
     let daemon = Daemon::start();
     let executable = daemon.root.join("codex");

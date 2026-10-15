@@ -213,7 +213,7 @@ fn viewport_reading_preferences_and_grid_drag_preserve_all_ids() {
     })
     .unwrap();
     ws.resize(40, 10).unwrap();
-    assert_eq!(ws.layout()[0].body.cols, 40);
+    assert_eq!(ws.layout()[0].body.cols, 38);
     ws.apply(&Action::ReadResize { cols: 30, rows: 3 }).unwrap();
     ws.resize(120, 40).unwrap();
     assert_eq!(ws.layout()[0].body.cols, 85);
