@@ -125,6 +125,7 @@ struct NativePane {
     last_input: Option<Instant>,
     idle_observations: u8,
     agent_named: bool,
+    terminal_title: Option<String>,
 }
 impl NativePane {
     fn spawn(config: &ServerConfig, cols: u16, rows: u16, id: PaneId) -> Result<Self> {
@@ -202,6 +203,7 @@ impl NativePane {
             last_input: None,
             idle_observations: 0,
             agent_named: false,
+            terminal_title: None,
         };
         pane.start = process::read(Path::new("/proc"), pane.child.id())?.start;
         let fd = pane.master.as_raw_fd();
@@ -1159,6 +1161,7 @@ impl Server {
         self.panes.remove(&id);
         self.workspace.panes.retain(|pane| pane.id != id);
         self.aliases.remove(&id);
+        self.workspace.ui.config.pane_colors.remove(&id);
         self.workspace.ui.unused.retain(|pane| *pane != id);
         let fallback = self
             .workspace
@@ -1197,6 +1200,7 @@ impl Server {
         for (number, pane) in self.workspace.panes.iter_mut().enumerate() {
             pane.number = number + 1;
         }
+        self.persist_ui()?;
         self.resize();
         Ok(())
     }
@@ -1269,7 +1273,14 @@ impl Server {
             pid: pane.child.id(),
             cwd: cwd.to_string_lossy().into_owned(),
             title,
-            palette: ((id - 1) % 9) as u8,
+            palette: self
+                .workspace
+                .ui
+                .config
+                .pane_colors
+                .get(&id)
+                .copied()
+                .unwrap_or(((id - 1) % 9) as u8),
             status: Status::Unknown,
             session_id: None,
             dead: false,
@@ -1378,6 +1389,7 @@ impl Server {
             for id in victims {
                 self.panes.remove(&id);
                 self.aliases.remove(&id);
+                self.workspace.ui.config.pane_colors.remove(&id);
             }
         } else {
             while self.workspace.panes.len() < count {
@@ -1868,9 +1880,29 @@ impl Server {
                                     let _ = pane.queue(&bytes);
                                 }
                                 Effect::Title(title) => {
+                                    pane.terminal_title = (!title.is_empty())
+                                        .then(|| title.chars().take(1024).collect());
+                                    // Discovery owns an agent tab's name; OSC cannot race it.
+                                    if pane.agent_named {
+                                        continue;
+                                    }
                                     if let Some(info) =
                                         self.workspace.panes.iter_mut().find(|p| p.id == *id)
                                     {
+                                        if let Some(kind) = info.kind {
+                                            let folder = Path::new(&info.cwd)
+                                                .file_name()
+                                                .unwrap_or_default()
+                                                .to_string_lossy();
+                                            if title.trim().is_empty()
+                                                || title == folder
+                                                || title == info.cwd
+                                                || title == "shell"
+                                                || title == kind.as_str()
+                                            {
+                                                continue;
+                                            }
+                                        }
                                         info.title =
                                             self.aliases.get(id).cloned().unwrap_or_else(|| {
                                                 title.chars().take(1024).collect()
@@ -1994,17 +2026,19 @@ impl Server {
                 info.observation = agent.observation.clone();
                 info.kind = Some(agent.kind);
                 info.session_id = agent.session_id.clone();
-                info.title = self
-                    .aliases
-                    .get(&info.id)
-                    .cloned()
-                    .unwrap_or_else(|| agent.name.chars().take(1024).collect());
                 if let Some(pane) = self.panes.get_mut(&info.id) {
-                    pane.agent_named = true;
+                    let (name, authoritative) = super::tracking::tab_name(
+                        agent,
+                        pane.terminal_title.as_deref(),
+                        self.aliases.get(&info.id).map(String::as_str),
+                    );
+                    info.title = name;
+                    pane.agent_named = authoritative;
                 }
             } else {
                 if let Some(pane) = self.panes.get_mut(&info.id) {
-                    if std::mem::take(&mut pane.agent_named) {
+                    if std::mem::take(&mut pane.agent_named) || before.kind.is_some() {
+                        pane.terminal_title = None;
                         info.title = self
                             .aliases
                             .get(&info.id)

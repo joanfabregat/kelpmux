@@ -3,7 +3,7 @@ use crate::{Result, model::Status};
 use serde::{Deserialize, Serialize};
 use std::io::{Read, Write};
 
-pub const VERSION: u16 = 5;
+pub const VERSION: u16 = 6;
 pub const MAX_MESSAGE: usize = 16 * 1024 * 1024;
 pub const MAX_INPUT: usize = 64 * 1024;
 pub type PaneId = u64;
@@ -214,6 +214,11 @@ pub enum Action {
     Config,
     WrapToggle,
     NewTab,
+    TabColor(PaneId),
+    TabColorSet {
+        pane: PaneId,
+        color: u8,
+    },
     TabPositionSet(super::ui::TabPosition),
     ClosePaneRequest(PaneId),
     ClosePaneConfirm(PaneId),

@@ -522,6 +522,10 @@ impl Router {
                 super::workspace::grid_cards(bounds)
                     .iter()
                     .position(|rect| rect.contains(event.position))
+            } else if dialog.kind == super::ui::DialogKind::Color {
+                super::workspace::color_cards(bounds)
+                    .iter()
+                    .position(|rect| rect.contains(event.position))
             } else if dialog.kind == super::ui::DialogKind::Move {
                 let (columns, rows) = frame.ui.grid_shape;
                 super::workspace::move_cards(bounds, columns, rows)
@@ -685,7 +689,7 @@ impl Router {
                     view.pane.id == frame.active
                         && view.body.cols > 0
                         && view.body.x + view.body.cols < frame.cols
-                        && event.position.x == view.body.x + view.body.cols
+                        && event.position.x == view.body.x + view.body.cols + 1
                         && event.position.y == view.body.y
                 })
             {
@@ -755,8 +759,14 @@ impl Router {
                         .unwrap();
                         let close = matches!(target, TabTarget::Pane(_))
                             && event.kind == MouseKind::Press
-                            && event.position.x >= bounds.x + bounds.cols - 3;
-                        if close {
+                            && super::workspace::tab_close(bounds).contains(event.position);
+                        let color = matches!(target, TabTarget::Pane(_))
+                            && event.kind == MouseKind::Press
+                            && super::workspace::tab_number(bounds).contains(event.position);
+                        if color {
+                            self.pending_modal = true;
+                            emit(&mut output, Action::TabColor(view.pane.id), true);
+                        } else if close {
                             self.pending_modal = true;
                             emit(&mut output, Action::ClosePaneRequest(view.pane.id), true);
                         } else {
@@ -798,6 +808,9 @@ impl Router {
                 Action::Focus(id)
             };
             emit(&mut output, action, true);
+            return output;
+        }
+        if !view.body.contains(event.position) {
             return output;
         }
         let app_mouse = view.modes.mouse_click || view.modes.mouse_drag || view.modes.mouse_motion;
@@ -906,6 +919,21 @@ impl Router {
             return vec![];
         };
         let mut actions = vec![];
+        if dialog.kind == DialogKind::Color {
+            return dialog
+                .source
+                .filter(|_| index < super::ui::PALETTE.len())
+                .map(|pane| {
+                    vec![
+                        ClientMessage::Action(Action::TabColorSet {
+                            pane,
+                            color: index as u8,
+                        }),
+                        ClientMessage::Action(Action::DialogClose),
+                    ]
+                })
+                .unwrap_or_default();
+        }
         if dialog.kind == DialogKind::Overview {
             if let Some(&id) = frame_entries(frame).get(index) {
                 return vec![

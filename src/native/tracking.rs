@@ -9,6 +9,41 @@ use crate::{
 use serde::{Deserialize, Serialize};
 use std::{collections::BTreeMap, path::Path};
 
+/// A directory is useful context but is not evidence of a conversation's name.
+/// The boolean means metadata/override owns the title; otherwise OSC may update it.
+pub fn tab_name(agent: &Agent, terminal: Option<&str>, alias: Option<&str>) -> (String, bool) {
+    if let Some(alias) = alias {
+        return (alias.chars().take(1024).collect(), true);
+    }
+    let folder = Path::new(&agent.cwd)
+        .file_name()
+        .unwrap_or_default()
+        .to_string_lossy();
+    if !agent.name.trim().is_empty() && agent.name != folder && agent.name != agent.cwd {
+        return (agent.name.chars().take(1024).collect(), true);
+    }
+    if let Some(title) = terminal.filter(|title| {
+        !title.trim().is_empty()
+            && *title != folder
+            && *title != agent.cwd
+            && *title != "shell"
+            && *title != agent.kind.as_str()
+    }) {
+        return (title.chars().take(1024).collect(), false);
+    }
+    (
+        match &agent.session_id {
+            Some(id) => format!(
+                "{} · {}",
+                agent.kind.as_str(),
+                id.chars().take(8).collect::<String>()
+            ),
+            None => format!("{} · session unknown", agent.kind.as_str()),
+        },
+        false,
+    )
+}
+
 /// Preserve logical pane order, including ordinary shells in the unfiltered view.
 pub fn filtered(panes: &[PaneInfo], filter: AgentFilter) -> Vec<&PaneInfo> {
     panes

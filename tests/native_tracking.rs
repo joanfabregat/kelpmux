@@ -388,3 +388,34 @@ fn native_hook_command_inherits_custom_state_and_explicit_flag_wins() {
         Status::TurnFinished
     );
 }
+
+#[test]
+fn tab_names_never_use_directory_as_conversation_identity_and_preserve_osc_fallback() {
+    use kelpmux::native::tracking::tab_name;
+    let mut agent = agent(100);
+    agent.cwd = "/home/joan/scratch".into();
+    agent.name = "scratch".into();
+    agent.session_id = None;
+    assert_eq!(
+        tab_name(&agent, None, None),
+        ("codex · session unknown".into(), false)
+    );
+    assert_eq!(
+        tab_name(&agent, Some("scratch"), None).0,
+        "codex · session unknown"
+    );
+    assert_eq!(
+        tab_name(&agent, Some("Fix authentication"), None),
+        ("Fix authentication".into(), false)
+    );
+    agent.name = "Review conversation".into();
+    agent.session_id = Some("verified-session".into());
+    assert_eq!(
+        tab_name(&agent, Some("terminal title"), None),
+        ("Review conversation".into(), true)
+    );
+    assert_eq!(
+        tab_name(&agent, Some("terminal title"), Some("Backend")),
+        ("Backend".into(), true)
+    );
+}

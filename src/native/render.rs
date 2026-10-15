@@ -1,19 +1,8 @@
 //! Native grid/tab composition and ANSI damage output. Grid header controls
 //! occupy six columns; tab navigation uses shared geometry from workspace.
-use super::{engine::safe_text, protocol::*, workspace::Workspace};
+use super::{engine::safe_text, protocol::*, ui::PALETTE, workspace::Workspace};
 use std::{collections::BTreeMap, fmt::Write};
 use unicode_width::UnicodeWidthChar;
-const PALETTE: [(u8, u8); 9] = [
-    (39, 24),
-    (42, 29),
-    (141, 60),
-    (214, 94),
-    (80, 30),
-    (205, 89),
-    (185, 58),
-    (209, 95),
-    (111, 67),
-];
 const SPINNER: [char; 8] = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧'];
 
 pub fn compose(
@@ -301,6 +290,7 @@ pub fn compose(
             format!("{}  Scroll: arrows/PgUp/PgDn; q leaves", key("[", "scroll")),
             format!("{}  Copy selection (also drag release)", key("y", "copy")),
             "Wheel/drag Scroll/select; Shift for mouse-aware apps".into(),
+            "Click a tab number to choose its color".into(),
             format!(
                 "{} / {} / {}  Overview / notifications / recovery",
                 key("o", "overview"),
@@ -478,6 +468,7 @@ fn draw_dialog(frame: &mut Frame, workspace: &Workspace, dialog: super::ui::Dial
         DialogKind::Move => " Move active pane · choose destination",
         DialogKind::Config => " Settings · tab position",
         DialogKind::CloseConfirm => " Close this tab?",
+        DialogKind::Color => " Tab color · arrows, Enter or click",
         DialogKind::Agents => match dialog.filter {
             AgentFilter::All => " Agents",
             AgentFilter::Attention => " Agents needing attention",
@@ -504,7 +495,46 @@ fn draw_dialog(frame: &mut Frame, workspace: &Workspace, dialog: super::ui::Dial
         Color::Indexed(88),
         true,
     );
-    if dialog.kind == DialogKind::CloseConfirm {
+    if dialog.kind == DialogKind::Color {
+        let current = workspace
+            .panes
+            .iter()
+            .find(|pane| Some(pane.id) == dialog.source)
+            .map(|pane| usize::from(pane.palette));
+        for (index, rect) in super::workspace::color_cards(bounds)
+            .into_iter()
+            .enumerate()
+        {
+            let (bright, muted) = PALETTE[index];
+            let bg = Color::Indexed(muted);
+            fill(frame, rect, bg);
+            let label = format!(
+                "{} {}",
+                if current == Some(index) { "✓" } else { " " },
+                super::ui::COLOR_NAMES[index]
+            );
+            write_text(
+                frame,
+                rect.x + 1,
+                rect.y + rect.rows / 2,
+                rect.cols.saturating_sub(2),
+                &label,
+                Color::Indexed(231),
+                bg,
+                true,
+            );
+            outline(
+                frame,
+                rect,
+                Color::Indexed(if dialog.selection == index {
+                    231
+                } else {
+                    bright
+                }),
+                bg,
+            );
+        }
+    } else if dialog.kind == DialogKind::CloseConfirm {
         write_text(
             frame,
             bounds.x + 2,
@@ -1139,89 +1169,12 @@ fn draw_tabs(frame: &mut Frame, workspace: &Workspace, spinner: usize) {
             TabTarget::Pane(index) => {
                 if let Some(pane) = panes.get(index) {
                     let selected = pane.id == active_id;
-                    let (bright, muted) = PALETTE[usize::from(pane.palette) % 9];
-                    let bg = Color::Indexed(if selected { bright } else { muted });
-                    fill(frame, rect, bg);
-                    let text_y = rect.y + rect.rows / 2;
-                    let number = format!(" {} ", pane.number);
-                    write_text(
-                        frame,
-                        rect.x,
-                        text_y,
-                        3,
-                        &number,
-                        Color::Indexed(if selected { 226 } else { 117 }),
-                        Color::Indexed(24),
-                        true,
-                    );
-                    let marker = if pane.status == crate::model::Status::Working {
-                        SPINNER[spinner % 8].to_string()
-                    } else {
-                        pane.status.marker().to_owned()
-                    };
-                    let prefix = format!(
-                        "{}{} ",
-                        if workspace
-                            .ui
-                            .notifications
-                            .iter()
-                            .any(|item| item.pane == pane.id && !item.read)
-                        {
-                            "● "
-                        } else {
-                            ""
-                        },
-                        marker,
-                    );
                     let count = if position == TabPosition::Bottom {
                         format!(" {}/{} ", index + 1, panes.len())
                     } else {
                         String::new()
                     };
-                    let count_width = count.len() as u16;
-                    let label_width = rect.cols.saturating_sub(6 + count_width);
-                    let title_width =
-                        label_width.saturating_sub(prefix.chars().map(char_width).sum());
-                    let label = format!(
-                        "{prefix}{}",
-                        marquee_title(
-                            &pane.title,
-                            title_width,
-                            workspace.ui.title_ticks.get(&pane.id).copied().unwrap_or(0)
-                        )
-                    );
-                    write_text(
-                        frame,
-                        rect.x + 3,
-                        text_y,
-                        label_width,
-                        &label,
-                        Color::Indexed(if selected { 231 } else { 245 }),
-                        bg,
-                        false,
-                    );
-                    if count_width > 0 {
-                        write_text(
-                            frame,
-                            rect.x + rect.cols - 3 - count_width,
-                            text_y,
-                            count_width,
-                            &count,
-                            Color::Indexed(231),
-                            bg,
-                            true,
-                        );
-                    }
-                    write_text(
-                        frame,
-                        rect.x + rect.cols - 3,
-                        text_y,
-                        3,
-                        " × ",
-                        Color::Indexed(231),
-                        Color::Indexed(88),
-                        true,
-                    );
+                    draw_tab(frame, workspace, pane, rect, selected, &count, spinner);
                 }
             }
         }
@@ -1233,7 +1186,7 @@ fn draw_tabs(frame: &mut Frame, workspace: &Workspace, spinner: usize) {
         matches!(workspace.reading, ReadingMode::Fullscreen(_)),
         workspace.ui.reading_size,
     );
-    let x = body.x + body.cols;
+    let x = body.x + body.cols + 1;
     if x < frame.cols {
         for y in body.y..body.y + body.rows {
             write_text(
@@ -1246,6 +1199,136 @@ fn draw_tabs(frame: &mut Frame, workspace: &Workspace, spinner: usize) {
                 Color::Default,
                 y == body.y,
             );
+        }
+    }
+}
+
+fn outline(frame: &mut Frame, rect: Rect, fg: Color, bg: Color) {
+    if rect.cols < 2 || rect.rows == 0 {
+        return;
+    }
+    for y in rect.y..rect.y + rect.rows {
+        write_text(frame, rect.x, y, 1, "│", fg, bg, false);
+        write_text(frame, rect.x + rect.cols - 1, y, 1, "│", fg, bg, false);
+    }
+    if rect.rows >= 3 {
+        for (y, left, right) in [(rect.y, "┌", "┐"), (rect.y + rect.rows - 1, "└", "┘")] {
+            write_text(frame, rect.x, y, 1, left, fg, bg, false);
+            for x in rect.x + 1..rect.x + rect.cols - 1 {
+                write_text(frame, x, y, 1, "─", fg, bg, false);
+            }
+            write_text(frame, rect.x + rect.cols - 1, y, 1, right, fg, bg, false);
+        }
+    }
+}
+fn draw_tab(
+    frame: &mut Frame,
+    workspace: &Workspace,
+    pane: &PaneInfo,
+    rect: Rect,
+    selected: bool,
+    count: &str,
+    spinner: usize,
+) {
+    let (bright, muted) = PALETTE[usize::from(pane.palette) % PALETTE.len()];
+    let bg = Color::Indexed(234);
+    fill(frame, rect, bg);
+    let number = super::workspace::tab_number(rect);
+    write_text(
+        frame,
+        number.x,
+        number.y,
+        number.cols,
+        &format!(" {} ", pane.number),
+        Color::Indexed(if selected { 226 } else { 117 }),
+        Color::Indexed(muted),
+        true,
+    );
+    let marker = if pane.status == crate::model::Status::Working {
+        SPINNER[spinner % 8].to_string()
+    } else {
+        pane.status.marker().to_owned()
+    };
+    let marker = format!(
+        "{}{}",
+        if workspace
+            .ui
+            .notifications
+            .iter()
+            .any(|item| item.pane == pane.id && !item.read)
+        {
+            "● "
+        } else {
+            ""
+        },
+        marker
+    );
+    let marker_x = number.x + number.cols + 2;
+    let marker_width: u16 = marker.chars().map(char_width).sum();
+    let close = super::workspace::tab_close(rect);
+    write_text(
+        frame,
+        marker_x,
+        number.y,
+        close.x.saturating_sub(marker_x),
+        &marker,
+        Color::Indexed(bright),
+        bg,
+        true,
+    );
+    let count_width = count.len() as u16;
+    let (title_x, title_y, title_width) = if rect.rows >= 4 {
+        (rect.x + 2, rect.y + 2, rect.cols.saturating_sub(4))
+    } else {
+        let x = marker_x + marker_width + 1;
+        (
+            x,
+            number.y,
+            close.x.saturating_sub(count_width).saturating_sub(x),
+        )
+    };
+    let title = marquee_title(
+        &pane.title,
+        title_width,
+        workspace.ui.title_ticks.get(&pane.id).copied().unwrap_or(0),
+    );
+    write_text(
+        frame,
+        title_x,
+        title_y,
+        title_width,
+        &title,
+        Color::Indexed(231),
+        bg,
+        false,
+    );
+    if count_width > 0 {
+        write_text(
+            frame,
+            close.x.saturating_sub(count_width),
+            number.y,
+            count_width,
+            count,
+            Color::Indexed(231),
+            bg,
+            true,
+        );
+    }
+    write_text(
+        frame,
+        close.x,
+        close.y,
+        close.cols,
+        " × ",
+        Color::Indexed(231),
+        Color::Indexed(88),
+        true,
+    );
+    if selected {
+        outline(frame, rect, Color::Indexed(bright), bg);
+    } else {
+        for y in rect.y..rect.y + rect.rows {
+            write_text(frame, rect.x, y, 1, "│", Color::Indexed(bright), bg, false);
         }
     }
 }
