@@ -531,6 +531,7 @@ impl Drop for RecoveryJob {
     }
 }
 struct Server {
+    title_animation: BTreeMap<PaneId, (String, u16)>,
     epoch: String,
     leases: BTreeMap<PaneId, PaneLease>,
     initializing: bool,
@@ -925,6 +926,50 @@ impl Server {
     }
     fn feature_action(&mut self, client: u64, action: &Action) -> Result<bool> {
         match action {
+            Action::NewTab => {
+                let count = self
+                    .workspace
+                    .panes
+                    .iter()
+                    .filter(|pane| Some(pane.id) != self.workspace.ui.scratch)
+                    .count();
+                if count >= 9 {
+                    return Err("nine tabs are already open".into());
+                }
+                // Spawn first; failure must leave every existing pane and view intact.
+                self.spawn_pane(None)?;
+                let id = self.workspace.panes.last().unwrap().id;
+                if self.workspace.ui.scratch_visible {
+                    self.workspace.apply(&Action::ScratchClose)?;
+                }
+                if count + 1
+                    > usize::from(self.workspace.grid_cols) * usize::from(self.workspace.grid_rows)
+                {
+                    let &(cols, rows) = super::workspace::GRIDS
+                        .iter()
+                        .find(|&&(cols, rows)| usize::from(cols) * usize::from(rows) > count)
+                        .ok_or("no grid can hold another tab")?;
+                    self.workspace.grid_cols = cols;
+                    self.workspace.grid_rows = rows;
+                    self.workspace.ui.grid_shape = (cols, rows);
+                    self.workspace.ui.column_weights.clear();
+                    self.workspace.ui.row_weights.clear();
+                }
+                self.workspace.active = id;
+                self.workspace.reading = ReadingMode::Tabs(id);
+                self.workspace.ui.config.view_modes
+                    [super::ui::geometry_bucket(self.workspace.cols)] = Some(true);
+                let mut number = 0;
+                for pane in &mut self.workspace.panes {
+                    if Some(pane.id) == self.workspace.ui.scratch {
+                        pane.number = 0;
+                    } else {
+                        number += 1;
+                        pane.number = number;
+                    }
+                }
+                self.persist_geometry()?;
+            }
             Action::Scratch => {
                 let dead = self
                     .workspace
@@ -2133,6 +2178,7 @@ pub fn serve(config: ServerConfig) -> Result<()> {
     let (listener, _endpoint) = endpoint(&config)?;
     super::lifecycle::save_pid(&config.state_dir)?;
     let mut server = Server {
+        title_animation: BTreeMap::new(),
         epoch: fs::read_to_string("/proc/sys/kernel/random/uuid")?
             .trim()
             .to_owned(),
@@ -2254,6 +2300,29 @@ pub fn serve(config: ServerConfig) -> Result<()> {
         if animation.elapsed() >= Duration::from_millis(125) {
             spinner += 1;
             animation = Instant::now();
+            server
+                .title_animation
+                .retain(|id, _| server.panes.contains_key(id));
+            server
+                .workspace
+                .ui
+                .title_ticks
+                .retain(|id, _| server.panes.contains_key(id));
+            for pane in &server.workspace.panes {
+                let entry = server
+                    .title_animation
+                    .entry(pane.id)
+                    .or_insert_with(|| (pane.title.clone(), 0));
+                if entry.0 != pane.title {
+                    *entry = (pane.title.clone(), 0);
+                }
+                let stop = (pane.title.chars().count().min(512) as u16) * 3 + 32;
+                if entry.1 <= stop {
+                    entry.1 += 1;
+                    server.workspace.ui.title_ticks.insert(pane.id, entry.1);
+                    server.dirty = true;
+                }
+            }
             server.dirty |= server
                 .workspace
                 .panes

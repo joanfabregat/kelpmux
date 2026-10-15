@@ -1,6 +1,6 @@
 # Native client foundation
 
-Kelpmux owns long-running PTYs and Alacritty terminal interpretation. Clients own presentation. Native mode has no tmux or WezTerm runtime dependency. The composed ANSI frontend remains protocol v4; the separate experimental pane stream is v1. This foundation is part of the unreleased beta.3 code, not the installed beta.2 binary. A graphical desktop/mobile client and MCP/device tools are not implemented.
+Kelpmux owns long-running PTYs and Alacritty terminal interpretation. Clients own presentation. Native mode has no tmux or WezTerm runtime dependency. The composed ANSI frontend is protocol v5 (new tab controls and reading-width settings); the separate experimental pane stream remains v1. This foundation is part of the unreleased beta.3 code, not the installed beta.2 binary. A graphical desktop/mobile client and MCP/device tools are not implemented.
 
 The broader proposed contract is [ADR 0001](adr/0001-native-client-protocol-and-device-capabilities.md). It covers pane lifecycle, independent device sizes, live agent status, notifications, remote Vitals and a future MCP/device request channel. The ADR deliberately distinguishes those proposals from the implemented requests below.
 
@@ -66,3 +66,7 @@ kelpmux stream-inspect --workspace NAME 1 2
 With no pane IDs it returns metadata only; explicit IDs add those panes' terminal cells to JSON stdout. It does not claim, resize, become the TUI controller, start a server or persist terminal contents. Automated tests use actual bridge subprocess pipes, disposable PTYs and typed reference state; they do not open a real SSH login or access a native device.
 
 The older `InspectPane` and bounded `History {pane,start,limit}` requests remain local inspection seams. Current history uses relative line indices and plain text; stable, styled native-history pagination is not implemented. Native pane create/rename/terminate commands, device capability requests, attachments, MCP, native apps and final public-protocol compatibility guarantees remain future work described in ADR 0001.
+
+### Hyperlink cells
+
+The server's `hyperlinks` capability indicates support for an optional `hyperlink` URI string per cell. Missing fields mean no target; explicit targets and recognized plain HTTP(S) URLs are carried independently of visible text. Targets are bounded to 2,048 bytes, require a URI scheme and reject whitespace and control characters. Deltas include target-only changes. Native clients open links through their own user interaction rather than requesting browser execution on the server. Older cell encodings remain decodable.

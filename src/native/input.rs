@@ -527,6 +527,10 @@ impl Router {
                 super::workspace::move_cards(bounds, columns, rows)
                     .iter()
                     .position(|rect| rect.contains(event.position))
+            } else if dialog.kind == super::ui::DialogKind::CloseConfirm {
+                super::workspace::close_buttons(bounds)
+                    .iter()
+                    .position(|rect| rect.contains(event.position))
             } else if event.position.y > bounds.y + 1 {
                 let visible = usize::from(bounds.rows.saturating_sub(2));
                 Some(
@@ -665,7 +669,7 @@ impl Router {
                     self.boundary_drag = Some((Some((view.pane.number - 1) as u8 - 1), None));
                     return output;
                 }
-                if view.rect.y > 0 && event.position.y == view.rect.y && event.position.x < 2 {
+                if view.rect.y > 0 && event.position.y == view.rect.y - 1 {
                     let rows = frame.ui.grid_shape.0.max(1);
                     self.boundary_drag = Some((
                         None,
@@ -676,6 +680,18 @@ impl Router {
             }
         }
         if frame.reading != ReadingMode::Grid && !frame.ui.scratch_visible {
+            if event.kind == MouseKind::Press
+                && frame.panes.iter().any(|view| {
+                    view.pane.id == frame.active
+                        && view.body.cols > 0
+                        && view.body.x + view.body.cols < frame.cols
+                        && event.position.x == view.body.x + view.body.cols
+                        && event.position.y == view.body.y
+                })
+            {
+                emit(&mut output, Action::WrapToggle, true);
+                return output;
+            }
             let tabviews: Vec<_> = frame
                 .panes
                 .iter()
@@ -695,6 +711,21 @@ impl Router {
             .into_iter()
             .find(|(_, rect)| rect.contains(event.position))
             {
+                if event.kind == MouseKind::Press {
+                    match target {
+                        super::workspace::TabTarget::New => {
+                            if tabviews.len() < 9 {
+                                emit(&mut output, Action::NewTab, true);
+                            }
+                            return output;
+                        }
+                        super::workspace::TabTarget::Wrap => {
+                            emit(&mut output, Action::WrapToggle, true);
+                            return output;
+                        }
+                        _ => {}
+                    }
+                }
                 if matches!(
                     event.kind,
                     MouseKind::Press | MouseKind::WheelUp | MouseKind::WheelDown
@@ -920,6 +951,9 @@ impl Router {
         if dialog.kind == DialogKind::Config {
             if index == 4 {
                 return vec![ClientMessage::Action(Action::NotificationSoundToggle)];
+            }
+            if index == 5 {
+                return vec![ClientMessage::Action(Action::WrapToggle)];
             }
             let positions = [
                 super::ui::TabPosition::Auto,

@@ -248,6 +248,22 @@ fn viewport_reading_preferences_and_grid_drag_preserve_all_ids() {
             row: None
         }]
     ));
+    let separator = Point {
+        x: 50,
+        y: f.panes[2].rect.y - 1,
+    };
+    assert!(
+        router
+            .route(mouse(separator, MouseKind::Press), &f)
+            .is_empty()
+    );
+    assert!(matches!(
+        actions(router.route(mouse(Point { x: 50, y: 20 }, MouseKind::Release), &f)).as_slice(),
+        [Action::ResizeGrid {
+            column: None,
+            row: Some((0, _))
+        }]
+    ));
 }
 #[test]
 fn header_drag_swap_and_keyboard_selection_are_owned_by_the_multiplexer() {
