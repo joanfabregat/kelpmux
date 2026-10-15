@@ -451,7 +451,7 @@ fn header(
 }
 fn draw_dialog(frame: &mut Frame, workspace: &Workspace, dialog: super::ui::Dialog) {
     use super::ui::{AgentFilter, DialogKind};
-    let bounds = super::workspace::dialog_bounds(frame.cols, frame.rows);
+    let bounds = super::workspace::dialog_bounds_for(frame.cols, frame.rows, dialog.kind);
     fill(frame, bounds, Color::Indexed(236));
     let title = match dialog.kind {
         DialogKind::Grid => " Grid · arrows, Enter or click",
@@ -540,7 +540,7 @@ fn draw_dialog(frame: &mut Frame, workspace: &Workspace, dialog: super::ui::Dial
             bounds.x + 2,
             bounds.y + 2,
             bounds.cols - 4,
-            "Closing stops this terminal and its running jobs.",
+            "Stops this terminal and its jobs.",
             Color::Indexed(231),
             Color::Indexed(236),
             true,
@@ -1117,16 +1117,8 @@ fn draw_tabs(frame: &mut Frame, workspace: &Workspace, spinner: usize) {
         active,
     ) {
         match target {
-            TabTarget::New | TabTarget::Wrap => {
-                let wrapping = workspace.ui.config.wrap_lines
-                    && !matches!(workspace.reading, ReadingMode::Fullscreen(_));
-                let label = if target == TabTarget::Wrap {
-                    if wrapping {
-                        " Wrap: on "
-                    } else {
-                        " Wrap: off "
-                    }
-                } else if position == TabPosition::Left {
+            TabTarget::New => {
+                let label = if position == TabPosition::Left {
                     " + New tab "
                 } else {
                     " + "
@@ -1169,7 +1161,10 @@ fn draw_tabs(frame: &mut Frame, workspace: &Workspace, spinner: usize) {
             TabTarget::Pane(index) => {
                 if let Some(pane) = panes.get(index) {
                     let selected = pane.id == active_id;
-                    let count = if position == TabPosition::Bottom {
+                    let count = if position == TabPosition::Bottom
+                        && panes.len() * 18 + 3 > usize::from(frame.cols)
+                        && frame.cols.saturating_sub(9) < 36
+                    {
                         format!(" {}/{} ", index + 1, panes.len())
                     } else {
                         String::new()
@@ -1186,6 +1181,27 @@ fn draw_tabs(frame: &mut Frame, workspace: &Workspace, spinner: usize) {
         matches!(workspace.reading, ReadingMode::Fullscreen(_)),
         workspace.ui.reading_size,
     );
+    let active = panes.iter().find(|pane| pane.id == active_id);
+    let (bright, muted) = active
+        .map(|pane| PALETTE[usize::from(pane.palette) % PALETTE.len()])
+        .unwrap_or(PALETTE[0]);
+    if position == TabPosition::Left {
+        let x = body.x - 2;
+        for y in 0..frame.rows - 1 {
+            write_text(
+                frame,
+                x,
+                y,
+                1,
+                "│",
+                Color::Indexed(bright),
+                Color::Indexed(muted),
+                false,
+            );
+        }
+    }
+    let wrapping =
+        workspace.ui.config.wrap_lines && !matches!(workspace.reading, ReadingMode::Fullscreen(_));
     let x = body.x + body.cols + 1;
     if x < frame.cols {
         for y in body.y..body.y + body.rows {
@@ -1194,8 +1210,12 @@ fn draw_tabs(frame: &mut Frame, workspace: &Workspace, spinner: usize) {
                 x,
                 y,
                 1,
-                if y == body.y { "+" } else { "│" },
-                Color::Indexed(245),
+                if y == body.y {
+                    if wrapping { "+" } else { "−" }
+                } else {
+                    "│"
+                },
+                Color::Indexed(bright),
                 Color::Default,
                 y == body.y,
             );
@@ -1231,7 +1251,7 @@ fn draw_tab(
     spinner: usize,
 ) {
     let (bright, muted) = PALETTE[usize::from(pane.palette) % PALETTE.len()];
-    let bg = Color::Indexed(234);
+    let bg = Color::Indexed(if selected { muted } else { 234 });
     fill(frame, rect, bg);
     let number = super::workspace::tab_number(rect);
     write_text(

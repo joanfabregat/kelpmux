@@ -509,7 +509,7 @@ impl Router {
             }
         }
         if let Some(dialog) = frame.ui.dialog {
-            let bounds = super::workspace::dialog_bounds(frame.cols, frame.rows);
+            let bounds = super::workspace::dialog_bounds_for(frame.cols, frame.rows, dialog.kind);
             if event.kind == MouseKind::Press
                 && (!bounds.contains(event.position)
                     || (event.position.y == bounds.y
@@ -715,20 +715,11 @@ impl Router {
             .into_iter()
             .find(|(_, rect)| rect.contains(event.position))
             {
-                if event.kind == MouseKind::Press {
-                    match target {
-                        super::workspace::TabTarget::New => {
-                            if tabviews.len() < 9 {
-                                emit(&mut output, Action::NewTab, true);
-                            }
-                            return output;
-                        }
-                        super::workspace::TabTarget::Wrap => {
-                            emit(&mut output, Action::WrapToggle, true);
-                            return output;
-                        }
-                        _ => {}
+                if event.kind == MouseKind::Press && target == super::workspace::TabTarget::New {
+                    if tabviews.len() < 9 {
+                        emit(&mut output, Action::NewTab, true);
                     }
+                    return output;
                 }
                 if matches!(
                     event.kind,
