@@ -124,7 +124,7 @@ fn tabs_resize_only_selected_terminal_and_restore_grid() {
             .unwrap()
             .body
             .cols,
-        172
+        170
     );
     assert_eq!(
         ws.layout()
@@ -195,7 +195,7 @@ fn tabs_toggle_exits_fullscreen_and_navigation_never_sends_application_clicks() 
             .find(|(target, _)| *target == kelpmux::native::workspace::TabTarget::Pane(1))
             .unwrap();
     let point = Point {
-        x: rect.x + 1,
+        x: rect.x + 7,
         y: rect.y,
     };
     let mut router = Router::default();

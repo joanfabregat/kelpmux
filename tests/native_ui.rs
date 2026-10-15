@@ -355,8 +355,8 @@ fn responsive_tabs_keep_all_panes_without_overlays_and_mouse_selects_tabs() {
             );
             let messages = router.route(
                 click(Point {
-                    x: rect.x + rect.cols - 1,
-                    y: rect.y,
+                    x: kelpmux::native::workspace::tab_close(*rect).x,
+                    y: kelpmux::native::workspace::tab_close(*rect).y,
                 }),
                 &f,
             );
@@ -416,9 +416,9 @@ fn selecting_same_tab_does_not_toggle_back_to_grid_and_width_is_inline() {
     assert_eq!(cap.cols, 90);
     assert_eq!(cap.rows, 68);
     assert_eq!(cap.y, 1);
-    assert_eq!(cap.x, 0);
+    assert_eq!(cap.x, 1);
     ws.apply(&Action::Fullscreen(5)).unwrap();
-    assert_eq!(ws.layout()[4].body.cols, 240);
+    assert_eq!(ws.layout()[4].body.cols, 238);
     ws.apply(&Action::Fullscreen(5)).unwrap();
     assert_eq!(ws.layout()[4].body, cap);
     ws.apply(&Action::Read(5)).unwrap();
@@ -577,16 +577,16 @@ fn responsive_new_tabs_wrap_controls_and_graphic_confirmation_have_disjoint_targ
                             .unwrap()
                             .1
                             .rows,
-                        3
+                        4
                     );
                 }
             }
             let capped = ws.layout()[0].body;
-            if capped.x + capped.cols < ws.cols {
+            if capped.x + capped.cols + 1 < ws.cols {
                 assert_eq!(
                     actions(Router::default().route(
                         click(Point {
-                            x: capped.x + capped.cols,
+                            x: capped.x + capped.cols + 1,
                             y: capped.y
                         }),
                         &f
@@ -597,7 +597,7 @@ fn responsive_new_tabs_wrap_controls_and_graphic_confirmation_have_disjoint_targ
             ws.apply(&Action::WrapToggle).unwrap();
             assert!(!ws.ui.config.wrap_lines);
             let full = ws.layout()[0].body;
-            assert_eq!(full.x + full.cols, ws.cols);
+            assert_eq!(full.x + full.cols, ws.cols - 1);
             ws.apply(&Action::WrapToggle).unwrap();
             assert_eq!(ws.layout()[0].body, capped);
 
@@ -656,4 +656,127 @@ fn long_tab_titles_scroll_once_then_stop_without_moving_terminal_content() {
     let mut display = Terminal::new(100, 30);
     display.feed(&terminal_diff(None, &middle));
     assert_eq!(display.snapshot().cells, middle.cells);
+}
+
+#[test]
+fn tab_colors_keep_bright_titles_selected_outline_and_disjoint_picker_controls() {
+    use kelpmux::native::{
+        ui::{PALETTE, TabPosition},
+        workspace::{TabTarget, color_cards, dialog_bounds, tab_number, tab_targets},
+    };
+    for size in [(40, 10), (120, 40), (240, 70)] {
+        let mut ws = workspace(size, (2, 1));
+        ws.ui.config.tab_position = TabPosition::Left;
+        ws.apply(&Action::Select(1)).unwrap();
+        let f = frame(&ws);
+        let targets = tab_targets(f.cols, f.rows, &f.ui.config, 2, 0);
+        for index in 0..2 {
+            let rect = targets
+                .iter()
+                .find(|(target, _)| *target == TabTarget::Pane(index))
+                .unwrap()
+                .1;
+            let number = tab_number(rect);
+            let number_cell = &f.cells[usize::from(number.y * f.cols + number.x + 1)];
+            assert_eq!(
+                number_cell.fg,
+                Color::Indexed(if index == 0 { 226 } else { 117 })
+            );
+            for x in number.x + 3..number.x + 5 {
+                assert_eq!(f.cells[usize::from(number.y * f.cols + x)].text, " ");
+                assert_eq!(
+                    f.cells[usize::from(number.y * f.cols + x)].bg,
+                    Color::Indexed(234)
+                );
+            }
+            assert_eq!(
+                f.cells[usize::from(rect.y * f.cols + rect.x)].fg,
+                Color::Indexed(PALETTE[usize::from(f.panes[index].pane.palette)].0)
+            );
+            if rect.rows >= 4 {
+                let title = &f.cells[usize::from((rect.y + 2) * f.cols + rect.x + 2)];
+                assert_eq!(title.text, "a");
+                assert_eq!(title.fg, Color::Indexed(231));
+                assert_eq!(title.bg, Color::Indexed(234));
+            }
+            let point = Point {
+                x: number.x + 1,
+                y: number.y,
+            };
+            assert_eq!(
+                actions(Router::default().route(click(point), &f)),
+                vec![Action::TabColor(index as u64 + 1)]
+            );
+        }
+        let ids: Vec<_> = ws.panes.iter().map(|pane| pane.id).collect();
+        ws.apply(&Action::TabColor(2)).unwrap();
+        for color in 0..9 {
+            let dialog = frame(&ws);
+            let card = color_cards(dialog_bounds(dialog.cols, dialog.rows))[color];
+            let messages = actions(Router::default().route(
+                click(Point {
+                    x: card.x + 1,
+                    y: card.y,
+                }),
+                &dialog,
+            ));
+            assert_eq!(
+                messages,
+                vec![
+                    Action::TabColorSet {
+                        pane: 2,
+                        color: color as u8
+                    },
+                    Action::DialogClose
+                ]
+            );
+            for action in messages {
+                ws.apply(&action).unwrap();
+            }
+            assert_eq!(ws.active, 1);
+            assert_eq!(ws.panes[1].palette, color as u8);
+            assert_eq!(ws.ui.config.pane_colors.get(&2), Some(&(color as u8)));
+            assert_eq!(ws.panes.iter().map(|pane| pane.id).collect::<Vec<_>>(), ids);
+            let rendered = frame(&ws);
+            let mut display = Terminal::new(rendered.cols, rendered.rows);
+            display.feed(&terminal_diff(None, &rendered));
+            assert_eq!(display.snapshot().cells, rendered.cells);
+            ws.apply(&Action::TabColor(2)).unwrap();
+        }
+        assert!(
+            ws.apply(&Action::TabColorSet { pane: 2, color: 9 })
+                .is_err()
+        );
+    }
+}
+
+#[test]
+fn one_column_terminal_margins_are_blank_and_do_not_receive_application_mouse() {
+    use kelpmux::native::ui::TabPosition;
+    for position in [TabPosition::Top, TabPosition::Left, TabPosition::Bottom] {
+        let mut ws = workspace((120, 40), (2, 1));
+        ws.ui.config.tab_position = position;
+        ws.apply(&Action::Fullscreen(1)).unwrap();
+        let mut f = frame(&ws);
+        let body = f.panes[0].body;
+        assert_eq!(body.x + body.cols, f.cols - 1);
+        assert!(body.x > 0);
+        f.panes[0].modes.mouse_click = true;
+        for x in [body.x - 1, body.x + body.cols] {
+            let point = Point { x, y: body.y + 2 };
+            assert_eq!(
+                f.cells[usize::from(point.y * f.cols + point.x)],
+                Cell::default()
+            );
+            assert!(Router::default().route(click(point), &f).is_empty());
+        }
+        ws.apply(&Action::CloseReading).unwrap();
+        for view in ws.layout() {
+            assert_eq!(view.body.x, view.rect.x + 1);
+            assert_eq!(
+                view.body.x + view.body.cols,
+                view.rect.x + view.rect.cols - 1
+            );
+        }
+    }
 }

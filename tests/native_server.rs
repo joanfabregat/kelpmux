@@ -786,10 +786,21 @@ fn new_tabs_create_one_pty_preserve_existing_jobs_and_stop_at_nine() {
     let mut admin = daemon.connect();
     let (initial, _) = command(&mut admin, Action::WrapToggle).unwrap();
     let original = (initial[0].id, initial[0].pid);
+    let (colored, _) = command(
+        &mut admin,
+        Action::TabColorSet {
+            pane: original.0,
+            color: 4,
+        },
+    )
+    .unwrap();
+    assert_eq!(colored[0].palette, 4);
+    assert_eq!((colored[0].id, colored[0].pid), original);
     let settings: serde_json::Value =
         serde_json::from_slice(&fs::read(daemon.root.join("state/workspace.json")).unwrap())
             .unwrap();
     assert_eq!(settings["ui"]["wrap_lines"], false);
+    assert_eq!(settings["ui"]["pane_colors"][original.0.to_string()], 4);
     command(&mut admin, Action::CloseReading).unwrap();
     for count in 2..=9 {
         let (panes, _) = command(&mut admin, Action::NewTab).unwrap();
@@ -799,6 +810,7 @@ fn new_tabs_create_one_pty_preserve_existing_jobs_and_stop_at_nine() {
                 .unwrap();
         assert_eq!(saved["ui"]["view_modes"][1], true);
         assert_eq!((panes[0].id, panes[0].pid), original);
+        assert_eq!(panes[0].palette, 4);
         for (index, pane) in panes.iter().enumerate() {
             assert_eq!(pane.number, index + 1);
             assert!(std::path::Path::new(&format!("/proc/{}", pane.pid)).exists());
@@ -812,4 +824,14 @@ fn new_tabs_create_one_pty_preserve_existing_jobs_and_stop_at_nine() {
     let (panes, _) = command(&mut admin, Action::Config).unwrap();
     assert_eq!(panes.len(), 9);
     assert_eq!((panes[0].id, panes[0].pid), original);
+    command(&mut admin, Action::ClosePaneRequest(original.0)).unwrap();
+    command(&mut admin, Action::ClosePaneConfirm(original.0)).unwrap();
+    let settings: serde_json::Value =
+        serde_json::from_slice(&fs::read(daemon.root.join("state/workspace.json")).unwrap())
+            .unwrap();
+    assert!(
+        settings["ui"]["pane_colors"]
+            .get(original.0.to_string())
+            .is_none()
+    );
 }
