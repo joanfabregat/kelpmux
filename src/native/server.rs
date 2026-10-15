@@ -957,6 +957,8 @@ impl Server {
                 }
                 self.workspace.active = id;
                 self.workspace.reading = ReadingMode::Tabs(id);
+                self.workspace.ui.config.view_modes
+                    [super::ui::geometry_bucket(self.workspace.cols)] = Some(true);
                 let mut number = 0;
                 for pane in &mut self.workspace.panes {
                     if Some(pane.id) == self.workspace.ui.scratch {

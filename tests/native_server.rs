@@ -790,9 +790,14 @@ fn new_tabs_create_one_pty_preserve_existing_jobs_and_stop_at_nine() {
         serde_json::from_slice(&fs::read(daemon.root.join("state/workspace.json")).unwrap())
             .unwrap();
     assert_eq!(settings["ui"]["wrap_lines"], false);
+    command(&mut admin, Action::CloseReading).unwrap();
     for count in 2..=9 {
         let (panes, _) = command(&mut admin, Action::NewTab).unwrap();
         assert_eq!(panes.len(), count);
+        let saved: serde_json::Value =
+            serde_json::from_slice(&fs::read(daemon.root.join("state/workspace.json")).unwrap())
+                .unwrap();
+        assert_eq!(saved["ui"]["view_modes"][1], true);
         assert_eq!((panes[0].id, panes[0].pid), original);
         for (index, pane) in panes.iter().enumerate() {
             assert_eq!(pane.number, index + 1);
