@@ -793,9 +793,18 @@ fn live_server_attach_layout_read_fullscreen_detach_reconnect_preserves_shell() 
     });
     // Exercise the real frontend footer translation, not just router helpers.
     tty.input(b"\x1b[<0;55;24M");
-    wait_text(&mut tty, "Settings · tab position");
-    let bounds = kelpmux::native::workspace::dialog_bounds(80, 24);
-    tty.input(format!("\x1b[<0;{};{}M", bounds.x + 2, bounds.y + 5).as_bytes());
+    wait_text(&mut tty, "Tab placement");
+    let bounds = kelpmux::native::workspace::dialog_bounds_for(
+        80,
+        24,
+        kelpmux::native::ui::DialogKind::Config,
+    );
+    let choice = kelpmux::native::workspace::config_targets(bounds)
+        .into_iter()
+        .find(|(index, _, _)| *index == 2)
+        .unwrap()
+        .2;
+    tty.input(format!("\x1b[<0;{};{}M", choice.x + 1, choice.y + 1).as_bytes());
     let deadline = Instant::now() + Duration::from_secs(5);
     loop {
         tty.drain();
