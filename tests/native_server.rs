@@ -35,6 +35,7 @@ impl Daemon {
             rows: 24,
             ui: Default::default(),
             initial_grid: (1, 1),
+            initial_tabs: None,
         };
         let handle = thread::spawn(move || serve(config));
         let daemon = Self {
@@ -250,6 +251,7 @@ fn active_server_lock_and_symlink_socket_are_rejected() {
         rows: 24,
         ui: Default::default(),
         initial_grid: (1, 1),
+        initial_tabs: None,
     };
     assert!(serve(config).is_err());
     let target = daemon.root.join("foreign");
@@ -267,6 +269,7 @@ fn active_server_lock_and_symlink_socket_are_rejected() {
         rows: 24,
         ui: Default::default(),
         initial_grid: (1, 1),
+        initial_tabs: None,
     };
     assert!(serve(config).is_err());
     assert_eq!(fs::read(target).unwrap(), b"preserve");
@@ -297,15 +300,11 @@ fn pty_output_colors_and_terminal_queries_reach_the_live_engine() {
 }
 
 #[test]
-fn grid_shrink_is_transactional_and_preserves_background_jobs() {
+fn manual_layout_is_rejected_and_preserves_background_jobs() {
     let daemon = Daemon::start();
     let (mut stream, owner, _) = daemon.attach();
     let mut ctl = daemon.connect();
-    write_message(
-        &mut ctl,
-        &ClientMessage::Command(Action::Grid { cols: 2, rows: 1 }),
-    )
-    .unwrap();
+    write_message(&mut ctl, &ClientMessage::Command(Action::NewTab)).unwrap();
     let (panes, controller) = state(&mut ctl);
     assert_eq!(panes.len(), 2);
     assert_eq!(controller, Some(owner));
@@ -334,7 +333,7 @@ fn grid_shrink_is_transactional_and_preserves_background_jobs() {
     .unwrap();
     loop {
         if let ServerMessage::Error(error) = next(&mut ctl) {
-            assert!(error.contains("occupied"));
+            assert!(error.contains("automatic"));
             break;
         }
     }
@@ -357,7 +356,14 @@ fn grid_shrink_is_transactional_and_preserves_background_jobs() {
     wait_process(panes[1].pid, |tree| {
         kelpmux::process::idle(tree, panes[1].pid, false)
     });
-    assert_eq!(grid_when_idle(&mut ctl, 1, 1).len(), 1);
+    command(&mut ctl, Action::ClosePaneRequest(panes[1].id)).unwrap();
+    assert_eq!(
+        command(&mut ctl, Action::ClosePaneConfirm(panes[1].id))
+            .unwrap()
+            .0
+            .len(),
+        1
+    );
 }
 
 #[test]
@@ -427,22 +433,14 @@ fn wait_process(
         thread::sleep(Duration::from_millis(10));
     }
 }
-fn grid_when_idle(stream: &mut UnixStream, cols: u8, rows: u8) -> Vec<PaneInfo> {
-    let deadline = Instant::now() + Duration::from_secs(5);
-    loop {
-        match command(stream, Action::Grid { cols, rows }) {
-            Ok((panes, _)) => return panes,
-            Err(error) => assert!(
-                error.contains("occupied"),
-                "unexpected shrink failure: {error}"
-            ),
-        }
-        assert!(
-            Instant::now() < deadline,
-            "idle confirmation never completed"
-        );
-        thread::sleep(Duration::from_millis(10));
+fn create_tabs(stream: &mut UnixStream, cols: u8, rows: u8) -> Vec<PaneInfo> {
+    let count = usize::from(cols) * usize::from(rows);
+    let mut panes = state(stream).0;
+    assert!(panes.len() <= count);
+    while panes.len() < count {
+        panes = command(stream, Action::NewTab).unwrap().0;
     }
+    panes
 }
 fn wait_frame(stream: &mut UnixStream, predicate: impl Fn(&Frame) -> bool) -> Frame {
     let deadline = Instant::now() + Duration::from_secs(5);
@@ -525,12 +523,10 @@ fn controller_cursor_footer_and_observer_geometry_survive_takeover() {
     );
 }
 #[test]
-fn batched_input_then_grid_does_not_discard_accepted_input() {
+fn batched_input_then_rejected_layout_does_not_discard_input() {
     let daemon = Daemon::start();
     let (mut stream, _, _) = daemon.attach();
-    let panes = command(&mut stream, Action::Grid { cols: 2, rows: 1 })
-        .unwrap()
-        .0;
+    let panes = command(&mut stream, Action::NewTab).unwrap().0;
     start_background(&mut stream, &panes[0]);
     write_message(
         &mut stream,
@@ -550,7 +546,7 @@ fn batched_input_then_grid_does_not_discard_accepted_input() {
     stream.write_all(&batch).unwrap();
     loop {
         if let ServerMessage::Error(error) = next(&mut stream) {
-            assert!(error.contains("occupied"));
+            assert!(error.contains("automatic"));
             break;
         }
     }
@@ -562,14 +558,12 @@ fn batched_input_then_grid_does_not_discard_accepted_input() {
     });
 }
 #[test]
-fn foreground_and_stopped_jobs_remain_alive_when_shrink_is_refused() {
+fn foreground_and_stopped_jobs_survive_rejected_manual_layout() {
     for stopped in [false, true] {
         let daemon = Daemon::start();
         let (mut stream, _, _) = daemon.attach();
         let mut ctl = daemon.connect();
-        let panes = command(&mut ctl, Action::Grid { cols: 2, rows: 1 })
-            .unwrap()
-            .0;
+        let panes = command(&mut ctl, Action::NewTab).unwrap().0;
         start_background(&mut stream, &panes[0]);
         write_message(
             &mut stream,
@@ -600,7 +594,7 @@ fn foreground_and_stopped_jobs_remain_alive_when_shrink_is_refused() {
         assert!(
             command(&mut ctl, Action::Grid { cols: 1, rows: 1 })
                 .unwrap_err()
-                .contains("occupied")
+                .contains("automatic")
         );
         let live = kelpmux::process::read(std::path::Path::new("/proc"), job).unwrap();
         assert_eq!(live.start, start);
@@ -624,41 +618,6 @@ fn start_background(stream: &mut UnixStream, pane: &PaneInfo) {
     });
 }
 #[test]
-fn shrink_removes_unused_earlier_pane_and_keeps_busy_last_pane_identity() {
-    let daemon = Daemon::start();
-    let (mut stream, _, _) = daemon.attach();
-    let mut ctl = daemon.connect();
-    let panes = command(&mut ctl, Action::Grid { cols: 2, rows: 1 })
-        .unwrap()
-        .0;
-    start_background(&mut stream, &panes[1]);
-    wait_process(panes[0].pid, |tree| {
-        kelpmux::process::idle(tree, panes[0].pid, false)
-    });
-    let tree = kelpmux::process::snapshot(std::path::Path::new("/proc")).unwrap();
-    let job = kelpmux::process::descendants(&tree, panes[1].pid)
-        .into_iter()
-        .find(|pid| tree.get(pid).is_some_and(|p| p.command == "sleep"))
-        .unwrap();
-    let shrunk = grid_when_idle(&mut ctl, 1, 1);
-    assert_eq!(shrunk.len(), 1);
-    assert_eq!(
-        (
-            shrunk[0].id,
-            shrunk[0].pid,
-            shrunk[0].palette,
-            shrunk[0].number
-        ),
-        (panes[1].id, panes[1].pid, panes[1].palette, 1)
-    );
-    assert_eq!(
-        kelpmux::process::read(std::path::Path::new("/proc"), job)
-            .unwrap()
-            .start,
-        tree[&job].start
-    );
-}
-#[test]
 fn child_shell_has_native_color_environment_without_ssh_autoattach_markers() {
     let daemon = Daemon::start();
     let (mut stream, _, _) = daemon.attach();
@@ -680,36 +639,10 @@ fn child_shell_has_native_color_environment_without_ssh_autoattach_markers() {
 }
 
 #[test]
-fn every_grid_preserves_the_busy_last_pane_when_unused_slots_are_removed() {
-    let daemon = Daemon::start();
-    let (mut stream, _, _) = daemon.attach();
-    let panes = grid_when_idle(&mut stream, 3, 3);
-    let busy = panes[8].clone();
-    command(&mut stream, Action::Focus(busy.id)).unwrap();
-    write_message(&mut stream, &ClientMessage::Input(b"sleep 60\n".to_vec())).unwrap();
-    let deadline = Instant::now() + Duration::from_secs(5);
-    loop {
-        let tree = kelpmux::process::snapshot(std::path::Path::new("/proc")).unwrap();
-        if !kelpmux::process::descendants(&tree, busy.pid).is_empty() {
-            break;
-        }
-        assert!(Instant::now() < deadline);
-        thread::sleep(Duration::from_millis(10));
-    }
-    for (cols, rows) in [(2, 3), (3, 2), (2, 2), (2, 1), (1, 1)] {
-        let after = grid_when_idle(&mut stream, cols, rows);
-        assert_eq!(after.len(), usize::from(cols) * usize::from(rows));
-        let retained = after.iter().find(|pane| pane.id == busy.id).unwrap();
-        assert_eq!(retained.pid, busy.pid);
-        assert!(!retained.dead);
-    }
-}
-
-#[test]
 fn pane_screen_inspection_is_independent_of_tabs_and_does_not_take_control() {
     let daemon = Daemon::start();
     let (mut controller, owner, _) = daemon.attach();
-    let panes = grid_when_idle(&mut controller, 2, 1);
+    let panes = create_tabs(&mut controller, 2, 1);
     command(&mut controller, Action::Read(panes[0].id)).unwrap();
     let mut inspector = daemon.connect();
     write_message(
@@ -743,7 +676,7 @@ fn pane_screen_inspection_is_independent_of_tabs_and_does_not_take_control() {
 fn close_tab_requires_matching_confirmation_and_preserves_other_processes() {
     let daemon = Daemon::start();
     let (mut stream, _, _) = daemon.attach();
-    let panes = grid_when_idle(&mut stream, 2, 1);
+    let panes = create_tabs(&mut stream, 2, 1);
     assert!(
         command(&mut stream, Action::ClosePaneConfirm(panes[0].id))
             .unwrap_err()

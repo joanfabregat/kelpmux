@@ -79,63 +79,6 @@ fn six_grids_fit_device_profiles_and_preserve_other_terminals() {
     }
 }
 #[test]
-fn picker_cards_disable_occupied_shapes_and_never_leak_input() {
-    let mut ws = workspace((160, 50), (3, 3));
-    ws.ui.unused = vec![7, 8, 9];
-    ws.apply(&Action::GridPicker).unwrap();
-    let f = frame(&ws);
-    let cards = grid_cards(dialog_bounds(f.cols, f.rows));
-    assert_eq!(cards[0].y, cards[2].y);
-    assert_eq!(cards[3].y, cards[5].y);
-    assert!(cards[3].y > cards[0].y);
-    let mut router = Router::default();
-    assert!(
-        router
-            .route(
-                click(Point {
-                    x: cards[0].x + 1,
-                    y: cards[0].y + 1
-                }),
-                &f
-            )
-            .is_empty()
-    );
-    assert_eq!(
-        actions(router.route(
-            click(Point {
-                x: cards[3].x + 1,
-                y: cards[3].y + 1
-            }),
-            &f
-        )),
-        vec![Action::Grid { cols: 3, rows: 2 }, Action::DialogClose]
-    );
-    assert!(
-        router
-            .route(InputEvent::Paste(b"never shell".to_vec()), &f)
-            .is_empty()
-    );
-    assert!(
-        router
-            .route(InputEvent::Bytes(b"garbage".to_vec()), &f)
-            .is_empty()
-    );
-    let mut router = Router::default();
-    let base = frame(&workspace((160, 50), (2, 2)));
-    assert_eq!(
-        actions(router.route(InputEvent::Bytes(b"\x02ghello".to_vec()), &base)),
-        vec![Action::GridPicker]
-    );
-    assert!(
-        router
-            .route(
-                InputEvent::Paste(b"no leak while waiting for frame".to_vec()),
-                &base
-            )
-            .is_empty()
-    );
-}
-#[test]
 fn custom_prefix_preserves_alt_editing_and_observers() {
     let mut ws = workspace((160, 50), (2, 2));
     ws.ui.config.prefix = 1;
@@ -147,7 +90,7 @@ fn custom_prefix_preserves_alt_editing_and_observers() {
     );
     assert_eq!(
         actions(router.route(InputEvent::Bytes(b"\x01x".to_vec()), &f)),
-        vec![Action::GridPicker]
+        vec![Action::CloseReading]
     );
     ws.apply(&Action::FocusDirection { dx: 1, dy: 0 }).unwrap();
     assert_eq!(ws.active, 2);
@@ -396,11 +339,11 @@ fn config_position_choices_and_close_confirmation_require_explicit_consent() {
         vec![Action::TabPositionSet(TabPosition::Left)]
     );
     ws.apply(&Action::ClosePaneRequest(2)).unwrap();
-    assert_eq!(ws.ui.dialog.unwrap().selection, 0);
+    assert_eq!(ws.ui.dialog.unwrap().selection, 1);
     let f = frame(&ws);
     assert_eq!(
         actions(Router::default().route(InputEvent::Bytes(b"\r".to_vec()), &f)),
-        vec![Action::DialogClose]
+        vec![Action::ClosePaneConfirm(2), Action::DialogClose]
     );
     assert_eq!(
         actions(Router::default().route(InputEvent::Bytes(vec![27]), &f)),
@@ -446,7 +389,7 @@ fn footer_buttons_and_compact_vitals_have_disjoint_hit_targets() {
         .map(|c| c.text.as_str())
         .collect::<String>();
     assert!(footer.contains("14:49"));
-    assert!(footer.contains("Layout"));
+    assert!(footer.contains("Park"));
     assert_eq!(
         actions(Router::default().route(
             click(Point {
@@ -485,7 +428,7 @@ fn footer_buttons_and_compact_vitals_have_disjoint_hit_targets() {
             }),
             &f
         )),
-        vec![Action::GridPicker]
+        vec![Action::Parked]
     );
 }
 
@@ -498,7 +441,7 @@ fn grid_separators_are_visible_and_outside_application_bodies() {
         for view in &views {
             if view.rect.x > 0 {
                 let x = view.rect.x - 1;
-                assert_eq!(f.cells[usize::from(view.body.y * f.cols + x)].text, "│");
+                assert_eq!(f.cells[usize::from(view.body.y * f.cols + x)].text, "▎");
                 assert!(
                     views
                         .iter()
@@ -515,10 +458,9 @@ fn grid_separators_are_visible_and_outside_application_bodies() {
                 );
             }
         }
-        if shape.0 > 1 && shape.1 > 1 {
-            let x = views[1].rect.x - 1;
-            let y = views[usize::from(shape.0)].rect.y - 1;
-            assert_eq!(f.cells[usize::from(y * f.cols + x)].text, "┼");
+        if let Some(view) = views.iter().find(|v| v.rect.y > 0) {
+            let y = view.rect.y - 1;
+            assert!((0..f.cols).all(|x| f.cells[usize::from(y * f.cols + x)].text == "─"));
         }
         let mut display = Terminal::new(f.cols, f.rows);
         display.feed(&terminal_diff(None, &f));
@@ -569,7 +511,7 @@ fn responsive_new_tabs_wrap_controls_and_graphic_confirmation_have_disjoint_targ
                         .unwrap()
                         .1
                         .rows,
-                    4
+                    3
                 );
             }
             let capped = ws.layout()[0].body;
@@ -644,7 +586,7 @@ fn responsive_new_tabs_wrap_controls_and_graphic_confirmation_have_disjoint_targ
                 assert_eq!(actual, expected);
                 assert_eq!(
                     f.cells[usize::from(point.y * f.cols + point.x)].bg,
-                    Color::Indexed(if index == 0 { 27 } else { 88 })
+                    Color::Indexed(if index == 0 { 24 } else { 196 })
                 );
             }
         }
@@ -710,8 +652,8 @@ fn tab_colors_keep_bright_titles_selected_outline_and_disjoint_picker_controls()
                 f.cells[usize::from(rect.y * f.cols + rect.x)].fg,
                 Color::Indexed(PALETTE[usize::from(f.panes[index].pane.palette)].0)
             );
-            if rect.rows >= 4 {
-                let title = &f.cells[usize::from((rect.y + 2) * f.cols + rect.x + 2)];
+            if rect.rows >= 3 {
+                let title = &f.cells[usize::from((rect.y + 1) * f.cols + rect.x + 2)];
                 assert_eq!(title.text, "a");
                 assert_eq!(title.fg, Color::Indexed(231));
                 assert_eq!(
@@ -941,12 +883,83 @@ fn active_palette_connects_sidebar_and_width_dividers_in_capped_and_full_modes()
                     if y == body.y {
                         if wrapping { "+" } else { "−" }
                     } else {
-                        "│"
+                        "▎"
                     }
                 );
                 assert_eq!(cell.fg, Color::Indexed(bright));
             }
         }
+    }
+}
+
+#[test]
+fn automatic_grid_parking_controls_alert_colors_and_three_row_tabs() {
+    use kelpmux::native::{
+        ui::TabPosition,
+        workspace::{TabTarget, tab_park, tab_targets},
+    };
+    for size in [(40, 10), (100, 30), (240, 70)] {
+        let mut ws = workspace(size, (3, 3));
+        ws.ui.config.tab_position = TabPosition::Left;
+        let ids: Vec<_> = ws.panes.iter().map(|p| p.id).collect();
+        ws.reflow();
+        for count in (1..=9).rev() {
+            let views = ws.grid_layout();
+            assert_eq!(views.iter().filter(|v| v.body.cols > 0).count(), count);
+            for view in views.iter().filter(|v| v.body.cols > 0) {
+                let end = views
+                    .iter()
+                    .filter(|other| other.rect.y == view.rect.y && other.body.cols > 0)
+                    .map(|other| other.rect.x + other.rect.cols)
+                    .max()
+                    .unwrap();
+                assert_eq!(end, ws.cols);
+                assert!(view.rect.y + view.rect.rows < ws.rows);
+            }
+            ws.apply(&Action::Park(count as u64)).unwrap();
+        }
+        assert_eq!(ws.active, 0);
+        assert!(ws.terminal_sizes().is_empty());
+        ws.apply(&Action::Parked).unwrap();
+        let f = frame(&ws);
+        assert_eq!(
+            actions(Router::default().route(InputEvent::Bytes(b"\r".to_vec()), &f)),
+            vec![Action::Restore(1), Action::DialogClose]
+        );
+        ws.apply(&Action::Restore(1)).unwrap();
+        assert_eq!(ws.panes.iter().map(|p| p.id).collect::<Vec<_>>(), ids);
+        let f = frame(&ws);
+        let tab = tab_targets(f.cols, f.rows, &f.ui.config, 1, 0)
+            .into_iter()
+            .find(|(t, _)| *t == TabTarget::Pane(0))
+            .unwrap()
+            .1;
+        assert_eq!(tab.rows, 3);
+        let park = tab_park(tab);
+        assert_eq!(
+            actions(Router::default().route(
+                click(Point {
+                    x: park.x,
+                    y: park.y
+                }),
+                &f
+            )),
+            vec![Action::Park(1)]
+        );
+        let at = usize::from((f.rows - 1) * f.cols + f.cols - 2);
+        assert_eq!(f.cells[at].bg, Color::Indexed(60));
+        ws.ui.notifications.push(Notification {
+            id: 1,
+            pane: 1,
+            title: "Question".into(),
+            status: Status::InputNeeded,
+            at: 1,
+            read: false,
+            workspace: "test".into(),
+        });
+        assert_eq!(frame(&ws).cells[at].bg, Color::Indexed(160));
+        ws.apply(&Action::Acknowledge(1)).unwrap();
+        assert_eq!(frame(&ws).cells[at].bg, Color::Indexed(60));
     }
 }
 

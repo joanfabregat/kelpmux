@@ -33,18 +33,18 @@ pub const HELP: &str = "Owned native terminal workspaces (Linux):
   kelpmux stream-inspect [--workspace NAME] [PANE_ID ...]
   kelpmux server [--socket PATH] [--state-dir PATH] [--shell PATH] [--cwd PATH] [--size CxR] [--config PATH]
   kelpmux attach [--workspace NAME] [--socket PATH] [--takeover] [--current-client]
-  kelpmux ctl [--socket PATH] list|layout CxR|focus ID|read ID|fullscreen ID|reclaim ID|close|shutdown
+  kelpmux ctl [--socket PATH] list|new|park ID|restore ID|focus ID|read ID|fullscreen ID|reclaim ID|close|shutdown
 
 start owns a detached server; ssh-entry starts or attaches. stop ends its processes.
 --current-client explicitly skips retained-client selection; the protocol handshake remains mandatory.
 Custom sockets infer adjacent state; specify --state-dir when state lives elsewhere.
 Default workspace: main; socket: $XDG_STATE_HOME/kelpmux/workspaces/main/control.sock
   (falls back to ~/.local/state/kelpmux/workspaces/main/control.sock)
-Grids: 1x1, 2x1, 2x2, 3x2, 2x3, 3x3. Shrinking preserves occupied panes.
-Attach keys: Ctrl-B d detach, z grid/tabs, f full width, g grid picker,
+Grid geometry is automatic from unparked tabs and client dimensions.
+Attach keys: Ctrl-B d detach, z grid/tabs, f full width, g/e automatic grid,
   a agents, ! attention, n finished, s move, ? help, , settings,
   o overview, b notifications, r recovery, / search, c scratch,
-  N next question, P next completion, Space selection, H/L/K/J resize grid.
+  N next question, P next completion, Space selection, Enter new, p park, u parked.
 Configurable in --config JSON. Scratch is persistent until explicitly closed.";
 const TIMEOUT: Duration = Duration::from_secs(3);
 const ESCAPE_TIMEOUT: Duration = Duration::from_millis(35);
@@ -202,6 +202,7 @@ fn options(args: &[String]) -> Result<Options> {
     if let Some(path) = template_path {
         let template = super::templates::Template::load(&absolute(&path)?)?;
         result.settings.grid = template.grid;
+        result.settings.tab_count = Some(template.grid.0 * template.grid.1);
         result.settings.grid_weights = [Vec::new(), Vec::new()];
         result.settings.template = Some(template);
     }
@@ -237,6 +238,7 @@ pub fn run(args: &[String]) -> Result<()> {
                 rows: options.size.1,
                 ui: options.settings.ui,
                 initial_grid: options.settings.grid,
+                initial_tabs: options.settings.tab_count,
             })
         }
         "start" | "ssh-entry" => {
@@ -403,17 +405,9 @@ fn control(path: &Path, args: &[String]) -> Result<()> {
     let message = match command.as_str() {
         "list" if rest.is_empty() => ClientMessage::Inspect,
         "diagnostics" if rest.is_empty() => ClientMessage::Diagnostics,
-        "layout" if rest.len() == 1 => {
-            let (cols, rows) = parse_size(&rest[0])?;
-            if cols > u8::MAX.into() || rows > u8::MAX.into() {
-                return Err("invalid layout".into());
-            }
-            super::workspace::Workspace::grid_count(cols as u8, rows as u8)?;
-            ClientMessage::Command(Action::Grid {
-                cols: cols as u8,
-                rows: rows as u8,
-            })
-        }
+        "new" if rest.is_empty() => ClientMessage::Command(Action::NewTab),
+        "park" => ClientMessage::Command(Action::Park(id()?)),
+        "restore" => ClientMessage::Command(Action::Restore(id()?)),
         "focus" => ClientMessage::Command(Action::Focus(id()?)),
         "reclaim" => ClientMessage::Command(Action::ClaimPane(id()?)),
         "read" => ClientMessage::Command(Action::Read(id()?)),

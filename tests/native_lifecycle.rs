@@ -676,7 +676,7 @@ fn explicit_template_override_rebalances_saved_grid_weights() {
         6
     );
     let saved = Settings::load(&path).unwrap();
-    assert_eq!(saved.grid, (3, 2));
+    assert_eq!(saved.tab_count, Some(6));
     assert!(saved.grid_weights.iter().all(Vec::is_empty));
     fixture.stop();
 }

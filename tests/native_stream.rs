@@ -35,6 +35,7 @@ impl Daemon {
             rows: 30,
             ui: Default::default(),
             initial_grid: (2, 1),
+            initial_tabs: None,
         };
         let handle = thread::spawn(move || serve(config));
         let daemon = Self {

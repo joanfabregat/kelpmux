@@ -283,119 +283,10 @@ fn close(peer: &mut Peer, id: u64) {
 const SESSION: &str = "019abcde-1234-5678-9012-123456789abc";
 
 #[test]
-fn scratch_is_persistent_above_tabs_and_excluded_from_safe_grid_and_last_main_close() {
-    let daemon = Daemon::start();
-    let mut peer = daemon.attach();
-    let main = peer.panes()[0].id;
-    peer.action(Action::Read(main));
-    peer.wait(|frame| matches!(frame.reading,ReadingMode::Tabs(id)if id==main));
-    peer.action(Action::Scratch);
-    let opened = peer.wait(|frame| frame.ui.scratch_visible);
-    let scratch = opened.ui.scratch.unwrap();
-    assert_eq!(opened.active, scratch);
-    assert!(
-        opened
-            .panes
-            .iter()
-            .any(|view| view.pane.id == scratch && view.overlay)
-    );
-    let scratch_pid = peer
-        .panes()
-        .iter()
-        .find(|pane| pane.id == scratch)
-        .unwrap()
-        .pid;
-    peer.input("sleep 30 & printf 'SCRATCH_''KEPT\\n'\n");
-    peer.wait(|frame| text(frame).contains("SCRATCH_KEPT"));
-    peer.action(Action::ScratchClose);
-    peer.wait(|frame| !frame.ui.scratch_visible && frame.active == main);
-    peer.action(Action::Scratch);
-    peer.wait(|frame| frame.ui.scratch_visible && frame.active == scratch);
-    assert_eq!(
-        peer.panes()
-            .iter()
-            .find(|pane| pane.id == scratch)
-            .unwrap()
-            .pid,
-        scratch_pid
-    );
-    assert!(
-        peer.history(scratch)
-            .iter()
-            .any(|(_, line)| line.contains("SCRATCH_KEPT"))
-    );
-    peer.action(Action::Grid { cols: 2, rows: 1 });
-    peer.wait(|frame| frame.ui.grid_shape == (2, 1));
-    assert_eq!(peer.panes().len(), 3);
-    assert_eq!(
-        peer.panes()
-            .iter()
-            .find(|pane| pane.id == scratch)
-            .unwrap()
-            .pid,
-        scratch_pid
-    );
-    peer.action(Action::ScratchClose);
-    peer.wait(|frame| !frame.ui.scratch_visible);
-    let mains: Vec<_> = peer
-        .panes()
-        .into_iter()
-        .filter(|pane| pane.id != scratch)
-        .collect();
-    peer.wait(|frame| mains.iter().all(|pane| frame.ui.unused.contains(&pane.id)));
-    peer.action(Action::Grid { cols: 1, rows: 1 });
-    peer.wait(|frame| frame.ui.grid_shape == (1, 1));
-    assert_eq!(peer.panes().len(), 2);
-    peer.action(Action::Grid { cols: 2, rows: 1 });
-    peer.wait(|frame| frame.ui.grid_shape == (2, 1) && !frame.ui.scratch_visible);
-    let mains: Vec<_> = peer
-        .panes()
-        .into_iter()
-        .filter(|pane| pane.id != scratch)
-        .collect();
-    peer.wait(|frame| mains.iter().all(|pane| frame.ui.unused.contains(&pane.id)));
-    peer.action(Action::Scratch);
-    peer.wait(|frame| frame.ui.scratch_visible);
-    peer.action(Action::Grid { cols: 1, rows: 1 });
-    peer.wait(|frame| {
-        frame.ui.grid_shape == (1, 1) && frame.ui.scratch_visible && frame.active == scratch
-    });
-    assert_eq!(
-        peer.panes()
-            .iter()
-            .find(|pane| pane.id == scratch)
-            .unwrap()
-            .pid,
-        scratch_pid
-    );
-    let main = peer
-        .panes()
-        .into_iter()
-        .find(|pane| pane.id != scratch)
-        .unwrap()
-        .id;
-    close(&mut peer, main);
-    let panes = peer.panes();
-    assert_eq!(panes.len(), 2);
-    assert!(
-        panes
-            .iter()
-            .any(|pane| pane.id == scratch && pane.pid == scratch_pid)
-    );
-    assert!(panes.iter().any(|pane| pane.id != scratch));
-    close(&mut peer, scratch);
-    let frame = peer.frame.as_ref().unwrap();
-    assert_eq!(frame.ui.scratch, None);
-    assert!(!frame.ui.scratch_visible);
-    assert_eq!(frame.ui.scratch_return, None);
-    assert_eq!(peer.panes().len(), 1);
-}
-
-#[test]
 fn search_unicode_history_clipboard_selection_and_alternate_reveal_use_real_ptys() {
     let daemon = Daemon::start();
     let mut peer = daemon.attach();
-    peer.action(Action::Grid { cols: 2, rows: 1 });
+    peer.action(Action::NewTab);
     peer.wait(|frame| frame.ui.grid_shape == (2, 1));
     let panes = peer.panes();
     for pane in &panes {
@@ -473,6 +364,115 @@ fn search_unicode_history_clipboard_selection_and_alternate_reveal_use_real_ptys
     assert!(peer.clipboard().contains("UNICODE_探査"));
     assert!(!alt.ui.search_hits.is_empty());
     peer.input("printf '\\033[?1049l'\n");
+}
+
+#[test]
+fn parking_keeps_ptys_output_and_identity_through_all_parked_and_reconnect() {
+    let daemon = Daemon::start();
+    let mut peer = daemon.attach();
+    peer.action(Action::NewTab);
+    peer.wait(|f| f.panes.len() == 2);
+    let panes = peer.panes();
+    let first = panes[0].clone();
+    peer.action(Action::Focus(first.id));
+    peer.input("i=0; while [ $i -lt 12 ]; do printf 'PARK_''OUTPUT_%s\\n' $i; i=$((i+1)); sleep 0.05; done &\n");
+    peer.wait(|f| text(f).contains("PARK_OUTPUT_0"));
+    let size = peer.screen(first.id);
+    peer.action(Action::Park(first.id));
+    peer.wait(|f| {
+        f.panes
+            .iter()
+            .any(|v| v.pane.id == first.id && v.pane.parked && v.body.cols == 0)
+    });
+    let parked_size = peer.screen(first.id);
+    assert_eq!((size.cols, size.rows), (parked_size.cols, parked_size.rows));
+    peer.action(Action::Park(panes[1].id));
+    peer.wait(|f| f.active == 0 && f.panes.iter().all(|v| v.pane.parked && v.body.cols == 0));
+    let mut observer = daemon.attach();
+    observer.action(Action::Restore(first.id));
+    assert!(observer.error().contains("observer"));
+    assert!(peer.panes().iter().all(|p| p.parked));
+    drop(observer);
+    drop(peer);
+    let mut peer = daemon.attach();
+    let after = peer.panes();
+    assert_eq!(
+        after.iter().map(|p| (p.id, p.pid)).collect::<Vec<_>>(),
+        panes.iter().map(|p| (p.id, p.pid)).collect::<Vec<_>>()
+    );
+    assert!(after.iter().all(|p| p.parked));
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while !peer
+        .history(first.id)
+        .iter()
+        .any(|(_, line)| line.contains("PARK_OUTPUT_11"))
+    {
+        assert!(Instant::now() < deadline);
+        thread::sleep(Duration::from_millis(20));
+    }
+    peer.action(Action::Restore(first.id));
+    peer.wait(|f| {
+        f.active == first.id
+            && f.panes
+                .iter()
+                .any(|v| v.pane.id == first.id && !v.pane.parked && v.body.cols > 0)
+    });
+    assert_eq!(peer.panes()[0].pid, first.pid);
+}
+
+#[test]
+fn shell_exit_removes_only_its_tab_rebalances_and_last_exit_detaches() {
+    let daemon = Daemon::start();
+    let mut peer = daemon.attach();
+    let first = peer.panes()[0].clone();
+    peer.action(Action::NewTab);
+    peer.wait(|f| f.panes.len() == 2);
+    let second = peer.panes()[1].clone();
+    peer.input("exit\n");
+    peer.wait(|f| {
+        f.panes.len() == 1 && f.panes[0].pane.id == first.id && f.ui.grid_shape == (1, 1)
+    });
+    assert_eq!(peer.panes()[0].pid, first.pid);
+    assert!(!std::path::Path::new(&format!("/proc/{}", second.pid)).exists());
+    peer.input("exit\n");
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        assert!(Instant::now() < deadline);
+        if matches!(peer.read(), ServerMessage::Detached) {
+            break;
+        }
+    }
+}
+
+#[test]
+fn scratch_retains_its_pty_through_new_tabs_parking_and_last_main_close() {
+    let daemon = Daemon::start();
+    let mut peer = daemon.attach();
+    peer.action(Action::Scratch);
+    let opened = peer.wait(|f| f.ui.scratch_visible);
+    let scratch = opened.ui.scratch.unwrap();
+    let scratch_pid = peer.panes().iter().find(|p| p.id == scratch).unwrap().pid;
+    peer.action(Action::ScratchClose);
+    peer.wait(|f| !f.ui.scratch_visible);
+    peer.action(Action::NewTab);
+    peer.wait(|f| f.panes.len() == 3);
+    let mains: Vec<_> = peer
+        .panes()
+        .into_iter()
+        .filter(|p| p.id != scratch)
+        .collect();
+    peer.action(Action::Park(mains[0].id));
+    peer.wait(|f| f.ui.grid_shape == (1, 1));
+    peer.action(Action::Restore(mains[0].id));
+    peer.wait(|f| f.ui.grid_shape == (2, 1));
+    close(&mut peer, mains[1].id);
+    close(&mut peer, mains[0].id);
+    assert_eq!(
+        peer.panes().iter().find(|p| p.id == scratch).unwrap().pid,
+        scratch_pid
+    );
+    close(&mut peer, scratch);
+    assert_eq!(peer.panes().len(), 1);
 }
 
 #[test]
