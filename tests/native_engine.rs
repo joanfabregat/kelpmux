@@ -5,6 +5,55 @@ use kelpmux::native::{
     workspace::Workspace,
 };
 use std::collections::BTreeMap;
+#[test]
+fn pane_palette_replies_match_opaque_defaults_and_faint_composer_background() {
+    let mut pane = Terminal::for_pane(40, 8);
+    let effects = pane.feed(b"\x1b[6n\x1b]10;?\x1b\\\x1b]11;?\x1b\\\x1b[?u\x1b[c");
+    let replies: Vec<u8> = effects
+        .into_iter()
+        .filter_map(|e| match e {
+            Effect::WritePty(bytes) => Some(bytes),
+            _ => None,
+        })
+        .flatten()
+        .collect();
+    let replies = String::from_utf8(replies).unwrap();
+    assert!(replies.contains("rgb:e5e5/e5e5/e5e5"));
+    assert!(replies.contains("rgb:0000/0000/0000"));
+    assert!(replies.contains("\x1b[?0u"));
+    // Codex-style low-contrast shading, including erased/blank cells.
+    for byte in b"\x1b[3;1H\x1b[48;2;31;31;31m\x1b[2K Input \x1b[0m" {
+        pane.feed(&[*byte]);
+    }
+    let source = pane.snapshot();
+    assert_eq!(source.cells[0].bg, Color::Rgb(0, 0, 0));
+    assert_eq!(source.cells[2 * 40 + 30].bg, Color::Rgb(31, 31, 31));
+    let mut display = Terminal::new(40, 8);
+    display.feed(b"\x1b]10;rgb:00/00/00\x07\x1b]11;rgb:1f/1f/1f\x07");
+    display.feed(&terminal_diff(None, &frame(source.clone())));
+    assert_eq!(display.snapshot().cells, source.cells);
+    assert_ne!(
+        display.snapshot().cells[0].bg,
+        display.snapshot().cells[2 * 40].bg
+    );
+}
+
+#[test]
+fn enhanced_keyboard_modes_report_push_and_pop_across_fragmented_output() {
+    let mut terminal = Terminal::new(40, 8);
+    let mut replies = Vec::new();
+    for byte in b"\x1b[>3u\x1b[?u" {
+        for effect in terminal.feed(&[*byte]) {
+            if let Effect::WritePty(bytes) = effect {
+                replies.extend(bytes);
+            }
+        }
+    }
+    assert_eq!(terminal.snapshot().modes.keyboard_flags, 3);
+    assert_eq!(replies, b"\x1b[?3u");
+    terminal.feed(b"\x1b[<1u");
+    assert_eq!(terminal.snapshot().modes.keyboard_flags, 0);
+}
 fn line(screen: &Screen, y: usize) -> String {
     screen.cells[y * usize::from(screen.cols)..(y + 1) * usize::from(screen.cols)]
         .iter()

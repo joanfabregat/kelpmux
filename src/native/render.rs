@@ -175,7 +175,7 @@ pub fn compose(
             8,
             " Config ",
             Color::Indexed(231),
-            Color::Indexed(60),
+            Color::Indexed(24),
             true,
         );
         fill(
@@ -186,7 +186,7 @@ pub fn compose(
                 cols: 6,
                 rows: 1,
             },
-            Color::Indexed(24),
+            Color::Indexed(67),
         );
         write_text(
             &mut frame,
@@ -201,7 +201,7 @@ pub fn compose(
                 " Grid "
             },
             Color::Indexed(231),
-            Color::Indexed(24),
+            Color::Indexed(67),
             true,
         );
         write_text(
@@ -307,7 +307,12 @@ fn draw_help(frame: &mut Frame, workspace: &Workspace) {
         " Help · Ctrl-{}, then key",
         char::from(b'A' + workspace.ui.config.prefix - 1)
     );
-    fill(frame, Rect { rows: 1, ..rect }, Color::Indexed(24));
+    let header_bg = Color::Indexed(if workspace.ui.notifications.iter().any(|n| !n.read) {
+        160
+    } else {
+        94
+    });
+    fill(frame, Rect { rows: 1, ..rect }, header_bg);
     write_text(
         frame,
         rect.x + 1,
@@ -315,7 +320,7 @@ fn draw_help(frame: &mut Frame, workspace: &Workspace) {
         rect.cols.saturating_sub(5),
         &title,
         Color::Indexed(231),
-        Color::Indexed(24),
+        header_bg,
         true,
     );
     write_text(
@@ -525,6 +530,22 @@ fn draw_dialog(
     use super::ui::{AgentFilter, DialogKind};
     let bounds = super::workspace::dialog_bounds_for(frame.cols, frame.rows, dialog.kind);
     fill(frame, bounds, Color::Indexed(236));
+    let header_bg = Color::Indexed(
+        if matches!(
+            dialog.kind,
+            DialogKind::CloseConfirm | DialogKind::ParkConfirm | DialogKind::RestoreConfirm
+        ) {
+            workspace
+                .panes
+                .iter()
+                .find(|p| Some(p.id) == dialog.source)
+                .map(|p| PALETTE[usize::from(p.palette) % PALETTE.len()].1)
+                .unwrap_or(24)
+        } else {
+            24
+        },
+    );
+    fill(frame, Rect { rows: 1, ..bounds }, header_bg);
     let title = match dialog.kind {
         DialogKind::Parked => " Parked tabs · select to restore",
         DialogKind::Grid => " Grid · arrows, Enter or click",
@@ -557,7 +578,7 @@ fn draw_dialog(
         bounds.cols,
         title,
         Color::Indexed(231),
-        Color::Indexed(24),
+        header_bg,
         true,
     );
     write_text(
@@ -1329,7 +1350,7 @@ fn draw_tabs(frame: &mut Frame, workspace: &Workspace, spinner: usize) {
                 write_text(
                     frame,
                     rect.x,
-                    rect.y,
+                    rect.y + rect.rows / 2,
                     rect.cols,
                     &label,
                     Color::Indexed(231),
@@ -1349,12 +1370,12 @@ fn draw_tabs(frame: &mut Frame, workspace: &Workspace, spinner: usize) {
                     .filter(|p| Some(p.id) != workspace.ui.scratch)
                     .count()
                     < 9;
-                let bg = Color::Indexed(if enabled { 29 } else { 236 });
+                let bg = Color::Indexed(if enabled { 238 } else { 236 });
                 fill(frame, rect, bg);
                 write_text(
                     frame,
                     rect.x,
-                    rect.y,
+                    rect.y + rect.rows / 2,
                     rect.cols,
                     label,
                     Color::Indexed(if enabled { 231 } else { 245 }),
@@ -1428,7 +1449,9 @@ fn draw_tabs(frame: &mut Frame, workspace: &Workspace, spinner: usize) {
     let wrapping =
         workspace.ui.config.wrap_lines && !matches!(workspace.reading, ReadingMode::Fullscreen(_));
     let x = body.x + body.cols + 1;
-    if x < frame.cols {
+    if x < frame.cols
+        && super::workspace::reading_limit_effective(frame.cols, frame.rows, &workspace.ui.config)
+    {
         for y in body.y..body.y + body.rows {
             write_text(
                 frame,
