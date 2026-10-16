@@ -52,6 +52,157 @@ fn click(point: Point) -> InputEvent {
     })
 }
 #[test]
+fn parking_and_restore_confirm_before_mutation_and_escape_cancels() {
+    use kelpmux::native::ui::DialogKind;
+    let mut ws = workspace((120, 40), (2, 1));
+    ws.apply(&Action::Read(1)).unwrap();
+    let original = ws.terminal_sizes();
+    let requested =
+        actions(Router::default().route(InputEvent::Bytes(b"\x02pX".to_vec()), &frame(&ws)));
+    assert_eq!(requested, vec![Action::ParkRequest(1)]);
+    ws.apply(&requested[0]).unwrap();
+    assert!(!ws.panes[0].parked);
+    assert_eq!(ws.terminal_sizes(), original);
+    assert_eq!(ws.ui.dialog.unwrap().kind, DialogKind::ParkConfirm);
+    let cancel = actions(Router::default().route(InputEvent::Bytes(vec![27]), &frame(&ws)));
+    for action in cancel {
+        ws.apply(&action).unwrap();
+    }
+    assert!(!ws.panes[0].parked);
+    ws.apply(&Action::ParkRequest(1)).unwrap();
+    for action in actions(Router::default().route(InputEvent::Bytes(b"\r".to_vec()), &frame(&ws))) {
+        ws.apply(&action).unwrap();
+    }
+    assert!(ws.panes[0].parked);
+    for action in [Action::Focus(1), Action::Read(1), Action::Fullscreen(1)] {
+        ws.apply(&action).unwrap();
+        assert!(ws.panes[0].parked);
+        assert_eq!(ws.ui.dialog.unwrap().kind, DialogKind::RestoreConfirm);
+        ws.apply(&Action::DialogClose).unwrap();
+    }
+    ws.apply(&Action::Parked).unwrap();
+    let choose = actions(Router::default().route(InputEvent::Bytes(b"\r".to_vec()), &frame(&ws)));
+    assert_eq!(choose, vec![Action::RestoreRequest(1)]);
+    ws.apply(&choose[0]).unwrap();
+    assert!(ws.panes[0].parked);
+    assert_eq!(ws.ui.dialog.unwrap().kind, DialogKind::RestoreConfirm);
+    for action in actions(Router::default().route(InputEvent::Bytes(vec![27]), &frame(&ws))) {
+        ws.apply(&action).unwrap();
+    }
+    assert!(ws.panes[0].parked);
+    ws.apply(&Action::RestoreRequest(1)).unwrap();
+    for action in actions(Router::default().route(InputEvent::Bytes(b"\r".to_vec()), &frame(&ws))) {
+        ws.apply(&action).unwrap();
+    }
+    assert!(!ws.panes[0].parked);
+    assert_eq!(ws.active, 1);
+}
+
+#[test]
+fn parked_tab_control_fits_all_positions_and_remains_reachable_when_all_parked() {
+    use kelpmux::native::{
+        ui::TabPosition,
+        workspace::{TabTarget, tab_targets},
+    };
+    for size in [(40, 10), (80, 24), (120, 40), (240, 70)] {
+        for position in [
+            TabPosition::Top,
+            TabPosition::Bottom,
+            TabPosition::Left,
+            TabPosition::Auto,
+        ] {
+            for count in 0..=9 {
+                let mut ws = workspace(size, (3, 3));
+                ws.ui.config.tab_position = position;
+                for id in count + 1..=9 {
+                    ws.apply(&Action::Park(id)).unwrap();
+                }
+                if count > 0 {
+                    ws.apply(&Action::Read(1)).unwrap();
+                }
+                let f = frame(&ws);
+                let targets = tab_targets(f.cols, f.rows, &f.ui.config, count as usize, 0);
+                for (i, (_, rect)) in targets.iter().enumerate() {
+                    assert!(rect.x + rect.cols <= f.cols && rect.y + rect.rows < f.rows);
+                    for (_, other) in targets.iter().skip(i + 1) {
+                        assert!(
+                            rect.x + rect.cols <= other.x
+                                || other.x + other.cols <= rect.x
+                                || rect.y + rect.rows <= other.y
+                                || other.y + other.rows <= rect.y
+                        );
+                    }
+                }
+                let parked = targets
+                    .iter()
+                    .find(|(t, _)| *t == TabTarget::Parked)
+                    .unwrap()
+                    .1;
+                assert_eq!(
+                    actions(Router::default().route(
+                        click(Point {
+                            x: parked.x,
+                            y: parked.y
+                        }),
+                        &f
+                    )),
+                    vec![Action::Parked]
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn parked_table_animates_status_and_modals_dim_without_altering_terminal_contents() {
+    use kelpmux::native::{ui::DialogKind, workspace::dialog_bounds_for};
+    let mut ws = workspace((120, 40), (2, 1));
+    ws.apply(&Action::Read(1)).unwrap();
+    let body = ws.layout()[0].body;
+    let mut terminal = Terminal::new(body.cols, body.rows);
+    terminal.feed(b"\x1b[38;2;120;200;240m\x1b[48;2;100;80;60mcontent");
+    let screen = terminal.snapshot();
+    let screens = BTreeMap::from([(1, screen.clone())]);
+    let original = compose(&ws, &screens, true, None, 0);
+    let at = usize::from(body.y * ws.cols + body.x);
+    for action in [
+        Action::Config,
+        Action::Help,
+        Action::ClosePaneRequest(1),
+        Action::ParkRequest(1),
+    ] {
+        ws.help = false;
+        ws.ui.dialog = None;
+        ws.apply(&action).unwrap();
+        let modal = compose(&ws, &screens, true, None, 0);
+        assert_eq!(modal.cells[at].text, original.cells[at].text);
+        assert_eq!(modal.cells[at].fg, Color::Rgb(50, 84, 100));
+        assert_eq!(modal.cells[at].bg, Color::Rgb(42, 33, 25));
+        assert_eq!(screens[&1], screen);
+        let mut display = Terminal::new(ws.cols, ws.rows);
+        display.feed(&terminal_diff(None, &modal));
+        assert_eq!(display.snapshot().cells, modal.cells);
+    }
+    ws.ui.dialog = None;
+    ws.panes[1].status = Status::Working;
+    ws.panes[1].title = "A parked agent".into();
+    ws.apply(&Action::Park(2)).unwrap();
+    ws.apply(&Action::Parked).unwrap();
+    let bounds = dialog_bounds_for(ws.cols, ws.rows, DialogKind::Parked);
+    let a = compose(&ws, &screens, true, None, 0);
+    let b = compose(&ws, &screens, true, None, 1);
+    let marker = usize::from((bounds.y + 2) * ws.cols + bounds.x + 6);
+    assert_eq!(a.cells[marker].text, "⠋");
+    assert_eq!(b.cells[marker].text, "⠙");
+    let accent = usize::from((bounds.y + 2) * ws.cols + bounds.x);
+    assert_eq!(a.cells[accent].text, "▎");
+    assert_eq!(
+        a.cells[accent].fg,
+        Color::Indexed(kelpmux::native::ui::PALETTE[2].0)
+    );
+}
+
+#[test]
 fn six_grids_fit_device_profiles_and_preserve_other_terminals() {
     for size in [(40, 10), (80, 30), (160, 50), (240, 70)] {
         for shape in GRIDS {
@@ -389,11 +540,12 @@ fn footer_buttons_and_compact_vitals_have_disjoint_hit_targets() {
         .map(|c| c.text.as_str())
         .collect::<String>();
     assert!(footer.contains("14:49"));
-    assert!(footer.contains("Park"));
+    assert!(!footer.contains("Park"));
+    assert!(footer.starts_with(" Config "));
     assert_eq!(
         actions(Router::default().route(
             click(Point {
-                x: f.cols - 26,
+                x: 1,
                 y: f.rows - 1
             }),
             &f
@@ -403,7 +555,7 @@ fn footer_buttons_and_compact_vitals_have_disjoint_hit_targets() {
     assert_eq!(
         actions(Router::default().route(
             click(Point {
-                x: f.cols - 19,
+                x: 9,
                 y: f.rows - 1
             }),
             &f
@@ -413,7 +565,7 @@ fn footer_buttons_and_compact_vitals_have_disjoint_hit_targets() {
     assert_eq!(
         actions(Router::default().route(
             click(Point {
-                x: f.cols - 11,
+                x: 17,
                 y: f.rows - 1
             }),
             &f
@@ -423,12 +575,12 @@ fn footer_buttons_and_compact_vitals_have_disjoint_hit_targets() {
     assert_eq!(
         actions(Router::default().route(
             click(Point {
-                x: f.cols - 9,
+                x: 20,
                 y: f.rows - 1
             }),
             &f
         )),
-        vec![Action::Parked]
+        vec![Action::Help]
     );
 }
 
@@ -924,7 +1076,7 @@ fn automatic_grid_parking_controls_alert_colors_and_three_row_tabs() {
         let f = frame(&ws);
         assert_eq!(
             actions(Router::default().route(InputEvent::Bytes(b"\r".to_vec()), &f)),
-            vec![Action::Restore(1), Action::DialogClose]
+            vec![Action::RestoreRequest(1)]
         );
         ws.apply(&Action::Restore(1)).unwrap();
         assert_eq!(ws.panes.iter().map(|p| p.id).collect::<Vec<_>>(), ids);
@@ -944,10 +1096,10 @@ fn automatic_grid_parking_controls_alert_colors_and_three_row_tabs() {
                 }),
                 &f
             )),
-            vec![Action::Park(1)]
+            vec![Action::ParkRequest(1)]
         );
-        let at = usize::from((f.rows - 1) * f.cols + f.cols - 2);
-        assert_eq!(f.cells[at].bg, Color::Indexed(60));
+        let at = usize::from((f.rows - 1) * f.cols + 20);
+        assert_eq!(f.cells[at].bg, Color::Indexed(94));
         ws.ui.notifications.push(Notification {
             id: 1,
             pane: 1,
@@ -959,7 +1111,7 @@ fn automatic_grid_parking_controls_alert_colors_and_three_row_tabs() {
         });
         assert_eq!(frame(&ws).cells[at].bg, Color::Indexed(160));
         ws.apply(&Action::Acknowledge(1)).unwrap();
-        assert_eq!(frame(&ws).cells[at].bg, Color::Indexed(60));
+        assert_eq!(frame(&ws).cells[at].bg, Color::Indexed(94));
     }
 }
 

@@ -2,7 +2,7 @@
 use crate::Result;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
-pub const FOOTER_COLS: u16 = 27;
+pub const FOOTER_COLS: u16 = 22;
 pub const PALETTE: [(u8, u8); 9] = [
     (39, 24),
     (42, 29),
@@ -57,6 +57,8 @@ pub enum DialogKind {
     Move,
     Config,
     CloseConfirm,
+    ParkConfirm,
+    RestoreConfirm,
     Color,
 }
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
