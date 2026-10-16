@@ -712,6 +712,9 @@ fn fitted(frame: &Frame, size: (u16, u16), notice: Option<&str>) -> Frame {
     }
     let target = usize::from(size.1 - 1) * usize::from(size.0);
     let source = usize::from(frame.rows - 1) * usize::from(frame.cols);
+    for cell in &mut fit.cells[target..target + usize::from(size.0)] {
+        cell.bg = Color::Indexed(super::ui::FOOTER_BG);
+    }
     let controls = super::ui::FOOTER_COLS.min(size.0).min(frame.cols);
     let fixed = (controls + if frame.controller { 0 } else { 10 })
         .min(size.0)
