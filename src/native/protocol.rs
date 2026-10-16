@@ -3,7 +3,7 @@ use crate::{Result, model::Status};
 use serde::{Deserialize, Serialize};
 use std::io::{Read, Write};
 
-pub const VERSION: u16 = 8;
+pub const VERSION: u16 = 9;
 pub const MAX_MESSAGE: usize = 16 * 1024 * 1024;
 pub const MAX_INPUT: usize = 64 * 1024;
 pub type PaneId = u64;
@@ -107,6 +107,8 @@ pub struct Screen {
 }
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PaneInfo {
+    #[serde(default)]
+    pub parked: bool,
     pub id: PaneId,
     pub number: usize,
     pub pid: u32,
@@ -214,6 +216,9 @@ pub enum Action {
     Config,
     WrapToggle,
     NewTab,
+    Park(PaneId),
+    Restore(PaneId),
+    Parked,
     TabColor(PaneId),
     TabColorSet {
         pane: PaneId,

@@ -201,7 +201,7 @@ fn notification_history_acknowledges_and_jumps_and_next_agent_navigation_wraps()
     assert!(ws.ui.notifications[0].read);
 }
 #[test]
-fn viewport_reading_preferences_and_grid_drag_preserve_all_ids() {
+fn viewport_reading_preferences_and_automatic_grid_preserve_all_ids() {
     let mut ws = workspace(120, 40);
     ws.apply(&Action::Read(1)).unwrap();
     ws.apply(&Action::ReadResize { cols: 85, rows: 20 })
@@ -227,8 +227,8 @@ fn viewport_reading_preferences_and_grid_drag_preserve_all_ids() {
     })
     .unwrap();
     let views = ws.layout();
-    assert!(views[0].rect.cols > views[1].rect.cols);
-    assert!(views[0].rect.rows > views[2].rect.rows);
+    assert!(views[0].rect.cols.abs_diff(views[1].rect.cols) <= 1);
+    assert!(views[0].rect.rows.abs_diff(views[2].rect.rows) <= 1);
     assert_eq!(ids, ws.panes.iter().map(|p| p.id).collect::<Vec<_>>());
     let f = frame(&ws);
     let mut router = Router::default();
@@ -241,13 +241,11 @@ fn viewport_reading_preferences_and_grid_drag_preserve_all_ids() {
             .route(mouse(separator, MouseKind::Press), &f)
             .is_empty()
     );
-    assert!(matches!(
-        actions(router.route(mouse(Point { x: 100, y: 2 }, MouseKind::Release), &f)).as_slice(),
-        [Action::ResizeGrid {
-            column: Some(_),
-            row: None
-        }]
-    ));
+    assert!(
+        router
+            .route(mouse(Point { x: 100, y: 2 }, MouseKind::Release), &f)
+            .is_empty()
+    );
     let separator = Point {
         x: 50,
         y: f.panes[2].rect.y - 1,
@@ -257,13 +255,11 @@ fn viewport_reading_preferences_and_grid_drag_preserve_all_ids() {
             .route(mouse(separator, MouseKind::Press), &f)
             .is_empty()
     );
-    assert!(matches!(
-        actions(router.route(mouse(Point { x: 50, y: 20 }, MouseKind::Release), &f)).as_slice(),
-        [Action::ResizeGrid {
-            column: None,
-            row: Some((0, _))
-        }]
-    ));
+    assert!(
+        router
+            .route(mouse(Point { x: 50, y: 20 }, MouseKind::Release), &f)
+            .is_empty()
+    );
 }
 #[test]
 fn header_drag_swap_and_keyboard_selection_are_owned_by_the_multiplexer() {
@@ -360,7 +356,7 @@ fn recovery_and_sound_settings_are_actionable_and_small_screen_help_scrolls() {
     assert!(ws.ui.help_offset > 0);
     let f = frame(&ws);
     let text = f.cells.iter().map(|c| c.text.as_str()).collect::<String>();
-    assert!(text.contains("Resize grid"));
+    assert!(text.contains("New tab"));
 }
 #[test]
 fn all_dashboards_and_scratch_compose_unicode_colors_roundtrip() {

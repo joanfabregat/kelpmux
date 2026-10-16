@@ -226,7 +226,10 @@ impl Router {
                         b"z" => Some(Action::Read(frame.active)),
                         b"f" => Some(Action::Fullscreen(frame.active)),
                         b"?" => Some(Action::Help),
-                        b"g" => Some(Action::GridPicker),
+                        b"g" | b"e" => Some(Action::CloseReading),
+                        b"p" => Some(Action::Park(frame.active)),
+                        b"u" => Some(Action::Parked),
+                        b"\r" | b"\n" => Some(Action::NewTab),
                         b"v" => Some(Action::TabPosition),
                         b"," => Some(Action::Config),
                         b"o" => Some(Action::Overview),
@@ -348,7 +351,14 @@ impl Router {
                 if let Some(action) = action {
                     emit(&mut output, action, true);
                 } else if matches!(key, b"\r" | b"\n") {
-                    output.extend(self.pick_dialog(frame, dialog.selection));
+                    output.extend(self.pick_dialog(
+                        frame,
+                        if dialog.kind == super::ui::DialogKind::CloseConfirm {
+                            1
+                        } else {
+                            dialog.selection
+                        },
+                    ));
                 } else if let [digit @ b'1'..=b'9'] = key {
                     let index = if dialog.kind == super::ui::DialogKind::Agents {
                         let panes: Vec<_> = frame
@@ -635,6 +645,19 @@ impl Router {
             && event.position.x >= frame.cols.saturating_sub(20)
             && event.position.x < frame.cols.saturating_sub(10)
         {
+            if frame.active == 0 {
+                if event.position.x < frame.cols - 13
+                    && frame
+                        .panes
+                        .iter()
+                        .filter(|v| Some(v.pane.id) != frame.ui.scratch)
+                        .count()
+                        < 9
+                {
+                    emit(&mut output, Action::NewTab, true);
+                }
+                return output;
+            }
             let action = if event.position.x < frame.cols - 13 {
                 Action::Read(frame.active)
             } else {
@@ -649,7 +672,7 @@ impl Router {
             && event.position.x < frame.cols.saturating_sub(3)
         {
             self.pending_modal = true;
-            emit(&mut output, Action::GridPicker, true);
+            emit(&mut output, Action::Parked, true);
             return output;
         }
         if event.kind == MouseKind::Press
@@ -683,29 +706,6 @@ impl Router {
                 return output;
             }
         }
-        if frame.reading == ReadingMode::Grid
-            && !frame.ui.scratch_visible
-            && event.kind == MouseKind::Press
-        {
-            for view in frame
-                .panes
-                .iter()
-                .filter(|v| Some(v.pane.id) != frame.ui.scratch)
-            {
-                if view.rect.y == 0 && view.rect.x > 0 && event.position.x == view.rect.x - 1 {
-                    self.boundary_drag = Some((Some((view.pane.number - 1) as u8 - 1), None));
-                    return output;
-                }
-                if view.rect.y > 0 && event.position.y == view.rect.y - 1 {
-                    let rows = frame.ui.grid_shape.0.max(1);
-                    self.boundary_drag = Some((
-                        None,
-                        Some(((view.pane.number - 1) / usize::from(rows)) as u8 - 1),
-                    ));
-                    return output;
-                }
-            }
-        }
         if frame.reading != ReadingMode::Grid && !frame.ui.scratch_visible {
             if event.kind == MouseKind::Press
                 && frame.panes.iter().any(|view| {
@@ -722,7 +722,7 @@ impl Router {
             let tabviews: Vec<_> = frame
                 .panes
                 .iter()
-                .filter(|view| Some(view.pane.id) != frame.ui.scratch)
+                .filter(|view| !view.pane.parked && Some(view.pane.id) != frame.ui.scratch)
                 .collect();
             let active = tabviews
                 .iter()
@@ -777,7 +777,12 @@ impl Router {
                         let color = matches!(target, TabTarget::Pane(_))
                             && event.kind == MouseKind::Press
                             && super::workspace::tab_number(bounds).contains(event.position);
-                        if color {
+                        let park = matches!(target, TabTarget::Pane(_))
+                            && event.kind == MouseKind::Press
+                            && super::workspace::tab_park(bounds).contains(event.position);
+                        if park {
+                            emit(&mut output, Action::Park(view.pane.id), true);
+                        } else if color {
                             self.pending_modal = true;
                             emit(&mut output, Action::TabColor(view.pane.id), true);
                         } else if close {
@@ -885,7 +890,7 @@ impl Router {
     fn binding(&mut self, name: &str, frame: &Frame) -> Option<Action> {
         Some(match name {
             "help" => Action::Help,
-            "grid" => Action::GridPicker,
+            "grid" => Action::CloseReading,
             "read" => Action::Read(frame.active),
             "fullscreen" => Action::Fullscreen(frame.active),
             "tab-position" => Action::TabPosition,
@@ -933,6 +938,17 @@ impl Router {
             return vec![];
         };
         let mut actions = vec![];
+        if dialog.kind == DialogKind::Parked {
+            return frame_entries(frame)
+                .get(index)
+                .map(|id| {
+                    vec![
+                        ClientMessage::Action(Action::Restore(*id)),
+                        ClientMessage::Action(Action::DialogClose),
+                    ]
+                })
+                .unwrap_or_default();
+        }
         if dialog.kind == DialogKind::Color {
             return dialog
                 .source
@@ -1258,40 +1274,7 @@ impl Router {
             self.pick_dialog(frame, frame.ui.dialog.unwrap().selection)
         }
     }
-    fn grid_resize(&self, frame: &Frame, dx: i16, dy: i16) -> Option<Action> {
-        if frame.reading != ReadingMode::Grid {
-            return None;
-        }
-        let (cols, rows) = frame.ui.grid_shape;
-        let index = frame
-            .panes
-            .iter()
-            .filter(|view| Some(view.pane.id) != frame.ui.scratch)
-            .position(|view| view.pane.id == frame.active)?;
-        let col = index % usize::from(cols.max(1));
-        let row = index / usize::from(cols.max(1));
-        let column = if dx != 0 && cols > 1 {
-            let boundary = col.min(usize::from(cols) - 2);
-            let current = if frame.ui.column_weights.len() == usize::from(cols) {
-                frame.ui.column_weights[..=boundary].iter().sum()
-            } else {
-                1000 * (boundary as u16 + 1) / u16::from(cols)
-            };
-            Some((boundary as u8, current.saturating_add_signed(dx)))
-        } else {
-            None
-        };
-        let row = if dy != 0 && rows > 1 {
-            let boundary = row.min(usize::from(rows) - 2);
-            let current = if frame.ui.row_weights.len() == usize::from(rows) {
-                frame.ui.row_weights[..=boundary].iter().sum()
-            } else {
-                1000 * (boundary as u16 + 1) / u16::from(rows)
-            };
-            Some((boundary as u8, current.saturating_add_signed(dy)))
-        } else {
-            None
-        };
-        Some(Action::ResizeGrid { column, row })
+    fn grid_resize(&self, _frame: &Frame, _dx: i16, _dy: i16) -> Option<Action> {
+        None
     }
 }

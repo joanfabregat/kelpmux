@@ -1,5 +1,5 @@
 {
-  "grid": [2, 2],
+  "tab_count": 4,
   "ui": {
     "prefix": 2,
     "tab_position": "auto",

@@ -86,13 +86,17 @@ fn every_grid_balances_cells_keeps_header_footer_and_all_panes() {
                 assert!(view.rect.x + view.rect.cols <= cols);
                 assert!(view.rect.y + view.rect.rows < rows);
             }
-            if shape.0 == 2 {
+            if views.len() > 1 && views[0].rect.y == views[1].rect.y {
                 assert_eq!(views[0].rect.x + views[0].rect.cols + 1, views[1].rect.x);
                 assert!(views[0].rect.cols.abs_diff(views[1].rect.cols) <= 1);
             }
             ws.resize(40, 10).unwrap();
             assert_eq!(ws.panes.len(), views.len());
-            assert_eq!((ws.grid_cols, ws.grid_rows), shape);
+            assert!(
+                ws.grid_layout()
+                    .iter()
+                    .all(|v| v.rect.x + v.rect.cols <= 40)
+            );
         }
     }
 }
