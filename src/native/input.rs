@@ -518,6 +518,29 @@ impl Router {
                 emit(&mut output, Action::DialogClose, true);
                 return output;
             }
+            if dialog.kind == super::ui::DialogKind::Config {
+                if let Some((index, value, _)) = super::workspace::config_targets(bounds)
+                    .into_iter()
+                    .find(|(_, _, rect)| rect.contains(event.position))
+                {
+                    if event.kind == MouseKind::Press {
+                        let current = match index {
+                            4 => Some(
+                                frame.ui.config.wrap_lines
+                                    && !matches!(frame.reading, ReadingMode::Fullscreen(_)),
+                            ),
+                            5 => Some(frame.ui.config.notification_sound),
+                            _ => None,
+                        };
+                        if value.is_none() || value != current {
+                            output.extend(self.pick_dialog(frame, index));
+                        }
+                    } else if event.kind == MouseKind::Move {
+                        emit(&mut output, Action::DialogPick(index), true);
+                    }
+                }
+                return output;
+            }
             let index = if dialog.kind == super::ui::DialogKind::Grid {
                 super::workspace::grid_cards(bounds)
                     .iter()
@@ -969,10 +992,10 @@ impl Router {
         }
         if dialog.kind == DialogKind::Config {
             if index == 4 {
-                return vec![ClientMessage::Action(Action::NotificationSoundToggle)];
+                return vec![ClientMessage::Action(Action::WrapToggle)];
             }
             if index == 5 {
-                return vec![ClientMessage::Action(Action::WrapToggle)];
+                return vec![ClientMessage::Action(Action::NotificationSoundToggle)];
             }
             let positions = [
                 super::ui::TabPosition::Auto,

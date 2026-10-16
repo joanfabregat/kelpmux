@@ -372,16 +372,24 @@ fn responsive_tabs_keep_all_panes_without_overlays_and_mouse_selects_tabs() {
 }
 #[test]
 fn config_position_choices_and_close_confirmation_require_explicit_consent() {
-    use kelpmux::native::{ui::TabPosition, workspace::dialog_bounds};
+    use kelpmux::native::{
+        ui::TabPosition,
+        workspace::{config_targets, dialog_bounds_for},
+    };
     let mut ws = workspace((120, 40), (2, 2));
     ws.apply(&Action::Config).unwrap();
     let f = frame(&ws);
-    let bounds = dialog_bounds(f.cols, f.rows);
+    let bounds = dialog_bounds_for(f.cols, f.rows, f.ui.dialog.unwrap().kind);
+    let choice = config_targets(bounds)
+        .into_iter()
+        .find(|(index, _, _)| *index == 2)
+        .unwrap()
+        .2;
     assert_eq!(
         actions(Router::default().route(
             click(Point {
-                x: bounds.x + 1,
-                y: bounds.y + 4
+                x: choice.x,
+                y: choice.y
             }),
             &f
         )),
@@ -522,7 +530,7 @@ fn grid_separators_are_visible_and_outside_application_bodies() {
 fn responsive_new_tabs_wrap_controls_and_graphic_confirmation_have_disjoint_targets() {
     use kelpmux::native::{
         ui::TabPosition,
-        workspace::{TabTarget, close_buttons, dialog_bounds, dialog_bounds_for, tab_targets},
+        workspace::{TabTarget, close_buttons, dialog_bounds_for, tab_targets},
     };
     for size in [(40, 10), (100, 30), (240, 70)] {
         for position in [TabPosition::Left, TabPosition::Top, TabPosition::Bottom] {
@@ -601,12 +609,17 @@ fn responsive_new_tabs_wrap_controls_and_graphic_confirmation_have_disjoint_targ
 
             ws.apply(&Action::Config).unwrap();
             let f = frame(&ws);
-            let bounds = dialog_bounds(f.cols, f.rows);
+            let bounds = dialog_bounds_for(f.cols, f.rows, f.ui.dialog.unwrap().kind);
+            let choice = kelpmux::native::workspace::config_targets(bounds)
+                .into_iter()
+                .find(|(index, value, _)| *index == 4 && *value == Some(false))
+                .unwrap()
+                .2;
             assert_eq!(
                 actions(Router::default().route(
                     click(Point {
-                        x: bounds.x + 1,
-                        y: bounds.y + 7
+                        x: choice.x,
+                        y: choice.y
                     }),
                     &f
                 )),
@@ -913,8 +926,9 @@ fn active_palette_connects_sidebar_and_width_dividers_in_capped_and_full_modes()
             );
             for y in 0..f.rows - 1 {
                 let cell = &f.cells[usize::from(y * f.cols + body.x - 2)];
-                assert_eq!(cell.text, "│");
-                assert_eq!(cell.fg, Color::Indexed(bright));
+                assert_eq!(cell.text, "▎");
+                assert_eq!(cell.fg, Color::Indexed(muted));
+                assert_eq!(cell.bg, Color::Default);
             }
             let right = body.x + body.cols + 1;
             if !wrapping {
@@ -933,5 +947,125 @@ fn active_palette_connects_sidebar_and_width_dividers_in_capped_and_full_modes()
                 assert_eq!(cell.fg, Color::Indexed(bright));
             }
         }
+    }
+}
+
+#[test]
+fn settings_zones_radio_values_and_keyboard_focus_remain_usable_on_small_screens() {
+    use kelpmux::native::{
+        ui::{DialogKind, TabPosition},
+        workspace::{config_targets, dialog_bounds_for},
+    };
+    for size in [(40, 10), (80, 20), (120, 40), (240, 70)] {
+        let mut ws = workspace(size, (2, 1));
+        ws.ui.config.tab_position = TabPosition::Left;
+        ws.apply(&Action::Select(1)).unwrap();
+        ws.apply(&Action::Config).unwrap();
+        let bounds = dialog_bounds_for(ws.cols, ws.rows, DialogKind::Config);
+        assert!(bounds.cols <= 72 && bounds.rows <= 13);
+        let targets = config_targets(bounds);
+        for (index, value, rect) in &targets {
+            assert!(rect.x >= bounds.x && rect.x + rect.cols <= bounds.x + bounds.cols);
+            assert!(rect.y > bounds.y && rect.y + rect.rows <= bounds.y + bounds.rows);
+            if let Some(value) = value {
+                let current = if *index == 4 {
+                    ws.ui.config.wrap_lines
+                } else {
+                    ws.ui.config.notification_sound
+                };
+                let f = frame(&ws);
+                assert_eq!(
+                    f.cells[usize::from(rect.y * f.cols + rect.x)].text,
+                    if current == *value { "●" } else { "○" }
+                );
+                let messages = actions(Router::default().route(
+                    click(Point {
+                        x: rect.x,
+                        y: rect.y,
+                    }),
+                    &f,
+                ));
+                if current == *value {
+                    assert!(messages.is_empty());
+                } else {
+                    assert_eq!(
+                        messages,
+                        vec![if *index == 4 {
+                            Action::WrapToggle
+                        } else {
+                            Action::NotificationSoundToggle
+                        }]
+                    );
+                    for action in messages {
+                        ws.apply(&action).unwrap();
+                    }
+                }
+                assert_eq!(
+                    if *index == 4 {
+                        ws.ui.config.wrap_lines
+                    } else {
+                        ws.ui.config.notification_sound
+                    },
+                    *value
+                );
+                let selected = frame(&ws);
+                assert_eq!(
+                    selected.cells[usize::from(rect.y * selected.cols + rect.x)].text,
+                    "●"
+                );
+                assert!(
+                    Router::default()
+                        .route(
+                            click(Point {
+                                x: rect.x,
+                                y: rect.y
+                            }),
+                            &selected
+                        )
+                        .is_empty()
+                );
+            }
+        }
+        ws.apply(&Action::DialogPick(2)).unwrap();
+        for (dx, dy, expected) in [
+            (1, 0, 3),
+            (-1, 0, 2),
+            (0, 1, 4),
+            (0, 1, 5),
+            (0, -1, 4),
+            (0, -1, 2),
+        ] {
+            ws.apply(&Action::DialogNavigate { dx, dy }).unwrap();
+            assert_eq!(ws.ui.dialog.unwrap().selection, expected);
+        }
+        // Section headings and padding must not toggle a value or reach the PTY.
+        assert!(
+            Router::default()
+                .route(
+                    click(Point {
+                        x: bounds.x + 2,
+                        y: bounds.y + 1
+                    }),
+                    &frame(&ws)
+                )
+                .is_empty()
+        );
+        let f = frame(&ws);
+        let mut display = Terminal::new(f.cols, f.rows);
+        display.feed(&terminal_diff(None, &f));
+        assert_eq!(display.snapshot().cells, f.cells);
+        ws.apply(&Action::Fullscreen(1)).unwrap();
+        ws.apply(&Action::Config).unwrap();
+        let f = frame(&ws);
+        let on = targets
+            .iter()
+            .find(|(index, value, _)| *index == 4 && *value == Some(true))
+            .unwrap()
+            .2;
+        for action in actions(Router::default().route(click(Point { x: on.x, y: on.y }), &f)) {
+            ws.apply(&action).unwrap();
+        }
+        assert_eq!(ws.reading, ReadingMode::Tabs(1));
+        assert!(ws.ui.config.wrap_lines);
     }
 }
