@@ -2,6 +2,7 @@
 
 - Status: Proposed. The native stream foundation is experimental; the full contract is not frozen.
 - Date: 2026-10-14 (America/Los_Angeles).
+- Updated: 2026-10-16 (America/Los_Angeles), embedded browser and MCP automation proposal.
 - Scope: Native Kelpmux. tmux compatibility remains an independent optional adapter.
 
 ## Context
@@ -9,6 +10,8 @@
 Kelpmux owns persistent PTYs and Alacritty terminal state. A terminal frontend currently presents a workspace as a grid or responsive tabs. Future desktop, iPad and iPhone clients should own their native presentation, scrolling and interaction, while connecting to the same long-running remote terminals. A Mac might display pane 1 at 240 × 70 cells while an iPhone displays pane 2 at 50 × 25 cells. Agent state, notifications and the remote machine's Vitals metrics must remain available independently of which terminal is visible.
 
 Agents will eventually need a standard MCP interface for asking the user questions and requesting device capabilities such as clipboard access, screenshots, location, camera capture and notifications. This ADR reserves that boundary without implementing a native app, MCP server or device access now.
+
+The native client should also be able to present an embedded browser that remote agents can inspect and interact with through MCP. This must operate on the page the user sees on their device, while acknowledging that an iOS/iPadOS WebKit view does not provide the same debugging interface as a Chromium browser on the remote host.
 
 ## Decision
 
@@ -86,6 +89,27 @@ SSH authenticates a remote account, not every individual agent under that accoun
 
 Questions, clipboard contents, screenshots, coordinates and camera images are not persisted in the recovery journal, diagnostics or general logs. Retain only minimal capability-operation metadata needed for delivery/audit, with a defined short lifetime. Transfer approved attachments with explicit type/size limits, bounded memory, cancellation and expiry; do not introduce an arbitrary local-file or URL fetch capability through attachment references. MCP implementation must pin and test a supported specification revision rather than depend on an unversioned draft.
 
+## Embedded browser and MCP automation (future)
+
+Use a client-owned embedded browser, initially Apple's public `WKWebView` APIs on Apple platforms. The remote stdio MCP adapter routes correlated browser requests over the authenticated Kelpmux connection to the selected native client. Results return over the same logical request/attachment channels. No additional public listener, separate device login or Mac debugging connection is required for these app-owned tools. This is a proposed architecture, not an implemented browser or a promise of Chrome DevTools feature parity.
+
+Browser views have identities separate from terminal pane IDs. Requests identify the workspace/epoch, originating adapter session, device, browser view and document generation. Navigation changes the document generation; stale element references and outstanding page-specific actions must fail explicitly rather than operate on a replacement document. A browser view must not be silently retargeted when the user selects a different terminal or browser tab. Browser state and page content do not become PTY output or recovery-journal entries.
+
+Expose one browser tool family with negotiated capabilities and explicit backend selection. Proposed operations include opening/navigating a view, obtaining a bounded DOM/text snapshot, interacting with elements, running page JavaScript, taking a page screenshot, and subscribing to supported console/network events. Exact tool names and schemas remain unfrozen. Return backend identity, current URL/document identity and capture limitations with results; an unsupported operation must return an explicit unavailable result, never silently run against a different browser.
+
+| Backend | Intended capabilities | Limits |
+| --- | --- | --- |
+| Native embedded WebKit | The page visible in the client; navigation, DOM inspection and scripted interaction through JavaScript, page screenshots, and instrumented console/fetch/XHR observations. | Public `WKWebView` APIs do not expose an in-app Chrome DevTools Protocol endpoint. Script instrumentation is partial and must not be labeled a complete network trace. Some interactions require platform/user involvement. |
+| Optional remote browser | A browser on jbox, with its supported debugging protocol, for comprehensive network/debugging operations and unattended inspection. | It is a separate browser session with separate cookies, viewport and engine behavior. It does not demonstrate what the embedded device page actually did. Its runtime and sandboxing require a separate implementation decision. |
+
+Apple's `isInspectable` enables Safari Web Inspector inspection through a connected Mac; it is not our in-app MCP transport or a requirement for ordinary embedded-browser tools. `WKURLSchemeHandler` handles custom schemes and is not a general HTTP/HTTPS interception API. WebKit offers per-data-store proxy configuration on iOS/iPadOS 17 and later, so an optional debugging proxy is a possible broader-capture path. Decrypting HTTPS traffic would require an explicit certificate-trust setup; proxy support alone does not provide response bodies or complete capture. Proxy deployment, coverage and trust are deferred, and the initial embedded implementation must report the narrower instrumentation coverage honestly.
+
+Browser automation follows the device-request authorization, cancellation, deadlines and attachment limits above. Scope any reusable grant to a named device/browser session and make it revocable. Script execution and page interaction can use signed-in website authority, so the client must visibly indicate agent control and allow it to be stopped. Page content is untrusted data and cannot grant browser/device permissions or authorize a different MCP operation. Browser screenshots capture the browser view, distinct from terminal or whole-device screenshots. Do not copy cookies, credentials or browser profiles between embedded and remote backends implicitly.
+
+Console/network subscriptions use bounded queues, sequence/gap information and explicit capture coverage. Sensitive headers, request/response bodies, console output and screenshots stay out of general diagnostics and the recovery journal; collecting or exporting them requires a scoped capture policy. Client suspension or disconnect makes device browser tools unavailable or expires outstanding requests; continuous background automation is not assumed. Reconnect does not automatically repeat navigation, form submission or other page actions.
+
+Deliver the embedded browser and basic inspection tools first. Add remote debugging and optional proxy capture as separately negotiated extensions. Validate request routing across multiple devices/views, document-generation invalidation, denied/revoked grants, disconnect/cancellation without replay, bounded large results and event gaps, unsupported capabilities, capture redaction and separation of embedded versus remote sessions. Device tests must exercise actual WebKit navigation, DOM interaction, screenshots and instrumentation limits before advertising those capabilities.
+
 ## Delivery plan and validation
 
 1. Reliability: matching-client discovery, explicit version errors, process-preserving upgrade behavior, deterministic terminal fixtures, seeded stress tests, bounded history and performance measurements.
@@ -93,6 +117,7 @@ Questions, clipboard contents, screenshots, coordinates and camera images are no
 3. Contract maturation: stable styled-history anchors, request correlation, native pane lifecycle controls, capability negotiation and independently tested reconnect/queue policies.
 4. Native clients: platform presentation, native scrolling, accessibility and device-specific lifecycle behavior.
 5. MCP/device broker: negotiated tools and explicit device permissions, bounded/cancellable requests and attachment handling. No device access is enabled by this ADR.
+6. Browser client and MCP tools: embedded WebKit views and basic page inspection first; optional remote debugging and broader network capture only through explicitly advertised extensions.
 
 Required contract tests include two clients owning different panes at different sizes; a third read-only observer; rejected unauthorized input/resize; explicit takeover/release/disconnect; cross-epoch rejection; snapshot/patch replay under slow consumers; Unicode/colors/alternate buffers; status uncertainty and lost hooks; notification replay; missing/stale vitals; bridge EOF and binary framing; version mismatch without raw-terminal corruption; and simulated device approval/denial/cancellation/expiry before any real device API is introduced.
 
@@ -100,7 +125,7 @@ Required contract tests include two clients owning different panes at different 
 
 Reusing tmux control mode would require tmux command/notification semantics and a compatibility maintenance commitment. Reusing WezTerm's codec would couple Kelpmux to its terminal/workspace types. Remote-display protocols do not directly provide our pane ownership, structured history and agent metadata model. A small owned protocol fits the existing Alacritty engine, but makes specification, compatibility testing and version negotiation our responsibility.
 
-The protocol remains experimental until a real native client validates it. The MCP/device section is a proposed boundary, not an implementation promise or implicit permission grant. A browser UI, native app, SSH library, MCP SDK, compact encoding and background push infrastructure are separate decisions.
+The protocol remains experimental until a real native client validates it. The MCP/device and browser sections are proposed boundaries, not implementation promises or implicit permission grants. Native app implementation, a remote browser runtime, proxy infrastructure, an SSH library, an MCP SDK, compact encoding and background push infrastructure remain separate decisions.
 
 ## References
 
@@ -110,6 +135,10 @@ The protocol remains experimental until a real native client validates it. The M
 - [MCP tools, pinned 2025-11-25 reference](https://modelcontextprotocol.io/specification/2025-11-25/server/tools).
 - [MCP elicitation, pinned 2025-11-25 reference](https://modelcontextprotocol.io/specification/2025-11-25/client/elicitation).
 - [MCP transports, pinned 2025-11-25 reference](https://modelcontextprotocol.io/specification/2025-11-25/basic/transports).
+- [Apple WKWebView: navigation, JavaScript evaluation and snapshots](https://developer.apple.com/documentation/webkit/wkwebview).
+- [Apple inspection of iOS/iPadOS content](https://developer.apple.com/documentation/safari-developer-tools/inspecting-ios).
+- [Apple custom URL scheme handlers](https://developer.apple.com/documentation/webkit/wkurlschemehandler).
+- [Apple per-data-store proxy configuration](https://developer.apple.com/documentation/webkit/wkwebsitedatastore/proxyconfigurations-6g21z).
 
 ## Initial-foundation limits
 
