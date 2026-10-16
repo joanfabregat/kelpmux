@@ -30,7 +30,7 @@ pub fn compose(
             view.modes = screen.modes;
         }
     }
-    if workspace.reading != ReadingMode::Grid {
+    if workspace.reading != ReadingMode::Grid || workspace.active == 0 {
         draw_tabs(&mut frame, workspace, spinner);
     } else {
         draw_grid_separators(&mut frame, workspace);
@@ -108,12 +108,19 @@ pub fn compose(
         }
     }
     if workspace.active == 0 && !workspace.ui.scratch_visible {
+        let body = super::workspace::tab_body(
+            workspace.cols,
+            workspace.rows,
+            &workspace.ui.config,
+            false,
+            None,
+        );
         write_text(
             &mut frame,
-            2,
-            2,
-            workspace.cols.saturating_sub(4),
-            "All tabs are parked. Restore from Park below, or use Ctrl-B Enter for a new tab.",
+            body.x,
+            body.y + 2,
+            body.cols,
+            "All tabs are parked. Ctrl-B u restores a tab; Ctrl-B Enter creates one.",
             Color::Indexed(250),
             Color::Default,
             false,
@@ -150,10 +157,10 @@ pub fn compose(
             text.push_str(" · ");
             text.push_str(&safe_text(notice));
         }
-        let width = frame.cols.saturating_sub(27);
+        let width = frame.cols.saturating_sub(super::ui::FOOTER_COLS);
         write_text(
             &mut frame,
-            0,
+            super::ui::FOOTER_COLS,
             y,
             width,
             &text,
@@ -163,19 +170,29 @@ pub fn compose(
         );
         write_text(
             &mut frame,
-            width,
+            0,
             y,
-            7,
-            "Config",
+            8,
+            " Config ",
             Color::Indexed(231),
             Color::Indexed(60),
             true,
         );
+        fill(
+            &mut frame,
+            Rect {
+                x: 8,
+                y,
+                cols: 8,
+                rows: 1,
+            },
+            Color::Indexed(24),
+        );
         write_text(
             &mut frame,
-            width + 7,
+            8,
             y,
-            7,
+            8,
             if workspace.active == 0 {
                 " New "
             } else if workspace.reading == ReadingMode::Grid {
@@ -189,7 +206,7 @@ pub fn compose(
         );
         write_text(
             &mut frame,
-            width + 14,
+            16,
             y,
             3,
             if matches!(workspace.reading, ReadingMode::Fullscreen(_)) {
@@ -203,20 +220,7 @@ pub fn compose(
         );
         write_text(
             &mut frame,
-            width + 17,
-            y,
-            7,
-            &format!(
-                "Park {}",
-                workspace.panes.iter().filter(|p| p.parked).count()
-            ),
-            Color::Indexed(231),
-            Color::Indexed(24),
-            true,
-        );
-        write_text(
-            &mut frame,
-            width + 24,
+            19,
             y,
             3,
             if workspace.ui.notifications.iter().any(|item| !item.read) {
@@ -229,7 +233,7 @@ pub fn compose(
                 if workspace.ui.notifications.iter().any(|item| !item.read) {
                     160
                 } else {
-                    60
+                    94
                 },
             ),
             true,
@@ -237,6 +241,15 @@ pub fn compose(
     }
     if !workspace.ui.vitals.is_empty() && notice.is_none() {
         draw_vitals(&mut frame, &workspace.ui.vitals);
+    }
+    if workspace.help || workspace.ui.dialog.is_some() || workspace.ui.scratch_visible {
+        let keep =
+            if workspace.ui.scratch_visible && !workspace.help && workspace.ui.dialog.is_none() {
+                Some(super::workspace::scratch_rect(frame.cols, frame.rows))
+            } else {
+                None
+            };
+        dim_background(&mut frame, keep);
     }
     if workspace.help {
         let cols = frame.cols.saturating_sub(4).min(76);
@@ -356,7 +369,7 @@ pub fn compose(
         frame.cursor = None;
     }
     if let Some(dialog) = workspace.ui.dialog {
-        draw_dialog(&mut frame, workspace, dialog);
+        draw_dialog(&mut frame, workspace, dialog, spinner);
     }
     repair_wide_edges(&mut frame);
     frame
@@ -462,7 +475,12 @@ fn header(
         );
     }
 }
-fn draw_dialog(frame: &mut Frame, workspace: &Workspace, dialog: super::ui::Dialog) {
+fn draw_dialog(
+    frame: &mut Frame,
+    workspace: &Workspace,
+    dialog: super::ui::Dialog,
+    spinner: usize,
+) {
     use super::ui::{AgentFilter, DialogKind};
     let bounds = super::workspace::dialog_bounds_for(frame.cols, frame.rows, dialog.kind);
     fill(frame, bounds, Color::Indexed(236));
@@ -482,6 +500,8 @@ fn draw_dialog(frame: &mut Frame, workspace: &Workspace, dialog: super::ui::Dial
         DialogKind::Move => " Move active pane · choose destination",
         DialogKind::Config => " Settings",
         DialogKind::CloseConfirm => " Close this tab?",
+        DialogKind::ParkConfirm => " ⊟ Park this tab?",
+        DialogKind::RestoreConfirm => " ↥ Restore this tab?",
         DialogKind::Color => " Tab color · arrows, Enter or click",
         DialogKind::Agents => match dialog.filter {
             AgentFilter::All => " Agents",
@@ -548,13 +568,20 @@ fn draw_dialog(frame: &mut Frame, workspace: &Workspace, dialog: super::ui::Dial
                 bg,
             );
         }
-    } else if dialog.kind == DialogKind::CloseConfirm {
+    } else if matches!(
+        dialog.kind,
+        DialogKind::CloseConfirm | DialogKind::ParkConfirm | DialogKind::RestoreConfirm
+    ) {
         write_text(
             frame,
             bounds.x + 2,
             bounds.y + 2,
             bounds.cols - 4,
-            "Stops this terminal and its jobs.",
+            match dialog.kind {
+                DialogKind::ParkConfirm => "Hides the tab; its jobs keep running.",
+                DialogKind::RestoreConfirm => "Returns this tab to the tab bar.",
+                _ => "Stops this terminal and its jobs.",
+            },
             Color::Indexed(231),
             Color::Indexed(236),
             true,
@@ -569,7 +596,15 @@ fn draw_dialog(frame: &mut Frame, workspace: &Workspace, dialog: super::ui::Dial
                 bounds.x + 2,
                 bounds.y + 3,
                 bounds.cols - 4,
-                &format!("{}  {}", pane.number, pane.title),
+                &format!(
+                    "{}  {}",
+                    if pane.parked {
+                        format!("#{}", pane.id)
+                    } else {
+                        pane.number.to_string()
+                    },
+                    pane.title
+                ),
                 Color::Indexed(250),
                 Color::Indexed(236),
                 false,
@@ -583,11 +618,23 @@ fn draw_dialog(frame: &mut Frame, workspace: &Workspace, dialog: super::ui::Dial
             let bg = Color::Indexed(match (index, selected) {
                 (0, true) => 27,
                 (0, false) => 24,
-                (_, true) => 196,
-                _ => 88,
+                (_, true) if dialog.kind == DialogKind::CloseConfirm => 196,
+                _ if dialog.kind == DialogKind::CloseConfirm => 88,
+                (_, true) if dialog.kind == DialogKind::ParkConfirm => 136,
+                _ if dialog.kind == DialogKind::ParkConfirm => 58,
+                (_, true) => 35,
+                _ => 29,
             });
             fill(frame, rect, bg);
-            let label = if index == 0 { "Cancel" } else { "Close tab" };
+            let label = if index == 0 {
+                "Cancel"
+            } else {
+                match dialog.kind {
+                    DialogKind::ParkConfirm => "⊟ Park tab",
+                    DialogKind::RestoreConfirm => "↥ Restore tab",
+                    _ => "Close tab",
+                }
+            };
             let label = format!("{} {label}", if selected { "›" } else { " " });
             write_text(
                 frame,
@@ -690,10 +737,11 @@ fn draw_dialog(frame: &mut Frame, workspace: &Workspace, dialog: super::ui::Dial
             Color::Indexed(235),
             false,
         );
+    } else if dialog.kind == DialogKind::Parked {
+        draw_parked(frame, workspace, dialog, bounds, spinner);
     } else if matches!(
         dialog.kind,
-        DialogKind::Parked
-            | DialogKind::Overview
+        DialogKind::Overview
             | DialogKind::Notifications
             | DialogKind::Recovery
             | DialogKind::Search
@@ -903,6 +951,64 @@ fn binding_label(config: &super::ui::UiConfig, defaults: &str, action: &str) -> 
         "unbound".into()
     } else {
         keys.join("/")
+    }
+}
+fn dim_color(color: Color, foreground: bool) -> Color {
+    let (r, g, b) = match color {
+        Color::Default => {
+            if foreground {
+                (208, 208, 208)
+            } else {
+                (16, 16, 16)
+            }
+        }
+        Color::Rgb(r, g, b) => (r, g, b),
+        Color::Indexed(index) => {
+            const ANSI: [(u8, u8, u8); 16] = [
+                (0, 0, 0),
+                (128, 0, 0),
+                (0, 128, 0),
+                (128, 128, 0),
+                (0, 0, 128),
+                (128, 0, 128),
+                (0, 128, 128),
+                (192, 192, 192),
+                (128, 128, 128),
+                (255, 0, 0),
+                (0, 255, 0),
+                (255, 255, 0),
+                (0, 0, 255),
+                (255, 0, 255),
+                (0, 255, 255),
+                (255, 255, 255),
+            ];
+            if index < 16 {
+                ANSI[usize::from(index)]
+            } else if index >= 232 {
+                let v = 8 + (index - 232) * 10;
+                (v, v, v)
+            } else {
+                let n = index - 16;
+                let level = |v: u8| if v == 0 { 0 } else { 55 + v * 40 };
+                (level(n / 36), level(n / 6 % 6), level(n % 6))
+            }
+        }
+    };
+    let darken = |v: u8| (u16::from(v) * 42 / 100) as u8;
+    Color::Rgb(darken(r), darken(g), darken(b))
+}
+fn dim_background(frame: &mut Frame, keep: Option<Rect>) {
+    for (index, cell) in frame.cells.iter_mut().enumerate() {
+        let point = Point {
+            x: (index % usize::from(frame.cols)) as u16,
+            y: (index / usize::from(frame.cols)) as u16,
+        };
+        if keep.is_some_and(|rect| rect.contains(point)) {
+            continue;
+        }
+        cell.fg = dim_color(cell.fg, true);
+        cell.bg = dim_color(cell.bg, false);
+        cell.bold = false;
     }
 }
 fn put(frame: &mut Frame, x: u16, y: u16, cell: Cell) {
@@ -1163,14 +1269,36 @@ fn draw_tabs(frame: &mut Frame, workspace: &Workspace, spinner: usize) {
         active,
     ) {
         match target {
+            TabTarget::Parked => {
+                let label = format!(
+                    " ⊟ Parked {} ",
+                    workspace.panes.iter().filter(|p| p.parked).count()
+                );
+                fill(frame, rect, Color::Indexed(58));
+                write_text(
+                    frame,
+                    rect.x,
+                    rect.y,
+                    rect.cols,
+                    &label,
+                    Color::Indexed(231),
+                    Color::Indexed(58),
+                    true,
+                );
+            }
             TabTarget::New => {
                 let label = if position == TabPosition::Left {
                     " + New tab "
                 } else {
                     " + "
                 };
-                let enabled = target != TabTarget::New || panes.len() < 9;
-                let bg = Color::Indexed(if enabled { 24 } else { 236 });
+                let enabled = workspace
+                    .panes
+                    .iter()
+                    .filter(|p| Some(p.id) != workspace.ui.scratch)
+                    .count()
+                    < 9;
+                let bg = Color::Indexed(if enabled { 29 } else { 236 });
                 fill(frame, rect, bg);
                 write_text(
                     frame,
@@ -1200,7 +1328,7 @@ fn draw_tabs(frame: &mut Frame, workspace: &Workspace, spinner: usize) {
                     rect.cols,
                     label,
                     Color::Indexed(231),
-                    Color::Indexed(24),
+                    Color::Indexed(67),
                     true,
                 );
             }
@@ -1396,9 +1524,9 @@ fn draw_tab(
         park.x,
         park.y,
         park.cols,
-        " ↓ ",
+        " ⊟ ",
         Color::Indexed(231),
-        Color::Indexed(30),
+        Color::Indexed(58),
         true,
     );
     for y in rect.y..rect.y + rect.rows {
@@ -1432,8 +1560,8 @@ fn marquee_title(title: &str, width: u16, ticks: u16) -> String {
         .collect()
 }
 fn draw_vitals(frame: &mut Frame, segments: &[(String, u8)]) {
-    let start = if frame.controller { 0 } else { 10 };
-    let end = frame.cols.saturating_sub(super::ui::FOOTER_COLS);
+    let start = (super::ui::FOOTER_COLS + if frame.controller { 0 } else { 10 }).min(frame.cols);
+    let end = frame.cols;
     let available = end.saturating_sub(start);
     let selected: Vec<_> = if available < 50 {
         segments
@@ -1478,6 +1606,136 @@ fn draw_vitals(frame: &mut Frame, segments: &[(String, u8)]) {
         x = x.saturating_add(width + 1);
     }
 }
+fn draw_parked(
+    frame: &mut Frame,
+    workspace: &Workspace,
+    dialog: super::ui::Dialog,
+    bounds: Rect,
+    spinner: usize,
+) {
+    let status_x = bounds.x + bounds.cols.saturating_sub(22);
+    let restore_x = bounds.x + bounds.cols.saturating_sub(5);
+    let title_x = bounds.x + 9;
+    for (x, width, label) in [
+        (bounds.x + 2, 6, "Tab"),
+        (title_x, status_x.saturating_sub(title_x), "Name"),
+        (status_x, 16, "Status"),
+        (restore_x, 3, " ↥ "),
+    ] {
+        write_text(
+            frame,
+            x,
+            bounds.y + 1,
+            width,
+            label,
+            Color::Indexed(250),
+            Color::Indexed(236),
+            true,
+        );
+    }
+    let panes: Vec<_> = workspace.panes.iter().filter(|p| p.parked).collect();
+    let visible = usize::from(bounds.rows.saturating_sub(2));
+    let offset = dialog.selection.saturating_sub(visible.saturating_sub(1));
+    if panes.is_empty() {
+        write_text(
+            frame,
+            bounds.x + 2,
+            bounds.y + 2,
+            bounds.cols.saturating_sub(4),
+            "No parked tabs",
+            Color::Indexed(250),
+            Color::Indexed(236),
+            false,
+        );
+    }
+    for (index, pane) in panes.iter().enumerate().skip(offset).take(visible) {
+        let y = bounds.y + 2 + (index - offset) as u16;
+        let selected = index == dialog.selection;
+        let (bright, muted) = PALETTE[usize::from(pane.palette) % PALETTE.len()];
+        let bg = Color::Indexed(if selected { muted } else { 234 });
+        fill(
+            frame,
+            Rect {
+                x: bounds.x,
+                y,
+                cols: bounds.cols,
+                rows: 1,
+            },
+            bg,
+        );
+        write_text(
+            frame,
+            bounds.x,
+            y,
+            1,
+            "▎",
+            Color::Indexed(bright),
+            bg,
+            false,
+        );
+        write_text(
+            frame,
+            bounds.x + 1,
+            y,
+            4,
+            &format!(" {} ", pane.id),
+            Color::Indexed(if selected { 226 } else { 117 }),
+            bg,
+            true,
+        );
+        let marker = if pane.status == crate::model::Status::Working {
+            SPINNER[spinner % SPINNER.len()].to_string()
+        } else {
+            pane.status.marker().to_owned()
+        };
+        write_text(
+            frame,
+            bounds.x + 6,
+            y,
+            2,
+            &marker,
+            Color::Indexed(bright),
+            bg,
+            true,
+        );
+        let title_width = status_x.saturating_sub(title_x + 1);
+        let title = marquee_title(
+            &pane.title,
+            title_width,
+            workspace.ui.title_ticks.get(&pane.id).copied().unwrap_or(0),
+        );
+        write_text(
+            frame,
+            title_x,
+            y,
+            title_width,
+            &title,
+            Color::Indexed(231),
+            bg,
+            false,
+        );
+        write_text(
+            frame,
+            status_x,
+            y,
+            16,
+            pane.status.text(),
+            Color::Indexed(bright),
+            bg,
+            false,
+        );
+        write_text(
+            frame,
+            restore_x,
+            y,
+            3,
+            " ↥ ",
+            Color::Indexed(231),
+            Color::Indexed(29),
+            true,
+        );
+    }
+}
 fn draw_dashboard(
     frame: &mut Frame,
     workspace: &Workspace,
@@ -1517,19 +1775,6 @@ fn draw_dashboard(
         );
     }
     let labels: Vec<String> = match dialog.kind {
-        DialogKind::Parked => workspace
-            .panes
-            .iter()
-            .filter(|p| p.parked)
-            .map(|p| {
-                format!(
-                    "{} {} · {} · Restore",
-                    p.status.marker(),
-                    p.title,
-                    p.status.text()
-                )
-            })
-            .collect(),
         DialogKind::Overview => workspace
             .panes
             .iter()
