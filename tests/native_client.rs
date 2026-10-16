@@ -781,14 +781,8 @@ fn live_server_attach_layout_read_fullscreen_detach_reconnect_preserves_shell() 
         );
         thread::sleep(Duration::from_millis(10));
     }
-    // The footer exposes full width while tabs remain visible.
-    let full = Point { x: 17, y: 23 };
-    wait_header(
-        &mut tty,
-        usize::from(full.y) * 80 + usize::from(full.x),
-        "⛶",
-    );
-    tty.input(format!("\x1b[<0;{};{}M", full.x + 1, full.y + 1).as_bytes());
+    // Full width remains available from the keyboard without a footer button.
+    tty.input(b"\x02f");
     wait_state(&server, &mut tty, |_, reading, _| {
         reading == ReadingMode::Fullscreen(original.id)
     });

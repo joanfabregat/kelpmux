@@ -52,6 +52,79 @@ fn click(point: Point) -> InputEvent {
     })
 }
 #[test]
+fn help_table_scrolls_to_last_action_and_keeps_columns_aligned() {
+    use kelpmux::native::{input::help_bounds, ui::HELP_ROWS};
+    for size in [(40, 10), (80, 24), (240, 70)] {
+        let mut ws = workspace(size, (1, 1));
+        ws.help = true;
+        let bounds = help_bounds(ws.cols, ws.rows);
+        let f = frame(&ws);
+        let text: String = f.cells.iter().map(|c| c.text.as_str()).collect();
+        assert!(text.contains("Key"));
+        assert!(text.contains("Action"));
+        let divider = bounds.x + (bounds.cols / 3).clamp(10, 22) + 1;
+        for row in 2..bounds.rows - 1 {
+            assert_eq!(
+                f.cells[usize::from((bounds.y + row) * f.cols + divider)].text,
+                "│"
+            );
+        }
+        ws.apply(&Action::HelpScroll(i16::MAX)).unwrap();
+        assert_eq!(ws.ui.help_offset + bounds.rows - 3, HELP_ROWS);
+        let f = frame(&ws);
+        let text: String = f.cells.iter().map(|c| c.text.as_str()).collect();
+        assert!(text.contains("Header drag"));
+        let mut terminal = Terminal::new(ws.cols, ws.rows);
+        terminal.feed(&terminal_diff(None, &f));
+        assert_eq!(terminal.snapshot().cells, f.cells);
+    }
+}
+
+#[test]
+fn config_buttons_use_all_three_rows_and_spacing_does_not_change_settings() {
+    use kelpmux::native::{
+        ui::{DialogKind, TabPosition},
+        workspace::{config_targets, dialog_bounds_for},
+    };
+    for size in [(40, 10), (80, 18), (120, 40), (240, 70)] {
+        let mut ws = workspace(size, (1, 1));
+        ws.apply(&Action::Config).unwrap();
+        let f = frame(&ws);
+        let bounds = dialog_bounds_for(ws.cols, ws.rows, DialogKind::Config);
+        let targets = config_targets(bounds);
+        for (_, _, rect) in &targets {
+            assert!(rect.x >= bounds.x && rect.x + rect.cols <= bounds.x + bounds.cols);
+            assert!(rect.y > bounds.y && rect.y + rect.rows < bounds.y + bounds.rows);
+            if size.1 >= 20 {
+                assert_eq!(rect.rows, 3);
+            }
+        }
+        for pair in targets[..4].windows(2) {
+            let left = pair[0].2;
+            let right = pair[1].2;
+            assert_eq!(left.x + left.cols + 1, right.x);
+            assert!(
+                Router::default()
+                    .route(
+                        click(Point {
+                            x: left.x + left.cols,
+                            y: left.y
+                        }),
+                        &f
+                    )
+                    .is_empty()
+            );
+        }
+        let target = targets.iter().find(|(i, _, _)| *i == 2).unwrap().2;
+        for y in target.y..target.y + target.rows {
+            assert_eq!(
+                actions(Router::default().route(click(Point { x: target.x, y }), &f)),
+                vec![Action::TabPositionSet(TabPosition::Left)]
+            );
+        }
+    }
+}
+#[test]
 fn parking_and_restore_confirm_before_mutation_and_escape_cancels() {
     use kelpmux::native::ui::DialogKind;
     let mut ws = workspace((120, 40), (2, 1));
@@ -542,6 +615,18 @@ fn footer_buttons_and_compact_vitals_have_disjoint_hit_targets() {
     assert!(footer.contains("14:49"));
     assert!(!footer.contains("Park"));
     assert!(footer.starts_with(" Config "));
+    assert_eq!(&footer[..17], " Config  Tabs  ? ");
+    assert!(!footer.contains('⛶') && !footer.contains('▣'));
+    let start = usize::from((f.rows - 1) * f.cols);
+    assert!(
+        f.cells[start + 17..]
+            .iter()
+            .all(|c| c.bg == Color::Indexed(kelpmux::native::ui::FOOTER_BG))
+    );
+    assert_eq!(
+        actions(Router::default().route(InputEvent::Bytes(b"\x02f".to_vec()), &f)),
+        vec![Action::Fullscreen(1)]
+    );
     assert_eq!(
         actions(Router::default().route(
             click(Point {
@@ -570,12 +655,12 @@ fn footer_buttons_and_compact_vitals_have_disjoint_hit_targets() {
             }),
             &f
         )),
-        vec![Action::Fullscreen(1)]
+        vec![]
     );
     assert_eq!(
         actions(Router::default().route(
             click(Point {
-                x: 20,
+                x: 15,
                 y: f.rows - 1
             }),
             &f
@@ -1098,7 +1183,7 @@ fn automatic_grid_parking_controls_alert_colors_and_three_row_tabs() {
             )),
             vec![Action::ParkRequest(1)]
         );
-        let at = usize::from((f.rows - 1) * f.cols + 20);
+        let at = usize::from((f.rows - 1) * f.cols + 15);
         assert_eq!(f.cells[at].bg, Color::Indexed(94));
         ws.ui.notifications.push(Notification {
             id: 1,
@@ -1127,7 +1212,7 @@ fn settings_zones_radio_values_and_keyboard_focus_remain_usable_on_small_screens
         ws.apply(&Action::Select(1)).unwrap();
         ws.apply(&Action::Config).unwrap();
         let bounds = dialog_bounds_for(ws.cols, ws.rows, DialogKind::Config);
-        assert!(bounds.cols <= 72 && bounds.rows <= 13);
+        assert!(bounds.cols <= 72 && bounds.rows <= 19);
         let targets = config_targets(bounds);
         for (index, value, rect) in &targets {
             assert!(rect.x >= bounds.x && rect.x + rect.cols <= bounds.x + bounds.cols);
@@ -1140,7 +1225,7 @@ fn settings_zones_radio_values_and_keyboard_focus_remain_usable_on_small_screens
                 };
                 let f = frame(&ws);
                 assert_eq!(
-                    f.cells[usize::from(rect.y * f.cols + rect.x)].text,
+                    f.cells[usize::from((rect.y + rect.rows / 2) * f.cols + rect.x + 1)].text,
                     if current == *value { "●" } else { "○" }
                 );
                 let messages = actions(Router::default().route(
@@ -1175,7 +1260,9 @@ fn settings_zones_radio_values_and_keyboard_focus_remain_usable_on_small_screens
                 );
                 let selected = frame(&ws);
                 assert_eq!(
-                    selected.cells[usize::from(rect.y * selected.cols + rect.x)].text,
+                    selected.cells
+                        [usize::from((rect.y + rect.rows / 2) * selected.cols + rect.x + 1)]
+                    .text,
                     "●"
                 );
                 assert!(

@@ -178,7 +178,7 @@ fn notification_history_acknowledges_and_jumps_and_next_agent_navigation_wraps()
         actions(Router::default().route(
             mouse(
                 Point {
-                    x: 20,
+                    x: 15,
                     y: f.rows - 1
                 },
                 MouseKind::Press
@@ -356,7 +356,7 @@ fn recovery_and_sound_settings_are_actionable_and_small_screen_help_scrolls() {
     assert!(ws.ui.help_offset > 0);
     let f = frame(&ws);
     let text = f.cells.iter().map(|c| c.text.as_str()).collect::<String>();
-    assert!(text.contains("New tab"));
+    assert!(text.contains("Header drag"));
 }
 #[test]
 fn all_dashboards_and_scratch_compose_unicode_colors_roundtrip() {

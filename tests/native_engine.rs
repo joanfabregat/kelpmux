@@ -146,7 +146,7 @@ fn compositor_footer_help_and_control_sanitization() {
             .iter()
             .all(|c| !c.text.chars().any(char::is_control))
     );
-    assert_eq!(frame.cells[23 * 80 + 20].text, "?");
+    assert_eq!(frame.cells[23 * 80 + 15].text, "?");
     workspace.help = true;
     let frame = compose(&workspace, &BTreeMap::new(), true, None, 0);
     assert!(frame.cursor.is_none());
