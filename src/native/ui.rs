@@ -47,6 +47,7 @@ pub enum AgentFilter {
 }
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum DialogKind {
+    Parked,
     Overview,
     Notifications,
     Recovery,

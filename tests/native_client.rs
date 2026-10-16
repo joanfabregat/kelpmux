@@ -454,7 +454,7 @@ fn management_uses_command_without_attach_and_validates_arguments() {
         let mut socket = fixture.accept();
         assert!(matches!(
             read_message::<ClientMessage>(&mut socket).unwrap(),
-            Some(ClientMessage::Command(Action::Grid { cols: 2, rows: 1 }))
+            Some(ClientMessage::Command(Action::NewTab))
         ));
         write_message(
             &mut socket,
@@ -470,7 +470,7 @@ fn management_uses_command_without_attach_and_validates_arguments() {
     let result = Command::new(env!("CARGO_BIN_EXE_kelpmux"))
         .args(["ctl", "--socket"])
         .arg(&path)
-        .args(["layout", "2x1"])
+        .args(["new"])
         .output()
         .unwrap();
     assert!(
@@ -750,26 +750,12 @@ fn live_server_attach_layout_read_fullscreen_detach_reconnect_preserves_shell() 
         assert!(Instant::now() < deadline, "live shell output missing");
         thread::sleep(Duration::from_millis(10));
     }
-    tty.input(b"\x02g");
-    let deadline = Instant::now() + Duration::from_secs(5);
-    loop {
-        tty.drain();
-        let mut display = kelpmux::native::engine::Terminal::new(80, 24);
-        display.feed(&tty.output);
-        let text: String = display
-            .snapshot()
-            .cells
-            .iter()
-            .map(|cell| cell.text.as_str())
-            .collect();
-        if text.contains("Grid · arrows") {
-            break;
-        }
-        assert!(Instant::now() < deadline, "grid picker did not appear");
-        thread::sleep(Duration::from_millis(10));
-    }
-    tty.input(b"2");
+    tty.input(b"\x02\r");
     wait_state(&server, &mut tty, |panes, _, _| panes.len() == 2);
+    tty.input(b"\x02g");
+    wait_state(&server, &mut tty, |_, reading, _| {
+        reading == ReadingMode::Grid
+    });
     let read = header_button(&server, original.id, ReadingMode::Grid, 0);
     wait_header(
         &mut tty,
@@ -780,6 +766,20 @@ fn live_server_attach_layout_read_fullscreen_detach_reconnect_preserves_shell() 
     wait_state(&server, &mut tty, |_, reading, _| {
         reading == ReadingMode::Tabs(original.id)
     });
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        tty.drain();
+        let mut display = kelpmux::native::engine::Terminal::new(80, 24);
+        display.feed(&tty.output);
+        if display.snapshot().cells[2].fg == Color::Indexed(226) {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "selected tab did not reach frontend"
+        );
+        thread::sleep(Duration::from_millis(10));
+    }
     // The footer exposes full width while tabs remain visible.
     let full = Point { x: 80 - 12, y: 23 };
     wait_header(

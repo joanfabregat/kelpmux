@@ -22,7 +22,9 @@ Foreground operation remains available:
 kelpmux server --socket /absolute/private/control.sock --state-dir /absolute/private/state --shell /bin/zsh --cwd /home/joan/repos --size 160x50
 kelpmux attach --socket /absolute/private/control.sock
 kelpmux ctl --socket /absolute/private/control.sock list
-kelpmux ctl --socket /absolute/private/control.sock layout 3x2
+kelpmux ctl --socket /absolute/private/control.sock new
+kelpmux ctl --socket /absolute/private/control.sock park ID
+kelpmux ctl --socket /absolute/private/control.sock restore ID
 kelpmux ctl --socket /absolute/private/control.sock focus ID
 kelpmux ctl --socket /absolute/private/control.sock read ID
 kelpmux ctl --socket /absolute/private/control.sock fullscreen ID
@@ -33,7 +35,9 @@ kelpmux ctl --socket /absolute/private/control.sock close
 
 ## Grid and tabs
 
-The grid is an overview of the same terminals represented by tabs. The six supported column × row grids are `1x1`, `2x1`, `2x2`, `3x2`, `2x3` and `3x3`. Switching view preserves processes, identities and the underlying grid. Only the active terminal is drawn in tab view; hidden terminals continue running. Their PTYs retain base-grid dimensions while the visible terminal uses its view dimensions.
+The grid is an overview of the unparked terminals represented by tabs. Geometry is automatic from their count and the controller's character dimensions, and recomputed when tabs change or the window resizes. Rows divide the available width evenly, including incomplete rows: five terminals use three cells above two wider cells. Narrow screens favor fewer columns. Switching views preserves processes and identities. Only the active terminal is drawn in tab view; hidden terminals continue running. Parked terminals retain their last PTY size and are excluded from the grid. Manual layout selection and separator resizing are removed.
+
+Use the ↓ tab control or prefix then `p` to park a tab. The Park footer button or prefix then `u` opens the list; click a row or press Enter to restore it. Parking hides the tab and preserves its PTY, process, output, status and session identity. It does not suspend processes. State survives client detach/reconnect while the server lives; a daemon stop or crash still needs ordinary session recovery. Parked tabs count toward the nine-terminal limit, and their attention notifications remain available. All tabs may be parked; use Park to restore or prefix then Enter to create a tab. Observers cannot change parking without taking control.
 
 Tab placement can be `auto`, `top`, `left` or `bottom`. Auto uses available character geometry rather than claiming to identify the device: narrow terminals get a compact bottom strip, medium landscape terminals can use a sidebar, and broad windows use a top strip. Explicit placement overrides this. Previous/next arrows appear only when all tabs cannot fit: above and below a vertical list, or at the left and right of a horizontal strip. The active tab remains visible as navigation advances through overflow. Settings opens a popup configuration panel with clickable placement choices; changes are retained in workspace settings for restart. Help, configuration and confirmations are dialogs, while agent terminals themselves use tabs rather than floating popups.
 
@@ -52,7 +56,9 @@ The default prefix is Ctrl-B; release it before the next key. Ordinary applicati
 | Prefix then `z`, Alt+Tab or Alt+0 | Switch grid / tabs |
 | Prefix then `1`…`9`, or Alt+1…9 | Select the numbered terminal in tab view |
 | Prefix then `f` | Toggle full / capped terminal width |
-| Prefix then `g` | Graphical six-grid picker |
+| Prefix then `g` or `e` | Automatic grid overview |
+| Prefix then Enter | New shell tab |
+| Prefix then `p` / `u` | Park active tab / restore list |
 | Prefix then `a`, `!`, `n` | Agents, attention, finished filters |
 | Prefix then `s` | Graphical pane movement; choose destination |
 | Prefix then `h`, `j`, `k`, `l` | Directional focus |
@@ -63,7 +69,6 @@ The default prefix is Ctrl-B; release it before the next key. Ordinary applicati
 | Prefix then `N`, `P` | Next question / completion |
 | Prefix then `/`, `c` | History search / persistent scratch |
 | Prefix then Space | Keyboard selection |
-| Prefix then `H`, `L`, `K`, `J` | Resize grid boundaries |
 | Prefix then `?` | Sticky help |
 | Help arrows / Page Up / Page Down / wheel | Scroll help |
 | Prefix then `d` | Detach without terminating processes |
@@ -74,13 +79,13 @@ The default prefix is Ctrl-B; release it before the next key. Ordinary applicati
 | Escape or `q` in scrolling mode | Leave scrolling mode |
 | Prefix then Ctrl-B | Send a literal Ctrl-B |
 
-Tabs, footer controls and grid cards are clickable. Grid choices requiring too many occupied panes to disappear are disabled, and the server independently checks occupancy again before applying them. Picker navigation uses arrows and Enter; numbered targets refer to the current logical order. Dialogs consume application input and close through Escape, their close control or outside clicks; an outside click cancels a confirmation.
+Tabs and footer controls are clickable. Picker navigation uses arrows and Enter; numbered targets refer to the current unparked order. Dialogs consume application input and close through Escape, their close control or outside clicks; an outside click cancels a confirmation. Close confirmation initially selects Close: Enter confirms, Escape cancels. An exited shell removes its tab; finishing an agent inside a still-running shell leaves the shell tab open. Exiting the last main shell ends the workspace when no scratch terminal remains. Unread notifications turn the alert button red; without alerts it uses a separate purple accent.
 
 Application mouse reporting receives body-relative events when enabled. Otherwise the wheel scrolls history and local drags select text. Hold Shift to select or scroll locally even in a mouse-aware application. Releasing a local selection copies through OSC 52; clipboard support depends on the SSH terminal client.
 
 ## Configuration
 
-The [workspace example](../examples/native-workspace.json) contains a startup grid and UI settings. Pass it with `start --config PATH` or foreground `server --config PATH`. Saved effective shell, working directory and UI settings are used when restarting a named workspace. Explicit `--shell` and `--cwd` override configuration.
+The [workspace example](../examples/native-workspace.json) contains a startup `tab_count` (1–9) and UI settings. Pass it with `start --config PATH` or foreground `server --config PATH`. Saved effective shell, working directory and UI settings are used when restarting a named workspace. Older `grid` settings are accepted as initial tab-count migration input; geometry and weights are omitted from newly saved settings. Explicit `--shell` and `--cwd` override configuration.
 
 UI settings include a control-key prefix number (`2` is Ctrl-B), `tab_position`, `read_width` and an ASCII key-to-action `bindings` map. The settings panel groups Tab placement, Reading width and Notifications into separate zones. Placement and explicit On/Off choices use the same filled/empty radio markers. Clicking an already selected On/Off value leaves it unchanged. Left/right arrows choose a placement, up/down moves between zones, and Enter applies the focused choice or toggles its setting. The panel fits the minimum 40-column, ten-row client. Supported action names are validated at startup; unsupported options and dimensions fail clearly. Bindings can use `unbound` to remove an existing shortcut. Interactive help reflects the configured prefix and bindings. Configuration files are regular JSON files bounded to 64 KiB. The legacy `read_height_percent` option is accepted for compatibility; tabs always use the available content height.
 
@@ -110,7 +115,7 @@ Enter that at Ctrl-B then `:` in tmux, not at an agent prompt. A future native c
 
 The first eligible attached client controls the workspace. Additional clients observe it and cannot send application input or change it without explicit takeover. Controller dimensions determine PTY sizes; observer resizes only clip or pad their display. Supported sizes are 40–400 columns and 10–160 rows. A window resize never removes a terminal.
 
-Growing creates interactive shells. Shrinking removes only the required number of recognized idle shells, regardless of their positions; busy terminals retain their identities and processes. Foreground applications, background jobs and stopped jobs count as occupied. Pending input and a short input cooldown prevent immediate shrink from discarding a just-submitted command. Insufficient unused terminals leave the old grid and all processes unchanged. Linux process checks cannot prove that every blocked shell built-in is an idle prompt, and fully detached processes outside the tracked tree are outside this guard.
+Creating a tab explicitly creates one shell. Grid resizing changes geometry and preserves every process; it does not create spare shells or remove idle ones. Closing a tab explicitly requires confirmation. Legacy native layout commands are rejected without changing any terminals; the older tmux helper retains its separate compatibility behavior.
 
 ## Discovery and recovery metadata
 
@@ -150,9 +155,9 @@ Prefix then Space starts keyboard selection at the visible cursor. Arrow keys ex
 
 ## Templates, adaptive views and resizing
 
-`start --template PATH` initializes a new workspace from a validated JSON template containing a supported grid and optional named panes with absolute working directories and shell paths. Starting an already-live workspace never replaces its terminals. Template names remain stable despite shell-title changes. Effective settings retain the template for restart. See [template example](../examples/native-template.json); replace its directories with your own. `kelpmux templates --workspace NAME` lists validated JSON templates in that workspace's private `templates` directory; it does not launch them.
+`start --template PATH` initializes a new workspace from named panes with absolute working directories and shell paths. Legacy template `grid` supplies its initial number of shell slots; the live layout is computed automatically. Starting an already-live workspace never replaces its terminals. Template names remain stable despite shell-title changes. Effective settings retain the template and exact tab count for restart. See [template example](../examples/native-template.json); replace its directories with your own. `kelpmux templates --workspace NAME` lists validated JSON templates in that workspace's private `templates` directory; it does not launch them.
 
-On narrow terminals, automatic view selection uses one visible tab without removing any terminals. View mode and reading width are remembered separately for compact, medium and wide column profiles. Explicit tab placement always overrides automatic placement. Drag a grid separator to adjust its neighboring columns or rows, or use prefix then uppercase `H`, `L`, `K`, `J` to resize near the active pane. Drag a pane header onto another to swap their logical positions; prefix then `s` remains a graphical keyboard alternative. Grid proportions are saved for restart. Changing a grid preset rebalances its proportions.
+On narrow terminals, automatic view selection uses a compact tab strip without removing terminals. View mode and reading width are remembered separately for compact, medium and wide column profiles. Explicit tab placement overrides automatic placement. Grid cells rebalance evenly as tabs and client dimensions change. Drag a pane header onto another to swap their logical positions; prefix then `s` remains a graphical keyboard alternative.
 
 ## Incremental updates and diagnostics
 
@@ -170,9 +175,9 @@ The overview now shows status evidence and stale/unknown checks. Idle does not i
 
 Terminal content starts at the left edge of its available content area. `wrap_lines` defaults to `true`: the PTY wraps at the configured reading width; disabling it uses the full available width. Toggle it in Settings, with Prefix then `f`, or with the control at the top of the palette-colored right divider. `+` removes the limit; `−` restores it. The divider stays reachable at the extreme right in full-width mode. A blank column separates it from terminal content in both modes. There is no wrap control in the sidebar. This controls PTY dimensions, not an application's own terminal autowrap mode.
 
-The `+` button creates one new shell tab, below the vertical list with a blank row above it, or immediately after the visible horizontal tabs. Existing processes are preserved, and the grid expands only when necessary to hold the additional terminal. At the current nine-main-tab limit the button is disabled. Scratch remains separate. Vertical tabs use up to four character rows when space permits, with the title below the number and status, and collapse on compact displays. Long titles pause, scroll slowly once, then return to a static label; changing the title starts a new pass. The compact close confirmation is at most 52 columns by eight rows and presents blue Cancel and red Close tab buttons side by side, with Cancel selected initially.
+The `+` button creates one new shell tab, below the vertical list with a blank row above it, or immediately after the visible horizontal tabs. Existing processes are preserved, and the grid rebalances automatically. At the nine-main-tab limit the button is disabled, including parked tabs. Scratch remains separate. Vertical tabs use up to three character rows, with the title below the number, status and park/close controls, and collapse on compact displays. Long titles pause, scroll slowly once, then return to a static label; changing the title starts a new pass. The compact close confirmation is at most 52 columns by eight rows and presents blue Cancel and red Close tab buttons side by side, with Close selected initially.
 
-Grid rows and columns have visible one-cell separators; drag a horizontal line or vertical gap to resize neighbors. These cells belong to Kelpmux, not the applications.
+Vertical separators, including the full-width right divider, use solid quarter-cell strokes; their exact pixel thickness is font-dependent. Horizontal grid separators remain visible. Separator cells belong to Kelpmux and are outside application input coordinates.
 
 OSC 8 hyperlink targets survive terminal snapshots, composition, deltas and ANSI rendering. Plain HTTP(S) URLs also become links, including soft-wrapped URLs within a pane. Opening a link uses the outer terminal's supported link gesture, often a modifier-click or touch menu when mouse reporting is active. Kelpmux does not launch a browser on the remote host. Explicit targets are limited to 2,048 bytes and reject whitespace/control characters. A matching new server and frontend are needed to use these changes; reconnecting to a running alpha keeps its original popup UI. Settings/help/confirmation dialogs remain popups in the tab-based version.
 

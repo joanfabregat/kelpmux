@@ -17,7 +17,8 @@ Kelpmux is a persistent terminal workspace for coding agents, inspired by Monter
 
 ## Native beta
 
-- Graphical grid selection from `1x1`, `2x1`, `2x2`, `3x2`, `2x3` and `3x3`. Growing creates shells; shrinking refuses to remove foreground, background or stopped jobs.
+- Automatic balanced grids computed from unparked tabs and terminal dimensions. Resizing the view preserves processes.
+- Park tabs behind a restore list while their terminals, output and agent status continue running.
 - Grid overview and responsive tabs with top, left or compact bottom navigation; capped or full terminal width while preserving every process.
 - Popup configuration and close-tab confirmations, plus a Vitals-derived CPU, memory, swap, disk and clock footer.
 - Stable pane IDs and colors, distinct pane numbers, lifecycle markers and a braille working spinner. Agent selection filters questions and finished sessions; missing session evidence stays unknown.
@@ -27,7 +28,7 @@ Kelpmux is a persistent terminal workspace for coding agents, inspired by Monter
 - Claude/Codex discovery without wrappers, optional lifecycle hooks and a seven-day metadata journal. No prompts, responses, credentials or transcripts are stored in the journal.
 - Overview, persistent unread notifications with optional sound, and a recovery dashboard grouped by workspace and project with copyable resume commands.
 - A persistent scratch terminal popup, history search across one or all terminals, and keyboard or mouse selection with OSC 52 copy.
-- Startup templates for grids, terminal names and directories; remembered view widths and separator resizing by keyboard or mouse.
+- Startup tab counts, named terminal templates and directories; remembered view widths and automatic equalization.
 - Revision-checked incremental frames with bounded slow-client resynchronization, a reproducible payload benchmark and content-free diagnostics.
 
 The server runs on **Linux** with readable `/proc`; CI tests x86-64 and ARM64. The server must stay alive to preserve terminals. A crash or reboot does not recreate terminal processes; the journal identifies sessions for manual resumption in their agent TUIs. Physical RootShell/device validation is separate from automated PTY profiles.
@@ -43,7 +44,7 @@ kelpmux attach --workspace beta-trial
 
 Inspect it with `kelpmux status --workspace beta-trial`. `Ctrl-B`, then `d` detaches without ending processes. `kelpmux stop --workspace beta-trial` ends that workspace and its owned shells; stop only a disposable trial when finished testing.
 
-`Ctrl-B`, then `g` opens the graphical grid picker; `z` switches grid/tabs; `f` toggles full terminal width; `?` opens help. `Ctrl-B`, then `a` opens the agent switcher, `!` filters attention and `n` filters finished sessions; `s` opens pane movement. Header controls and the footer expose the same views. Use `attach --takeover` or `Ctrl-B`, then `t` to take control from another client. Controller dimensions determine the backend grid; observers see a clipped or padded frame.
+`Ctrl-B`, then `g` or `e` opens the automatic grid; `z` switches grid/tabs; `f` toggles full terminal width; `?` opens help. Prefix then Enter creates a tab, `p` parks the active tab, and `u` opens the parked list. The ↓ tab control parks a tab; the Park footer button restores one. `Ctrl-B`, then `a` opens the agent switcher, `!` filters attention and `n` filters finished sessions; `s` opens pane movement. Use `attach --takeover` or `Ctrl-B`, then `t` to take control from another client. Controller dimensions determine geometry; observers see a clipped or padded frame.
 
 `kelpmux ssh-entry --workspace beta-trial` attaches or starts the named workspace from an SSH shell. Automatic SSH routing requires explicit login-hook configuration; a launch command injected into an already running tmux agent is not a shell command. Keep existing SSH authentication unchanged and choose Kelpmux before automatic tmux attachment. See [native commands, configuration and SSH setup](docs/native.md).
 
@@ -60,7 +61,7 @@ cargo test --locked
 cargo build --locked --release
 ```
 
-Native fixtures use disposable PTYs, shells and private sockets/state. They test reconnect identity, controller/observer behavior, malformed/slow clients, ANSI/query handling, fragmented input, paste, geometry and responsive tabs/dialogs, occupied-pane shrink refusal, agent filters, configuration and workspace lifecycle. They do not launch real agents or modify an existing workspace. Small and large terminal profiles check rendering and resize behavior; the [release checklist](docs/releases.md) separately covers hands-on RootShell and display checks.
+Native fixtures use disposable PTYs, shells and private sockets/state. They test reconnect identity, controller/observer behavior, malformed/slow clients, ANSI/query handling, fragmented input, paste, automatic grids, parking, exit cleanup, responsive tabs/dialogs, agent filters, configuration and workspace lifecycle. They do not launch real agents or modify an existing workspace. Small and large terminal profiles check rendering and resize behavior; the [release checklist](docs/releases.md) separately covers hands-on RootShell and display checks.
 
 Quality, native architecture, minimum-Rust, dependency policy and legacy integration jobs run in parallel. Reviewed cache actions restore locked dependency sources and job/toolchain-specific build outputs; only successful trusted events save caches. Current advisories and audit results are never cached. Release jobs produce versioned archives, license texts and verified SHA-256 checksums.
 
