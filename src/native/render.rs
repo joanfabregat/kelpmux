@@ -283,7 +283,7 @@ pub fn compose(
                 key("+", "read-wider"),
                 key("-", "read-narrower")
             ),
-            format!("{}  Settings (tab placement)", key(",", "config")),
+            format!("{}  Settings", key(",", "config")),
             format!("{}  Detach", key("d", "detach")),
             format!("{}  Take control", key("tT", "takeover")),
             format!("{}  Toggle help", key("?", "help")),
@@ -466,7 +466,7 @@ fn draw_dialog(frame: &mut Frame, workspace: &Workspace, dialog: super::ui::Dial
         }
         DialogKind::Search => " Search history",
         DialogKind::Move => " Move active pane · choose destination",
-        DialogKind::Config => " Settings · tab position",
+        DialogKind::Config => " Settings",
         DialogKind::CloseConfirm => " Close this tab?",
         DialogKind::Color => " Tab color · arrows, Enter or click",
         DialogKind::Agents => match dialog.filter {
@@ -587,64 +587,95 @@ fn draw_dialog(frame: &mut Frame, workspace: &Workspace, dialog: super::ui::Dial
             );
         }
     } else if dialog.kind == DialogKind::Config {
-        let labels: Vec<String> = {
-            use super::ui::TabPosition;
-            [
-                TabPosition::Auto,
-                TabPosition::Top,
-                TabPosition::Left,
-                TabPosition::Bottom,
-            ]
+        use super::ui::TabPosition;
+        let positions = [
+            TabPosition::Auto,
+            TabPosition::Top,
+            TabPosition::Left,
+            TabPosition::Bottom,
+        ];
+        let step = if bounds.rows >= 11 { 4 } else { 2 };
+        for (group, label) in ["Tab placement", "Reading width", "Notifications"]
             .iter()
-            .map(|position| {
-                format!(
-                    "{} {:?}",
-                    if *position == workspace.ui.config.tab_position {
-                        "●"
-                    } else {
-                        "○"
-                    },
-                    position
-                )
-            })
-            .chain(std::iter::once(format!(
-                "Notification sound: {}",
-                if workspace.ui.config.notification_sound {
-                    "on"
-                } else {
-                    "off"
-                }
-            )))
-            .chain(std::iter::once(format!(
-                "Wrap at reading width: {}",
-                if workspace.ui.config.wrap_lines {
-                    "on"
-                } else {
-                    "off"
-                }
-            )))
-            .collect()
-        };
-        for (index, label) in labels.iter().enumerate() {
-            let rect = Rect {
-                x: bounds.x,
-                y: bounds.y + 2 + index as u16,
-                cols: bounds.cols,
-                rows: 1,
+            .enumerate()
+        {
+            fill(
+                frame,
+                Rect {
+                    x: bounds.x + 1,
+                    y: bounds.y + 1 + group as u16 * step,
+                    cols: bounds.cols - 2,
+                    rows: if step == 4 { 3 } else { 2 },
+                },
+                Color::Indexed(235),
+            );
+            write_text(
+                frame,
+                bounds.x + 2,
+                bounds.y + 1 + group as u16 * step,
+                bounds.cols - 4,
+                label,
+                Color::Indexed(117),
+                Color::Indexed(235),
+                true,
+            );
+        }
+        let wrap = workspace.ui.config.wrap_lines
+            && !matches!(workspace.reading, ReadingMode::Fullscreen(_));
+        for (index, value, rect) in super::workspace::config_targets(bounds) {
+            let (checked, label) = match index {
+                0..=3 => (
+                    positions[index] == workspace.ui.config.tab_position,
+                    format!("{:?}", positions[index]),
+                ),
+                4 => (
+                    value == Some(wrap),
+                    if value == Some(true) { "On" } else { "Off" }.to_owned(),
+                ),
+                _ => (
+                    value == Some(workspace.ui.config.notification_sound),
+                    if value == Some(true) { "On" } else { "Off" }.to_owned(),
+                ),
             };
-            let bg = Color::Indexed(if index == dialog.selection { 24 } else { 236 });
+            let label = format!("{} {label}", if checked { "●" } else { "○" });
+            let bg = Color::Indexed(if index == dialog.selection { 24 } else { 235 });
             fill(frame, rect, bg);
             write_text(
                 frame,
-                rect.x + 1,
+                rect.x,
                 rect.y,
-                rect.cols - 2,
-                label,
+                rect.cols,
+                &label,
                 Color::Indexed(231),
                 bg,
                 true,
             );
         }
+        let inner = bounds.cols - 4;
+        write_text(
+            frame,
+            bounds.x + 2,
+            bounds.y + 2 + step,
+            inner / 2,
+            &format!(
+                "Limit: {} cols",
+                workspace.ui.config.remembered_read_widths[super::ui::geometry_bucket(frame.cols)]
+                    .unwrap_or(workspace.ui.config.read_width)
+            ),
+            Color::Indexed(250),
+            Color::Indexed(235),
+            false,
+        );
+        write_text(
+            frame,
+            bounds.x + 2,
+            bounds.y + 2 + 2 * step,
+            inner / 2,
+            "Sound",
+            Color::Indexed(250),
+            Color::Indexed(235),
+            false,
+        );
     } else if matches!(
         dialog.kind,
         DialogKind::Overview
@@ -1193,9 +1224,9 @@ fn draw_tabs(frame: &mut Frame, workspace: &Workspace, spinner: usize) {
                 x,
                 y,
                 1,
-                "│",
-                Color::Indexed(bright),
+                "▎",
                 Color::Indexed(muted),
+                Color::Default,
                 false,
             );
         }
@@ -1344,12 +1375,8 @@ fn draw_tab(
         Color::Indexed(88),
         true,
     );
-    if selected {
-        outline(frame, rect, Color::Indexed(bright), bg);
-    } else {
-        for y in rect.y..rect.y + rect.rows {
-            write_text(frame, rect.x, y, 1, "│", Color::Indexed(bright), bg, false);
-        }
+    for y in rect.y..rect.y + rect.rows {
+        write_text(frame, rect.x, y, 1, "▎", Color::Indexed(bright), bg, false);
     }
 }
 

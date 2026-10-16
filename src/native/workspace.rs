@@ -450,6 +450,24 @@ impl Workspace {
             Action::DialogNavigate { dx, dy } => {
                 let count = self.dialog_entries().len();
                 if let Some(dialog) = self.ui.dialog.as_mut() {
+                    if dialog.kind == DialogKind::Config {
+                        dialog.selection = match (dialog.selection, dx, dy) {
+                            (0..=3, _, dy) if dy > 0 => 4,
+                            (4, _, dy) if dy > 0 => 5,
+                            (5, _, dy) if dy < 0 => 4,
+                            (4, _, dy) if dy < 0 => match self.ui.config.tab_position {
+                                super::ui::TabPosition::Auto => 0,
+                                super::ui::TabPosition::Top => 1,
+                                super::ui::TabPosition::Left => 2,
+                                super::ui::TabPosition::Bottom => 3,
+                            },
+                            (index @ 0..=3, dx, _) => {
+                                (index as isize + isize::from(dx)).clamp(0, 3) as usize
+                            }
+                            (index, _, _) => index,
+                        };
+                        return Ok(());
+                    }
                     let columns = match dialog.kind {
                         DialogKind::Grid | DialogKind::Color => 3,
                         DialogKind::Move => isize::from(self.grid_cols),
@@ -705,17 +723,58 @@ pub fn dialog_bounds(cols: u16, rows: u16) -> Rect {
     }
 }
 pub fn dialog_bounds_for(cols: u16, rows: u16, kind: super::ui::DialogKind) -> Rect {
-    if kind != super::ui::DialogKind::CloseConfirm {
+    if !matches!(
+        kind,
+        super::ui::DialogKind::CloseConfirm | super::ui::DialogKind::Config
+    ) {
         return dialog_bounds(cols, rows);
     }
-    let width = cols.saturating_sub(4).min(52);
-    let height = rows.saturating_sub(2).min(8);
+    let (width, height) = if kind == super::ui::DialogKind::Config {
+        (72, 13)
+    } else {
+        (52, 8)
+    };
+    let width = cols.saturating_sub(4).min(width);
+    let height = rows.saturating_sub(2).min(height);
     Rect {
         x: (cols - width) / 2,
         y: (rows - 1 - height) / 2,
         cols: width,
         rows: height,
     }
+}
+/// Logical focus index, optional explicit on/off value, and shared mouse geometry.
+pub fn config_targets(bounds: Rect) -> Vec<(usize, Option<bool>, Rect)> {
+    let step = if bounds.rows >= 11 { 4 } else { 2 };
+    let mut choices = Vec::new();
+    let inner = bounds.cols - 4;
+    for index in 0..4u16 {
+        choices.push((
+            usize::from(index),
+            None,
+            Rect {
+                x: bounds.x + 2 + inner * index / 4,
+                y: bounds.y + 2,
+                cols: inner * (index + 1) / 4 - inner * index / 4,
+                rows: 1,
+            },
+        ));
+    }
+    for group in 0..2u16 {
+        for value in 0..2u16 {
+            choices.push((
+                usize::from(group) + 4,
+                Some(value == 0),
+                Rect {
+                    x: bounds.x + 2 + inner / 2 + (inner - inner / 2) * value / 2,
+                    y: bounds.y + 2 + (group + 1) * step,
+                    cols: (inner - inner / 2) * (value + 1) / 2 - (inner - inner / 2) * value / 2,
+                    rows: 1,
+                },
+            ));
+        }
+    }
+    choices
 }
 pub fn grid_cards(bounds: Rect) -> Vec<Rect> {
     let width = bounds.cols / 3;
