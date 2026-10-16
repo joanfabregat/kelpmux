@@ -221,7 +221,7 @@ fn help_close_button_and_footer_toggle_close_without_application_input() {
             x: bounds.x + bounds.cols - 2,
             y: bounds.y,
         },
-        Point { x: 20, y: 29 },
+        Point { x: 15, y: 29 },
     ] {
         let messages = router.route(mouse(point, MouseKind::Press), &f);
         assert_eq!(action(&messages), vec![Action::Help]);
@@ -378,14 +378,14 @@ fn grid_headers_and_tab_footer_have_distinct_hit_targets() {
         action(&router.route(
             mouse(
                 Point {
-                    x: 17,
+                    x: 15,
                     y: f.rows - 1
                 },
                 MouseKind::Press
             ),
             &f
         )),
-        vec![Action::Fullscreen(1)]
+        vec![Action::Help]
     );
 }
 #[test]

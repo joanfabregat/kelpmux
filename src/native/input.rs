@@ -618,7 +618,7 @@ impl Router {
             let close = event.position.y == bounds.y
                 && event.position.x >= bounds.x + bounds.cols.saturating_sub(3);
             let toggle = event.position.y == frame.rows.saturating_sub(1)
-                && (19..22).contains(&event.position.x);
+                && (14..17).contains(&event.position.x);
             if event.kind == MouseKind::Press
                 && (!bounds.contains(event.position) || close || toggle)
             {
@@ -654,33 +654,27 @@ impl Router {
         if event.kind == MouseKind::Press
             && event.position.y == frame.rows - 1
             && event.position.x >= 8
-            && event.position.x < 19
+            && event.position.x < 14
         {
             if frame.active == 0 {
-                if event.position.x < 16
-                    && frame
-                        .panes
-                        .iter()
-                        .filter(|v| Some(v.pane.id) != frame.ui.scratch)
-                        .count()
-                        < 9
+                if frame
+                    .panes
+                    .iter()
+                    .filter(|v| Some(v.pane.id) != frame.ui.scratch)
+                    .count()
+                    < 9
                 {
                     emit(&mut output, Action::NewTab, true);
                 }
                 return output;
             }
-            let action = if event.position.x < 16 {
-                Action::Read(frame.active)
-            } else {
-                Action::Fullscreen(frame.active)
-            };
-            emit(&mut output, action, true);
+            emit(&mut output, Action::Read(frame.active), true);
             return output;
         }
         if event.kind == MouseKind::Press
             && event.position.y == frame.rows.saturating_sub(1)
-            && event.position.x >= 19
-            && event.position.x < 22
+            && event.position.x >= 14
+            && event.position.x < 17
         {
             if frame.ui.notifications.iter().any(|item| !item.read) {
                 self.pending_modal = true;
