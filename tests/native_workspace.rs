@@ -342,7 +342,7 @@ fn prefix_sequences_and_application_editing_keys_are_separate() {
             }
         })
         .collect();
-    assert_eq!(passthrough, keys);
+    assert_eq!(passthrough, b"\x1bf\x1bb\x1b[1;3D\x1b[1;5C\n\n");
     assert_eq!(
         action(&router.route(InputEvent::Bytes(b"\x02s14".to_vec()), &frame)),
         vec![Action::MovePicker]
