@@ -7,7 +7,7 @@ use kelpmux::{
         render::{compose, terminal_diff},
         tracking::RecoveryEntry,
         ui::DialogKind,
-        workspace::{Workspace, dialog_bounds},
+        workspace::{Workspace, config_targets, dialog_bounds_for},
     },
 };
 use std::collections::BTreeMap;
@@ -333,13 +333,18 @@ fn recovery_and_sound_settings_are_actionable_and_small_screen_help_scrolls() {
     );
     ws.apply(&Action::Config).unwrap();
     let f = frame(&ws);
-    let bounds = dialog_bounds(f.cols, f.rows);
+    let bounds = dialog_bounds_for(f.cols, f.rows, DialogKind::Config);
+    let choice = config_targets(bounds)
+        .into_iter()
+        .find(|(index, value, _)| *index == 5 && *value == Some(true))
+        .unwrap()
+        .2;
     assert_eq!(
         actions(Router::default().route(
             mouse(
                 Point {
-                    x: bounds.x + 1,
-                    y: bounds.y + 6
+                    x: choice.x,
+                    y: choice.y
                 },
                 MouseKind::Press
             ),
@@ -473,7 +478,7 @@ fn dialogs_and_help_take_click_priority_above_scratch_on_compact_terminal() {
     ws.ui.scratch = Some(100);
     ws.apply(&Action::Scratch).unwrap();
     ws.apply(&Action::Config).unwrap();
-    let bounds = dialog_bounds(ws.cols, ws.rows);
+    let bounds = dialog_bounds_for(ws.cols, ws.rows, DialogKind::Config);
     let point = Point {
         x: bounds.x + bounds.cols - 1,
         y: bounds.y,

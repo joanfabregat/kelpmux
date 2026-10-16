@@ -1,6 +1,6 @@
 # Native client foundation
 
-Kelpmux owns long-running PTYs and Alacritty terminal interpretation. Clients own presentation. Native mode has no tmux or WezTerm runtime dependency. The composed ANSI frontend is protocol v7 (overflow tab navigation, compact confirmations and persistent width-divider controls); the separate experimental pane stream remains v1. A matching frontend/server pair is required because mouse routing shares their UI geometry. This foundation is part of the unreleased beta.3 code, not the installed beta.2 binary. A graphical desktop/mobile client and MCP/device tools are not implemented.
+Kelpmux owns long-running PTYs and Alacritty terminal interpretation. Clients own presentation. Native mode has no tmux or WezTerm runtime dependency. The composed ANSI frontend is protocol v8 (grouped settings and explicit on/off radio targets); the separate experimental pane stream remains v1. A matching frontend/server pair is required because mouse routing shares their UI geometry. This foundation is part of the unreleased beta.3 code, not the installed beta.2 binary. A graphical desktop/mobile client and MCP/device tools are not implemented.
 
 The broader proposed contract is [ADR 0001](adr/0001-native-client-protocol-and-device-capabilities.md). It covers pane lifecycle, independent device sizes, live agent status, notifications, remote Vitals and a future MCP/device request channel. The ADR deliberately distinguishes those proposals from the implemented requests below.
 
