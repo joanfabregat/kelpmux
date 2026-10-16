@@ -64,6 +64,7 @@ pub struct Terminal {
     primary_history: Option<Vec<HistoryRow>>,
     selection_anchor: Option<TermPoint>,
     selection_head: Option<TermPoint>,
+    explicit_defaults: bool,
 }
 #[derive(Clone)]
 struct HistoryRow {
@@ -79,14 +80,29 @@ impl Terminal {
             rows: usize::from(rows.max(1)),
         };
         Self {
-            term: Term::new(Config::default(), &size, listener.clone()),
+            term: Term::new(
+                Config {
+                    kitty_keyboard: true,
+                    ..Config::default()
+                },
+                &size,
+                listener.clone(),
+            ),
             parser: Processor::new(),
             listener,
             escape: Vec::new(),
             primary_history: None,
             selection_anchor: None,
             selection_head: None,
+            explicit_defaults: false,
         }
+    }
+    /// A pane owns its default palette; it must match the OSC replies even when
+    /// an attached SSH terminal uses a different theme.
+    pub fn for_pane(cols: u16, rows: u16) -> Self {
+        let mut terminal = Self::new(cols, rows);
+        terminal.explicit_defaults = true;
+        terminal
     }
     pub fn feed(&mut self, bytes: &[u8]) -> Vec<Effect> {
         let mut effects = Vec::new();
@@ -241,6 +257,14 @@ impl Terminal {
             }
             let mut fg = color(source.fg, content.colors);
             let mut bg = color(source.bg, content.colors);
+            if self.explicit_defaults {
+                if fg == Color::Default {
+                    fg = rgb_color(default_rgb(256));
+                }
+                if bg == Color::Default {
+                    bg = rgb_color(default_rgb(257));
+                }
+            }
             if flags.contains(Flags::INVERSE) {
                 // Defaults are role-dependent in ANSI: resolve before swapping.
                 if fg == Color::Default {
@@ -307,6 +331,23 @@ impl Terminal {
             cells,
             cursor,
             modes: InputModes {
+                keyboard_flags: [
+                    TermMode::DISAMBIGUATE_ESC_CODES,
+                    TermMode::REPORT_EVENT_TYPES,
+                    TermMode::REPORT_ALTERNATE_KEYS,
+                    TermMode::REPORT_ALL_KEYS_AS_ESC,
+                    TermMode::REPORT_ASSOCIATED_TEXT,
+                ]
+                .iter()
+                .enumerate()
+                .fold(0, |flags, (i, mode)| {
+                    flags
+                        | if mode.intersects(content.mode) {
+                            1 << i
+                        } else {
+                            0
+                        }
+                }),
                 application_cursor: mode.contains(TermMode::APP_CURSOR),
                 application_keypad: mode.contains(TermMode::APP_KEYPAD),
                 bracketed_paste: mode.contains(TermMode::BRACKETED_PASTE),

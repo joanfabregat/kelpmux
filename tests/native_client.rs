@@ -300,17 +300,19 @@ fn attach_keyboard_paste_focus_mouse_resize_detach_reconnect_restores_tty() {
     });
     let mut tty = Pty::spawn(&path, 80, 24);
     tty.ready();
-    tty.input(b"hello\x1b[200~a\x02d\x1b[201~\x1b[I\x1b[<0;3;3M");
+    tty.input(b"hello\x1b[13;2u\x1b[200~a\x02d\x1b[201~\x1b[I\x1b[<0;3;3M");
     let deadline = Instant::now() + Duration::from_secs(5);
     let mut keyboard = false;
     let mut paste = false;
     let mut focus = false;
     let mut mouse = false;
-    while !(keyboard && paste && focus && mouse) {
+    let mut newline = false;
+    while !(keyboard && paste && focus && mouse && newline) {
         assert!(Instant::now() < deadline);
         match receiver.recv_timeout(Duration::from_secs(1)).unwrap() {
             ClientMessage::Input(bytes) => {
                 keyboard |= bytes.windows(5).any(|b| b == b"hello");
+                newline |= bytes == b"\n";
                 focus |= bytes.windows(3).any(|b| b == b"\x1b[I");
             }
             ClientMessage::Paste(bytes) => {
@@ -351,6 +353,8 @@ fn attach_keyboard_paste_focus_mouse_resize_detach_reconnect_restores_tty() {
     tty.input(b"\x02d");
     tty.finish(true);
     assert!(tty.output.windows(8).any(|b| b == b"\x1b[?1049l"));
+    assert!(tty.output.windows(5).any(|b| b == b"\x1b[>1u"));
+    assert!(tty.output.windows(5).any(|b| b == b"\x1b[<1u"));
     assert!(String::from_utf8_lossy(&tty.output).contains("Zml4dHVyZSBjb3B5"));
     let mut again = Pty::spawn(&path, 80, 24);
     again.ready();
