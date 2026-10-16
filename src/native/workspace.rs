@@ -84,6 +84,7 @@ impl Workspace {
                 self.reading = reading;
             }
         }
+        self.reflow();
         Ok(())
     }
     pub fn layout(&self) -> Vec<PaneView> {
@@ -133,7 +134,13 @@ impl Workspace {
                 .iter()
                 .enumerate()
                 .map(|(index, pane)| {
-                    let mut view = Self::view(pane, index, Rect::default(), false);
+                    let number = self
+                        .panes
+                        .iter()
+                        .take(index)
+                        .filter(|p| !p.parked && Some(p.id) != self.ui.scratch)
+                        .count();
+                    let mut view = Self::view(pane, number, Rect::default(), false);
                     if pane.id == self.active {
                         view.rect = body;
                         view.body = body;
@@ -147,22 +154,46 @@ impl Workspace {
         self.grid_layout()
     }
     pub fn grid_layout(&self) -> Vec<PaneView> {
-        let columns = u16::from(self.grid_cols.max(1));
-        let usable_cols = self.cols.saturating_sub(columns - 1);
+        let (_, grid_rows) = self.automatic_shape();
         // Reserve the footer and one separator between neighboring rows.
-        let usable_rows = self.rows.saturating_sub(u16::from(self.grid_rows.max(1)));
+        let usable_rows = self.rows.saturating_sub(u16::from(grid_rows));
         let mut views = Vec::new();
-        let x_boundaries =
-            weighted_boundaries(usable_cols, self.grid_cols, &self.ui.column_weights);
-        let y_boundaries = weighted_boundaries(usable_rows, self.grid_rows, &self.ui.row_weights);
+        let y_boundaries = weighted_boundaries(usable_rows, grid_rows, &[]);
+        let count = self
+            .panes
+            .iter()
+            .filter(|p| !p.parked && Some(p.id) != self.ui.scratch)
+            .count();
+        let mut visible = 0;
         for (index, pane) in self
             .panes
             .iter()
             .filter(|pane| Some(pane.id) != self.ui.scratch)
             .enumerate()
         {
-            let col = index as u16 % columns;
-            let row = index as u16 / columns;
+            if pane.parked {
+                let mut view = Self::view(pane, index, Rect::default(), false);
+                view.body = Rect::default();
+                views.push(view);
+                continue;
+            }
+            let index = visible;
+            visible += 1;
+            let mut row = 0usize;
+            let mut offset = 0usize;
+            let row_count = loop {
+                let length = count / usize::from(grid_rows)
+                    + usize::from(row < count % usize::from(grid_rows));
+                if index < offset + length {
+                    break length;
+                }
+                offset += length;
+                row += 1;
+            };
+            let col = (index - offset) as u16;
+            let row = row as u16;
+            let x_boundaries =
+                weighted_boundaries(self.cols - (row_count as u16 - 1), row_count as u8, &[]);
             let left = x_boundaries[usize::from(col)];
             let top = y_boundaries[usize::from(row)];
             let rect = Rect {
@@ -175,9 +206,40 @@ impl Workspace {
         }
         views
     }
+    pub fn automatic_shape(&self) -> (u8, u8) {
+        let count = self
+            .panes
+            .iter()
+            .filter(|p| !p.parked && Some(p.id) != self.ui.scratch)
+            .count();
+        match count {
+            0 | 1 => (1, 1),
+            2 if self.cols < 70 => (1, 2),
+            2 => (2, 1),
+            3 | 4 => (2, 2),
+            5 | 6 if self.cols < 100 => (2, 3),
+            5 | 6 => (3, 2),
+            _ => (3, 3),
+        }
+    }
+    pub fn reflow(&mut self) {
+        (self.grid_cols, self.grid_rows) = self.automatic_shape();
+        self.ui.grid_shape = (self.grid_cols, self.grid_rows);
+        self.ui.column_weights.clear();
+        self.ui.row_weights.clear();
+        let mut number = 0;
+        for pane in &mut self.panes {
+            pane.number = if pane.parked || Some(pane.id) == self.ui.scratch {
+                0
+            } else {
+                number += 1;
+                number
+            };
+        }
+    }
     fn view(pane: &PaneInfo, index: usize, rect: Rect, overlay: bool) -> PaneView {
         let mut pane = pane.clone();
-        pane.number = index + 1;
+        pane.number = if pane.parked { 0 } else { index + 1 };
         PaneView {
             pane,
             rect,
@@ -198,6 +260,9 @@ impl Workspace {
             views.extend(self.layout().into_iter().filter(|view| view.body.cols > 0));
         }
         for view in views {
+            if view.body.cols == 0 || view.body.rows == 0 {
+                continue;
+            }
             let entry = (view.pane.id, view.body.cols, view.body.rows);
             if let Some(existing) = sizes
                 .iter_mut()
@@ -224,6 +289,50 @@ impl Workspace {
     }
     pub fn apply(&mut self, action: &Action) -> Result<()> {
         match *action {
+            Action::Parked => {
+                self.help = false;
+                self.ui.dialog = Some(Dialog {
+                    kind: DialogKind::Parked,
+                    selection: 0,
+                    source: None,
+                    filter: AgentFilter::All,
+                });
+            }
+            Action::Park(id) => {
+                let index = self.require_pane(id)?;
+                if Some(id) == self.ui.scratch {
+                    return Err("scratch cannot be parked".into());
+                }
+                if self.ui.scratch_visible {
+                    self.apply(&Action::ScratchClose)?;
+                }
+                self.panes[index].parked = true;
+                if self.active == id {
+                    self.active = self
+                        .panes
+                        .iter()
+                        .find(|p| !p.parked && Some(p.id) != self.ui.scratch)
+                        .map(|p| p.id)
+                        .unwrap_or(0);
+                    if self.reading != ReadingMode::Grid {
+                        self.reading = if self.active == 0 {
+                            ReadingMode::Grid
+                        } else {
+                            ReadingMode::Tabs(self.active)
+                        };
+                    }
+                }
+                self.ui.dialog = None;
+                self.reflow();
+            }
+            Action::Restore(id) => {
+                let index = self.require_pane(id)?;
+                self.panes[index].parked = false;
+                self.active = id;
+                self.reading = ReadingMode::Tabs(id);
+                self.ui.dialog = None;
+                self.reflow();
+            }
             Action::ClaimPane(_) => {}
             Action::NewTab => return Err("new tabs require the PTY server".into()),
             Action::HelpScroll(amount) => {
@@ -325,14 +434,14 @@ impl Workspace {
                     self.active = self
                         .ui
                         .scratch_return
-                        .filter(|id| self.panes.iter().any(|p| p.id == *id))
+                        .filter(|id| self.panes.iter().any(|p| p.id == *id && !p.parked))
                         .or_else(|| {
                             self.panes
                                 .iter()
-                                .find(|p| Some(p.id) != self.ui.scratch)
+                                .find(|p| !p.parked && Some(p.id) != self.ui.scratch)
                                 .map(|p| p.id)
                         })
-                        .ok_or("no regular terminal")?;
+                        .unwrap_or(0);
                     self.reading = self.ui.scratch_reading.take().unwrap_or(ReadingMode::Grid);
                     self.ui.scratch_visible = false;
                     self.ui.scratch_return = None;
@@ -411,7 +520,7 @@ impl Workspace {
                 self.ui.dialog = Some(Dialog {
                     kind: DialogKind::CloseConfirm,
                     filter: AgentFilter::All,
-                    selection: 0,
+                    selection: 1,
                     source: Some(id),
                 });
             }
@@ -493,15 +602,37 @@ impl Workspace {
                     .scratch_return
                     .filter(|_| self.ui.scratch_visible)
                     .unwrap_or(self.active);
-                let index = self.require_pane(normal)?;
-                let columns = usize::from(self.grid_cols);
-                let x = index % columns;
-                let y = index / columns;
-                let nx = (x as isize + isize::from(dx)).clamp(0, columns as isize - 1) as usize;
-                let ny = (y as isize + isize::from(dy)).clamp(0, isize::from(self.grid_rows) - 1)
-                    as usize;
-                if let Some(pane) = self.panes.get(ny * columns + nx) {
-                    let id = pane.id;
+                self.require_pane(normal)?;
+                let views = self.grid_layout();
+                let origin = views
+                    .iter()
+                    .find(|view| view.pane.id == normal)
+                    .unwrap()
+                    .rect;
+                let center = |r: Rect| {
+                    (
+                        i32::from(r.x) * 2 + i32::from(r.cols),
+                        i32::from(r.y) * 2 + i32::from(r.rows),
+                    )
+                };
+                let (x, y) = center(origin);
+                if let Some(view) = views
+                    .iter()
+                    .filter(|v| !v.pane.parked && v.pane.id != normal)
+                    .filter(|v| {
+                        let (nx, ny) = center(v.rect);
+                        if dx != 0 {
+                            (nx - x) * i32::from(dx) > 0 && v.rect.y == origin.y
+                        } else {
+                            (ny - y) * i32::from(dy) > 0
+                        }
+                    })
+                    .min_by_key(|v| {
+                        let (nx, ny) = center(v.rect);
+                        (nx - x).abs() + (ny - y).abs() * 4
+                    })
+                {
+                    let id = view.pane.id;
                     self.apply(&Action::Focus(id))?;
                 }
             }
@@ -515,6 +646,11 @@ impl Workspace {
                     Some(cols.clamp(20, self.cols));
             }
             Action::Focus(id) => {
+                let index = self.require_pane(id)?;
+                if self.panes[index].parked {
+                    self.panes[index].parked = false;
+                    self.reflow();
+                }
                 self.require_pane(id)?;
                 if Some(id) == self.ui.scratch && !self.ui.scratch_visible {
                     return self.apply(&Action::Scratch);
@@ -536,7 +672,7 @@ impl Workspace {
                 let id = self
                     .panes
                     .iter()
-                    .filter(|pane| Some(pane.id) != self.ui.scratch)
+                    .filter(|pane| !pane.parked && Some(pane.id) != self.ui.scratch)
                     .nth(number.checked_sub(1).ok_or("invalid pane number")?)
                     .ok_or("invalid pane number")?
                     .id;
@@ -548,6 +684,11 @@ impl Workspace {
                 };
             }
             Action::Read(id) => {
+                let index = self.require_pane(id)?;
+                if self.panes[index].parked {
+                    self.panes[index].parked = false;
+                    self.reflow();
+                }
                 if Some(id) == self.ui.scratch {
                     return self.apply(&Action::ScratchClose);
                 }
@@ -564,6 +705,11 @@ impl Workspace {
                 };
             }
             Action::Fullscreen(id) => {
+                let index = self.require_pane(id)?;
+                if self.panes[index].parked {
+                    self.panes[index].parked = false;
+                    self.reflow();
+                }
                 if self.ui.scratch_visible && Some(id) != self.ui.scratch {
                     self.apply(&Action::ScratchClose)?;
                 }
@@ -648,7 +794,7 @@ impl Workspace {
         Ok(())
     }
     pub fn grid_count(cols: u8, rows: u8) -> Result<usize> {
-        if !GRIDS.contains(&(cols, rows)) {
+        if !GRIDS.contains(&(cols, rows)) && (cols, rows) != (1, 2) {
             return Err("supported grids are 1x1, 2x1, 2x2, 3x2, 2x3 and 3x3".into());
         }
         Ok(cols as usize * rows as usize)
@@ -673,6 +819,10 @@ impl Workspace {
 }
 pub fn dialog_entries(panes: &[PaneInfo], dialog: Option<Dialog>) -> Vec<PaneId> {
     match dialog {
+        Some(Dialog {
+            kind: DialogKind::Parked,
+            ..
+        }) => panes.iter().filter(|p| p.parked).map(|p| p.id).collect(),
         Some(Dialog {
             kind: DialogKind::Color,
             ..
@@ -908,8 +1058,8 @@ pub enum TabTarget {
 pub fn tab_number(rect: Rect) -> Rect {
     Rect {
         x: rect.x + 1,
-        y: if rect.rows >= 4 {
-            rect.y + 1
+        y: if rect.rows >= 3 {
+            rect.y
         } else {
             rect.y + rect.rows / 2
         },
@@ -942,6 +1092,13 @@ pub fn close_buttons(bounds: Rect) -> [Rect; 2] {
             rows: height,
         },
     ]
+}
+pub fn tab_park(rect: Rect) -> Rect {
+    let close = tab_close(rect);
+    Rect {
+        x: close.x.saturating_sub(3),
+        ..close
+    }
 }
 pub fn color_cards(bounds: Rect) -> Vec<Rect> {
     let height = bounds.rows.saturating_sub(2) / 3;
@@ -1038,7 +1195,7 @@ pub fn tab_targets(
             let width = (cols / 5).clamp(18, 28);
             let overflow = count > usize::from(rows.saturating_sub(3));
             let available = rows.saturating_sub(if overflow { 5 } else { 3 });
-            let height = (available / count as u16).clamp(1, 4);
+            let height = (available / count as u16).clamp(1, 3);
             let capacity = usize::from(available / height).max(1);
             let start = if overflow {
                 active.saturating_sub(capacity - 1)

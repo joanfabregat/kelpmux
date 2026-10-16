@@ -34,6 +34,7 @@ pub struct ServerConfig {
     pub rows: u16,
     pub ui: super::ui::UiConfig,
     pub initial_grid: (u8, u8),
+    pub initial_tabs: Option<u8>,
 }
 const MAX_CLIENTS: usize = 16;
 const MAX_QUEUED: usize = MAX_MESSAGE + 4;
@@ -900,6 +901,14 @@ impl Server {
             self.workspace.ui.row_weights.clone(),
         ];
         settings.template = self.config.template.clone();
+        settings.tab_count = Some(
+            self.workspace
+                .panes
+                .iter()
+                .filter(|p| Some(p.id) != self.workspace.ui.scratch)
+                .count()
+                .max(1) as u8,
+        );
         journal::atomic(&path, &settings)
     }
     fn poll_recovery(&mut self) {
@@ -928,6 +937,9 @@ impl Server {
     }
     fn feature_action(&mut self, client: u64, action: &Action) -> Result<bool> {
         match action {
+            Action::Grid { .. } | Action::GridPicker | Action::ResizeGrid { .. } => {
+                return Err("grid layout is automatic; use New Tab, Park or Close".into());
+            }
             Action::NewTab => {
                 let count = self
                     .workspace
@@ -944,19 +956,7 @@ impl Server {
                 if self.workspace.ui.scratch_visible {
                     self.workspace.apply(&Action::ScratchClose)?;
                 }
-                if count + 1
-                    > usize::from(self.workspace.grid_cols) * usize::from(self.workspace.grid_rows)
-                {
-                    let &(cols, rows) = super::workspace::GRIDS
-                        .iter()
-                        .find(|&&(cols, rows)| usize::from(cols) * usize::from(rows) > count)
-                        .ok_or("no grid can hold another tab")?;
-                    self.workspace.grid_cols = cols;
-                    self.workspace.grid_rows = rows;
-                    self.workspace.ui.grid_shape = (cols, rows);
-                    self.workspace.ui.column_weights.clear();
-                    self.workspace.ui.row_weights.clear();
-                }
+                self.workspace.reflow();
                 self.workspace.active = id;
                 self.workspace.reading = ReadingMode::Tabs(id);
                 self.workspace.ui.config.view_modes
@@ -1140,6 +1140,9 @@ impl Server {
         if dialog.kind != super::ui::DialogKind::CloseConfirm || dialog.source != Some(id) {
             return Err("closing a pane requires its confirmation dialog".into());
         }
+        self.remove_pane(id, true)
+    }
+    fn remove_pane(&mut self, id: PaneId, replace_last: bool) -> Result<()> {
         if !self.panes.contains_key(&id) {
             return Err("unknown pane".into());
         }
@@ -1152,7 +1155,7 @@ impl Server {
             .iter()
             .filter(|pane| Some(pane.id) != self.workspace.ui.scratch)
             .count();
-        if !is_scratch && main_count == 1 {
+        if !is_scratch && main_count == 1 && (replace_last || self.workspace.ui.scratch.is_some()) {
             self.spawn_pane(None)?;
         }
         if is_scratch && self.workspace.ui.scratch_visible {
@@ -1167,9 +1170,9 @@ impl Server {
             .workspace
             .panes
             .iter()
-            .find(|pane| Some(pane.id) != self.workspace.ui.scratch)
-            .ok_or("workspace has no main terminal")?
-            .id;
+            .find(|pane| !pane.parked && Some(pane.id) != self.workspace.ui.scratch)
+            .map(|pane| pane.id)
+            .unwrap_or(0);
         if is_scratch {
             self.workspace.ui.scratch = None;
             self.workspace.ui.scratch_visible = false;
@@ -1197,27 +1200,27 @@ impl Server {
             .scratch_reading
             .map(|reading| replace(reading, id, fallback));
         self.workspace.ui.dialog = None;
+        if fallback == 0 {
+            self.workspace.reading = ReadingMode::Grid;
+        }
+        if !replace_last && !is_scratch && main_count == 1 && self.workspace.ui.scratch.is_none() {
+            self.shutdown = true;
+            for client in self.clients.values_mut().filter(|client| client.attached) {
+                let _ = client.send(ServerMessage::Detached);
+            }
+        }
         for (number, pane) in self.workspace.panes.iter_mut().enumerate() {
             pane.number = number + 1;
         }
         self.persist_ui()?;
         self.resize();
+        self.persist_geometry()?;
         Ok(())
     }
     fn persist_ui(&mut self) -> Result<()> {
         if self.config.ui != self.workspace.ui.config {
-            let path = self.config.state_dir.join("workspace.json");
-            let mut settings = if path.exists() {
-                super::lifecycle::Settings::load(&path)?
-            } else {
-                super::lifecycle::Settings::default()
-            };
-            settings.ui = self.workspace.ui.config.clone();
-            settings.shell = Some(self.config.shell.clone());
-            settings.cwd = Some(self.config.cwd.clone());
-            settings.grid = (self.workspace.grid_cols, self.workspace.grid_rows);
-            journal::atomic(&path, &settings)?;
-            self.config.ui = settings.ui;
+            self.persist_geometry()?;
+            self.config.ui = self.workspace.ui.config.clone();
         }
         Ok(())
     }
@@ -1268,6 +1271,7 @@ impl Server {
             self.aliases.insert(id, title.clone());
         }
         self.workspace.panes.push(PaneInfo {
+            parked: false,
             id,
             number: self.workspace.panes.len() + 1,
             pid: pane.child.id(),
@@ -1297,6 +1301,7 @@ impl Server {
         Ok(())
     }
     fn resize(&mut self) {
+        self.workspace.reflow();
         for (id, cols, rows) in self.workspace.terminal_sizes() {
             if let Some(pane) = self.panes.get_mut(&id) {
                 let (cols, rows) = self
@@ -1308,112 +1313,6 @@ impl Server {
             }
         }
         self.dirty = true;
-    }
-    fn grid(&mut self, cols: u8, rows: u8) -> Result<()> {
-        let scratch = self
-            .workspace
-            .ui
-            .scratch
-            .and_then(|id| self.workspace.panes.iter().position(|pane| pane.id == id))
-            .map(|index| self.workspace.panes.remove(index));
-        let active = self.workspace.active;
-        if scratch.as_ref().is_some_and(|pane| pane.id == active) {
-            self.workspace.active = self
-                .workspace
-                .ui
-                .scratch_return
-                .filter(|id| self.workspace.panes.iter().any(|pane| pane.id == *id))
-                .or_else(|| self.workspace.panes.first().map(|pane| pane.id))
-                .unwrap_or(0);
-        }
-        let result = self.grid_inner(cols, rows);
-        if let Some(scratch) = scratch {
-            self.workspace.panes.push(scratch);
-            if self.workspace.ui.scratch_visible {
-                self.workspace.active = active;
-            }
-        }
-        self.resize();
-        if result.is_ok() {
-            self.persist_geometry()?;
-        }
-        result
-    }
-    fn grid_inner(&mut self, cols: u8, rows: u8) -> Result<()> {
-        let count = Workspace::grid_count(cols, rows)?;
-        let old_len = self.workspace.panes.len();
-        if count < old_len {
-            let tree = process::snapshot(Path::new("/proc"))?;
-            let victims: Vec<_> = self
-                .workspace
-                .panes
-                .iter()
-                .rev()
-                .filter(|info| {
-                    !self.leases.contains_key(&info.id)
-                        && self
-                            .panes
-                            .get(&info.id)
-                            .is_some_and(|pane| pane.unused(&tree))
-                })
-                .take(old_len - count)
-                .map(|info| info.id)
-                .collect();
-            if victims.len() != old_len - count {
-                return Err("grid shrink refused: insufficient unused panes; remaining panes are occupied or cannot be proven idle".into());
-            }
-            // Validate every victim from one fresh snapshot, then recheck all immediately before mutation.
-            for _ in 0..2 {
-                let tree = process::snapshot(Path::new("/proc"))?;
-                if victims
-                    .iter()
-                    .any(|id| !self.panes.get(id).is_some_and(|p| p.unused(&tree)))
-                {
-                    return Err(
-                        "grid shrink refused: a removed pane is occupied or cannot be proven idle"
-                            .into(),
-                    );
-                }
-            }
-            let mut prepared = self.workspace.clone();
-            prepared.panes.retain(|pane| !victims.contains(&pane.id));
-            if victims.contains(&prepared.active) {
-                prepared.active = prepared.panes[0].id;
-            }
-            if matches!(prepared.reading, ReadingMode::Capped(id) | ReadingMode::Fullscreen(id) | ReadingMode::Tabs(id) if victims.contains(&id))
-            {
-                prepared.reading = ReadingMode::Grid;
-            }
-            prepared.apply(&Action::Grid { cols, rows })?;
-            self.workspace = prepared;
-            for id in victims {
-                self.panes.remove(&id);
-                self.aliases.remove(&id);
-                self.workspace.ui.config.pane_colors.remove(&id);
-            }
-        } else {
-            while self.workspace.panes.len() < count {
-                if let Err(e) = self.add_pane() {
-                    for p in self.workspace.panes.drain(old_len..) {
-                        self.panes.remove(&p.id);
-                    }
-                    return Err(e);
-                }
-            }
-            let mut prepared = self.workspace.clone();
-            if let Err(e) = prepared.apply(&Action::Grid { cols, rows }) {
-                for p in self.workspace.panes.drain(old_len..) {
-                    self.panes.remove(&p.id);
-                }
-                return Err(e);
-            }
-            self.workspace = prepared;
-        }
-        for (number, pane) in self.workspace.panes.iter_mut().enumerate() {
-            pane.number = number + 1;
-        }
-        self.resize();
-        Ok(())
     }
     fn message(&mut self, id: u64, message: ClientMessage) -> Result<()> {
         if let ClientMessage::Stream(request) = message {
@@ -1538,7 +1437,7 @@ impl Server {
                             self.resize();
                         }
                         Action::Shutdown => self.shutdown = true,
-                        Action::Grid { cols, rows } => self.grid(cols, rows)?,
+                        Action::Grid { .. } => return Err("grid layout is automatic".into()),
                         Action::ClosePaneConfirm(pane) => self.close_pane(pane)?,
                         Action::Focus(_)
                         | Action::Read(_)
@@ -1729,7 +1628,9 @@ impl Server {
                         if !self.feature_action(id, &action)? {
                             match action {
                                 Action::Shutdown => self.shutdown = true,
-                                Action::Grid { cols, rows } => self.grid(cols, rows)?,
+                                Action::Grid { .. } => {
+                                    return Err("grid layout is automatic".into());
+                                }
                                 Action::ClosePaneConfirm(pane) => self.close_pane(pane)?,
                                 Action::Scroll { pane, lines } => self
                                     .panes
@@ -1861,6 +1762,7 @@ impl Server {
     }
     fn poll_ptys(&mut self) {
         let mut clipboard = vec![];
+        let mut exited = vec![];
         for (id, pane) in &mut self.panes {
             let mut buf = [0; 8192];
             for _ in 0..16 {
@@ -1943,6 +1845,7 @@ impl Server {
                 }
             }
             if !pane.dead && pane.child.try_wait().ok().flatten().is_some() {
+                exited.push(*id);
                 pane.dead = true;
                 pane.pending.clear();
                 if let Some(info) = self.workspace.panes.iter_mut().find(|p| p.id == *id) {
@@ -1956,6 +1859,11 @@ impl Server {
                     };
                 }
                 self.dirty = true;
+            }
+        }
+        for id in exited {
+            if let Err(error) = self.remove_pane(id, false) {
+                self.notice = Some(format!("Close exited tab: {error}"));
             }
         }
         if let Some(client) = self.controller.and_then(|id| self.clients.get_mut(&id)) {
@@ -2242,11 +2150,14 @@ pub fn serve(config: ServerConfig) -> Result<()> {
         notice: None,
         shutdown: false,
     };
-    server.add_pane()?;
-    server.grid(server.config.initial_grid.0, server.config.initial_grid.1)?;
+    let count = server.config.initial_tabs.map(usize::from).unwrap_or(
+        usize::from(server.config.initial_grid.0) * usize::from(server.config.initial_grid.1),
+    );
+    for _ in 0..count {
+        server.add_pane()?;
+    }
     server.initializing = false;
-    server.workspace.ui.column_weights = server.config.initial_weights[0].clone();
-    server.workspace.ui.row_weights = server.config.initial_weights[1].clone();
+    server.workspace.reflow();
     server.persist_geometry()?;
     server.resize();
     let (requests, results, worker) = discovery_worker(server.config.state_dir.clone());

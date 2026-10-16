@@ -107,6 +107,18 @@ pub fn compose(
             header(&mut frame, &view, selected, workspace.reading, spinner);
         }
     }
+    if workspace.active == 0 && !workspace.ui.scratch_visible {
+        write_text(
+            &mut frame,
+            2,
+            2,
+            workspace.cols.saturating_sub(4),
+            "All tabs are parked. Restore from Park below, or use Ctrl-B Enter for a new tab.",
+            Color::Indexed(250),
+            Color::Default,
+            false,
+        );
+    }
     if frame.rows > 0 {
         let y = frame.rows - 1;
         fill(
@@ -121,10 +133,9 @@ pub fn compose(
         );
         let label = if controller {
             format!(
-                "^{}: {} read · {} grid · {} detach",
+                "^{}: {} tabs/grid · Enter new · p park · {} detach",
                 char::from(b'A' + workspace.ui.config.prefix - 1),
                 binding_label(&workspace.ui.config, "z", "read"),
-                binding_label(&workspace.ui.config, "g", "grid"),
                 binding_label(&workspace.ui.config, "d", "detach")
             )
         } else {
@@ -165,7 +176,9 @@ pub fn compose(
             width + 7,
             y,
             7,
-            if workspace.reading == ReadingMode::Grid {
+            if workspace.active == 0 {
+                " New "
+            } else if workspace.reading == ReadingMode::Grid {
                 " Tabs "
             } else {
                 " Grid "
@@ -193,7 +206,10 @@ pub fn compose(
             width + 17,
             y,
             7,
-            "Layout ",
+            &format!(
+                "Park {}",
+                workspace.panes.iter().filter(|p| p.parked).count()
+            ),
             Color::Indexed(231),
             Color::Indexed(24),
             true,
@@ -209,7 +225,13 @@ pub fn compose(
                 " ? "
             },
             Color::Indexed(231),
-            Color::Indexed(24),
+            Color::Indexed(
+                if workspace.ui.notifications.iter().any(|item| !item.read) {
+                    160
+                } else {
+                    60
+                },
+            ),
             true,
         );
     }
@@ -258,7 +280,7 @@ pub fn compose(
             format!("{}  Tabs / grid (also Alt+Tab / Alt+0)", key("z", "read")),
             format!("{}  Full width / capped reading", key("f", "fullscreen")),
             format!(
-                "{}  Grid picker (occupied panes protected)",
+                "{}  Automatic grid view; p parks, u restores",
                 key("g", "grid")
             ),
             format!(
@@ -311,14 +333,8 @@ pub fn compose(
                 "{}  Keyboard selection; arrows, y copies",
                 key(" ", "selection")
             ),
-            format!(
-                "{} {} {} {}  Resize grid boundaries",
-                key("H", "grid-narrower"),
-                key("L", "grid-wider"),
-                key("K", "grid-shorter"),
-                key("J", "grid-taller")
-            ),
-            "Drag      Pane headers swap; separators resize".into(),
+            "Enter New tab · p Park · u Parked tabs".into(),
+            "Drag Pane headers to swap; grid balances automatically".into(),
         ];
         for (i, line) in lines
             .iter()
@@ -347,35 +363,32 @@ pub fn compose(
 }
 
 fn draw_grid_separators(frame: &mut Frame, workspace: &Workspace) {
-    let views = workspace.grid_layout();
-    let columns: std::collections::BTreeSet<_> = views
-        .iter()
-        .filter(|view| view.rect.x > 0)
-        .map(|view| view.rect.x - 1)
-        .collect();
-    let rows: std::collections::BTreeSet<_> = views
-        .iter()
-        .filter(|view| view.rect.y > 0)
-        .map(|view| view.rect.y - 1)
-        .collect();
-    for y in 0..frame.rows.saturating_sub(1) {
-        for x in 0..frame.cols {
-            let glyph = match (columns.contains(&x), rows.contains(&y)) {
-                (true, true) => "┼",
-                (true, false) => "│",
-                (false, true) => "─",
-                _ => continue,
-            };
-            put(
+    for view in workspace.grid_layout().iter().filter(|v| !v.pane.parked) {
+        if view.rect.y > 0 {
+            write_text(
                 frame,
-                x,
-                y,
-                Cell {
-                    text: glyph.into(),
-                    fg: Color::Indexed(245),
-                    ..Cell::default()
-                },
+                0,
+                view.rect.y - 1,
+                frame.cols,
+                &"─".repeat(usize::from(frame.cols)),
+                Color::Indexed(245),
+                Color::Default,
+                false,
             );
+        }
+        if view.rect.x > 0 {
+            for y in view.rect.y..view.rect.y + view.rect.rows {
+                write_text(
+                    frame,
+                    view.rect.x - 1,
+                    y,
+                    1,
+                    "▎",
+                    Color::Indexed(245),
+                    Color::Default,
+                    false,
+                );
+            }
         }
     }
 }
@@ -454,6 +467,7 @@ fn draw_dialog(frame: &mut Frame, workspace: &Workspace, dialog: super::ui::Dial
     let bounds = super::workspace::dialog_bounds_for(frame.cols, frame.rows, dialog.kind);
     fill(frame, bounds, Color::Indexed(236));
     let title = match dialog.kind {
+        DialogKind::Parked => " Parked tabs · select to restore",
         DialogKind::Grid => " Grid · arrows, Enter or click",
         DialogKind::Overview => " Workspace overview",
         DialogKind::Notifications => " Notifications",
@@ -678,7 +692,8 @@ fn draw_dialog(frame: &mut Frame, workspace: &Workspace, dialog: super::ui::Dial
         );
     } else if matches!(
         dialog.kind,
-        DialogKind::Overview
+        DialogKind::Parked
+            | DialogKind::Overview
             | DialogKind::Notifications
             | DialogKind::Recovery
             | DialogKind::Search
@@ -1129,7 +1144,7 @@ fn draw_tabs(frame: &mut Frame, workspace: &Workspace, spinner: usize) {
     let panes: Vec<_> = workspace
         .panes
         .iter()
-        .filter(|pane| Some(pane.id) != workspace.ui.scratch)
+        .filter(|pane| !pane.parked && Some(pane.id) != workspace.ui.scratch)
         .collect();
     let active_id = if workspace.ui.scratch_visible {
         workspace.ui.scratch_return.unwrap_or(workspace.active)
@@ -1244,7 +1259,7 @@ fn draw_tabs(frame: &mut Frame, workspace: &Workspace, spinner: usize) {
                 if y == body.y {
                     if wrapping { "+" } else { "−" }
                 } else {
-                    "│"
+                    "▎"
                 },
                 Color::Indexed(bright),
                 Color::Default,
@@ -1317,6 +1332,7 @@ fn draw_tab(
     let marker_x = number.x + number.cols + 2;
     let marker_width: u16 = marker.chars().map(char_width).sum();
     let close = super::workspace::tab_close(rect);
+    let park = super::workspace::tab_park(rect);
     write_text(
         frame,
         marker_x,
@@ -1328,14 +1344,14 @@ fn draw_tab(
         true,
     );
     let count_width = count.len() as u16;
-    let (title_x, title_y, title_width) = if rect.rows >= 4 {
-        (rect.x + 2, rect.y + 2, rect.cols.saturating_sub(4))
+    let (title_x, title_y, title_width) = if rect.rows >= 3 {
+        (rect.x + 2, rect.y + 1, rect.cols.saturating_sub(4))
     } else {
         let x = marker_x + marker_width + 1;
         (
             x,
             number.y,
-            close.x.saturating_sub(count_width).saturating_sub(x),
+            park.x.saturating_sub(count_width).saturating_sub(x),
         )
     };
     let title = marquee_title(
@@ -1356,7 +1372,7 @@ fn draw_tab(
     if count_width > 0 {
         write_text(
             frame,
-            close.x.saturating_sub(count_width),
+            park.x.saturating_sub(count_width),
             number.y,
             count_width,
             count,
@@ -1373,6 +1389,16 @@ fn draw_tab(
         " × ",
         Color::Indexed(231),
         Color::Indexed(88),
+        true,
+    );
+    write_text(
+        frame,
+        park.x,
+        park.y,
+        park.cols,
+        " ↓ ",
+        Color::Indexed(231),
+        Color::Indexed(30),
         true,
     );
     for y in rect.y..rect.y + rect.rows {
@@ -1491,6 +1517,19 @@ fn draw_dashboard(
         );
     }
     let labels: Vec<String> = match dialog.kind {
+        DialogKind::Parked => workspace
+            .panes
+            .iter()
+            .filter(|p| p.parked)
+            .map(|p| {
+                format!(
+                    "{} {} · {} · Restore",
+                    p.status.marker(),
+                    p.title,
+                    p.status.text()
+                )
+            })
+            .collect(),
         DialogKind::Overview => workspace
             .panes
             .iter()

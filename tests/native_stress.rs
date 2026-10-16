@@ -260,7 +260,9 @@ impl Peer {
 fn nine_noisy_ptys_survive_slow_observer_controller_reconnect_and_resizing() {
     let daemon = Daemon::start();
     let mut controller = daemon.peer(false);
-    controller.action(Action::Grid { cols: 3, rows: 3 });
+    for _ in 1..9 {
+        controller.action(Action::NewTab);
+    }
     let initial = controller.wait(|f| f.panes.len() == 9);
     let identities: BTreeSet<_> = initial
         .panes

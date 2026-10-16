@@ -42,16 +42,20 @@ pub fn private_state(state: &Path) -> Result<()> {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct Settings {
+    pub tab_count: Option<u8>,
+    #[serde(skip_serializing)]
     pub grid_weights: [Vec<u16>; 2],
     pub template: Option<super::templates::Template>,
     pub ui: UiConfig,
     pub shell: Option<PathBuf>,
     pub cwd: Option<PathBuf>,
+    #[serde(skip_serializing)]
     pub grid: (u8, u8),
 }
 impl Default for Settings {
     fn default() -> Self {
         Self {
+            tab_count: None,
             grid_weights: [Vec::new(), Vec::new()],
             template: None,
             ui: UiConfig::default(),
@@ -67,7 +71,13 @@ impl Settings {
         if !meta.is_file() || meta.len() > 64 * 1024 {
             return Err("configuration must be a regular file smaller than 64 KiB".into());
         }
-        let settings: Self = serde_json::from_slice(&fs::read(path)?)?;
+        let mut settings: Self = serde_json::from_slice(&fs::read(path)?)?;
+        if settings
+            .tab_count
+            .is_some_and(|count| !(1..=9).contains(&count))
+        {
+            return Err("tab_count must be between 1 and 9".into());
+        }
         settings.ui.validate()?;
         for (weights, count) in settings
             .grid_weights
@@ -85,9 +95,12 @@ impl Settings {
         if let Some(template) = &settings.template {
             template.validate_schema()?;
         }
-        if ![(1, 1), (2, 1), (2, 2), (3, 2), (2, 3), (3, 3)].contains(&settings.grid) {
+        if ![(1, 1), (1, 2), (2, 1), (2, 2), (3, 2), (2, 3), (3, 3)].contains(&settings.grid) {
             return Err("unsupported startup grid".into());
         }
+        settings
+            .tab_count
+            .get_or_insert(settings.grid.0 * settings.grid.1);
         Ok(settings)
     }
 }
