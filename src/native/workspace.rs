@@ -298,6 +298,24 @@ impl Workspace {
                     filter: AgentFilter::All,
                 });
             }
+            Action::ParkRequest(id) | Action::RestoreRequest(id) => {
+                let index = self.require_pane(id)?;
+                let restore = matches!(action, Action::RestoreRequest(_));
+                if Some(id) == self.ui.scratch || self.panes[index].parked != restore {
+                    return Err("tab is not available for this action".into());
+                }
+                self.help = false;
+                self.ui.dialog = Some(Dialog {
+                    kind: if restore {
+                        DialogKind::RestoreConfirm
+                    } else {
+                        DialogKind::ParkConfirm
+                    },
+                    selection: 1,
+                    source: Some(id),
+                    filter: AgentFilter::All,
+                });
+            }
             Action::Park(id) => {
                 let index = self.require_pane(id)?;
                 if Some(id) == self.ui.scratch {
@@ -648,8 +666,7 @@ impl Workspace {
             Action::Focus(id) => {
                 let index = self.require_pane(id)?;
                 if self.panes[index].parked {
-                    self.panes[index].parked = false;
-                    self.reflow();
+                    return self.apply(&Action::RestoreRequest(id));
                 }
                 self.require_pane(id)?;
                 if Some(id) == self.ui.scratch && !self.ui.scratch_visible {
@@ -686,8 +703,7 @@ impl Workspace {
             Action::Read(id) => {
                 let index = self.require_pane(id)?;
                 if self.panes[index].parked {
-                    self.panes[index].parked = false;
-                    self.reflow();
+                    return self.apply(&Action::RestoreRequest(id));
                 }
                 if Some(id) == self.ui.scratch {
                     return self.apply(&Action::ScratchClose);
@@ -707,8 +723,7 @@ impl Workspace {
             Action::Fullscreen(id) => {
                 let index = self.require_pane(id)?;
                 if self.panes[index].parked {
-                    self.panes[index].parked = false;
-                    self.reflow();
+                    return self.apply(&Action::RestoreRequest(id));
                 }
                 if self.ui.scratch_visible && Some(id) != self.ui.scratch {
                     self.apply(&Action::ScratchClose)?;
@@ -832,7 +847,7 @@ pub fn dialog_entries(panes: &[PaneInfo], dialog: Option<Dialog>) -> Vec<PaneId>
             ..
         }) => (0..6).collect(),
         Some(Dialog {
-            kind: DialogKind::CloseConfirm,
+            kind: DialogKind::CloseConfirm | DialogKind::ParkConfirm | DialogKind::RestoreConfirm,
             ..
         }) => (0..2).collect(),
         Some(Dialog {
@@ -875,7 +890,10 @@ pub fn dialog_bounds(cols: u16, rows: u16) -> Rect {
 pub fn dialog_bounds_for(cols: u16, rows: u16, kind: super::ui::DialogKind) -> Rect {
     if !matches!(
         kind,
-        super::ui::DialogKind::CloseConfirm | super::ui::DialogKind::Config
+        super::ui::DialogKind::CloseConfirm
+            | super::ui::DialogKind::ParkConfirm
+            | super::ui::DialogKind::RestoreConfirm
+            | super::ui::DialogKind::Config
     ) {
         return dialog_bounds(cols, rows);
     }
@@ -1050,6 +1068,7 @@ fn set_boundary(weights: &mut Vec<u16>, count: u8, index: u8, value: u16) -> Res
 }
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TabTarget {
+    Parked,
     Pane(usize),
     Previous,
     Next,
@@ -1124,13 +1143,41 @@ pub fn tab_targets(
 ) -> Vec<(TabTarget, Rect)> {
     use super::ui::TabPosition;
     if count == 0 {
-        return vec![];
+        let left = config.tab_position.resolve(cols, rows) == TabPosition::Left;
+        let y = if left {
+            1
+        } else if config.tab_position.resolve(cols, rows) == TabPosition::Bottom {
+            rows - 2
+        } else {
+            0
+        };
+        let width = if left { (cols / 5).clamp(18, 28) } else { 3 };
+        return vec![
+            (
+                TabTarget::New,
+                Rect {
+                    x: 0,
+                    y,
+                    cols: width,
+                    rows: 1,
+                },
+            ),
+            (
+                TabTarget::Parked,
+                Rect {
+                    x: if left { 0 } else { 3 },
+                    y: y + u16::from(left),
+                    cols: if left { width } else { 12 },
+                    rows: 1,
+                },
+            ),
+        ];
     }
     let position = config.tab_position.resolve(cols, rows);
     match position {
         TabPosition::Top | TabPosition::Bottom => {
-            let overflow = count * 18 + 3 > usize::from(cols);
-            let reserve = if overflow { 9 } else { 3 };
+            let overflow = count * 18 + 15 > usize::from(cols);
+            let reserve = if overflow { 21 } else { 15 };
             let capacity = usize::from(cols.saturating_sub(reserve) / 18)
                 .max(1)
                 .min(count);
@@ -1169,6 +1216,15 @@ pub fn tab_targets(
                     rows: 1,
                 },
             ));
+            tabs.push((
+                TabTarget::Parked,
+                Rect {
+                    x: x + (tabs.len() as u16 - 1) * width + 3,
+                    y,
+                    cols: 12,
+                    rows: 1,
+                },
+            ));
             if overflow {
                 tabs.push((
                     TabTarget::Previous,
@@ -1193,8 +1249,8 @@ pub fn tab_targets(
         }
         TabPosition::Left => {
             let width = (cols / 5).clamp(18, 28);
-            let overflow = count > usize::from(rows.saturating_sub(3));
-            let available = rows.saturating_sub(if overflow { 5 } else { 3 });
+            let overflow = count > usize::from(rows.saturating_sub(4));
+            let available = rows.saturating_sub(if overflow { 6 } else { 4 });
             let height = (available / count as u16).clamp(1, 3);
             let capacity = usize::from(available / height).max(1);
             let start = if overflow {
@@ -1243,6 +1299,15 @@ pub fn tab_targets(
                 Rect {
                     x: 0,
                     y: end + u16::from(overflow) + 1,
+                    cols: width,
+                    rows: 1,
+                },
+            ));
+            tabs.push((
+                TabTarget::Parked,
+                Rect {
+                    x: 0,
+                    y: end + u16::from(overflow) + 2,
                     cols: width,
                     rows: 1,
                 },

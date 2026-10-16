@@ -227,7 +227,7 @@ impl Router {
                         b"f" => Some(Action::Fullscreen(frame.active)),
                         b"?" => Some(Action::Help),
                         b"g" | b"e" => Some(Action::CloseReading),
-                        b"p" => Some(Action::Park(frame.active)),
+                        b"p" => Some(Action::ParkRequest(frame.active)),
                         b"u" => Some(Action::Parked),
                         b"\r" | b"\n" => Some(Action::NewTab),
                         b"v" => Some(Action::TabPosition),
@@ -281,6 +281,8 @@ impl Router {
                                 | Action::Agents(_)
                                 | Action::Config
                                 | Action::ClosePaneRequest(_)
+                                | Action::ParkRequest(_)
+                                | Action::Parked
                                 | Action::Overview
                                 | Action::Notifications
                                 | Action::Recovery
@@ -353,7 +355,12 @@ impl Router {
                 } else if matches!(key, b"\r" | b"\n") {
                     output.extend(self.pick_dialog(
                         frame,
-                        if dialog.kind == super::ui::DialogKind::CloseConfirm {
+                        if matches!(
+                            dialog.kind,
+                            super::ui::DialogKind::CloseConfirm
+                                | super::ui::DialogKind::ParkConfirm
+                                | super::ui::DialogKind::RestoreConfirm
+                        ) {
                             1
                         } else {
                             dialog.selection
@@ -564,7 +571,12 @@ impl Router {
                 super::workspace::move_cards(bounds, columns, rows)
                     .iter()
                     .position(|rect| rect.contains(event.position))
-            } else if dialog.kind == super::ui::DialogKind::CloseConfirm {
+            } else if matches!(
+                dialog.kind,
+                super::ui::DialogKind::CloseConfirm
+                    | super::ui::DialogKind::ParkConfirm
+                    | super::ui::DialogKind::RestoreConfirm
+            ) {
                 super::workspace::close_buttons(bounds)
                     .iter()
                     .position(|rect| rect.contains(event.position))
@@ -606,7 +618,7 @@ impl Router {
             let close = event.position.y == bounds.y
                 && event.position.x >= bounds.x + bounds.cols.saturating_sub(3);
             let toggle = event.position.y == frame.rows.saturating_sub(1)
-                && event.position.x >= frame.cols.saturating_sub(3);
+                && (19..22).contains(&event.position.x);
             if event.kind == MouseKind::Press
                 && (!bounds.contains(event.position) || close || toggle)
             {
@@ -633,8 +645,7 @@ impl Router {
         }
         if event.kind == MouseKind::Press
             && event.position.y == frame.rows - 1
-            && event.position.x >= frame.cols.saturating_sub(27)
-            && event.position.x < frame.cols.saturating_sub(20)
+            && event.position.x < 8
         {
             self.pending_modal = true;
             emit(&mut output, Action::Config, true);
@@ -642,11 +653,11 @@ impl Router {
         }
         if event.kind == MouseKind::Press
             && event.position.y == frame.rows - 1
-            && event.position.x >= frame.cols.saturating_sub(20)
-            && event.position.x < frame.cols.saturating_sub(10)
+            && event.position.x >= 8
+            && event.position.x < 19
         {
             if frame.active == 0 {
-                if event.position.x < frame.cols - 13
+                if event.position.x < 16
                     && frame
                         .panes
                         .iter()
@@ -658,7 +669,7 @@ impl Router {
                 }
                 return output;
             }
-            let action = if event.position.x < frame.cols - 13 {
+            let action = if event.position.x < 16 {
                 Action::Read(frame.active)
             } else {
                 Action::Fullscreen(frame.active)
@@ -668,16 +679,8 @@ impl Router {
         }
         if event.kind == MouseKind::Press
             && event.position.y == frame.rows.saturating_sub(1)
-            && event.position.x >= frame.cols.saturating_sub(10)
-            && event.position.x < frame.cols.saturating_sub(3)
-        {
-            self.pending_modal = true;
-            emit(&mut output, Action::Parked, true);
-            return output;
-        }
-        if event.kind == MouseKind::Press
-            && event.position.y == frame.rows.saturating_sub(1)
-            && event.position.x >= frame.cols.saturating_sub(3)
+            && event.position.x >= 19
+            && event.position.x < 22
         {
             if frame.ui.notifications.iter().any(|item| !item.read) {
                 self.pending_modal = true;
@@ -706,7 +709,7 @@ impl Router {
                 return output;
             }
         }
-        if frame.reading != ReadingMode::Grid && !frame.ui.scratch_visible {
+        if (frame.reading != ReadingMode::Grid || frame.active == 0) && !frame.ui.scratch_visible {
             if event.kind == MouseKind::Press
                 && frame.panes.iter().any(|view| {
                     view.pane.id == frame.active
@@ -738,6 +741,11 @@ impl Router {
             .into_iter()
             .find(|(_, rect)| rect.contains(event.position))
             {
+                if event.kind == MouseKind::Press && target == super::workspace::TabTarget::Parked {
+                    self.pending_modal = true;
+                    emit(&mut output, Action::Parked, true);
+                    return output;
+                }
                 if event.kind == MouseKind::Press && target == super::workspace::TabTarget::New {
                     if tabviews.len() < 9 {
                         emit(&mut output, Action::NewTab, true);
@@ -781,7 +789,8 @@ impl Router {
                             && event.kind == MouseKind::Press
                             && super::workspace::tab_park(bounds).contains(event.position);
                         if park {
-                            emit(&mut output, Action::Park(view.pane.id), true);
+                            self.pending_modal = true;
+                            emit(&mut output, Action::ParkRequest(view.pane.id), true);
                         } else if color {
                             self.pending_modal = true;
                             emit(&mut output, Action::TabColor(view.pane.id), true);
@@ -941,12 +950,7 @@ impl Router {
         if dialog.kind == DialogKind::Parked {
             return frame_entries(frame)
                 .get(index)
-                .map(|id| {
-                    vec![
-                        ClientMessage::Action(Action::Restore(*id)),
-                        ClientMessage::Action(Action::DialogClose),
-                    ]
-                })
+                .map(|id| vec![ClientMessage::Action(Action::RestoreRequest(*id))])
                 .unwrap_or_default();
         }
         if dialog.kind == DialogKind::Color {
@@ -966,10 +970,7 @@ impl Router {
         }
         if dialog.kind == DialogKind::Overview {
             if let Some(&id) = frame_entries(frame).get(index) {
-                return vec![
-                    ClientMessage::Action(Action::Focus(id)),
-                    ClientMessage::Action(Action::DialogClose),
-                ];
+                return dialog_focus(frame, id);
             }
             return vec![];
         }
@@ -979,9 +980,10 @@ impl Router {
             };
             let mut actions = vec![ClientMessage::Action(Action::Acknowledge(item.id))];
             if frame.panes.iter().any(|view| view.pane.id == item.pane) {
-                actions.push(ClientMessage::Action(Action::Focus(item.pane)));
+                actions.extend(dialog_focus(frame, item.pane));
+            } else {
+                actions.push(ClientMessage::Action(Action::DialogClose));
             }
-            actions.push(ClientMessage::Action(Action::DialogClose));
             return actions;
         }
         if dialog.kind == DialogKind::Recovery {
@@ -1024,11 +1026,18 @@ impl Router {
             };
             return vec![ClientMessage::Action(Action::TabPositionSet(position))];
         }
-        if dialog.kind == DialogKind::CloseConfirm {
+        if matches!(
+            dialog.kind,
+            DialogKind::CloseConfirm | DialogKind::ParkConfirm | DialogKind::RestoreConfirm
+        ) {
             return match (index, dialog.source) {
                 (0, _) => vec![ClientMessage::Action(Action::DialogClose)],
                 (1, Some(id)) => vec![
-                    ClientMessage::Action(Action::ClosePaneConfirm(id)),
+                    ClientMessage::Action(match dialog.kind {
+                        DialogKind::ParkConfirm => Action::Park(id),
+                        DialogKind::RestoreConfirm => Action::Restore(id),
+                        _ => Action::ClosePaneConfirm(id),
+                    }),
                     ClientMessage::Action(Action::DialogClose),
                 ],
                 _ => vec![],
@@ -1059,17 +1068,27 @@ impl Router {
             let Some(&id) = entries.get(index) else {
                 return vec![];
             };
-            actions.push(if dialog.kind == DialogKind::Move {
-                Action::Swap {
+            if dialog.kind == DialogKind::Move {
+                actions.push(Action::Swap {
                     source: dialog.source.unwrap_or(frame.active),
                     target: id,
-                }
+                });
             } else {
-                Action::Focus(id)
-            });
+                return dialog_focus(frame, id);
+            }
         }
         actions.push(Action::DialogClose);
         actions.into_iter().map(ClientMessage::Action).collect()
+    }
+}
+fn dialog_focus(frame: &Frame, id: PaneId) -> Vec<ClientMessage> {
+    if frame.panes.iter().any(|v| v.pane.id == id && v.pane.parked) {
+        vec![ClientMessage::Action(Action::RestoreRequest(id))]
+    } else {
+        vec![
+            ClientMessage::Action(Action::Focus(id)),
+            ClientMessage::Action(Action::DialogClose),
+        ]
     }
 }
 fn local_point(point: Point, body: Rect) -> Point {
