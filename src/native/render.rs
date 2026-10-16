@@ -136,7 +136,7 @@ pub fn compose(
                 cols: workspace.cols,
                 rows: 1,
             },
-            Color::Indexed(234),
+            Color::Indexed(super::ui::FOOTER_BG),
         );
         let label = if controller {
             format!(
@@ -165,7 +165,7 @@ pub fn compose(
             width,
             &text,
             Color::Indexed(250),
-            Color::Indexed(234),
+            Color::Indexed(super::ui::FOOTER_BG),
             false,
         );
         write_text(
@@ -183,7 +183,7 @@ pub fn compose(
             Rect {
                 x: 8,
                 y,
-                cols: 8,
+                cols: 6,
                 rows: 1,
             },
             Color::Indexed(24),
@@ -192,7 +192,7 @@ pub fn compose(
             &mut frame,
             8,
             y,
-            8,
+            6,
             if workspace.active == 0 {
                 " New "
             } else if workspace.reading == ReadingMode::Grid {
@@ -206,21 +206,7 @@ pub fn compose(
         );
         write_text(
             &mut frame,
-            16,
-            y,
-            3,
-            if matches!(workspace.reading, ReadingMode::Fullscreen(_)) {
-                " ▣ "
-            } else {
-                " ⛶ "
-            },
-            Color::Indexed(231),
-            Color::Indexed(30),
-            true,
-        );
-        write_text(
-            &mut frame,
-            19,
+            14,
             y,
             3,
             if workspace.ui.notifications.iter().any(|item| !item.read) {
@@ -252,121 +238,7 @@ pub fn compose(
         dim_background(&mut frame, keep);
     }
     if workspace.help {
-        let cols = frame.cols.saturating_sub(4).min(76);
-        let rows = frame.rows.saturating_sub(2).min(30);
-        let rect = Rect {
-            x: (frame.cols - cols) / 2,
-            y: (frame.rows.saturating_sub(1) - rows) / 2,
-            cols,
-            rows,
-        };
-        fill(&mut frame, rect, Color::Indexed(236));
-        write_text(
-            &mut frame,
-            rect.x,
-            rect.y,
-            cols,
-            " Kelpmux keys",
-            Color::Indexed(231),
-            Color::Indexed(24),
-            true,
-        );
-        if cols >= 3 {
-            write_text(
-                &mut frame,
-                rect.x + cols - 3,
-                rect.y,
-                3,
-                " × ",
-                Color::Indexed(231),
-                Color::Indexed(88),
-                true,
-            );
-        }
-        let key = |default, action| binding_label(&workspace.ui.config, default, action);
-        let lines = [
-            format!(
-                "Ctrl-{}, then:",
-                char::from(b'A' + workspace.ui.config.prefix - 1)
-            ),
-            "1–9       Select a tab (also Alt+1–9)".into(),
-            format!("{}  Tabs / grid (also Alt+Tab / Alt+0)", key("z", "read")),
-            format!("{}  Full width / capped reading", key("f", "fullscreen")),
-            format!(
-                "{}  Automatic grid view; p parks, u restores",
-                key("g", "grid")
-            ),
-            format!(
-                "{}, N  Move active pane to numbered destination",
-                key("s", "move")
-            ),
-            format!(
-                "{} / {} / {}  Agents / attention / finished",
-                key("a", "agents"),
-                key("!", "attention"),
-                key("n", "finished")
-            ),
-            format!(
-                "{} {} {} {}  Focus left/down/up/right",
-                key("h", "focus-left"),
-                key("j", "focus-down"),
-                key("k", "focus-up"),
-                key("l", "focus-right")
-            ),
-            format!(
-                "{} {}  Text width +10 / -10",
-                key("+", "read-wider"),
-                key("-", "read-narrower")
-            ),
-            format!("{}  Settings", key(",", "config")),
-            format!("{}  Detach", key("d", "detach")),
-            format!("{}  Take control", key("tT", "takeover")),
-            format!("{}  Toggle help", key("?", "help")),
-            format!("{}  Scroll: arrows/PgUp/PgDn; q leaves", key("[", "scroll")),
-            format!("{}  Copy selection (also drag release)", key("y", "copy")),
-            "Wheel/drag Scroll/select; Shift for mouse-aware apps".into(),
-            "Click a tab number to choose its color".into(),
-            format!(
-                "{} / {} / {}  Overview / notifications / recovery",
-                key("o", "overview"),
-                key("b", "notifications"),
-                key("r", "recovery")
-            ),
-            format!(
-                "{} / {}  Next attention / next finished",
-                key("N", "next-attention"),
-                key("P", "next-finished")
-            ),
-            format!("{}  Persistent scratch terminal popup", key("c", "scratch")),
-            format!(
-                "{}  Search; Tab scope; Ctrl-Y copies result",
-                key("/", "search")
-            ),
-            format!(
-                "{}  Keyboard selection; arrows, y copies",
-                key(" ", "selection")
-            ),
-            "Enter New tab · p Park · u Parked tabs".into(),
-            "Drag Pane headers to swap; grid balances automatically".into(),
-        ];
-        for (i, line) in lines
-            .iter()
-            .enumerate()
-            .skip(usize::from(workspace.ui.help_offset))
-            .take(usize::from(rows.saturating_sub(2)))
-        {
-            write_text(
-                &mut frame,
-                rect.x + 2,
-                rect.y + 2 + i as u16 - workspace.ui.help_offset,
-                cols.saturating_sub(4),
-                line,
-                Color::Indexed(252),
-                Color::Indexed(236),
-                false,
-            );
-        }
-        frame.cursor = None;
+        draw_help(&mut frame, workspace);
     }
     if let Some(dialog) = workspace.ui.dialog {
         draw_dialog(&mut frame, workspace, dialog, spinner);
@@ -375,6 +247,175 @@ pub fn compose(
     frame
 }
 
+fn help_entries(config: &super::ui::UiConfig) -> Vec<(String, &'static str)> {
+    let key = |default, action| binding_label(config, default, action);
+    vec![
+        ("1–9".into(), "Select tab (also Alt+1–9)"),
+        (key("z", "read"), "Tabs / grid (also Alt+Tab)"),
+        (key("g/e", "grid"), "Automatic grid view"),
+        (key("f", "fullscreen"), "Toggle reading-width limit"),
+        ("Enter".into(), "New tab"),
+        ("p".into(), "Park tab (confirm)"),
+        ("u".into(), "Show parked tabs"),
+        (key("s", "move"), "Move pane to a destination"),
+        (key("a", "agents"), "Agent picker"),
+        (key("!", "attention"), "Agents needing attention"),
+        (key("n", "finished"), "Finished agents"),
+        (
+            format!(
+                "{} {} {} {}",
+                key("h", "focus-left"),
+                key("j", "focus-down"),
+                key("k", "focus-up"),
+                key("l", "focus-right")
+            ),
+            "Focus left/down/up/right",
+        ),
+        (
+            format!("{} / {}", key("+", "read-wider"), key("-", "read-narrower")),
+            "Text width +10 / −10 cols",
+        ),
+        (key(",", "config"), "Settings"),
+        (key("d", "detach"), "Detach; keep jobs running"),
+        (key("tT", "takeover"), "Take control"),
+        (key("?", "help"), "Toggle help"),
+        (key("[", "scroll"), "Scroll mode; arrows/PgUp/PgDn"),
+        (key("y", "copy"), "Copy selection"),
+        ("Wheel / drag".into(), "Scroll/select; Shift for apps"),
+        ("Tab number".into(), "Choose tab color (click)"),
+        (key("o", "overview"), "Workspace overview"),
+        (key("b", "notifications"), "Notifications"),
+        (key("r", "recovery"), "Recovery journal"),
+        (
+            format!(
+                "{} / {}",
+                key("N", "next-attention"),
+                key("P", "next-finished")
+            ),
+            "Next attention / finished",
+        ),
+        (key("c", "scratch"), "Scratch terminal popup"),
+        (key("/", "search"), "Search; Tab scope; Ctrl-Y copy"),
+        (key("Space", "selection"), "Select with arrows; y copies"),
+        ("Header drag".into(), "Swap panes; grid auto-balances"),
+    ]
+}
+fn draw_help(frame: &mut Frame, workspace: &Workspace) {
+    let rect = super::input::help_bounds(frame.cols, frame.rows);
+    fill(frame, rect, Color::Indexed(236));
+    let title = format!(
+        " Help · Ctrl-{}, then key",
+        char::from(b'A' + workspace.ui.config.prefix - 1)
+    );
+    fill(frame, Rect { rows: 1, ..rect }, Color::Indexed(24));
+    write_text(
+        frame,
+        rect.x + 1,
+        rect.y,
+        rect.cols.saturating_sub(5),
+        &title,
+        Color::Indexed(231),
+        Color::Indexed(24),
+        true,
+    );
+    write_text(
+        frame,
+        rect.x + rect.cols - 3,
+        rect.y,
+        3,
+        " × ",
+        Color::Indexed(231),
+        Color::Indexed(88),
+        true,
+    );
+    let key_width = (rect.cols / 3).clamp(10, 22);
+    let action_x = rect.x + key_width + 3;
+    let action_width = rect.cols.saturating_sub(key_width + 4);
+    write_text(
+        frame,
+        rect.x + 1,
+        rect.y + 1,
+        key_width,
+        "Key",
+        Color::Indexed(117),
+        Color::Indexed(236),
+        true,
+    );
+    write_text(
+        frame,
+        action_x,
+        rect.y + 1,
+        action_width,
+        "Action",
+        Color::Indexed(117),
+        Color::Indexed(236),
+        true,
+    );
+    let entries = help_entries(&workspace.ui.config);
+    let visible = usize::from(rect.rows.saturating_sub(3));
+    let offset = usize::from(workspace.ui.help_offset).min(entries.len().saturating_sub(visible));
+    for (index, (key, action)) in entries.iter().enumerate().skip(offset).take(visible) {
+        let y = rect.y + 2 + (index - offset) as u16;
+        let bg = Color::Indexed(if index % 2 == 0 { 235 } else { 237 });
+        fill(
+            frame,
+            Rect {
+                x: rect.x,
+                y,
+                cols: rect.cols,
+                rows: 1,
+            },
+            bg,
+        );
+        write_text(
+            frame,
+            rect.x + 1,
+            y,
+            key_width,
+            key,
+            Color::Indexed(117),
+            bg,
+            true,
+        );
+        write_text(
+            frame,
+            rect.x + key_width + 1,
+            y,
+            1,
+            "│",
+            Color::Indexed(242),
+            bg,
+            false,
+        );
+        write_text(
+            frame,
+            action_x,
+            y,
+            action_width,
+            action,
+            Color::Indexed(252),
+            bg,
+            false,
+        );
+    }
+    let hint = format!(
+        " ↑↓ scroll · Esc close · {}–{}/{}",
+        offset + 1,
+        (offset + visible).min(entries.len()),
+        entries.len()
+    );
+    write_text(
+        frame,
+        rect.x,
+        rect.y + rect.rows - 1,
+        rect.cols,
+        &hint,
+        Color::Indexed(250),
+        Color::Indexed(236),
+        false,
+    );
+    frame.cursor = None;
+}
 fn draw_grid_separators(frame: &mut Frame, workspace: &Workspace) {
     for view in workspace.grid_layout().iter().filter(|v| !v.pane.parked) {
         if view.rect.y > 0 {
@@ -655,7 +696,7 @@ fn draw_dialog(
             TabPosition::Left,
             TabPosition::Bottom,
         ];
-        let step = if bounds.rows >= 11 { 4 } else { 2 };
+        let (step, height) = super::workspace::config_geometry(bounds);
         for (group, label) in ["Tab placement", "Reading width", "Notifications"]
             .iter()
             .enumerate()
@@ -666,7 +707,7 @@ fn draw_dialog(
                     x: bounds.x + 1,
                     y: bounds.y + 1 + group as u16 * step,
                     cols: bounds.cols - 2,
-                    rows: if step == 4 { 3 } else { 2 },
+                    rows: height + 1,
                 },
                 Color::Indexed(235),
             );
@@ -687,7 +728,11 @@ fn draw_dialog(
             let (checked, label) = match index {
                 0..=3 => (
                     positions[index] == workspace.ui.config.tab_position,
-                    format!("{:?}", positions[index]),
+                    if rect.cols < 9 && index == 3 {
+                        "Btm".into()
+                    } else {
+                        format!("{:?}", positions[index])
+                    },
                 ),
                 4 => (
                     value == Some(wrap),
@@ -699,13 +744,19 @@ fn draw_dialog(
                 ),
             };
             let label = format!("{} {label}", if checked { "●" } else { "○" });
-            let bg = Color::Indexed(if index == dialog.selection { 24 } else { 235 });
+            let bg = Color::Indexed(if index == dialog.selection && (index < 4 || checked) {
+                24
+            } else if checked {
+                29
+            } else {
+                238
+            });
             fill(frame, rect, bg);
             write_text(
                 frame,
-                rect.x,
-                rect.y,
-                rect.cols,
+                rect.x + 1,
+                rect.y + rect.rows / 2,
+                rect.cols.saturating_sub(1),
                 &label,
                 Color::Indexed(231),
                 bg,
@@ -716,8 +767,8 @@ fn draw_dialog(
         write_text(
             frame,
             bounds.x + 2,
-            bounds.y + 2 + step,
-            inner / 2,
+            bounds.y + 2 + step + height / 2,
+            inner / 2 - 1,
             &format!(
                 "Limit: {} cols",
                 workspace.ui.config.remembered_read_widths[super::ui::geometry_bucket(frame.cols)]
@@ -730,8 +781,8 @@ fn draw_dialog(
         write_text(
             frame,
             bounds.x + 2,
-            bounds.y + 2 + 2 * step,
-            inner / 2,
+            bounds.y + 2 + 2 * step + height / 2,
+            inner / 2 - 1,
             "Sound",
             Color::Indexed(250),
             Color::Indexed(235),
@@ -1586,7 +1637,7 @@ fn draw_vitals(frame: &mut Frame, segments: &[(String, u8)]) {
             cols: available,
             rows: 1,
         },
-        Color::Indexed(234),
+        Color::Indexed(super::ui::FOOTER_BG),
     );
     for (text, color) in selected {
         if x >= end {
@@ -1600,7 +1651,7 @@ fn draw_vitals(frame: &mut Frame, segments: &[(String, u8)]) {
             (end - x).min(width),
             text,
             Color::Indexed(*color),
-            Color::Indexed(234),
+            Color::Indexed(super::ui::FOOTER_BG),
             false,
         );
         x = x.saturating_add(width + 1);

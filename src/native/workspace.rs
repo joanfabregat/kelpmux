@@ -354,12 +354,12 @@ impl Workspace {
             Action::ClaimPane(_) => {}
             Action::NewTab => return Err("new tabs require the PTY server".into()),
             Action::HelpScroll(amount) => {
-                let visible = self.rows.saturating_sub(4).min(28);
+                let visible = self.rows.saturating_sub(2).min(30).saturating_sub(3);
                 self.ui.help_offset = self
                     .ui
                     .help_offset
                     .saturating_add_signed(amount)
-                    .min(23u16.saturating_sub(visible));
+                    .min(super::ui::HELP_ROWS.saturating_sub(visible));
             }
             Action::Overview | Action::Notifications | Action::Recovery | Action::SearchOpen => {
                 let kind = match action {
@@ -898,7 +898,7 @@ pub fn dialog_bounds_for(cols: u16, rows: u16, kind: super::ui::DialogKind) -> R
         return dialog_bounds(cols, rows);
     }
     let (width, height) = if kind == super::ui::DialogKind::Config {
-        (72, 13)
+        (72, 19)
     } else {
         (52, 8)
     };
@@ -911,9 +911,20 @@ pub fn dialog_bounds_for(cols: u16, rows: u16, kind: super::ui::DialogKind) -> R
         rows: height,
     }
 }
+pub fn config_geometry(bounds: Rect) -> (u16, u16) {
+    if bounds.rows >= 18 {
+        (6, 3)
+    } else if bounds.rows >= 15 {
+        (5, 2)
+    } else if bounds.rows >= 12 {
+        (4, 1)
+    } else {
+        (2, 1)
+    }
+}
 /// Logical focus index, optional explicit on/off value, and shared mouse geometry.
 pub fn config_targets(bounds: Rect) -> Vec<(usize, Option<bool>, Rect)> {
-    let step = if bounds.rows >= 11 { 4 } else { 2 };
+    let (step, height) = config_geometry(bounds);
     let mut choices = Vec::new();
     let inner = bounds.cols - 4;
     for index in 0..4u16 {
@@ -921,10 +932,10 @@ pub fn config_targets(bounds: Rect) -> Vec<(usize, Option<bool>, Rect)> {
             usize::from(index),
             None,
             Rect {
-                x: bounds.x + 2 + inner * index / 4,
+                x: bounds.x + 2 + (inner - 3) * index / 4 + index,
                 y: bounds.y + 2,
-                cols: inner * (index + 1) / 4 - inner * index / 4,
-                rows: 1,
+                cols: (inner - 3) * (index + 1) / 4 - (inner - 3) * index / 4,
+                rows: height,
             },
         ));
     }
@@ -934,10 +945,11 @@ pub fn config_targets(bounds: Rect) -> Vec<(usize, Option<bool>, Rect)> {
                 usize::from(group) + 4,
                 Some(value == 0),
                 Rect {
-                    x: bounds.x + 2 + inner / 2 + (inner - inner / 2) * value / 2,
+                    x: bounds.x + 2 + inner / 2 + (inner - inner / 2 - 1) * value / 2 + value,
                     y: bounds.y + 2 + (group + 1) * step,
-                    cols: (inner - inner / 2) * (value + 1) / 2 - (inner - inner / 2) * value / 2,
-                    rows: 1,
+                    cols: (inner - inner / 2 - 1) * (value + 1) / 2
+                        - (inner - inner / 2 - 1) * value / 2,
+                    rows: height,
                 },
             ));
         }

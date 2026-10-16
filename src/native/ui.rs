@@ -2,7 +2,9 @@
 use crate::Result;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
-pub const FOOTER_COLS: u16 = 22;
+pub const FOOTER_COLS: u16 = 17;
+pub const FOOTER_BG: u8 = 239;
+pub const HELP_ROWS: u16 = 29;
 pub const PALETTE: [(u8, u8); 9] = [
     (39, 24),
     (42, 29),
