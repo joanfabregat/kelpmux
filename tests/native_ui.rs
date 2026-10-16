@@ -52,6 +52,123 @@ fn click(point: Point) -> InputEvent {
     })
 }
 #[test]
+fn enhanced_enter_prefix_and_releases_route_without_leaking_mux_commands() {
+    let mut ws = workspace((120, 40), (1, 1));
+    ws.apply(&Action::Select(1)).unwrap();
+    let mut f = frame(&ws);
+    for wire in [b"\x1b[13;2u".as_slice(), b"\x1b[27;2;13~".as_slice()] {
+        let mut decoder = kelpmux::native::input::Decoder::default();
+        let mut router = Router::default();
+        let output: Vec<_> = wire
+            .iter()
+            .flat_map(|b| decoder.feed(&[*b]))
+            .flat_map(|e| router.route(e, &f))
+            .collect();
+        assert!(matches!(&output[..], [ClientMessage::Input(bytes)] if bytes == b"\n"));
+    }
+    f.panes[0].modes.keyboard_flags = 3;
+    let mut router = Router::default();
+    assert!(
+        matches!(&router.route(InputEvent::Bytes(b"\x1b[13;2u".to_vec()), &f)[..], [ClientMessage::Input(bytes)] if bytes == b"\x1b[13;2u")
+    );
+    assert_eq!(
+        actions(router.route(
+            InputEvent::Bytes(b"\x1b[98;5u\x1b[98;5:3u\x1b[102u\x1b[102;1:3u".to_vec()),
+            &f
+        )),
+        vec![Action::Fullscreen(1)]
+    );
+    assert!(
+        matches!(&router.route(InputEvent::Bytes(b"\x1b[13u".to_vec()), &f)[..], [ClientMessage::Input(bytes)] if bytes == b"\x1b[13u")
+    );
+    let paste = b"\x1b[13;2u\x02f".to_vec();
+    assert!(
+        matches!(&router.route(InputEvent::Paste(paste.clone()), &f)[..], [ClientMessage::Paste(bytes)] if bytes == &paste)
+    );
+}
+
+#[test]
+fn sidebar_actions_anchor_at_bottom_and_dialog_headers_match_their_context() {
+    use kelpmux::native::{
+        input::help_bounds,
+        ui::{DialogKind, PALETTE, TabPosition},
+        workspace::{TabTarget, close_buttons, dialog_bounds_for, tab_targets},
+    };
+    let mut ws = workspace((120, 40), (2, 1));
+    ws.ui.config.tab_position = TabPosition::Left;
+    ws.apply(&Action::Select(1)).unwrap();
+    let f = frame(&ws);
+    let targets = tab_targets(f.cols, f.rows, &f.ui.config, 2, 0);
+    let new = targets
+        .iter()
+        .find(|(t, _)| *t == TabTarget::New)
+        .unwrap()
+        .1;
+    let parked = targets
+        .iter()
+        .find(|(t, _)| *t == TabTarget::Parked)
+        .unwrap()
+        .1;
+    assert_eq!((new.rows, parked.rows), (3, 3));
+    assert_eq!(parked.y + parked.rows, f.rows - 1);
+    assert_eq!(new.y + new.rows + 1, parked.y);
+    assert!(
+        !PALETTE
+            .iter()
+            .any(|(_, muted)| f.cells[usize::from(new.y * f.cols)].bg == Color::Indexed(*muted))
+    );
+    for row in 0..3 {
+        assert_eq!(
+            actions(Router::default().route(
+                click(Point {
+                    x: new.x,
+                    y: new.y + row
+                }),
+                &f
+            )),
+            vec![Action::NewTab]
+        );
+        assert_eq!(
+            actions(Router::default().route(
+                click(Point {
+                    x: parked.x,
+                    y: parked.y + row
+                }),
+                &f
+            )),
+            vec![Action::Parked]
+        );
+    }
+    let config_bg = f.cells[usize::from((f.rows - 1) * f.cols + 1)].bg;
+    ws.apply(&Action::Config).unwrap();
+    let config = frame(&ws);
+    let bounds = dialog_bounds_for(f.cols, f.rows, DialogKind::Config);
+    assert_eq!(
+        config.cells[usize::from(bounds.y * f.cols + bounds.x)].bg,
+        config_bg
+    );
+    ws.ui.dialog = None;
+    ws.help = true;
+    let help = frame(&ws);
+    let bounds = help_bounds(f.cols, f.rows);
+    assert_eq!(
+        help.cells[usize::from(bounds.y * f.cols + bounds.x)].bg,
+        f.cells[usize::from((f.rows - 1) * f.cols + 15)].bg
+    );
+    ws.help = false;
+    for action in [Action::ClosePaneRequest(2), Action::ParkRequest(2)] {
+        ws.apply(&action).unwrap();
+        let kind = ws.ui.dialog.unwrap().kind;
+        let bounds = dialog_bounds_for(f.cols, f.rows, kind);
+        assert_eq!(close_buttons(bounds)[0].rows, 3);
+        let popup = frame(&ws);
+        assert_eq!(
+            popup.cells[usize::from(bounds.y * f.cols + bounds.x)].bg,
+            Color::Indexed(PALETTE[2].1)
+        );
+    }
+}
+#[test]
 fn help_table_scrolls_to_last_action_and_keeps_columns_aligned() {
     use kelpmux::native::{input::help_bounds, ui::HELP_ROWS};
     for size in [(40, 10), (80, 24), (240, 70)] {
@@ -752,7 +869,12 @@ fn responsive_new_tabs_wrap_controls_and_graphic_confirmation_have_disjoint_targ
                 );
             }
             let capped = ws.layout()[0].body;
-            if capped.x + capped.cols + 1 < ws.cols {
+            let effective = kelpmux::native::workspace::reading_limit_effective(
+                ws.cols,
+                ws.rows,
+                &ws.ui.config,
+            );
+            if capped.x + capped.cols + 1 < ws.cols && effective {
                 assert_eq!(
                     actions(Router::default().route(
                         click(Point {
@@ -777,11 +899,15 @@ fn responsive_new_tabs_wrap_controls_and_graphic_confirmation_have_disjoint_targ
                     }),
                     &full_frame
                 )),
-                vec![Action::WrapToggle]
+                if effective {
+                    vec![Action::WrapToggle]
+                } else {
+                    vec![]
+                }
             );
             assert_eq!(
                 full_frame.cells[usize::from(full.y * ws.cols + ws.cols - 1)].text,
-                "−"
+                if effective { "−" } else { " " }
             );
             ws.apply(&Action::WrapToggle).unwrap();
             assert_eq!(ws.layout()[0].body, capped);
@@ -807,7 +933,7 @@ fn responsive_new_tabs_wrap_controls_and_graphic_confirmation_have_disjoint_targ
             ws.apply(&Action::ClosePaneRequest(2)).unwrap();
             let f = frame(&ws);
             let bounds = dialog_bounds_for(f.cols, f.rows, f.ui.dialog.unwrap().kind);
-            assert!(bounds.cols <= 52 && bounds.rows <= 8);
+            assert!(bounds.cols <= 52 && bounds.rows <= 9);
             let buttons = close_buttons(bounds);
             for (index, button) in buttons.into_iter().enumerate() {
                 let point = Point {

@@ -520,7 +520,7 @@ impl RawTty {
         // Mark entered before writing: a partial write still needs restoration.
         guard.entered = true;
         TerminalWriter.write_all(
-            b"\x1b[?1l\x1b>\x1b[?1049h\x1b[?25l\x1b[?1002h\x1b[?1006h\x1b[?1004h\x1b[?2004h",
+            b"\x1b[?1l\x1b>\x1b[?1049h\x1b[?25l\x1b[?1002h\x1b[?1006h\x1b[?1004h\x1b[?2004h\x1b[>1u",
         )?;
         Ok(guard)
     }
@@ -534,7 +534,7 @@ impl Drop for RawTty {
             let flags = unsafe { libc::fcntl(1, libc::F_GETFL) };
             if flags >= 0 && unsafe { libc::fcntl(1, libc::F_SETFL, flags | libc::O_NONBLOCK) } == 0
             {
-                let mut bytes: &[u8]=b"\x1b[0m\x1b[?1l\x1b>\x1b[?2004l\x1b[?1004l\x1b[?1006l\x1b[?1002l\x1b[?1000l\x1b[?25h\x1b[?1049l";
+                let mut bytes: &[u8]=b"\x1b[<1u\x1b[0m\x1b[?1l\x1b>\x1b[?2004l\x1b[?1004l\x1b[?1006l\x1b[?1002l\x1b[?1000l\x1b[?25h\x1b[?1049l";
                 let deadline = Instant::now() + Duration::from_millis(100);
                 while !bytes.is_empty() && Instant::now() < deadline {
                     let count = unsafe { libc::write(1, bytes.as_ptr().cast(), bytes.len()) };
@@ -683,6 +683,9 @@ fn validate_frame(frame: &Frame) -> Result<()> {
         }
     }
     for view in &frame.panes {
+        if view.modes.keyboard_flags & !31 != 0 {
+            return Err("unsupported native keyboard flags".into());
+        }
         for rect in [view.rect, view.body] {
             if u32::from(rect.x) + u32::from(rect.cols) > u32::from(frame.cols)
                 || u32::from(rect.y) + u32::from(rect.rows) > u32::from(frame.rows)
@@ -862,6 +865,7 @@ fn attach(mut socket: UnixStream, takeover: bool) -> Result<()> {
     let mut notice: Option<String> = None;
     let mut pending = VecDeque::new();
     let mut revision = 0;
+    let mut keyboard_mode = 1;
     loop {
         if INTERRUPTED.load(Ordering::Relaxed) {
             return Ok(());
@@ -912,6 +916,20 @@ fn attach(mut socket: UnixStream, takeover: bool) -> Result<()> {
             }
         }
         if let Some(frame) = newest {
+            let mode = if frame.controller && !frame.help && frame.ui.dialog.is_none() {
+                frame
+                    .panes
+                    .iter()
+                    .find(|p| p.pane.id == frame.active)
+                    .map_or(1, |p| p.modes.keyboard_flags | 1)
+            } else {
+                1
+            };
+            if mode != keyboard_mode {
+                write!(stdout, "\x1b[={mode}u")?;
+                stdout.flush()?;
+                keyboard_mode = mode;
+            }
             let sound = frame.controller
                 && frame.ui.config.notification_sound
                 && latest.as_ref().is_some_and(|old| {

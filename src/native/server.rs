@@ -164,6 +164,8 @@ impl NativePane {
             .current_dir(&config.cwd)
             .env("TERM", "xterm-256color")
             .env("COLORTERM", "truecolor")
+            .env("TERM_PROGRAM", "kelpmux")
+            .env("TERM_PROGRAM_VERSION", env!("CARGO_PKG_VERSION"))
             .env_remove("NO_COLOR")
             .env("KELPMUX", "1")
             .env("KELPMUX_PANE", format!("%{id}"))
@@ -198,7 +200,7 @@ impl NativePane {
             child,
             master,
             start: 0,
-            terminal: Terminal::new(cols, rows),
+            terminal: Terminal::for_pane(cols, rows),
             pending: VecDeque::new(),
             dead: false,
             last_input: None,

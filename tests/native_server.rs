@@ -639,6 +639,34 @@ fn child_shell_has_native_color_environment_without_ssh_autoattach_markers() {
 }
 
 #[test]
+fn startup_color_and_keyboard_probe_replies_support_a_shaded_composer() {
+    let daemon = Daemon::start();
+    let (mut stream, _, _) = daemon.attach();
+    let script = b"stty -echo -icanon min 1 time 0; printf '\\033]10;?\\033\\\\\\033]11;?\\033\\\\\\033[?u'; reply=$(timeout --foreground 2 dd bs=1 count=55 2>/dev/null); printf %s \"$reply\" > probe-reply; printf '\\033[2;1HPRO''BE_COLORS_OK\\033[8;1H\\033[48;2;31;31;31m\\033[2K SHADE \\033[0m'; stty sane\n";
+    write_message(&mut stream, &ClientMessage::Input(script.to_vec())).unwrap();
+    let frame = wait_frame(&mut stream, |f| {
+        f.cells
+            .iter()
+            .map(|c| c.text.as_str())
+            .collect::<String>()
+            .contains("PROBE_COLORS_OK")
+    });
+    let body = frame.panes[0].body;
+    let reply = fs::read_to_string(daemon.root.join("probe-reply")).unwrap();
+    assert!(reply.contains("rgb:e5e5/e5e5/e5e5"), "{reply:?}");
+    assert!(reply.contains("rgb:0000/0000/0000"), "{reply:?}");
+    assert!(reply.contains("\x1b[?0u"), "{reply:?}");
+    assert_eq!(
+        frame.cells[usize::from((body.y + 7) * frame.cols + body.x + 30)].bg,
+        Color::Rgb(31, 31, 31)
+    );
+    assert_eq!(
+        frame.cells[usize::from(body.y * frame.cols + body.x)].bg,
+        Color::Rgb(0, 0, 0)
+    );
+}
+
+#[test]
 fn pane_screen_inspection_is_independent_of_tabs_and_does_not_take_control() {
     let daemon = Daemon::start();
     let (mut controller, owner, _) = daemon.attach();

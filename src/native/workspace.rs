@@ -900,7 +900,7 @@ pub fn dialog_bounds_for(cols: u16, rows: u16, kind: super::ui::DialogKind) -> R
     let (width, height) = if kind == super::ui::DialogKind::Config {
         (72, 19)
     } else {
-        (52, 8)
+        (52, 9)
     };
     let width = cols.saturating_sub(4).min(width);
     let height = rows.saturating_sub(2).min(height);
@@ -1107,7 +1107,13 @@ pub fn tab_close(rect: Rect) -> Rect {
 
 pub fn close_buttons(bounds: Rect) -> [Rect; 2] {
     let width = bounds.cols.saturating_sub(6) / 2;
-    let height = if bounds.rows >= 8 { 2 } else { 1 };
+    let height = if bounds.rows >= 9 {
+        3
+    } else if bounds.rows >= 8 {
+        2
+    } else {
+        1
+    };
     let y = bounds.y + bounds.rows.saturating_sub(height + 1);
     [
         Rect {
@@ -1146,6 +1152,29 @@ pub fn color_cards(bounds: Rect) -> Vec<Rect> {
         })
         .collect()
 }
+pub fn sidebar_actions(cols: u16, rows: u16) -> [Rect; 2] {
+    let height = if rows >= 14 { 3 } else { 1 };
+    let parked = Rect {
+        x: 0,
+        y: rows - 1 - height,
+        cols: (cols / 5).clamp(18, 28),
+        rows: height,
+    };
+    [
+        Rect {
+            y: parked.y - height - 1,
+            ..parked
+        },
+        parked,
+    ]
+}
+/// The width switch is useful only when the configured cap is narrower than
+/// the available terminal, regardless of the current wrap/full-width mode.
+pub fn reading_limit_effective(cols: u16, rows: u16, config: &super::ui::UiConfig) -> bool {
+    let full = tab_body(cols, rows, config, true, None);
+    config.remembered_read_widths[super::ui::geometry_bucket(cols)].unwrap_or(config.read_width)
+        < full.cols
+}
 pub fn tab_targets(
     cols: u16,
     rows: u16,
@@ -1156,6 +1185,10 @@ pub fn tab_targets(
     use super::ui::TabPosition;
     if count == 0 {
         let left = config.tab_position.resolve(cols, rows) == TabPosition::Left;
+        if left {
+            let [new, parked] = sidebar_actions(cols, rows);
+            return vec![(TabTarget::New, new), (TabTarget::Parked, parked)];
+        }
         let y = if left {
             1
         } else if config.tab_position.resolve(cols, rows) == TabPosition::Bottom {
@@ -1261,8 +1294,10 @@ pub fn tab_targets(
         }
         TabPosition::Left => {
             let width = (cols / 5).clamp(18, 28);
-            let overflow = count > usize::from(rows.saturating_sub(4));
-            let available = rows.saturating_sub(if overflow { 6 } else { 4 });
+            let [new, parked] = sidebar_actions(cols, rows);
+            let area = new.y.saturating_sub(1);
+            let overflow = count > usize::from(area);
+            let available = area.saturating_sub(if overflow { 2 } else { 0 });
             let height = (available / count as u16).clamp(1, 3);
             let capacity = usize::from(available / height).max(1);
             let start = if overflow {
@@ -1285,7 +1320,6 @@ pub fn tab_targets(
                     )
                 })
                 .collect();
-            let end = top + tabs.len() as u16 * height;
             if overflow {
                 tabs.push((
                     TabTarget::Previous,
@@ -1300,30 +1334,14 @@ pub fn tab_targets(
                     TabTarget::Next,
                     Rect {
                         x: 0,
-                        y: end,
+                        y: area - 1,
                         cols: width,
                         rows: 1,
                     },
                 ));
             }
-            tabs.push((
-                TabTarget::New,
-                Rect {
-                    x: 0,
-                    y: end + u16::from(overflow) + 1,
-                    cols: width,
-                    rows: 1,
-                },
-            ));
-            tabs.push((
-                TabTarget::Parked,
-                Rect {
-                    x: 0,
-                    y: end + u16::from(overflow) + 2,
-                    cols: width,
-                    rows: 1,
-                },
-            ));
+            tabs.push((TabTarget::New, new));
+            tabs.push((TabTarget::Parked, parked));
             tabs
         }
         TabPosition::Auto => unreachable!(),

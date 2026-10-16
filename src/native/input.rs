@@ -153,10 +153,12 @@ pub struct Router {
     selection: Option<(PaneId, Point, Point)>,
     observed_help: bool,
     help_override: Option<bool>,
+    suppressed_releases: Vec<Vec<u8>>,
 }
 impl Router {
     pub fn route(&mut self, event: InputEvent, frame: &Frame) -> Vec<ClientMessage> {
         if frame.ui.dialog.is_some() {
+            self.suppressed_releases.clear();
             self.header_drag = None;
             self.boundary_drag = None;
             self.selecting = false;
@@ -210,10 +212,50 @@ impl Router {
             } else {
                 1
             };
-            let key = &bytes[position..position + length];
+            let wire_key = &bytes[position..position + length];
             position += length;
+            let enhanced = enhanced_key(wire_key);
+            let key = enhanced
+                .as_ref()
+                .map_or(wire_key, |(key, _)| key.as_slice());
+            if enhanced.as_ref().is_some_and(|(_, event)| *event == 3) {
+                if let Some(index) = self
+                    .suppressed_releases
+                    .iter()
+                    .position(|old| old.as_slice() == key)
+                {
+                    self.suppressed_releases.remove(index);
+                    continue;
+                }
+                if !self.prefix
+                    && !self.pending_modal
+                    && !self.selecting
+                    && !self.scrolling
+                    && key != [frame.ui.config.prefix]
+                    && frame.controller
+                    && !frame.help
+                    && frame.ui.dialog.is_none()
+                    && frame
+                        .panes
+                        .iter()
+                        .any(|v| v.pane.id == frame.active && v.modes.keyboard_flags & 2 != 0)
+                {
+                    push_input(&mut output, wire_key);
+                }
+                continue;
+            }
             if self.prefix {
                 self.prefix = false;
+                if frame
+                    .panes
+                    .iter()
+                    .any(|v| v.pane.id == frame.active && v.modes.keyboard_flags & 2 != 0)
+                {
+                    if self.suppressed_releases.len() == 32 {
+                        self.suppressed_releases.remove(0);
+                    }
+                    self.suppressed_releases.push(key.to_vec());
+                }
                 let configured = std::str::from_utf8(key)
                     .ok()
                     .and_then(|key| frame.ui.config.bindings.get(key));
@@ -438,6 +480,16 @@ impl Router {
                 _ => None,
             };
             if let Some(action) = action {
+                if frame
+                    .panes
+                    .iter()
+                    .any(|v| v.pane.id == frame.active && v.modes.keyboard_flags & 2 != 0)
+                {
+                    if self.suppressed_releases.len() == 32 {
+                        self.suppressed_releases.remove(0);
+                    }
+                    self.suppressed_releases.push(key.to_vec());
+                }
                 emit(&mut output, action, true);
             } else {
                 let modes = frame
@@ -462,7 +514,14 @@ impl Router {
                         push_input(&mut output, key);
                     }
                 } else {
-                    push_input(&mut output, key);
+                    push_input(
+                        &mut output,
+                        if enhanced.is_some() && modes.keyboard_flags != 0 {
+                            wire_key
+                        } else {
+                            key
+                        },
+                    );
                 }
             }
         }
@@ -705,6 +764,11 @@ impl Router {
         }
         if (frame.reading != ReadingMode::Grid || frame.active == 0) && !frame.ui.scratch_visible {
             if event.kind == MouseKind::Press
+                && super::workspace::reading_limit_effective(
+                    frame.cols,
+                    frame.rows,
+                    &frame.ui.config,
+                )
                 && frame.panes.iter().any(|view| {
                     view.pane.id == frame.active
                         && view.body.cols > 0
@@ -1075,6 +1139,56 @@ impl Router {
         actions.into_iter().map(ClientMessage::Action).collect()
     }
 }
+/// Normalize negotiated CSI-u and xterm modifyOtherKeys for mux controls and
+/// legacy applications. Enhanced applications retain the original wire event.
+fn enhanced_key(bytes: &[u8]) -> Option<(Vec<u8>, u8)> {
+    let payload = bytes.strip_prefix(b"\x1b[")?;
+    let (code, modifier, event) = if let Some(payload) = payload.strip_suffix(b"u") {
+        let text = std::str::from_utf8(payload).ok()?;
+        let mut parts = text.split(';');
+        let code = parts.next()?.split(':').next()?.parse::<u32>().ok()?;
+        let mut mods = parts.next().unwrap_or("1").split(':');
+        (
+            code,
+            mods.next()?.parse::<u8>().ok()?,
+            mods.next().unwrap_or("1").parse::<u8>().ok()?,
+        )
+    } else {
+        let text = std::str::from_utf8(payload.strip_suffix(b"~")?).ok()?;
+        let mut parts = text.split(';');
+        if parts.next()? != "27" {
+            return None;
+        }
+        let modifier = parts.next()?.parse::<u8>().ok()?;
+        let code = parts.next()?.parse::<u32>().ok()?;
+        if parts.next().is_some() {
+            return None;
+        }
+        (code, modifier, 1)
+    };
+    let mods = modifier.checked_sub(1)?;
+    if mods & !7 != 0 {
+        return None;
+    }
+    let mut key = if code == 13 && mods == 1 {
+        vec![b'\n']
+    } else if mods & 4 != 0 && (64..=127).contains(&code) {
+        vec![(code as u8) & 31]
+    } else if mods & 4 != 0 && code == 32 {
+        vec![0]
+    } else {
+        let mut c = char::from_u32(code)?;
+        if mods & 1 != 0 && c.is_ascii_lowercase() {
+            c = c.to_ascii_uppercase();
+        }
+        let mut buf = [0; 4];
+        c.encode_utf8(&mut buf).as_bytes().to_vec()
+    };
+    if mods & 2 != 0 {
+        key.insert(0, 27);
+    }
+    Some((key, event))
+}
 fn dialog_focus(frame: &Frame, id: PaneId) -> Vec<ClientMessage> {
     if frame.panes.iter().any(|v| v.pane.id == id && v.pane.parked) {
         vec![ClientMessage::Action(Action::RestoreRequest(id))]
@@ -1183,7 +1297,13 @@ impl Router {
                     }
                 }
             }
-            InputEvent::Bytes(bytes) => {
+            InputEvent::Bytes(mut bytes) => {
+                if let Some((normalized, event)) = enhanced_key(&bytes) {
+                    if event == 3 {
+                        return output;
+                    }
+                    bytes = normalized;
+                }
                 match bytes.as_slice() {
                     b"\x1b" => {
                         emit(&mut output, Action::DialogClose, true);
