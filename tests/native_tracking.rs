@@ -408,6 +408,22 @@ fn tab_names_never_use_directory_as_conversation_identity_and_preserve_osc_fallb
         tab_name(&agent, Some("Fix authentication"), None),
         ("Fix authentication".into(), false)
     );
+    for title in [
+        "⠋ Fix authentication",
+        "⠙ Fix authentication",
+        "⠇ Fix authentication",
+    ] {
+        assert_eq!(
+            tab_name(&agent, Some(title), None),
+            ("Fix authentication".into(), false)
+        );
+    }
+    assert_eq!(
+        tab_name(&agent, Some("⠋ scratch"), None).0,
+        "codex · session unknown"
+    );
+    assert_eq!(tab_name(&agent, Some("⠋real title"), None).0, "⠋real title");
+    assert_eq!(tab_name(&agent, None, Some("⠋ My title")).0, "⠋ My title");
     agent.name = "Review conversation".into();
     agent.session_id = Some("verified-session".into());
     assert_eq!(
