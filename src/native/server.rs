@@ -200,7 +200,7 @@ impl NativePane {
             child,
             master,
             start: 0,
-            terminal: Terminal::for_pane(cols, rows),
+            terminal: Terminal::new(cols, rows),
             pending: VecDeque::new(),
             dead: false,
             last_input: None,
