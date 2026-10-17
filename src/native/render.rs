@@ -1035,8 +1035,8 @@ fn binding_label(config: &super::ui::UiConfig, defaults: &str, action: &str) -> 
         keys.join("/")
     }
 }
-fn dim_color(color: Color, foreground: bool) -> Color {
-    let (r, g, b) = match color {
+fn color_rgb(color: Color, foreground: bool) -> (u8, u8, u8) {
+    match color {
         Color::Default => {
             if foreground {
                 (208, 208, 208)
@@ -1075,7 +1075,10 @@ fn dim_color(color: Color, foreground: bool) -> Color {
                 (level(n / 36), level(n / 6 % 6), level(n % 6))
             }
         }
-    };
+    }
+}
+fn dim_color(color: Color, foreground: bool) -> Color {
+    let (r, g, b) = color_rgb(color, foreground);
     let darken = |v: u8| (u16::from(v) * 42 / 100) as u8;
     Color::Rgb(darken(r), darken(g), darken(b))
 }
@@ -1317,15 +1320,15 @@ fn draw_tabs(frame: &mut Frame, workspace: &Workspace, spinner: usize) {
         },
         TabPosition::Bottom => Rect {
             x: 0,
-            y: frame.rows - 3,
+            y: frame.rows - 4,
             cols: frame.cols,
-            rows: 2,
+            rows: 3,
         },
         _ => Rect {
             x: 0,
             y: 0,
             cols: frame.cols,
-            rows: 2,
+            rows: 3,
         },
     };
     fill(frame, area, Color::Indexed(234));
@@ -1523,39 +1526,13 @@ fn draw_tab(
         Color::Indexed(muted),
         true,
     );
-    let marker = if pane.status == crate::model::Status::Working {
-        SPINNER[spinner % 8].to_string()
-    } else {
-        pane.status.marker().to_owned()
-    };
-    let marker = format!(
-        " {}{} ",
-        if workspace
-            .ui
-            .notifications
-            .iter()
-            .any(|item| item.pane == pane.id && !item.read)
-        {
-            "● "
-        } else {
-            ""
-        },
-        marker
-    );
-    let marker_x = number.x + number.cols + 2;
-    let marker_width: u16 = marker.chars().map(char_width).sum();
+    let unread = workspace
+        .ui
+        .notifications
+        .iter()
+        .any(|item| item.pane == pane.id && !item.read);
     let close = super::workspace::tab_close(rect);
     let park = super::workspace::tab_park(rect);
-    write_text(
-        frame,
-        marker_x,
-        number.y,
-        close.x.saturating_sub(marker_x),
-        &marker,
-        Color::Indexed(16),
-        Color::Indexed(bright),
-        true,
-    );
     let count_width = count.len() as u16;
     let (title_x, title_y, title_width) = if rect.rows >= 2 {
         (
@@ -1564,23 +1541,36 @@ fn draw_tab(
             rect.cols.saturating_sub(4 + count_width),
         )
     } else {
-        let x = marker_x + marker_width + 1;
+        let x = number.x + number.cols + 2;
         (
             x,
             number.y,
             park.x.saturating_sub(count_width).saturating_sub(x),
         )
     };
+    let bell_width = if unread { 3.min(title_width) } else { 0 };
+    if unread {
+        write_text(
+            frame,
+            title_x,
+            title_y,
+            bell_width,
+            "🔔 ",
+            Color::Indexed(226),
+            bg,
+            true,
+        );
+    }
     let title = marquee_title(
         &pane.title,
-        title_width,
+        title_width.saturating_sub(bell_width),
         workspace.ui.title_ticks.get(&pane.id).copied().unwrap_or(0),
     );
     write_text(
         frame,
-        title_x,
+        title_x + bell_width,
         title_y,
-        title_width,
+        title_width.saturating_sub(bell_width),
         &title,
         Color::Indexed(231),
         bg,
@@ -1624,6 +1614,62 @@ fn draw_tab(
     );
     for y in rect.y..rect.y + rect.rows {
         write_text(frame, rect.x, y, 1, "▎", Color::Indexed(bright), bg, false);
+    }
+    if pane.status == crate::model::Status::Working {
+        activity_background(
+            frame,
+            rect,
+            bg,
+            Color::Indexed(bright),
+            spinner,
+            &[number, close, park],
+        );
+    }
+}
+
+/// A slow, bounded highlight across the tab background; terminal cells and
+/// foreground colors are untouched, and controls retain their own backgrounds.
+fn activity_background(
+    frame: &mut Frame,
+    rect: Rect,
+    base: Color,
+    tint: Color,
+    tick: usize,
+    controls: &[Rect],
+) {
+    let (br, bg, bb) = color_rgb(base, false);
+    let (tr, tg, tb) = color_rgb(tint, false);
+    let radius = 5usize;
+    let center = (tick / 2) % (usize::from(rect.cols) + radius * 2);
+    for y in rect.y..rect.y + rect.rows {
+        for x in rect.x + 1..rect.x + rect.cols {
+            let point = Point { x, y };
+            if controls.iter().any(|control| control.contains(point)) {
+                continue;
+            }
+            let distance = (usize::from(x - rect.x) + radius).abs_diff(center);
+            if distance >= radius {
+                continue;
+            }
+            let weight = ((radius - distance) * 7) as u16;
+            let mix = |a: u8, b: u8| {
+                ((u16::from(a) * (100 - weight) + u16::from(b) * weight) / 100) as u8
+            };
+            let cell = &mut frame.cells[usize::from(y) * usize::from(frame.cols) + usize::from(x)];
+            if cell.width == 0 || cell.bg != base {
+                continue;
+            }
+            let color = Color::Rgb(mix(br, tr), mix(bg, tg), mix(bb, tb));
+            let width = cell.width;
+            cell.bg = color;
+            for offset in 1..u16::from(width) {
+                if x + offset < rect.x + rect.cols {
+                    frame.cells
+                        [usize::from(y) * usize::from(frame.cols) + usize::from(x + offset)]
+                    .bg = color;
+                }
+            }
+        }
     }
 }
 

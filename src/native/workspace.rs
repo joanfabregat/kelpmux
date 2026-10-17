@@ -1003,15 +1003,15 @@ pub fn tab_body(
     };
     match position {
         TabPosition::Top => {
-            area.y = 2;
-            area.rows = area.rows.saturating_sub(2);
+            area.y = 3;
+            area.rows = area.rows.saturating_sub(3);
         }
         TabPosition::Left => {
             let sidebar = (cols / 5).clamp(18, 28);
             area.x = sidebar;
             area.cols = cols - sidebar;
         }
-        TabPosition::Bottom => area.rows = area.rows.saturating_sub(2),
+        TabPosition::Bottom => area.rows = area.rows.saturating_sub(3),
         TabPosition::Auto => unreachable!(),
     }
     let cap = config.remembered_read_widths[super::ui::geometry_bucket(cols)]
@@ -1186,47 +1186,43 @@ pub fn tab_targets(
     active: usize,
 ) -> Vec<(TabTarget, Rect)> {
     use super::ui::TabPosition;
+    let position = config.tab_position.resolve(cols, rows);
     if count == 0 {
-        let left = config.tab_position.resolve(cols, rows) == TabPosition::Left;
-        if left {
+        if position == TabPosition::Left {
             let [mut new, parked] = sidebar_actions(cols, rows);
             new.y = 1;
             return vec![(TabTarget::New, new), (TabTarget::Parked, parked)];
         }
-        let y = if left {
-            1
-        } else if config.tab_position.resolve(cols, rows) == TabPosition::Bottom {
-            rows - 3
+        let y = if position == TabPosition::Bottom {
+            rows - 4
         } else {
             0
         };
-        let width = if left { (cols / 5).clamp(18, 28) } else { 3 };
         return vec![
             (
                 TabTarget::New,
                 Rect {
-                    x: 0,
+                    x: 1,
                     y,
-                    cols: width,
-                    rows: 2,
+                    cols: 3,
+                    rows: 3,
                 },
             ),
             (
                 TabTarget::Parked,
                 Rect {
-                    x: if left { 0 } else { 4 },
-                    y: y + u16::from(left),
-                    cols: if left { width } else { 12 },
-                    rows: 2,
+                    x: cols - 12,
+                    y,
+                    cols: 12,
+                    rows: 3,
                 },
             ),
         ];
     }
-    let position = config.tab_position.resolve(cols, rows);
     match position {
         TabPosition::Top | TabPosition::Bottom => {
-            let overflow = count * 18 + 16 > usize::from(cols);
-            let reserve = if overflow { 22 } else { 16 };
+            let overflow = count * 18 + 17 > usize::from(cols);
+            let reserve = if overflow { 23 } else { 17 };
             let capacity = usize::from(cols.saturating_sub(reserve) / 18)
                 .max(1)
                 .min(count);
@@ -1238,7 +1234,7 @@ pub fn tab_targets(
             let width = ((cols - reserve) / capacity as u16).min(40);
             let x = if overflow { 3 } else { 0 };
             let y = if position == TabPosition::Bottom {
-                rows - 3
+                rows - 4
             } else {
                 0
             };
@@ -1251,7 +1247,7 @@ pub fn tab_targets(
                             x: x + i as u16 * width,
                             y,
                             cols: width,
-                            rows: 2,
+                            rows: 3,
                         },
                     )
                 })
@@ -1259,19 +1255,19 @@ pub fn tab_targets(
             tabs.push((
                 TabTarget::New,
                 Rect {
-                    x: x + tabs.len() as u16 * width,
+                    x: x + tabs.len() as u16 * width + 1,
                     y,
                     cols: 3,
-                    rows: 2,
+                    rows: 3,
                 },
             ));
             tabs.push((
                 TabTarget::Parked,
                 Rect {
-                    x: x + (tabs.len() as u16 - 1) * width + 4,
+                    x: cols - 12,
                     y,
                     cols: 12,
-                    rows: 2,
+                    rows: 3,
                 },
             ));
             if overflow {
@@ -1281,16 +1277,16 @@ pub fn tab_targets(
                         x: 0,
                         y,
                         cols: 3,
-                        rows: 2,
+                        rows: 3,
                     },
                 ));
                 tabs.push((
                     TabTarget::Next,
                     Rect {
-                        x: cols - 3,
+                        x: cols - 16,
                         y,
                         cols: 3,
-                        rows: 2,
+                        rows: 3,
                     },
                 ));
             }
