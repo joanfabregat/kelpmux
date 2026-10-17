@@ -57,6 +57,7 @@ impl Dimensions for Size {
 }
 
 pub struct Terminal {
+    theme: [Option<Rgb>; 2],
     term: Term<Listener>,
     parser: Processor,
     listener: Listener,
@@ -79,6 +80,7 @@ impl Terminal {
             rows: usize::from(rows.max(1)),
         };
         Self {
+            theme: [None; 2],
             term: Term::new(
                 Config {
                     kitty_keyboard: true,
@@ -93,6 +95,17 @@ impl Terminal {
             primary_history: None,
             selection_anchor: None,
             selection_head: None,
+        }
+    }
+    /// Query fallbacks describe the controller's theme without painting default
+    /// cells opaque or overriding application OSC palette changes.
+    pub fn set_theme(&mut self, theme: [Option<[u8; 3]>; 2]) {
+        self.theme = theme.map(|color| color.map(|[r, g, b]| Rgb { r, g, b }));
+    }
+    fn default_color(&self, index: usize) -> Rgb {
+        match index {
+            256 | 257 => self.theme[index - 256].unwrap_or_else(|| default_rgb(index)),
+            _ => default_rgb(index),
         }
     }
     pub fn feed(&mut self, bytes: &[u8]) -> Vec<Effect> {
@@ -116,7 +129,8 @@ impl Terminal {
                     Event::Bell => Some(Effect::Bell),
                     Event::ClipboardStore(_, text) => Some(Effect::Clipboard(text)),
                     Event::ColorRequest(index, format) => {
-                        let rgb = self.term.colors()[index].unwrap_or_else(|| default_rgb(index));
+                        let rgb =
+                            self.term.colors()[index].unwrap_or_else(|| self.default_color(index));
                         Some(Effect::WritePty(format(rgb).into_bytes()))
                     }
                     Event::TextAreaSizeRequest(format) => Some(Effect::WritePty(
@@ -251,10 +265,10 @@ impl Terminal {
             if flags.contains(Flags::INVERSE) {
                 // Defaults are role-dependent in ANSI: resolve before swapping.
                 if fg == Color::Default {
-                    fg = rgb_color(default_rgb(256));
+                    fg = rgb_color(self.default_color(256));
                 }
                 if bg == Color::Default {
-                    bg = rgb_color(default_rgb(257));
+                    bg = rgb_color(self.default_color(257));
                 }
                 std::mem::swap(&mut fg, &mut bg);
             }

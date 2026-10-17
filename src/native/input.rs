@@ -5,12 +5,30 @@ use super::protocol::*;
 pub struct Decoder {
     pending: Vec<u8>,
     paste: Option<Vec<u8>>,
+    discard_osc: bool,
+    osc_escape: bool,
 }
 impl Decoder {
     pub fn feed(&mut self, bytes: &[u8]) -> Vec<InputEvent> {
         let mut events = Vec::new();
         // Processing byte by byte bounds retained storage even for an oversized packet.
         for byte in bytes {
+            if self.discard_osc {
+                if *byte == 7 || self.osc_escape && *byte == b'\\' {
+                    self.discard_osc = false;
+                    self.osc_escape = false;
+                    continue;
+                }
+                if *byte < 32 && !matches!(*byte, 7 | 27) {
+                    // A user control key cancels a broken response, preserving
+                    // Ctrl-C and the mux prefix as immediate escape routes.
+                    self.discard_osc = false;
+                    self.osc_escape = false;
+                } else {
+                    self.osc_escape = *byte == 27;
+                    continue;
+                }
+            }
             self.pending.push(*byte);
             self.drain(&mut events);
         }
@@ -63,6 +81,31 @@ impl Decoder {
             if self.pending.len() == 1 {
                 break;
             }
+            if self.pending.starts_with(b"\x1b]") {
+                if let Some(control) = self
+                    .pending
+                    .last()
+                    .copied()
+                    .filter(|byte| *byte < 32 && !matches!(*byte, 7 | 27))
+                {
+                    self.pending.clear();
+                    events.push(InputEvent::Bytes(vec![control]));
+                    continue;
+                }
+                if self.pending.last() == Some(&7) || self.pending.ends_with(b"\x1b\\") {
+                    if let Some(event) = theme_reply(&self.pending) {
+                        events.push(event);
+                    }
+                    self.pending.clear();
+                    continue;
+                }
+                if self.pending.len() >= 128 {
+                    self.discard_osc = true;
+                    self.osc_escape = self.pending.last() == Some(&27);
+                    self.pending.clear();
+                }
+                break;
+            }
             let length = if self.pending[1] == b'[' || self.pending[1] == b'O' {
                 self.pending
                     .iter()
@@ -96,11 +139,63 @@ impl Decoder {
     }
     /// Called after the frontend's escape timeout; an unfinished paste remains buffered.
     pub fn flush(&mut self) -> Vec<InputEvent> {
+        if self.discard_osc {
+            return vec![];
+        }
+        if self.pending.starts_with(b"\x1b]") && self.pending.len() > 2 {
+            self.discard_osc = true;
+            self.osc_escape = self.pending.last() == Some(&27);
+            self.pending.clear();
+            return vec![];
+        }
         if self.paste.is_some() || self.pending.is_empty() {
             return vec![];
         }
         vec![InputEvent::Bytes(std::mem::take(&mut self.pending))]
     }
+}
+fn theme_reply(bytes: &[u8]) -> Option<InputEvent> {
+    let text = std::str::from_utf8(bytes).ok()?.strip_prefix("\x1b]")?;
+    let text = text
+        .strip_suffix('\u{7}')
+        .or_else(|| text.strip_suffix("\x1b\\"))?;
+    let (role, color) = text.split_once(';')?;
+    let background = match role {
+        "10" => false,
+        "11" => true,
+        _ => return None,
+    };
+    let components: Vec<&str> = if let Some(rgb) = color.strip_prefix("rgb:") {
+        rgb.split('/').collect()
+    } else {
+        let hex = color.strip_prefix('#')?;
+        if !hex.is_ascii() || hex.is_empty() || hex.len() % 3 != 0 {
+            return None;
+        }
+        let width = hex.len() / 3;
+        if width > 4 {
+            return None;
+        }
+        (0..3)
+            .map(|index| &hex[index * width..(index + 1) * width])
+            .collect()
+    };
+    if components.len() != 3 {
+        return None;
+    }
+    let mut rgb = [0; 3];
+    for (out, component) in rgb.iter_mut().zip(components) {
+        if component.is_empty()
+            || component.len() > 4
+            || !component.bytes().all(|c| c.is_ascii_hexdigit())
+        {
+            return None;
+        }
+        let value = u32::from_str_radix(component, 16).ok()?;
+        let maximum = (1u32 << (component.len() * 4)) - 1;
+        *out = ((value * 255 + maximum / 2) / maximum) as u8;
+    }
+    Some(InputEvent::ThemeColor { background, rgb })
 }
 fn decode_mouse(bytes: &[u8]) -> Option<MouseEvent> {
     if !bytes.starts_with(b"\x1b[<") || !matches!(bytes.last(), Some(b'M' | b'm')) {
@@ -157,6 +252,9 @@ pub struct Router {
 }
 impl Router {
     pub fn route(&mut self, event: InputEvent, frame: &Frame) -> Vec<ClientMessage> {
+        if let InputEvent::ThemeColor { background, rgb } = event {
+            return vec![ClientMessage::ThemeColor { background, rgb }];
+        }
         if frame.ui.dialog.is_some() {
             self.suppressed_releases.clear();
             self.header_drag = None;
@@ -181,6 +279,7 @@ impl Router {
         }
         let help = self.help_override.unwrap_or(frame.help);
         match event {
+            InputEvent::ThemeColor { .. } => vec![],
             InputEvent::Paste(bytes)
                 if frame.controller
                     && !help
@@ -1274,6 +1373,7 @@ impl Router {
         }
         let mut output = vec![];
         match event {
+            InputEvent::ThemeColor { .. } => {}
             InputEvent::Mouse(mouse) => {
                 let bounds = super::workspace::dialog_bounds(frame.cols, frame.rows);
                 if mouse.kind == MouseKind::Press {

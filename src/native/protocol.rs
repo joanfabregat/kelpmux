@@ -3,7 +3,7 @@ use crate::{Result, model::Status};
 use serde::{Deserialize, Serialize};
 use std::io::{Read, Write};
 
-pub const VERSION: u16 = 14;
+pub const VERSION: u16 = 15;
 pub const MAX_MESSAGE: usize = 16 * 1024 * 1024;
 pub const MAX_INPUT: usize = 64 * 1024;
 pub type PaneId = u64;
@@ -180,6 +180,7 @@ pub struct MouseEvent {
 }
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum InputEvent {
+    ThemeColor { background: bool, rgb: [u8; 3] },
     Bytes(Vec<u8>),
     Paste(Vec<u8>),
     Mouse(MouseEvent),
@@ -279,6 +280,10 @@ pub enum Action {
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum ClientMessage {
+    ThemeColor {
+        background: bool,
+        rgb: [u8; 3],
+    },
     Stream(super::stream::Request),
     Diagnostics,
     History {
