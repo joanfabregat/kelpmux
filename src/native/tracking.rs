@@ -50,10 +50,10 @@ pub fn tab_name(agent: &Agent, terminal: Option<&str>, alias: Option<&str>) -> (
 pub fn agent_terminal_title(title: &str) -> &str {
     let title = title.trim();
     let mut chars = title.chars();
-    if let Some(first) = chars.next()
-        && ('\u{2800}'..='\u{28ff}').contains(&first)
-        && chars.clone().next().is_some_and(char::is_whitespace)
-    {
+    let Some(first) = chars.next() else {
+        return title;
+    };
+    if ('\u{2800}'..='\u{28ff}').contains(&first) && chars.next().is_some_and(char::is_whitespace) {
         return title[first.len_utf8()..].trim_start();
     }
     title
