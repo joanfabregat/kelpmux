@@ -6,8 +6,8 @@ use kelpmux::native::{
 };
 use std::collections::BTreeMap;
 #[test]
-fn pane_palette_replies_match_opaque_defaults_and_faint_composer_background() {
-    let mut pane = Terminal::for_pane(40, 8);
+fn panes_inherit_terminal_defaults_and_preserve_explicit_composer_background() {
+    let mut pane = Terminal::new(40, 8);
     let effects = pane.feed(b"\x1b[6n\x1b]10;?\x1b\\\x1b]11;?\x1b\\\x1b[?u\x1b[c");
     let replies: Vec<u8> = effects
         .into_iter()
@@ -26,10 +26,10 @@ fn pane_palette_replies_match_opaque_defaults_and_faint_composer_background() {
         pane.feed(&[*byte]);
     }
     let source = pane.snapshot();
-    assert_eq!(source.cells[0].bg, Color::Rgb(0, 0, 0));
+    assert_eq!(source.cells[0].bg, Color::Default);
+    assert_eq!(source.cells[0].fg, Color::Default);
     assert_eq!(source.cells[2 * 40 + 30].bg, Color::Rgb(31, 31, 31));
     let mut display = Terminal::new(40, 8);
-    display.feed(b"\x1b]10;rgb:00/00/00\x07\x1b]11;rgb:1f/1f/1f\x07");
     display.feed(&terminal_diff(None, &frame(source.clone())));
     assert_eq!(display.snapshot().cells, source.cells);
     assert_ne!(

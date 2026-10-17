@@ -64,7 +64,6 @@ pub struct Terminal {
     primary_history: Option<Vec<HistoryRow>>,
     selection_anchor: Option<TermPoint>,
     selection_head: Option<TermPoint>,
-    explicit_defaults: bool,
 }
 #[derive(Clone)]
 struct HistoryRow {
@@ -94,15 +93,7 @@ impl Terminal {
             primary_history: None,
             selection_anchor: None,
             selection_head: None,
-            explicit_defaults: false,
         }
-    }
-    /// A pane owns its default palette; it must match the OSC replies even when
-    /// an attached SSH terminal uses a different theme.
-    pub fn for_pane(cols: u16, rows: u16) -> Self {
-        let mut terminal = Self::new(cols, rows);
-        terminal.explicit_defaults = true;
-        terminal
     }
     pub fn feed(&mut self, bytes: &[u8]) -> Vec<Effect> {
         let mut effects = Vec::new();
@@ -257,14 +248,6 @@ impl Terminal {
             }
             let mut fg = color(source.fg, content.colors);
             let mut bg = color(source.bg, content.colors);
-            if self.explicit_defaults {
-                if fg == Color::Default {
-                    fg = rgb_color(default_rgb(256));
-                }
-                if bg == Color::Default {
-                    bg = rgb_color(default_rgb(257));
-                }
-            }
             if flags.contains(Flags::INVERSE) {
                 // Defaults are role-dependent in ANSI: resolve before swapping.
                 if fg == Color::Default {

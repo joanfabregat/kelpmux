@@ -639,6 +639,11 @@ impl Router {
                 super::workspace::close_buttons(bounds)
                     .iter()
                     .position(|rect| rect.contains(event.position))
+            } else if dialog.kind == super::ui::DialogKind::Parked {
+                super::workspace::parked_cards(bounds, dialog.selection, frame_entries(frame).len())
+                    .into_iter()
+                    .find(|(_, rect)| rect.contains(event.position))
+                    .map(|(index, _)| index)
             } else if event.position.y > bounds.y + 1 {
                 let visible = usize::from(bounds.rows.saturating_sub(2));
                 Some(
@@ -773,7 +778,7 @@ impl Router {
                     view.pane.id == frame.active
                         && view.body.cols > 0
                         && view.body.x + view.body.cols < frame.cols
-                        && event.position.x == view.body.x + view.body.cols + 1
+                        && event.position.x == view.body.x + view.body.cols
                         && event.position.y == view.body.y
                 })
             {
