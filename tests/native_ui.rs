@@ -714,8 +714,8 @@ fn selecting_same_tab_does_not_toggle_back_to_grid_and_width_is_inline() {
     ws.apply(&Action::ReadResize { cols: 90, rows: 3 }).unwrap();
     let cap = ws.layout()[4].body;
     assert_eq!(cap.cols, 90);
-    assert_eq!(cap.rows, 67);
-    assert_eq!(cap.y, 2);
+    assert_eq!(cap.rows, 66);
+    assert_eq!(cap.y, 3);
     assert_eq!(cap.x, 0);
     ws.apply(&Action::Fullscreen(5)).unwrap();
     assert_eq!(ws.layout()[4].body.cols, 239);
@@ -1144,7 +1144,88 @@ fn width_switch_reserves_only_a_useful_divider_at_the_cap_boundary() {
 }
 
 #[test]
-fn horizontal_tabs_have_two_rows_and_a_gap_between_new_and_parked() {
+fn working_tabs_animate_only_backgrounds_and_keep_bells_beside_titles() {
+    use kelpmux::native::{
+        ui::TabPosition,
+        workspace::{TabTarget, tab_close, tab_number, tab_park, tab_targets},
+    };
+    for (position, size) in [
+        (TabPosition::Left, (120, 40)),
+        (TabPosition::Top, (240, 70)),
+        (TabPosition::Bottom, (40, 10)),
+    ] {
+        for active in [1, 2] {
+            let mut ws = workspace(size, (2, 1));
+            ws.ui.config.tab_position = position;
+            ws.panes[0].status = Status::Working;
+            ws.panes[0].title = "Wide 界 title".into();
+            ws.panes[1].status = Status::Unknown;
+            ws.apply(&Action::Select(active)).unwrap();
+            // Keep the working tab visible on a one-tab horizontal viewport.
+            if size.0 == 40 && active == 2 {
+                continue;
+            }
+            ws.ui.notifications.push(Notification {
+                id: 1,
+                pane: 1,
+                title: "Question".into(),
+                status: Status::InputNeeded,
+                at: 1,
+                read: false,
+                workspace: "test".into(),
+            });
+            let tab = tab_targets(ws.cols, ws.rows, &ws.ui.config, 2, active - 1)
+                .into_iter()
+                .find(|(target, _)| *target == TabTarget::Pane(0))
+                .unwrap()
+                .1;
+            let body = ws
+                .layout()
+                .into_iter()
+                .find(|view| view.pane.id == active as u64)
+                .unwrap()
+                .body;
+            let mut terminal = Terminal::new(body.cols, body.rows);
+            terminal.feed(b"\x1b[48;2;31;31;31mcontent\x1b[0m");
+            let screens = BTreeMap::from([(active as u64, terminal.snapshot())]);
+            let a = compose(&ws, &screens, true, None, 0);
+            let b = compose(&ws, &screens, true, None, 16);
+            assert_ne!(a.cells, b.cells);
+            for (index, (before, after)) in a.cells.iter().zip(&b.cells).enumerate() {
+                assert_eq!(before.text, after.text);
+                assert_eq!(before.fg, after.fg);
+                if before != after {
+                    assert!(tab.contains(Point {
+                        x: (index % usize::from(ws.cols)) as u16,
+                        y: (index / usize::from(ws.cols)) as u16
+                    }));
+                }
+            }
+            for control in [tab_number(tab), tab_close(tab), tab_park(tab)] {
+                for x in control.x..control.x + control.cols {
+                    let index = usize::from(control.y * ws.cols + x);
+                    assert_eq!(a.cells[index], b.cells[index]);
+                }
+            }
+            let bell = usize::from((tab.y + 1) * ws.cols + tab.x + 2);
+            assert_eq!(b.cells[bell].text, "🔔");
+            assert_eq!(b.cells[bell].width, 2);
+            let mut display = Terminal::new(ws.cols, ws.rows);
+            display.feed(&terminal_diff(None, &a));
+            assert_eq!(display.snapshot().cells, a.cells);
+            display.feed(&terminal_diff(Some(&a), &b));
+            assert_eq!(display.snapshot().cells, b.cells);
+            ws.apply(&Action::Acknowledge(1)).unwrap();
+            ws.panes[0].status = Status::Unknown;
+            let stopped = compose(&ws, &screens, true, None, 16);
+            assert_eq!(stopped.cells, compose(&ws, &screens, true, None, 32).cells);
+            assert!(!stopped.cells.iter().any(|cell| cell.text == "🔔"));
+        }
+    }
+}
+
+#[test]
+fn horizontal_tabs_have_three_rows_a_new_tab_gap_and_right_anchored_parked() {
     use kelpmux::native::{
         ui::TabPosition,
         workspace::{TabTarget, tab_targets},
@@ -1168,7 +1249,7 @@ fn horizontal_tabs_have_two_rows_and_a_gap_between_new_and_parked() {
                 }
                 let f = frame(&ws);
                 let targets = tab_targets(ws.cols, ws.rows, &ws.ui.config, count as usize, 0);
-                assert!(targets.iter().all(|(_, r)| r.rows == 2));
+                assert!(targets.iter().all(|(_, r)| r.rows == 3));
                 let new = targets
                     .iter()
                     .find(|(t, _)| *t == TabTarget::New)
@@ -1179,17 +1260,12 @@ fn horizontal_tabs_have_two_rows_and_a_gap_between_new_and_parked() {
                     .find(|(t, _)| *t == TabTarget::Parked)
                     .unwrap()
                     .1;
-                assert_eq!(parked.x, new.x + new.cols + 1);
-                for y in new.y..new.y + 2 {
+                assert_eq!(parked.x + parked.cols, ws.cols);
+                assert!(parked.x > new.x + new.cols);
+                for y in new.y..new.y + 3 {
                     assert!(
                         Router::default()
-                            .route(
-                                click(Point {
-                                    x: new.x + new.cols,
-                                    y
-                                }),
-                                &f
-                            )
+                            .route(click(Point { x: new.x - 1, y }), &f)
                             .is_empty()
                     );
                     assert_eq!(
@@ -1203,10 +1279,19 @@ fn horizontal_tabs_have_two_rows_and_a_gap_between_new_and_parked() {
                         .find(|(t, _)| *t == TabTarget::Pane(0))
                         .unwrap()
                         .1;
-                    let marker = usize::from(tab.y * f.cols + tab.x + 7);
-                    assert_eq!(
-                        f.cells[marker].bg,
-                        Color::Indexed(kelpmux::native::ui::PALETTE[1].0)
+                    let last_tab = targets
+                        .iter()
+                        .filter_map(|(target, rect)| {
+                            matches!(target, TabTarget::Pane(_)).then_some(rect.x + rect.cols)
+                        })
+                        .max()
+                        .unwrap();
+                    assert_eq!(new.x, last_tab + 1);
+                    assert!(
+                        !f.cells[usize::from(tab.y * f.cols + tab.x)
+                            ..usize::from(tab.y * f.cols + tab.x + tab.cols)]
+                            .iter()
+                            .any(|cell| cell.text == "?")
                     );
                     assert!(
                         f.cells

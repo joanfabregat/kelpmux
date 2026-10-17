@@ -1793,13 +1793,18 @@ impl Server {
                                     if let Some(info) =
                                         self.workspace.panes.iter_mut().find(|p| p.id == *id)
                                     {
+                                        let title = if info.kind.is_some() {
+                                            super::tracking::agent_terminal_title(&title)
+                                        } else {
+                                            title.as_str()
+                                        };
                                         if let Some(kind) = info.kind {
                                             let folder = Path::new(&info.cwd)
                                                 .file_name()
                                                 .unwrap_or_default()
                                                 .to_string_lossy();
                                             if title.trim().is_empty()
-                                                || title == folder
+                                                || title == folder.as_ref()
                                                 || title == info.cwd
                                                 || title == "shell"
                                                 || title == kind.as_str()
