@@ -522,6 +522,7 @@ impl RawTty {
         TerminalWriter.write_all(
             b"\x1b[?1l\x1b>\x1b[?1049h\x1b[?25l\x1b[?1002h\x1b[?1006h\x1b[?1004h\x1b[?2004h\x1b[>1u",
         )?;
+        TerminalWriter.write_all(b"\x1b]10;?\x1b\\\x1b]11;?\x1b\\")?;
         Ok(guard)
     }
 }
@@ -784,7 +785,7 @@ fn queue_events(pending: &mut VecDeque<InputEvent>, events: Vec<InputEvent>) -> 
         .iter()
         .map(|event| match event {
             InputEvent::Bytes(bytes) | InputEvent::Paste(bytes) => bytes.len(),
-            InputEvent::Mouse(_) => 32,
+            InputEvent::Mouse(_) | InputEvent::ThemeColor { .. } => 32,
         })
         .sum();
     if size > MAX_PENDING || pending.len() > 4096 {

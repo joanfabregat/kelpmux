@@ -714,8 +714,8 @@ fn selecting_same_tab_does_not_toggle_back_to_grid_and_width_is_inline() {
     ws.apply(&Action::ReadResize { cols: 90, rows: 3 }).unwrap();
     let cap = ws.layout()[4].body;
     assert_eq!(cap.cols, 90);
-    assert_eq!(cap.rows, 66);
-    assert_eq!(cap.y, 3);
+    assert_eq!(cap.rows, 65);
+    assert_eq!(cap.y, 4);
     assert_eq!(cap.x, 0);
     ws.apply(&Action::Fullscreen(5)).unwrap();
     assert_eq!(ws.layout()[4].body.cols, 239);
@@ -1225,6 +1225,53 @@ fn working_tabs_animate_only_backgrounds_and_keep_bells_beside_titles() {
 }
 
 #[test]
+fn tab_folder_subtitles_and_horizontal_rules_stay_outside_terminal_hit_targets() {
+    use kelpmux::native::{
+        ui::TabPosition,
+        workspace::{TabTarget, tab_targets},
+    };
+    for position in [TabPosition::Top, TabPosition::Bottom, TabPosition::Left] {
+        let mut ws = workspace((120, 40), (2, 1));
+        ws.ui.config.tab_position = position;
+        ws.panes[0].title = "Conversation name".into();
+        ws.panes[0].cwd = "/home/joan/repos/project".into();
+        ws.apply(&Action::Select(1)).unwrap();
+        let f = frame(&ws);
+        let tab = tab_targets(f.cols, f.rows, &f.ui.config, 2, 0)
+            .into_iter()
+            .find(|(target, _)| *target == TabTarget::Pane(0))
+            .unwrap()
+            .1;
+        let folder = usize::from((tab.y + 2) * f.cols + tab.x + 2);
+        let name = usize::from((tab.y + 1) * f.cols + tab.x + 2);
+        assert_eq!(
+            f.cells[folder..folder + 7]
+                .iter()
+                .map(|cell| cell.text.as_str())
+                .collect::<String>(),
+            "project"
+        );
+        assert_ne!(f.cells[folder].fg, f.cells[name].fg);
+        if position != TabPosition::Left {
+            let y = if position == TabPosition::Top {
+                3
+            } else {
+                f.rows - 5
+            };
+            for x in 0..f.cols {
+                assert_eq!(f.cells[usize::from(y * f.cols + x)].text, "━");
+                assert!(
+                    Router::default()
+                        .route(click(Point { x, y }), &f)
+                        .is_empty()
+                );
+                assert!(!f.panes[0].body.contains(Point { x, y }));
+            }
+        }
+    }
+}
+
+#[test]
 fn horizontal_tabs_have_three_rows_a_new_tab_gap_and_right_anchored_parked() {
     use kelpmux::native::{
         ui::TabPosition,
@@ -1483,7 +1530,7 @@ fn active_palette_connects_sidebar_and_width_dividers_in_capped_and_full_modes()
                     if y == body.y {
                         if wrapping { "+" } else { "−" }
                     } else {
-                        "▎"
+                        "┃"
                     }
                 );
                 assert_eq!(cell.fg, Color::Indexed(bright));

@@ -316,6 +316,7 @@ impl Drop for NativePane {
 }
 
 struct Client {
+    theme: [Option<[u8; 3]>; 2],
     stream: Option<StreamClient>,
     previous_frame: Option<(u64, Frame)>,
     full_frames: u64,
@@ -370,6 +371,7 @@ impl Client {
         }
         socket.set_nonblocking(true)?;
         Ok(Self {
+            theme: [None; 2],
             stream: None,
             previous_frame: None,
             full_frames: 0,
@@ -558,6 +560,18 @@ struct Server {
     shutdown: bool,
 }
 impl Server {
+    fn terminal_theme(&self) -> [Option<[u8; 3]>; 2] {
+        self.controller
+            .and_then(|id| self.clients.get(&id))
+            .map_or([None; 2], |client| client.theme)
+    }
+    fn apply_theme(&mut self) {
+        let theme = self.terminal_theme();
+        for pane in self.panes.values_mut() {
+            pane.terminal.set_theme(theme);
+        }
+        self.dirty = true;
+    }
     fn tui_write_allowed(&self, pane: PaneId) -> Result<()> {
         if self.leases.contains_key(&pane) {
             return Err("pane belongs to a native client; claim it explicitly first".into());
@@ -1260,7 +1274,8 @@ impl Server {
         );
         self.config.cwd = original_cwd;
         self.config.shell = original_shell;
-        let pane = pane?;
+        let mut pane = pane?;
+        pane.terminal.set_theme(self.terminal_theme());
         let cwd = specification
             .as_ref()
             .map(|specification| specification.cwd.clone())
@@ -1487,6 +1502,12 @@ impl Server {
                         controller: self.controller,
                     })?;
             }
+            ClientMessage::ThemeColor { background, rgb } if self.clients[&id].attached => {
+                self.clients.get_mut(&id).unwrap().theme[usize::from(background)] = Some(rgb);
+                if self.controller == Some(id) {
+                    self.apply_theme();
+                }
+            }
             ClientMessage::Attach {
                 version,
                 cols,
@@ -1504,6 +1525,7 @@ impl Server {
                 self.clients.get_mut(&id).unwrap().geometry = Some((cols, rows));
                 if self.controller.is_none() || takeover {
                     self.controller = Some(id);
+                    self.apply_theme();
                     self.workspace.resize(cols, rows)?;
                     self.resize();
                 }
@@ -1533,6 +1555,7 @@ impl Server {
                     .geometry
                     .ok_or("attached client has no geometry")?;
                 self.controller = Some(id);
+                self.apply_theme();
                 self.workspace.resize(cols, rows)?;
                 self.resize();
             }
@@ -1794,7 +1817,7 @@ impl Server {
                                         self.workspace.panes.iter_mut().find(|p| p.id == *id)
                                     {
                                         let title = if info.kind.is_some() {
-                                            super::tracking::agent_terminal_title(&title)
+                                            super::tracking::agent_terminal_title(&title, &info.cwd)
                                         } else {
                                             title.as_str()
                                         };
