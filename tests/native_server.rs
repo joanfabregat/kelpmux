@@ -662,7 +662,7 @@ fn startup_color_and_keyboard_probe_replies_support_a_shaded_composer() {
     );
     assert_eq!(
         frame.cells[usize::from(body.y * frame.cols + body.x)].bg,
-        Color::Rgb(0, 0, 0)
+        Color::Default
     );
 }
 

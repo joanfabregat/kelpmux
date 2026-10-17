@@ -128,7 +128,7 @@ fn tabs_resize_only_selected_terminal_and_restore_grid() {
             .unwrap()
             .body
             .cols,
-        169
+        171
     );
     assert_eq!(
         ws.layout()
