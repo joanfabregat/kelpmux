@@ -244,9 +244,9 @@ impl Workspace {
             pane,
             rect,
             body: Rect {
-                x: rect.x + 1,
+                x: rect.x,
                 y: rect.y + 1,
-                cols: rect.cols.saturating_sub(2),
+                cols: rect.cols,
                 rows: rect.rows.saturating_sub(1),
             },
             overlay,
@@ -985,7 +985,7 @@ pub fn move_cards(bounds: Rect, columns: u8, rows: u8) -> Vec<Rect> {
         })
         .collect()
 }
-/// Content is a single terminal with blank margins, never a floating pane.
+/// Terminal content occupies every column except visible UI dividers.
 pub fn tab_body(
     cols: u16,
     rows: u16,
@@ -1003,21 +1003,25 @@ pub fn tab_body(
     };
     match position {
         TabPosition::Top => {
-            area.y = 1;
-            area.rows = area.rows.saturating_sub(1);
+            area.y = 2;
+            area.rows = area.rows.saturating_sub(2);
         }
         TabPosition::Left => {
             let sidebar = (cols / 5).clamp(18, 28);
             area.x = sidebar;
             area.cols = cols - sidebar;
         }
-        TabPosition::Bottom => area.rows = area.rows.saturating_sub(1),
+        TabPosition::Bottom => area.rows = area.rows.saturating_sub(2),
         TabPosition::Auto => unreachable!(),
     }
-    area.x += 1;
-    // Blank terminal margins plus a permanently reachable width divider.
-    area.cols = area.cols.saturating_sub(3);
-    let width = if full || !config.wrap_lines {
+    let cap = config.remembered_read_widths[super::ui::geometry_bucket(cols)]
+        .unwrap_or(config.read_width);
+    // Reserve only the actual divider, and only where the width toggle helps.
+    let effective = cap < area.cols.saturating_sub(1);
+    if effective {
+        area.cols = area.cols.saturating_sub(1);
+    }
+    let width = if full || !config.wrap_lines || !effective {
         area.cols
     } else {
         config.remembered_read_widths[super::ui::geometry_bucket(cols)]
@@ -1089,7 +1093,7 @@ pub enum TabTarget {
 pub fn tab_number(rect: Rect) -> Rect {
     Rect {
         x: rect.x + 1,
-        y: if rect.rows >= 3 {
+        y: if rect.rows >= 2 {
             rect.y
         } else {
             rect.y + rect.rows / 2
@@ -1172,8 +1176,7 @@ pub fn sidebar_actions(cols: u16, rows: u16) -> [Rect; 2] {
 /// the available terminal, regardless of the current wrap/full-width mode.
 pub fn reading_limit_effective(cols: u16, rows: u16, config: &super::ui::UiConfig) -> bool {
     let full = tab_body(cols, rows, config, true, None);
-    config.remembered_read_widths[super::ui::geometry_bucket(cols)].unwrap_or(config.read_width)
-        < full.cols
+    full.x + full.cols < cols
 }
 pub fn tab_targets(
     cols: u16,
@@ -1186,13 +1189,14 @@ pub fn tab_targets(
     if count == 0 {
         let left = config.tab_position.resolve(cols, rows) == TabPosition::Left;
         if left {
-            let [new, parked] = sidebar_actions(cols, rows);
+            let [mut new, parked] = sidebar_actions(cols, rows);
+            new.y = 1;
             return vec![(TabTarget::New, new), (TabTarget::Parked, parked)];
         }
         let y = if left {
             1
         } else if config.tab_position.resolve(cols, rows) == TabPosition::Bottom {
-            rows - 2
+            rows - 3
         } else {
             0
         };
@@ -1204,16 +1208,16 @@ pub fn tab_targets(
                     x: 0,
                     y,
                     cols: width,
-                    rows: 1,
+                    rows: 2,
                 },
             ),
             (
                 TabTarget::Parked,
                 Rect {
-                    x: if left { 0 } else { 3 },
+                    x: if left { 0 } else { 4 },
                     y: y + u16::from(left),
                     cols: if left { width } else { 12 },
-                    rows: 1,
+                    rows: 2,
                 },
             ),
         ];
@@ -1221,8 +1225,8 @@ pub fn tab_targets(
     let position = config.tab_position.resolve(cols, rows);
     match position {
         TabPosition::Top | TabPosition::Bottom => {
-            let overflow = count * 18 + 15 > usize::from(cols);
-            let reserve = if overflow { 21 } else { 15 };
+            let overflow = count * 18 + 16 > usize::from(cols);
+            let reserve = if overflow { 22 } else { 16 };
             let capacity = usize::from(cols.saturating_sub(reserve) / 18)
                 .max(1)
                 .min(count);
@@ -1234,7 +1238,7 @@ pub fn tab_targets(
             let width = ((cols - reserve) / capacity as u16).min(40);
             let x = if overflow { 3 } else { 0 };
             let y = if position == TabPosition::Bottom {
-                rows - 2
+                rows - 3
             } else {
                 0
             };
@@ -1247,7 +1251,7 @@ pub fn tab_targets(
                             x: x + i as u16 * width,
                             y,
                             cols: width,
-                            rows: 1,
+                            rows: 2,
                         },
                     )
                 })
@@ -1258,16 +1262,16 @@ pub fn tab_targets(
                     x: x + tabs.len() as u16 * width,
                     y,
                     cols: 3,
-                    rows: 1,
+                    rows: 2,
                 },
             ));
             tabs.push((
                 TabTarget::Parked,
                 Rect {
-                    x: x + (tabs.len() as u16 - 1) * width + 3,
+                    x: x + (tabs.len() as u16 - 1) * width + 4,
                     y,
                     cols: 12,
-                    rows: 1,
+                    rows: 2,
                 },
             ));
             if overflow {
@@ -1277,7 +1281,7 @@ pub fn tab_targets(
                         x: 0,
                         y,
                         cols: 3,
-                        rows: 1,
+                        rows: 2,
                     },
                 ));
                 tabs.push((
@@ -1286,7 +1290,7 @@ pub fn tab_targets(
                         x: cols - 3,
                         y,
                         cols: 3,
-                        rows: 1,
+                        rows: 2,
                     },
                 ));
             }
@@ -1294,7 +1298,7 @@ pub fn tab_targets(
         }
         TabPosition::Left => {
             let width = (cols / 5).clamp(18, 28);
-            let [new, parked] = sidebar_actions(cols, rows);
+            let [mut new, parked] = sidebar_actions(cols, rows);
             let area = new.y.saturating_sub(1);
             let overflow = count > usize::from(area);
             let available = area.saturating_sub(if overflow { 2 } else { 0 });
@@ -1320,6 +1324,8 @@ pub fn tab_targets(
                     )
                 })
                 .collect();
+            let end = top + tabs.len() as u16 * height;
+            new.y = end + u16::from(overflow) + 1;
             if overflow {
                 tabs.push((
                     TabTarget::Previous,
@@ -1334,7 +1340,7 @@ pub fn tab_targets(
                     TabTarget::Next,
                     Rect {
                         x: 0,
-                        y: area - 1,
+                        y: end,
                         cols: width,
                         rows: 1,
                     },
@@ -1346,4 +1352,25 @@ pub fn tab_targets(
         }
         TabPosition::Auto => unreachable!(),
     }
+}
+
+/// Shared three-row parked entry bounds for drawing, hover and click routing.
+pub fn parked_cards(bounds: Rect, selection: usize, count: usize) -> Vec<(usize, Rect)> {
+    let visible = usize::from(bounds.rows.saturating_sub(2) / 3);
+    let offset = selection.saturating_sub(visible.saturating_sub(1));
+    (offset..count)
+        .take(visible)
+        .enumerate()
+        .map(|(row, index)| {
+            (
+                index,
+                Rect {
+                    x: bounds.x,
+                    y: bounds.y + 2 + row as u16 * 3,
+                    cols: bounds.cols,
+                    rows: 3,
+                },
+            )
+        })
+        .collect()
 }

@@ -496,13 +496,23 @@ fn header(
     } else {
         view.pane.status.marker().to_owned()
     };
-    let title = format!(" {} {}", marker, safe_text(&view.pane.title));
+    let activity = format!(" {marker} ");
     write_text(
         frame,
         view.rect.x + badge_width,
         view.rect.y,
-        title_width,
-        &title,
+        title_width.min(3),
+        &activity,
+        Color::Indexed(16),
+        Color::Indexed(bright),
+        true,
+    );
+    write_text(
+        frame,
+        view.rect.x + badge_width + 3,
+        view.rect.y,
+        title_width.saturating_sub(3),
+        &format!(" {}", safe_text(&view.pane.title)),
         fg,
         bg,
         false,
@@ -1307,15 +1317,15 @@ fn draw_tabs(frame: &mut Frame, workspace: &Workspace, spinner: usize) {
         },
         TabPosition::Bottom => Rect {
             x: 0,
-            y: frame.rows - 2,
+            y: frame.rows - 3,
             cols: frame.cols,
-            rows: 1,
+            rows: 2,
         },
         _ => Rect {
             x: 0,
             y: 0,
             cols: frame.cols,
-            rows: 1,
+            rows: 2,
         },
     };
     fill(frame, area, Color::Indexed(234));
@@ -1384,6 +1394,7 @@ fn draw_tabs(frame: &mut Frame, workspace: &Workspace, spinner: usize) {
                 );
             }
             TabTarget::Previous | TabTarget::Next => {
+                fill(frame, rect, Color::Indexed(67));
                 let label = if position == TabPosition::Left && target == TabTarget::Previous {
                     " ↑ "
                 } else if position == TabPosition::Left {
@@ -1396,7 +1407,7 @@ fn draw_tabs(frame: &mut Frame, workspace: &Workspace, spinner: usize) {
                 write_text(
                     frame,
                     rect.x,
-                    rect.y,
+                    rect.y + rect.rows / 2,
                     rect.cols,
                     label,
                     Color::Indexed(231),
@@ -1432,7 +1443,7 @@ fn draw_tabs(frame: &mut Frame, workspace: &Workspace, spinner: usize) {
         .map(|pane| PALETTE[usize::from(pane.palette) % PALETTE.len()])
         .unwrap_or(PALETTE[0]);
     if position == TabPosition::Left {
-        let x = body.x - 2;
+        let x = body.x - 1;
         for y in 0..frame.rows - 1 {
             write_text(
                 frame,
@@ -1448,7 +1459,7 @@ fn draw_tabs(frame: &mut Frame, workspace: &Workspace, spinner: usize) {
     }
     let wrapping =
         workspace.ui.config.wrap_lines && !matches!(workspace.reading, ReadingMode::Fullscreen(_));
-    let x = body.x + body.cols + 1;
+    let x = body.x + body.cols;
     if x < frame.cols
         && super::workspace::reading_limit_effective(frame.cols, frame.rows, &workspace.ui.config)
     {
@@ -1518,7 +1529,7 @@ fn draw_tab(
         pane.status.marker().to_owned()
     };
     let marker = format!(
-        "{}{}",
+        " {}{} ",
         if workspace
             .ui
             .notifications
@@ -1541,13 +1552,17 @@ fn draw_tab(
         number.y,
         close.x.saturating_sub(marker_x),
         &marker,
+        Color::Indexed(16),
         Color::Indexed(bright),
-        bg,
         true,
     );
     let count_width = count.len() as u16;
-    let (title_x, title_y, title_width) = if rect.rows >= 3 {
-        (rect.x + 2, rect.y + 1, rect.cols.saturating_sub(4))
+    let (title_x, title_y, title_width) = if rect.rows >= 2 {
+        (
+            rect.x + 2,
+            rect.y + 1,
+            rect.cols.saturating_sub(4 + count_width),
+        )
     } else {
         let x = marker_x + marker_width + 1;
         (
@@ -1574,8 +1589,12 @@ fn draw_tab(
     if count_width > 0 {
         write_text(
             frame,
-            park.x.saturating_sub(count_width),
-            number.y,
+            if rect.rows >= 2 {
+                rect.x + rect.cols.saturating_sub(2 + count_width)
+            } else {
+                park.x.saturating_sub(count_width)
+            },
+            if rect.rows >= 2 { rect.y + 1 } else { number.y },
             count_width,
             count,
             Color::Indexed(231),
@@ -1708,8 +1727,6 @@ fn draw_parked(
         );
     }
     let panes: Vec<_> = workspace.panes.iter().filter(|p| p.parked).collect();
-    let visible = usize::from(bounds.rows.saturating_sub(2));
-    let offset = dialog.selection.saturating_sub(visible.saturating_sub(1));
     if panes.is_empty() {
         write_text(
             frame,
@@ -1722,31 +1739,25 @@ fn draw_parked(
             false,
         );
     }
-    for (index, pane) in panes.iter().enumerate().skip(offset).take(visible) {
-        let y = bounds.y + 2 + (index - offset) as u16;
+    for (index, rect) in super::workspace::parked_cards(bounds, dialog.selection, panes.len()) {
+        let pane = panes[index];
+        let y = rect.y + 1;
         let selected = index == dialog.selection;
         let (bright, muted) = PALETTE[usize::from(pane.palette) % PALETTE.len()];
         let bg = Color::Indexed(if selected { muted } else { 234 });
-        fill(
-            frame,
-            Rect {
-                x: bounds.x,
-                y,
-                cols: bounds.cols,
-                rows: 1,
-            },
-            bg,
-        );
-        write_text(
-            frame,
-            bounds.x,
-            y,
-            1,
-            "▎",
-            Color::Indexed(bright),
-            bg,
-            false,
-        );
+        fill(frame, rect, bg);
+        for row in rect.y..rect.y + rect.rows {
+            write_text(
+                frame,
+                bounds.x,
+                row,
+                1,
+                "▎",
+                Color::Indexed(bright),
+                bg,
+                false,
+            );
+        }
         write_text(
             frame,
             bounds.x + 1,
@@ -1766,10 +1777,10 @@ fn draw_parked(
             frame,
             bounds.x + 6,
             y,
-            2,
-            &marker,
+            3,
+            &format!(" {marker} "),
+            Color::Indexed(16),
             Color::Indexed(bright),
-            bg,
             true,
         );
         let title_width = status_x.saturating_sub(title_x + 1);
@@ -2009,7 +2020,7 @@ mod tests {
                 display.feed(&terminal_diff(None, &frame));
                 assert_eq!(display.snapshot().cells, frame.cells);
                 header(&mut frame, &view(cols, overlay), false, reading, 0);
-                assert_eq!(frame.cells[5].bg, Color::Indexed(24));
+                assert_eq!(frame.cells[5].bg, Color::Indexed(39));
             }
         }
     }
