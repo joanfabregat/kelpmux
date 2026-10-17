@@ -22,7 +22,7 @@ pub fn tab_name(agent: &Agent, terminal: Option<&str>, alias: Option<&str>) -> (
     if !agent.name.trim().is_empty() && agent.name != folder && agent.name != agent.cwd {
         return (agent.name.chars().take(1024).collect(), true);
     }
-    if let Some(title) = terminal.filter(|title| {
+    if let Some(title) = terminal.map(agent_terminal_title).filter(|title| {
         !title.trim().is_empty()
             && *title != folder
             && *title != agent.cwd
@@ -42,6 +42,21 @@ pub fn tab_name(agent: &Agent, terminal: Option<&str>, alias: Option<&str>) -> (
         },
         false,
     )
+}
+
+/// Applications may decorate OSC titles with a spinner independently of agent
+/// metadata. Remove only a leading braille glyph followed by whitespace; never
+/// infer lifecycle state from it or rewrite explicit names and aliases.
+pub fn agent_terminal_title(title: &str) -> &str {
+    let title = title.trim();
+    let mut chars = title.chars();
+    let Some(first) = chars.next() else {
+        return title;
+    };
+    if ('\u{2800}'..='\u{28ff}').contains(&first) && chars.next().is_some_and(char::is_whitespace) {
+        return title[first.len_utf8()..].trim_start();
+    }
+    title
 }
 
 /// Preserve logical pane order, including ordinary shells in the unfiltered view.
