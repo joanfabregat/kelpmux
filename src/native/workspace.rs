@@ -1003,15 +1003,15 @@ pub fn tab_body(
     };
     match position {
         TabPosition::Top => {
-            area.y = 3;
-            area.rows = area.rows.saturating_sub(3);
+            area.y = 4;
+            area.rows = area.rows.saturating_sub(4);
         }
         TabPosition::Left => {
             let sidebar = (cols / 5).clamp(18, 28);
             area.x = sidebar;
             area.cols = cols - sidebar;
         }
-        TabPosition::Bottom => area.rows = area.rows.saturating_sub(3),
+        TabPosition::Bottom => area.rows = area.rows.saturating_sub(4),
         TabPosition::Auto => unreachable!(),
     }
     let cap = config.remembered_read_widths[super::ui::geometry_bucket(cols)]

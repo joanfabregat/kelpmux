@@ -1445,6 +1445,25 @@ fn draw_tabs(frame: &mut Frame, workspace: &Workspace, spinner: usize) {
     let (bright, muted) = active
         .map(|pane| PALETTE[usize::from(pane.palette) % PALETTE.len()])
         .unwrap_or(PALETTE[0]);
+    if position != TabPosition::Left {
+        let y = if position == TabPosition::Top {
+            3
+        } else {
+            frame.rows - 5
+        };
+        for x in 0..frame.cols {
+            write_text(
+                frame,
+                x,
+                y,
+                1,
+                "━",
+                Color::Indexed(muted),
+                Color::Default,
+                false,
+            );
+        }
+    }
     if position == TabPosition::Left {
         let x = body.x - 1;
         for y in 0..frame.rows - 1 {
@@ -1475,7 +1494,7 @@ fn draw_tabs(frame: &mut Frame, workspace: &Workspace, spinner: usize) {
                 if y == body.y {
                     if wrapping { "+" } else { "−" }
                 } else {
-                    "▎"
+                    "┃"
                 },
                 Color::Indexed(bright),
                 Color::Default,
@@ -1576,6 +1595,22 @@ fn draw_tab(
         bg,
         false,
     );
+    if rect.rows >= 3 {
+        let folder = std::path::Path::new(&pane.cwd)
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or(&pane.cwd);
+        write_text(
+            frame,
+            rect.x + 2,
+            rect.y + 2,
+            rect.cols.saturating_sub(4),
+            &safe_text(folder),
+            Color::Indexed(if selected { 250 } else { 245 }),
+            bg,
+            false,
+        );
+    }
     if count_width > 0 {
         write_text(
             frame,
@@ -1621,6 +1656,7 @@ fn draw_tab(
             rect,
             bg,
             Color::Indexed(bright),
+            selected,
             spinner,
             &[number, close, park],
         );
@@ -1634,26 +1670,30 @@ fn activity_background(
     rect: Rect,
     base: Color,
     tint: Color,
+    selected: bool,
     tick: usize,
     controls: &[Rect],
 ) {
     let (br, bg, bb) = color_rgb(base, false);
     let (tr, tg, tb) = color_rgb(tint, false);
-    let radius = 5usize;
-    let center = (tick / 2) % (usize::from(rect.cols) + radius * 2);
+    let time = tick as f64 * 0.16;
+    let amplitude = if selected { 0.34 } else { 0.085 };
     for y in rect.y..rect.y + rect.rows {
         for x in rect.x + 1..rect.x + rect.cols {
             let point = Point { x, y };
             if controls.iter().any(|control| control.contains(point)) {
                 continue;
             }
-            let distance = (usize::from(x - rect.x) + radius).abs_diff(center);
-            if distance >= radius {
-                continue;
-            }
-            let weight = ((radius - distance) * 7) as u16;
+            // A broad curved reflection with a narrow specular ridge, slightly
+            // angled across rows and eased in speed rather than resetting a band.
+            let phase = f64::from(x - rect.x) * std::f64::consts::TAU / f64::from(rect.cols + 8)
+                + f64::from(y - rect.y) * 0.2
+                - time
+                - (time * 0.37).sin() * 0.15;
+            let wave = (phase.cos() + 1.0) * 0.5;
+            let weight = amplitude * (wave * 0.2 + wave.powi(10) * 0.8);
             let mix = |a: u8, b: u8| {
-                ((u16::from(a) * (100 - weight) + u16::from(b) * weight) / 100) as u8
+                (f64::from(a) * (1.0 - weight) + f64::from(b) * weight).round() as u8
             };
             let cell = &mut frame.cells[usize::from(y) * usize::from(frame.cols) + usize::from(x)];
             if cell.width == 0 || cell.bg != base {
@@ -2068,6 +2108,50 @@ mod tests {
                 header(&mut frame, &view(cols, overlay), false, reading, 0);
                 assert_eq!(frame.cells[5].bg, Color::Indexed(39));
             }
+        }
+    }
+    #[test]
+    fn inactive_material_sheen_is_subtler_and_both_states_keep_the_pane_hue() {
+        for (bright, muted) in PALETTE {
+            let mut strengths = Vec::new();
+            for selected in [true, false] {
+                let ws = Workspace::new(80, 24).unwrap();
+                let mut f = compose(&ws, &BTreeMap::new(), true, None, 0);
+                let rect = Rect {
+                    x: 0,
+                    y: 0,
+                    cols: 40,
+                    rows: 3,
+                };
+                let base = Color::Indexed(if selected { muted } else { 234 });
+                let tint = Color::Indexed(bright);
+                fill(&mut f, rect, base);
+                let rgb = color_rgb(base, false);
+                let target = color_rgb(tint, false);
+                activity_background(&mut f, rect, base, tint, selected, 0, &[]);
+                let mut strength = 0;
+                for y in 0..3 {
+                    for x in 1..40 {
+                        let cell = &f.cells[usize::from(y * f.cols + x)];
+                        let color = color_rgb(cell.bg, false);
+                        for (actual, from, to) in [
+                            (color.0, rgb.0, target.0),
+                            (color.1, rgb.1, target.1),
+                            (color.2, rgb.2, target.2),
+                        ] {
+                            assert!((from.min(to)..=from.max(to)).contains(&actual));
+                            strength = strength.max(actual.abs_diff(from));
+                        }
+                    }
+                }
+                assert!(strength > 0);
+                strengths.push(strength);
+                let first = f.cells.clone();
+                fill(&mut f, rect, base);
+                activity_background(&mut f, rect, base, tint, selected, 4, &[]);
+                assert_ne!(f.cells, first);
+            }
+            assert!(strengths[1] < strengths[0]);
         }
     }
     #[test]
