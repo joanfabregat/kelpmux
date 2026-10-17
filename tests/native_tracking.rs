@@ -408,6 +408,18 @@ fn tab_names_never_use_directory_as_conversation_identity_and_preserve_osc_fallb
         tab_name(&agent, Some("Fix authentication"), None),
         ("Fix authentication".into(), false)
     );
+    assert_eq!(
+        tab_name(&agent, Some("⠋ Fix authentication | scratch"), None).0,
+        "Fix authentication"
+    );
+    assert_eq!(
+        tab_name(&agent, Some("Fix authentication | other"), None).0,
+        "Fix authentication | other"
+    );
+    assert_eq!(
+        tab_name(&agent, None, Some("Name | scratch")).0,
+        "Name | scratch"
+    );
     for title in [
         "⠋ Fix authentication",
         "⠙ Fix authentication",

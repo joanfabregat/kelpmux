@@ -73,6 +73,81 @@ fn mouse(position: Point, kind: MouseKind) -> InputEvent {
     })
 }
 #[test]
+fn terminal_theme_replies_are_bounded_fragment_safe_and_never_application_input() {
+    let wire = b"\x1b]10;rgb:d0d0/d8d8/e0e0\x1b\\\x1b]11;#1f2021\x07";
+    let expected = vec![
+        InputEvent::ThemeColor {
+            background: false,
+            rgb: [208, 216, 224],
+        },
+        InputEvent::ThemeColor {
+            background: true,
+            rgb: [31, 32, 33],
+        },
+    ];
+    for split in 0..=wire.len() {
+        let mut decoder = Decoder::default();
+        let mut events = decoder.feed(&wire[..split]);
+        events.extend(decoder.feed(&wire[split..]));
+        assert_eq!(events, expected);
+        assert!(decoder.flush().is_empty());
+    }
+    for wire in [
+        b"\x1b]11;rgb:f/8/0\x07".as_slice(),
+        b"\x1b]11;#f80\x1b\\".as_slice(),
+    ] {
+        assert_eq!(
+            Decoder::default().feed(wire),
+            vec![InputEvent::ThemeColor {
+                background: true,
+                rgb: [255, 136, 0]
+            }]
+        );
+    }
+    for wire in [
+        b"\x1b]11;rgb:00/no/11\x07".as_slice(),
+        b"\x1b]11;rgb:fffff/0/0\x07".as_slice(),
+        b"\x1b]12;#123456\x07".as_slice(),
+    ] {
+        assert!(Decoder::default().feed(wire).is_empty());
+    }
+    let mut decoder = Decoder::default();
+    assert!(decoder.feed(b"\x1b]11;rgb:1234/").is_empty());
+    assert!(decoder.flush().is_empty());
+    assert_eq!(
+        decoder.feed(b"ffff/ffff\x07z"),
+        vec![InputEvent::Bytes(b"z".to_vec())]
+    );
+    let mut broken = Decoder::default();
+    broken.feed(b"\x1b]11;rgb:1234/");
+    broken.flush();
+    assert_eq!(
+        broken.feed(b"\x02d"),
+        vec![InputEvent::Bytes(b"\x02d".to_vec())]
+    );
+    let oversized = [b"\x1b]11;".as_slice(), &vec![b'x'; 1000], b"\x1b\\ok"].concat();
+    assert_eq!(
+        decoder.feed(&oversized),
+        vec![InputEvent::Bytes(b"ok".to_vec())]
+    );
+    let paste = [b"\x1b[200~".as_slice(), wire, b"\x1b[201~"].concat();
+    assert_eq!(
+        Decoder::default().feed(&paste),
+        vec![InputEvent::Paste(wire.to_vec())]
+    );
+    let mut ws = workspace(80, 24, (1, 1));
+    for modal in [Action::Help, Action::SearchOpen] {
+        ws.apply(&modal).unwrap();
+        for event in &expected {
+            assert!(matches!(
+                &Router::default().route(event.clone(), &frame(&ws))[..],
+                [ClientMessage::ThemeColor { .. }]
+            ));
+        }
+    }
+}
+
+#[test]
 fn every_grid_balances_cells_keeps_header_footer_and_all_panes() {
     for (cols, rows) in [(40, 10), (121, 41), (400, 160)] {
         for shape in kelpmux::native::workspace::GRIDS {

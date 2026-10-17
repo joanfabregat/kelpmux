@@ -275,6 +275,45 @@ fn welcome(socket: &mut UnixStream, controller: bool) {
     }
 }
 #[test]
+fn frontend_queries_theme_and_routes_fragmented_replies_without_typing_them() {
+    let fixture = Fixture::new();
+    let path = fixture.socket.clone();
+    let (sender, receiver) = mpsc::channel();
+    let backend = thread::spawn(move || {
+        let mut socket = fixture.accept();
+        welcome(&mut socket, true);
+        while let Some(message) = read_message::<ClientMessage>(&mut socket).unwrap() {
+            let detach = matches!(message, ClientMessage::Action(Action::Detach));
+            sender.send(message).unwrap();
+            if detach {
+                write_message(&mut socket, &ServerMessage::Detached).unwrap();
+                break;
+            }
+        }
+    });
+    let mut tty = Pty::spawn(&path, 80, 24);
+    tty.ready();
+    assert!(tty.output.windows(7).any(|part| part == b"\x1b]11;?\x1b"));
+    for byte in b"\x1b]10;rgb:d0d0/d8d8/e0e0\x1b\\\x1b]11;rgb:1f1f/2020/2121\x07kept" {
+        tty.input(&[*byte]);
+    }
+    let mut colors = Vec::new();
+    let mut typed = Vec::new();
+    while colors.len() < 2 || typed.len() < 4 {
+        match receiver.recv_timeout(Duration::from_secs(5)).unwrap() {
+            ClientMessage::ThemeColor { background, rgb } => colors.push((background, rgb)),
+            ClientMessage::Input(bytes) => typed.extend(bytes),
+            other => panic!("unexpected client message: {other:?}"),
+        }
+    }
+    assert_eq!(colors, vec![(false, [208, 216, 224]), (true, [31, 32, 33])]);
+    assert_eq!(typed, b"kept");
+    tty.input(b"\x02d");
+    tty.finish(true);
+    backend.join().unwrap();
+}
+
+#[test]
 fn attach_keyboard_paste_focus_mouse_resize_detach_reconnect_restores_tty() {
     let fixture = Fixture::new();
     let path = fixture.socket.clone();

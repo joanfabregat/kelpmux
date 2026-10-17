@@ -639,6 +639,53 @@ fn child_shell_has_native_color_environment_without_ssh_autoattach_markers() {
 }
 
 #[test]
+fn controller_theme_queries_survive_observers_takeover_and_new_panes() {
+    fn probe(daemon: &Daemon, client: &mut UnixStream, index: u8) -> String {
+        let script = format!(
+            "stty -echo -icanon min 1 time 0; printf '\\033]11;?\\033\\\\'; reply=$(timeout --foreground 2 dd bs=1 count=25 2>/dev/null); printf %s \"$reply\" > theme-{index}; stty sane\n"
+        );
+        write_message(client, &ClientMessage::Input(script.into_bytes())).unwrap();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            if let Ok(text) = fs::read_to_string(daemon.root.join(format!("theme-{index}"))) {
+                if text.len() == 25 {
+                    return text;
+                }
+            }
+            assert!(Instant::now() < deadline, "theme query did not finish");
+            thread::sleep(Duration::from_millis(10));
+        }
+    }
+    let daemon = Daemon::start();
+    let (mut first, _, _) = daemon.attach();
+    write_message(
+        &mut first,
+        &ClientMessage::ThemeColor {
+            background: true,
+            rgb: [20, 30, 40],
+        },
+    )
+    .unwrap();
+    assert!(probe(&daemon, &mut first, 0).contains("1414/1e1e/2828"));
+    let (mut observer, _, controller) = daemon.attach();
+    assert!(!controller);
+    write_message(
+        &mut observer,
+        &ClientMessage::ThemeColor {
+            background: true,
+            rgb: [80, 90, 100],
+        },
+    )
+    .unwrap();
+    assert!(probe(&daemon, &mut first, 1).contains("1414/1e1e/2828"));
+    write_message(&mut observer, &ClientMessage::Action(Action::Takeover)).unwrap();
+    assert!(probe(&daemon, &mut observer, 2).contains("5050/5a5a/6464"));
+    write_message(&mut observer, &ClientMessage::Action(Action::NewTab)).unwrap();
+    assert_eq!(state(&mut observer).0.len(), 2);
+    assert!(probe(&daemon, &mut observer, 3).contains("5050/5a5a/6464"));
+}
+
+#[test]
 fn startup_color_and_keyboard_probe_replies_support_a_shaded_composer() {
     let daemon = Daemon::start();
     let (mut stream, _, _) = daemon.attach();

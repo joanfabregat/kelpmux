@@ -39,6 +39,39 @@ fn panes_inherit_terminal_defaults_and_preserve_explicit_composer_background() {
 }
 
 #[test]
+fn theme_queries_use_client_colors_without_overriding_app_colors_or_default_cells() {
+    let mut terminal = Terminal::new(40, 8);
+    terminal.set_theme([Some([208, 216, 224]), Some([31, 32, 33])]);
+    let replies = |effects: Vec<Effect>| -> String {
+        String::from_utf8(
+            effects
+                .into_iter()
+                .filter_map(|effect| match effect {
+                    Effect::WritePty(bytes) => Some(bytes),
+                    _ => None,
+                })
+                .flatten()
+                .collect(),
+        )
+        .unwrap()
+    };
+    let response = replies(terminal.feed(b"\x1b]10;?\x1b\\\x1b]11;?\x07"));
+    assert!(response.contains("rgb:d0d0/d8d8/e0e0"));
+    assert!(response.contains("rgb:1f1f/2020/2121"));
+    assert_eq!(terminal.snapshot().cells[0].bg, Color::Default);
+    assert_eq!(terminal.snapshot().cells[0].fg, Color::Default);
+    terminal.feed(b"\x1b[48;2;48;49;50m\x1b[2K input \x1b[0m");
+    assert_eq!(terminal.snapshot().cells[30].bg, Color::Rgb(48, 49, 50));
+    let response = replies(terminal.feed(b"\x1b]11;rgb:aa/bb/cc\x07\x1b]11;?\x07"));
+    assert!(response.contains("rgb:aaaa/bbbb/cccc"));
+    let response = replies(terminal.feed(b"\x1b]111\x07\x1b]11;?\x07"));
+    assert!(response.contains("rgb:1f1f/2020/2121"));
+    terminal.feed(b"\x1b[2;1H\x1b[7mX\x1b[0m");
+    assert_eq!(terminal.snapshot().cells[40].fg, Color::Rgb(31, 32, 33));
+    assert_eq!(terminal.snapshot().cells[40].bg, Color::Rgb(208, 216, 224));
+}
+
+#[test]
 fn enhanced_keyboard_modes_report_push_and_pop_across_fragmented_output() {
     let mut terminal = Terminal::new(40, 8);
     let mut replies = Vec::new();
