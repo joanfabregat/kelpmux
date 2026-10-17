@@ -2,14 +2,14 @@
 
 - Status: Proposed. The native stream foundation is experimental; the full contract is not frozen.
 - Date: 2026-10-14 (America/Los_Angeles).
-- Updated: 2026-10-16 (America/Los_Angeles), embedded browser and MCP automation proposal.
+- Updated: 2026-10-17 (America/Los_Angeles), client-approved SSH execution requests.
 - Scope: Native Kelpmux. tmux compatibility remains an independent optional adapter.
 
 ## Context
 
 Kelpmux owns persistent PTYs and Alacritty terminal state. A terminal frontend currently presents a workspace as a grid or responsive tabs. Future desktop, iPad and iPhone clients should own their native presentation, scrolling and interaction, while connecting to the same long-running remote terminals. A Mac might display pane 1 at 240 × 70 cells while an iPhone displays pane 2 at 50 × 25 cells. Agent state, notifications and the remote machine's Vitals metrics must remain available independently of which terminal is visible.
 
-Agents will eventually need a standard MCP interface for asking the user questions and requesting device capabilities such as clipboard access, screenshots, location, camera capture and notifications. This ADR reserves that boundary without implementing a native app, MCP server or device access now.
+Agents will eventually need a standard MCP interface for asking the user questions and requesting device capabilities such as clipboard access, screenshots, location, camera capture, notifications and client-initiated SSH commands. This ADR reserves that boundary without implementing a native app, MCP server or device access now.
 
 The native client should also be able to present an embedded browser that remote agents can inspect and interact with through MCP. This must operate on the page the user sees on their device, while acknowledging that an iOS/iPadOS WebKit view does not provide the same debugging interface as a Chromium browser on the remote host.
 
@@ -91,6 +91,24 @@ SSH authenticates a remote account, not every individual agent under that accoun
 
 Questions, clipboard contents, screenshots, coordinates and camera images are not persisted in the recovery journal, diagnostics or general logs. Retain only minimal capability-operation metadata needed for delivery/audit, with a defined short lifetime. Transfer approved attachments with explicit type/size limits, bounded memory, cancellation and expiry; do not introduce an arbitrary local-file or URL fetch capability through attachment references. MCP implementation must pin and test a supported specification revision rather than depend on an unversioned draft.
 
+## Client-approved SSH execution through MCP (future)
+
+A remote agent may request that a selected native client execute an SSH command on a client-approved destination. This is a device capability carried through the existing MCP adapter and correlated device-request channel, not unrestricted local shell execution or permission for the remote host to use the client's SSH identities. It can expose the client's network reachability and destination privileges, so it is disabled by default and enabled separately for each remote connection. Start with client-defined destination profiles and named operations with validated parameters; arbitrary commands remain a separate advanced permission, outside the initial implementation. A proposed tool is `ssh_execute`; the exact tool name and schema remain unfrozen.
+
+The request and approval flow is:
+
+1. The agent submits the destination profile, requested operation and parameters, reason, intended device and deadline through MCP. The broker includes the available workspace, epoch and requesting-agent provenance; a claimed pane or session name is not proof of agent identity.
+2. The native client validates its local policy and resolves the operation into an immutable execution request. A trusted client-side dialog shows the requesting remote connection and available agent provenance, target host/port and account, SSH identity, exact resulting command and what output will be returned to the remote agent. Agent-supplied text is rendered as untrusted text and cannot replace the trusted approval controls.
+3. The user approves or rejects that exact request once. Approval is bound to its request ID and resolved execution details, including output-return scope. Changed parameters, identity, destination or command require a new approval; a duplicate request cannot reuse an already consumed grant. The remote host and agent cannot approve their own requests. Rejection or expiration returns an explicit result without execution.
+4. After approval, the client opens its own SSH connection using the selected locally held key, including Secure Enclave-backed signing where supported, and executes the approved operation. Destination host keys must be verified; an unknown or changed key requires a separate trusted client-side decision. Private keys are never exported or forwarded to the remote agent or destination, and remote-supplied SSH options, proxy commands and local command hooks are not accepted. A key-provider authentication prompt is additional to command approval, not a substitute for it.
+5. The client returns bounded, approved stdout/stderr and execution status through the correlated response channel. Expose timeout, cancellation and progress where supported. Returning output is itself a disclosure to the remote agent and must respect the approved scope; no automatic copying of unrelated local files or credentials is implied. Treat returned command output as untrusted data rather than permission for another action.
+
+Execution has client-enforced time and output limits and a visible cancel control. Losing the Kelpmux connection must not cause automatic execution, duplicate execution or replay after reconnect. If the client cannot determine whether an approved command started or finished, report an explicit unknown outcome; do not claim exactly-once execution across a crash or retry it automatically. Closing an SSH connection or requesting cancellation does not prove that a command or its descendants stopped on the destination. Any fresh execution requires fresh approval.
+
+Keep a short-lived audit record of request identity, destination profile, decision, timing and outcome. Raw commands, parameter values, reason text and output may contain secrets and stay out of recovery journals and general diagnostics; retention or export of sensitive details requires a separate explicit policy. No local process-launch API is assumed: platform and SSH-library selection must demonstrate client-originated SSH execution, key-provider integration and cancellation on the supported devices before advertising the capability.
+
+Acceptance tests must cover default denial, disallowed destinations and operations, invalid parameters, honest provenance, approval UI rendering, rejection/expiry, mutation after approval, duplicate requests, one-use grants, key/host verification, output disclosure and limits, cancellation, disconnect before and after execution, and unknown outcomes without replay. Test the broker and client policy with simulated execution before enabling real device SSH operations. No SSH execution capability is enabled by this ADR.
+
 ## Embedded browser and MCP automation (future)
 
 Use a client-owned embedded browser, initially Apple's public `WKWebView` APIs on Apple platforms. The remote stdio MCP adapter routes correlated browser requests over the authenticated Kelpmux connection to the selected native client. Results return over the same logical request/attachment channels. No additional public listener, separate device login or Mac debugging connection is required for these app-owned tools. This is a proposed architecture, not an implemented browser or a promise of Chrome DevTools feature parity.
@@ -120,7 +138,7 @@ Deliver the embedded browser and basic inspection tools first. Add remote debugg
 2. Experimental native foundation: pane subscriptions/snapshots/deltas, per-pane ownership and sizes, status/notification/vitals updates, SSH stdio bridge and a reference client.
 3. Contract maturation: stable styled-history anchors, request correlation, native pane lifecycle controls, capability negotiation and independently tested reconnect/queue policies.
 4. Native clients: platform presentation, native scrolling, accessibility, device-specific lifecycle behavior and validated Secure Enclave-backed SSH authentication.
-5. MCP/device broker: negotiated tools and explicit device permissions, bounded/cancellable requests and attachment handling. No device access is enabled by this ADR.
+5. MCP/device broker: negotiated tools and explicit device permissions, bounded/cancellable requests and attachment handling. Client-originated SSH execution starts with named operations and per-request local approval, subject to the policy and acceptance tests above. No device access is enabled by this ADR.
 6. Browser client and MCP tools: embedded WebKit views, YubiKey-backed WebAuthn authentication and basic page inspection first; optional remote debugging and broader network capture only through explicitly advertised extensions.
 
 Required contract tests include two clients owning different panes at different sizes; a third read-only observer; rejected unauthorized input/resize; explicit takeover/release/disconnect; cross-epoch rejection; snapshot/patch replay under slow consumers; Unicode/colors/alternate buffers; status uncertainty and lost hooks; notification replay; missing/stale vitals; bridge EOF and binary framing; version mismatch without raw-terminal corruption; and simulated device approval/denial/cancellation/expiry before any real device API is introduced.
@@ -139,6 +157,7 @@ The protocol remains experimental until a real native client validates it. The M
 - [MCP tools, pinned 2025-11-25 reference](https://modelcontextprotocol.io/specification/2025-11-25/server/tools).
 - [MCP elicitation, pinned 2025-11-25 reference](https://modelcontextprotocol.io/specification/2025-11-25/client/elicitation).
 - [MCP transports, pinned 2025-11-25 reference](https://modelcontextprotocol.io/specification/2025-11-25/basic/transports).
+- [OpenSSH authentication and agent-forwarding considerations](https://man.openbsd.org/ssh).
 - [Apple WKWebView: navigation, JavaScript evaluation and snapshots](https://developer.apple.com/documentation/webkit/wkwebview).
 - [Apple inspection of iOS/iPadOS content](https://developer.apple.com/documentation/safari-developer-tools/inspecting-ios).
 - [Apple custom URL scheme handlers](https://developer.apple.com/documentation/webkit/wkurlschemehandler).
