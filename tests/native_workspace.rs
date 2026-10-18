@@ -21,6 +21,57 @@ fn pane(id: u64) -> PaneInfo {
         ..Default::default()
     }
 }
+
+#[test]
+fn focusing_reused_panes_acknowledges_only_their_history() {
+    for selection in [
+        Action::Focus(2),
+        Action::Select(2),
+        Action::Read(2),
+        Action::Fullscreen(2),
+    ] {
+        let mut ws = workspace(160, 50, (2, 1));
+        ws.panes[1].title = "htop".into();
+        ws.ui.notifications = (1..=2)
+            .map(|pane| Notification {
+                id: pane,
+                pane,
+                title: "Previous agent".into(),
+                status: Status::Exited,
+                at: 1,
+                read: false,
+                workspace: "test".into(),
+            })
+            .collect();
+        ws.apply(&selection).unwrap();
+        assert!(!ws.ui.notifications[0].read);
+        assert!(ws.ui.notifications[1].read);
+        assert_eq!(ws.ui.notifications.len(), 2);
+    }
+}
+
+#[test]
+fn restoring_parked_panes_preserves_grid_or_tab_presentation() {
+    for grid in [true, false] {
+        let mut ws = workspace(160, 50, (2, 1));
+        ws.apply(&Action::Park(2)).unwrap();
+        if !grid {
+            ws.apply(&Action::Read(1)).unwrap();
+        }
+        ws.apply(&Action::RestoreRequest(2)).unwrap();
+        ws.apply(&Action::Restore(2)).unwrap();
+        assert_eq!(
+            ws.reading,
+            if grid {
+                ReadingMode::Grid
+            } else {
+                ReadingMode::Tabs(2)
+            }
+        );
+        assert_eq!(ws.active, 2);
+        assert!(!ws.panes[1].parked);
+    }
+}
 fn workspace(cols: u16, rows: u16, shape: (u8, u8)) -> Workspace {
     let mut workspace = Workspace::new(cols, rows).unwrap();
     workspace.panes = (1..=Workspace::grid_count(shape.0, shape.1).unwrap() as u64)
@@ -296,7 +347,7 @@ fn help_close_button_and_footer_toggle_close_without_application_input() {
             x: bounds.x + bounds.cols - 2,
             y: bounds.y,
         },
-        Point { x: 32, y: 29 },
+        Point { x: 29, y: 29 },
     ] {
         let messages = router.route(mouse(point, MouseKind::Press), &f);
         assert_eq!(action(&messages), vec![Action::Help]);
@@ -454,7 +505,7 @@ fn grid_headers_and_tab_footer_have_distinct_hit_targets() {
         action(&router.route(
             mouse(
                 Point {
-                    x: 32,
+                    x: 29,
                     y: f.rows - 1
                 },
                 MouseKind::Press
