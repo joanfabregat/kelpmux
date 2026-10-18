@@ -758,7 +758,14 @@ fn close_tab_requires_matching_confirmation_and_preserves_other_processes() {
             .contains("confirmation")
     );
     assert_eq!(state(&mut stream).0.len(), 2);
+    command(&mut stream, Action::Park(panes[0].id)).unwrap();
     command(&mut stream, Action::ClosePaneRequest(panes[0].id)).unwrap();
+    assert!(
+        state(&mut stream)
+            .0
+            .iter()
+            .any(|pane| pane.id == panes[0].id && pane.parked)
+    );
     assert!(command(&mut stream, Action::ClosePaneConfirm(panes[1].id)).is_err());
     let (remaining, _) = command(&mut stream, Action::ClosePaneConfirm(panes[0].id)).unwrap();
     assert_eq!(remaining.len(), 1);

@@ -445,7 +445,7 @@ fn grid_headers_and_tab_footer_have_distinct_hit_targets() {
             ),
             &f
         )),
-        vec![Action::Read(2)]
+        vec![Action::Focus(2)]
     );
     ws.apply(&Action::Read(1)).unwrap();
     let f = frame(&ws);
