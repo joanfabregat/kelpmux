@@ -849,6 +849,13 @@ impl Router {
             return output;
         }
         if event.kind == MouseKind::Press
+            && super::workspace::parked_button(frame.rows).contains(event.position)
+        {
+            self.pending_modal = true;
+            emit(&mut output, Action::Parked, true);
+            return output;
+        }
+        if event.kind == MouseKind::Press
             && event.position.y == frame.rows.saturating_sub(1)
             && event.position.x >= 14
             && event.position.x < 17
@@ -997,10 +1004,21 @@ impl Router {
             if event.kind != MouseKind::Press {
                 return output;
             }
-            let right = view.rect.x + view.rect.cols;
-            let first = right.saturating_sub(3);
-            let action = if event.position.x >= first {
+            let [zoom, park, close] = super::workspace::grid_controls(Rect {
+                rows: 1,
+                ..view.rect
+            });
+            let action = if close.contains(event.position) {
+                self.pending_modal = true;
+                Action::ClosePaneRequest(id)
+            } else if park.contains(event.position) {
+                self.pending_modal = true;
+                Action::ParkRequest(id)
+            } else if zoom.contains(event.position) {
                 Action::Fullscreen(id)
+            } else if super::workspace::tab_number(view.rect).contains(event.position) {
+                self.pending_modal = true;
+                Action::TabColor(id)
             } else {
                 self.header_drag = Some(id);
                 Action::Focus(id)

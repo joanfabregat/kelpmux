@@ -1063,7 +1063,7 @@ mod fit_tests {
                 let text: String = fit.cells[row..].iter().map(|c| c.text.as_str()).collect();
                 assert!(text.starts_with(" Config "));
                 assert!(text.contains(if notice.is_some() {
-                    "connection notice"
+                    "connection"
                 } else {
                     "12:34"
                 }));

@@ -155,8 +155,8 @@ impl Workspace {
     }
     pub fn grid_layout(&self) -> Vec<PaneView> {
         let (_, grid_rows) = self.automatic_shape();
-        // Reserve the footer and one separator between neighboring rows.
-        let usable_rows = self.rows.saturating_sub(u16::from(grid_rows));
+        // Each row's pane header separates it from the preceding terminal.
+        let usable_rows = self.rows.saturating_sub(1);
         let mut views = Vec::new();
         let y_boundaries = weighted_boundaries(usable_rows, grid_rows, &[]);
         let count = self
@@ -198,7 +198,7 @@ impl Workspace {
             let top = y_boundaries[usize::from(row)];
             let rect = Rect {
                 x: left + col,
-                y: top + row,
+                y: top,
                 cols: x_boundaries[usize::from(col + 1)] - left,
                 rows: y_boundaries[usize::from(row + 1)] - top,
             };
@@ -1142,6 +1142,26 @@ pub fn tab_park(rect: Rect) -> Rect {
         ..close
     }
 }
+pub fn grid_controls(rect: Rect) -> [Rect; 3] {
+    let close = tab_close(rect);
+    let park = tab_park(rect);
+    [
+        Rect {
+            x: park.x.saturating_sub(3),
+            ..park
+        },
+        park,
+        close,
+    ]
+}
+pub fn parked_button(rows: u16) -> Rect {
+    Rect {
+        x: 17,
+        y: rows - 1,
+        cols: 12,
+        rows: 1,
+    }
+}
 pub fn color_cards(bounds: Rect) -> Vec<Rect> {
     let height = bounds.rows.saturating_sub(2) / 3;
     (0..9u16)
@@ -1159,19 +1179,13 @@ pub fn color_cards(bounds: Rect) -> Vec<Rect> {
 }
 pub fn sidebar_actions(cols: u16, rows: u16) -> [Rect; 2] {
     let height = if rows >= 14 { 3 } else { 1 };
-    let parked = Rect {
+    let new = Rect {
         x: 0,
         y: rows - 1 - height,
         cols: (cols / 5).clamp(18, 28),
         rows: height,
     };
-    [
-        Rect {
-            y: parked.y - height - 1,
-            ..parked
-        },
-        parked,
-    ]
+    [new, parked_button(rows)]
 }
 /// The width switch is useful only when the configured cap is narrower than
 /// the available terminal, regardless of the current wrap/full-width mode.
@@ -1209,21 +1223,13 @@ pub fn tab_targets(
                     rows: 3,
                 },
             ),
-            (
-                TabTarget::Parked,
-                Rect {
-                    x: cols - 12,
-                    y,
-                    cols: 12,
-                    rows: 3,
-                },
-            ),
+            (TabTarget::Parked, parked_button(rows)),
         ];
     }
     match position {
         TabPosition::Top | TabPosition::Bottom => {
-            let overflow = count * 18 + 18 > usize::from(cols);
-            let reserve = if overflow { 24 } else { 18 };
+            let overflow = count * 18 + 6 > usize::from(cols);
+            let reserve = if overflow { 12 } else { 6 };
             let capacity = usize::from(cols.saturating_sub(reserve) / 18)
                 .max(1)
                 .min(count);
@@ -1262,15 +1268,7 @@ pub fn tab_targets(
                     rows: 3,
                 },
             ));
-            tabs.push((
-                TabTarget::Parked,
-                Rect {
-                    x: cols - 12,
-                    y,
-                    cols: 12,
-                    rows: 3,
-                },
-            ));
+            tabs.push((TabTarget::Parked, parked_button(rows)));
             if overflow {
                 tabs.push((
                     TabTarget::Previous,
@@ -1284,7 +1282,7 @@ pub fn tab_targets(
                 tabs.push((
                     TabTarget::Next,
                     Rect {
-                        x: cols - 16,
+                        x: cols - 3,
                         y,
                         cols: 3,
                         rows: 3,
