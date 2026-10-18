@@ -445,8 +445,9 @@ fn grid_headers_and_tab_footer_have_distinct_hit_targets() {
             ),
             &f
         )),
-        vec![Action::Focus(2)]
+        vec![Action::ParkRequest(2)]
     );
+    router = Router::default();
     ws.apply(&Action::Read(1)).unwrap();
     let f = frame(&ws);
     assert_eq!(
