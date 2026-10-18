@@ -1,9 +1,8 @@
 //! Native grid/tab composition and ANSI damage output. Grid header controls
-//! occupy three columns; tab navigation uses shared geometry from workspace.
+//! share tab styling; navigation and controls use workspace geometry.
 use super::{engine::safe_text, protocol::*, ui::PALETTE, workspace::Workspace};
 use std::{collections::BTreeMap, fmt::Write};
 use unicode_width::UnicodeWidthChar;
-const SPINNER: [char; 8] = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧'];
 
 pub fn compose(
     workspace: &Workspace,
@@ -49,6 +48,10 @@ pub fn compose(
                         if cell.width == 2 && x + 1 >= view.body.cols {
                             cell.text = " ".into();
                             cell.width = 1;
+                        }
+                        if workspace.reading == ReadingMode::Grid && !selected && !view.overlay {
+                            cell.fg = inactive_color(cell.fg, true);
+                            cell.bg = inactive_color(cell.bg, false);
                         }
                         put(
                             &mut frame,
@@ -104,7 +107,7 @@ pub fn compose(
                 true,
             );
         } else if workspace.reading == ReadingMode::Grid {
-            header(&mut frame, &view, selected, workspace.reading, spinner);
+            header(&mut frame, workspace, &view, selected, spinner);
         }
     }
     if workspace.active == 0 && !workspace.ui.scratch_visible {
@@ -222,6 +225,20 @@ pub fn compose(
                     94
                 },
             ),
+            true,
+        );
+        let parked = super::workspace::parked_button(frame.rows);
+        write_text(
+            &mut frame,
+            parked.x,
+            parked.y,
+            parked.cols,
+            &format!(
+                " ⊟ Parked {} ",
+                workspace.panes.iter().filter(|pane| pane.parked).count()
+            ),
+            Color::Indexed(231),
+            Color::Indexed(super::ui::PARKED_BG),
             true,
         );
     }
@@ -423,27 +440,16 @@ fn draw_help(frame: &mut Frame, workspace: &Workspace) {
 }
 fn draw_grid_separators(frame: &mut Frame, workspace: &Workspace) {
     for view in workspace.grid_layout().iter().filter(|v| !v.pane.parked) {
-        if view.rect.y > 0 {
-            write_text(
-                frame,
-                0,
-                view.rect.y - 1,
-                frame.cols,
-                &"─".repeat(usize::from(frame.cols)),
-                Color::Indexed(245),
-                Color::Default,
-                false,
-            );
-        }
-        if view.rect.x > 0 {
+        let right = view.rect.x + view.rect.cols;
+        if right < frame.cols {
             for y in view.rect.y..view.rect.y + view.rect.rows {
                 write_text(
                     frame,
-                    view.rect.x - 1,
+                    right,
                     y,
                     1,
                     "▎",
-                    Color::Indexed(245),
+                    Color::Indexed(PALETTE[usize::from(view.pane.palette) % PALETTE.len()].1),
                     Color::Default,
                     false,
                 );
@@ -453,92 +459,36 @@ fn draw_grid_separators(frame: &mut Frame, workspace: &Workspace) {
 }
 fn header(
     frame: &mut Frame,
+    workspace: &Workspace,
     view: &PaneView,
     selected: bool,
-    reading: ReadingMode,
     spinner: usize,
 ) {
     if view.rect.rows == 0 {
         return;
     }
-    let (bright, muted) = PALETTE[usize::from(view.pane.palette) % PALETTE.len()];
-    let bg = Color::Indexed(if selected { bright } else { muted });
-    let fg = Color::Indexed(if selected { 231 } else { 245 });
-    fill(
+    draw_tab(
         frame,
+        workspace,
+        &view.pane,
         Rect {
             rows: 1,
             ..view.rect
         },
-        bg,
+        selected,
+        "",
+        spinner,
     );
-    let grid = reading == ReadingMode::Grid && !view.overlay;
-    let badge = if grid {
-        format!(" {} ", view.pane.number)
-    } else {
-        format!(
-            " {} {} ",
-            if selected { "▶" } else { " " },
-            view.pane.number
-        )
-    };
-    let badge_width = badge.chars().count() as u16;
-    write_text(
-        frame,
-        view.rect.x,
-        view.rect.y,
-        view.rect.cols.min(badge_width),
-        &badge,
-        Color::Indexed(if selected { 226 } else { 117 }),
-        Color::Indexed(if selected { 24 } else { 17 }),
-        true,
-    );
-    let buttons: &[(&str, u8, u8)] = if grid {
-        &[(" ⛶ ", 16, 39)]
-    } else {
-        &[(" ↗ ", 231, 24), (" ⛶ ", 16, 39)]
-    };
-    let button_width = buttons.len() as u16 * 3;
-    let title_width = view.rect.cols.saturating_sub(badge_width + button_width);
-    let marker = if view.pane.status == crate::model::Status::Working {
-        SPINNER[spinner % 8].to_string()
-    } else {
-        view.pane.status.marker().to_owned()
-    };
-    let activity = format!(" {marker} ");
-    write_text(
-        frame,
-        view.rect.x + badge_width,
-        view.rect.y,
-        title_width.min(3),
-        &activity,
-        Color::Indexed(16),
-        Color::Indexed(bright),
-        true,
-    );
-    write_text(
-        frame,
-        view.rect.x + badge_width + 3,
-        view.rect.y,
-        title_width.saturating_sub(3),
-        &format!(" {}", safe_text(&view.pane.title)),
-        fg,
-        bg,
-        false,
-    );
-    for (i, (label, fg, bg)) in buttons.iter().enumerate() {
-        let offset = view.rect.cols.saturating_sub(button_width) + i as u16 * 3;
-        write_text(
-            frame,
-            view.rect.x + offset,
-            view.rect.y,
-            view.rect.cols.saturating_sub(offset).min(3),
-            label,
-            Color::Indexed(*fg),
-            Color::Indexed(*bg),
-            true,
-        );
+}
+
+fn inactive_color(color: Color, foreground: bool) -> Color {
+    if color == Color::Default && !foreground {
+        return Color::Default;
     }
+    let (r, g, b) = color_rgb(color, foreground);
+    let luminance = (u16::from(r) * 3 + u16::from(g) * 6 + u16::from(b)) / 10;
+    let gray = (luminance * if foreground { 7 } else { 5 } / 10) as u8;
+    Color::Rgb(gray, gray, gray)
 }
 fn draw_dialog(
     frame: &mut Frame,
@@ -1340,7 +1290,7 @@ fn draw_tabs(frame: &mut Frame, workspace: &Workspace, spinner: usize) {
             rows: 3,
         },
     };
-    fill(frame, area, Color::Indexed(234));
+    fill(frame, area, Color::Indexed(super::ui::TAB_BG));
     let panes: Vec<_> = workspace
         .panes
         .iter()
@@ -1364,21 +1314,7 @@ fn draw_tabs(frame: &mut Frame, workspace: &Workspace, spinner: usize) {
     ) {
         match target {
             TabTarget::Parked => {
-                let label = format!(
-                    " ⊟ Parked {} ",
-                    workspace.panes.iter().filter(|p| p.parked).count()
-                );
-                fill(frame, rect, Color::Indexed(58));
-                write_text(
-                    frame,
-                    rect.x,
-                    rect.y + rect.rows / 2,
-                    rect.cols,
-                    &label,
-                    Color::Indexed(231),
-                    Color::Indexed(58),
-                    true,
-                );
+                // The shared target is rendered with the footer in every view.
             }
             TabTarget::New => {
                 let label = if position == TabPosition::Left {
@@ -1451,7 +1387,7 @@ fn draw_tabs(frame: &mut Frame, workspace: &Workspace, spinner: usize) {
         workspace.ui.reading_size,
     );
     let active = panes.iter().find(|pane| pane.id == active_id);
-    let (bright, _) = active
+    let (_, accent) = active
         .map(|pane| PALETTE[usize::from(pane.palette) % PALETTE.len()])
         .unwrap_or(PALETTE[0]);
     if position != TabPosition::Left {
@@ -1471,7 +1407,7 @@ fn draw_tabs(frame: &mut Frame, workspace: &Workspace, spinner: usize) {
                 } else {
                     "▁"
                 },
-                Color::Indexed(bright),
+                Color::Indexed(accent),
                 Color::Default,
                 false,
             );
@@ -1486,7 +1422,7 @@ fn draw_tabs(frame: &mut Frame, workspace: &Workspace, spinner: usize) {
                 y,
                 1,
                 "▎",
-                Color::Indexed(bright),
+                Color::Indexed(accent),
                 Color::Default,
                 false,
             );
@@ -1509,7 +1445,7 @@ fn draw_tabs(frame: &mut Frame, workspace: &Workspace, spinner: usize) {
                 } else {
                     "┃"
                 },
-                Color::Indexed(bright),
+                Color::Indexed(accent),
                 Color::Default,
                 y == body.y,
             );
@@ -1544,8 +1480,9 @@ fn draw_tab(
     count: &str,
     spinner: usize,
 ) {
-    let (bright, muted) = PALETTE[usize::from(pane.palette) % PALETTE.len()];
-    let bg = Color::Indexed(if selected { muted } else { 234 });
+    let grid = workspace.reading == ReadingMode::Grid;
+    let (_, accent) = PALETTE[usize::from(pane.palette) % PALETTE.len()];
+    let bg = Color::Indexed(if selected { accent } else { super::ui::TAB_BG });
     fill(frame, rect, bg);
     let number = super::workspace::tab_number(rect);
     write_text(
@@ -1555,7 +1492,7 @@ fn draw_tab(
         number.cols,
         &format!(" {} ", pane.number),
         Color::Indexed(if selected { 226 } else { 231 }),
-        Color::Indexed(muted),
+        bg,
         true,
     );
     let unread = workspace
@@ -1565,6 +1502,7 @@ fn draw_tab(
         .any(|item| item.pane == pane.id && !item.read);
     let close = super::workspace::tab_close(rect);
     let park = super::workspace::tab_park(rect);
+    let zoom = super::workspace::grid_controls(rect)[0];
     let count_width = count.len() as u16;
     let (title_x, title_y, title_width) = if rect.rows >= 2 {
         (
@@ -1577,8 +1515,30 @@ fn draw_tab(
         (
             x,
             number.y,
-            park.x.saturating_sub(count_width).saturating_sub(x),
+            (if grid { zoom.x } else { park.x })
+                .saturating_sub(count_width)
+                .saturating_sub(x),
         )
+    };
+    let track = if rect.rows >= 2 {
+        Rect {
+            x: number.x + number.cols + 1,
+            y: rect.y,
+            cols: park.x.saturating_sub(number.x + number.cols + 1).min(5),
+            rows: 1,
+        }
+    } else {
+        Rect {
+            x: title_x,
+            y: title_y,
+            cols: if title_width >= 12 { 5 } else { 0 },
+            rows: 1,
+        }
+    };
+    let (title_x, title_width) = if rect.rows == 1 {
+        (title_x + track.cols, title_width.saturating_sub(track.cols))
+    } else {
+        (title_x, title_width)
     };
     let bell_width = if unread { 3.min(title_width) } else { 0 };
     if unread {
@@ -1657,22 +1617,44 @@ fn draw_tab(
         park.cols,
         " ⊟ ",
         Color::Indexed(231),
-        Color::Indexed(58),
+        Color::Indexed(super::ui::PARKED_BG),
         true,
     );
+    if grid {
+        write_text(
+            frame,
+            zoom.x,
+            zoom.y,
+            zoom.cols,
+            " ⛶ ",
+            Color::Indexed(231),
+            Color::Indexed(24),
+            true,
+        );
+    }
     for y in rect.y..rect.y + rect.rows {
-        write_text(frame, rect.x, y, 1, "▎", Color::Indexed(bright), bg, false);
+        write_text(frame, rect.x, y, 1, "▎", Color::Indexed(accent), bg, false);
     }
     if pane.status == crate::model::Status::Working {
         activity_background(
             frame,
             rect,
             bg,
-            Color::Indexed(bright),
+            if selected {
+                Color::Indexed(231)
+            } else {
+                Color::Indexed(accent)
+            },
             selected,
             spinner,
-            &[number, close, park],
+            &[
+                number,
+                close,
+                park,
+                if grid { zoom } else { Rect::default() },
+            ],
         );
+        activity_ball(frame, track, selected, spinner);
     }
 }
 
@@ -1689,7 +1671,7 @@ fn activity_background(
 ) {
     let (br, bg, bb) = color_rgb(base, false);
     let (tr, tg, tb) = color_rgb(tint, false);
-    let time = tick as f64 * 0.20;
+    let time = tick as f64 * 0.65;
     let amplitude = if selected { 0.34 } else { 0.085 };
     for y in rect.y..rect.y + rect.rows {
         for x in rect.x + 1..rect.x + rect.cols {
@@ -1726,6 +1708,25 @@ fn activity_background(
     }
 }
 
+fn activity_ball(frame: &mut Frame, track: Rect, selected: bool, tick: usize) {
+    if track.cols == 0 {
+        return;
+    }
+    let span = usize::from(track.cols.saturating_sub(1));
+    let phase = tick % (span * 2).max(1);
+    let offset = if phase <= span {
+        phase
+    } else {
+        span * 2 - phase
+    };
+    let index = usize::from(track.y) * usize::from(frame.cols) + usize::from(track.x) + offset;
+    if let Some(cell) = frame.cells.get_mut(index) {
+        cell.text = "●".into();
+        cell.fg = Color::Indexed(if selected { 226 } else { 231 });
+        cell.width = 1;
+    }
+}
+
 fn marquee_title(title: &str, width: u16, ticks: u16) -> String {
     let title = safe_text(title);
     let chars: Vec<_> = title.chars().take(512).collect();
@@ -1756,12 +1757,25 @@ fn draw_vitals(frame: &mut Frame, segments: &[(String, u8)]) {
     let end = frame.cols;
     let available = end.saturating_sub(start);
     let selected: Vec<_> = if available < 50 {
-        segments
+        let mut remaining = available.saturating_sub(
+            segments
+                .last()
+                .map_or(0, |(text, _)| text.chars().count() as u16),
+        );
+        let mut chosen = Vec::new();
+        for segment in segments
             .iter()
-            .enumerate()
-            .filter(|(index, _)| *index < 2 || *index == segments.len() - 1)
-            .map(|(_, segment)| segment)
-            .collect()
+            .take(2)
+            .take(segments.len().saturating_sub(1))
+        {
+            let cost = segment.0.chars().count() as u16 + 1;
+            if cost <= remaining {
+                chosen.push(segment);
+                remaining -= cost;
+            }
+        }
+        chosen.extend(segments.last());
+        chosen
     } else {
         segments.iter().collect()
     };
@@ -1843,8 +1857,8 @@ fn draw_parked(
         let pane = panes[index];
         let y = rect.y + 1;
         let selected = index == dialog.selection;
-        let (bright, muted) = PALETTE[usize::from(pane.palette) % PALETTE.len()];
-        let bg = Color::Indexed(if selected { muted } else { 234 });
+        let (_, accent) = PALETTE[usize::from(pane.palette) % PALETTE.len()];
+        let bg = Color::Indexed(if selected { accent } else { super::ui::TAB_BG });
         fill(frame, rect, bg);
         for row in rect.y..rect.y + rect.rows {
             write_text(
@@ -1853,7 +1867,7 @@ fn draw_parked(
                 row,
                 1,
                 "▎",
-                Color::Indexed(bright),
+                Color::Indexed(accent),
                 bg,
                 false,
             );
@@ -1864,7 +1878,7 @@ fn draw_parked(
             y,
             4,
             &format!(" {} ", pane.id),
-            Color::Indexed(if selected { 226 } else { 117 }),
+            Color::Indexed(if selected { 226 } else { 231 }),
             bg,
             true,
         );
@@ -1890,7 +1904,7 @@ fn draw_parked(
             y,
             16,
             pane.status.text(),
-            Color::Indexed(bright),
+            Color::Indexed(231),
             bg,
             false,
         );
@@ -1919,10 +1933,25 @@ fn draw_parked(
                 frame,
                 rect,
                 bg,
-                Color::Indexed(bright),
+                if selected {
+                    Color::Indexed(231)
+                } else {
+                    Color::Indexed(accent)
+                },
                 selected,
                 spinner,
                 &[number, restore, close],
+            );
+            activity_ball(
+                frame,
+                Rect {
+                    x: rect.x + 6,
+                    y: rect.y,
+                    cols: status_x.saturating_sub(rect.x + 6).min(5),
+                    rows: 1,
+                },
+                selected,
+                spinner,
             );
         }
     }
@@ -2103,17 +2132,17 @@ mod tests {
     #[test]
     fn header_palette_buttons_title_sanitization_and_wide_clipping() {
         for cols in [40, 80, 120, 240, 400] {
-            for (reading, overlay, buttons) in [
-                (ReadingMode::Grid, false, 3),
-                (ReadingMode::Capped(1), true, 6),
-                (ReadingMode::Fullscreen(1), true, 6),
+            for (reading, overlay) in [
+                (ReadingMode::Grid, false),
+                (ReadingMode::Capped(1), true),
+                (ReadingMode::Fullscreen(1), true),
             ] {
                 let workspace = Workspace::new(cols, 10).unwrap();
                 let mut frame = compose(&workspace, &BTreeMap::new(), true, None, 0);
-                header(&mut frame, &view(cols, overlay), true, reading, 0);
+                header(&mut frame, &workspace, &view(cols, overlay), true, 0);
                 assert_eq!(frame.cells[0].bg, Color::Indexed(24));
-                assert_eq!(frame.cells[5].bg, Color::Indexed(39));
-                let button_start = usize::from(cols - buttons);
+                assert_eq!(frame.cells[5].bg, Color::Indexed(24));
+                let button_start = usize::from(cols - 10);
                 assert_eq!(frame.cells[button_start].text, " ");
                 assert_eq!(frame.cells[usize::from(cols) - 1].text, " ");
                 let text = frame.cells[..usize::from(cols)]
@@ -2129,8 +2158,8 @@ mod tests {
                 let mut display = Terminal::new(cols, 10);
                 display.feed(&terminal_diff(None, &frame));
                 assert_eq!(display.snapshot().cells, frame.cells);
-                header(&mut frame, &view(cols, overlay), false, reading, 0);
-                assert_eq!(frame.cells[5].bg, Color::Indexed(39));
+                header(&mut frame, &workspace, &view(cols, overlay), false, 0);
+                assert_eq!(frame.cells[5].bg, Color::Indexed(super::super::ui::TAB_BG));
             }
         }
     }

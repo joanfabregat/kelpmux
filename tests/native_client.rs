@@ -960,7 +960,17 @@ fn header_button(server: &LiveServer, id: PaneId, reading: ReadingMode, slot: u1
         .rev()
         .find(|view| view.pane.id == id && view.rect.cols > 0)
         .unwrap();
-    let buttons = if reading == ReadingMode::Grid { 1 } else { 2 };
+    if reading == ReadingMode::Grid {
+        let control = kelpmux::native::workspace::grid_controls(Rect {
+            rows: 1,
+            ..view.rect
+        })[usize::from(slot)];
+        return Point {
+            x: control.x + 1,
+            y: control.y,
+        };
+    }
+    let buttons = 2;
     Point {
         x: view.rect.x + view.rect.cols - buttons * 3 + slot * 3 + 1,
         y: view.rect.y,
