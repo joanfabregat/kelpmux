@@ -2,7 +2,7 @@
 use crate::Result;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
-pub const FOOTER_COLS: u16 = 29;
+pub const FOOTER_COLS: u16 = 34;
 pub const FOOTER_BG: u8 = 239;
 pub const TAB_BG: u8 = 236;
 pub const PARKED_BG: u8 = 60;
@@ -167,6 +167,9 @@ impl UiConfig {
 }
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct UiState {
+    /// Presentation colors reported by this client, never persisted as settings.
+    #[serde(default)]
+    pub terminal_theme: [Option<[u8; 3]>; 2],
     #[serde(default)]
     pub title_ticks: BTreeMap<u64, u16>,
     pub recovery_loading: bool,

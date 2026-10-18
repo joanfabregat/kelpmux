@@ -795,7 +795,7 @@ impl Router {
             let close = event.position.y == bounds.y
                 && event.position.x >= bounds.x + bounds.cols.saturating_sub(3);
             let toggle = event.position.y == frame.rows.saturating_sub(1)
-                && (14..17).contains(&event.position.x);
+                && super::workspace::help_button(frame.rows).contains(event.position);
             if event.kind == MouseKind::Press
                 && (!bounds.contains(event.position) || close || toggle)
             {
@@ -849,6 +849,20 @@ impl Router {
             return output;
         }
         if event.kind == MouseKind::Press
+            && super::workspace::new_button(frame.rows).contains(event.position)
+        {
+            if frame
+                .panes
+                .iter()
+                .filter(|view| Some(view.pane.id) != frame.ui.scratch)
+                .count()
+                < 9
+            {
+                emit(&mut output, Action::NewTab, true);
+            }
+            return output;
+        }
+        if event.kind == MouseKind::Press
             && super::workspace::parked_button(frame.rows).contains(event.position)
         {
             self.pending_modal = true;
@@ -856,9 +870,7 @@ impl Router {
             return output;
         }
         if event.kind == MouseKind::Press
-            && event.position.y == frame.rows.saturating_sub(1)
-            && event.position.x >= 14
-            && event.position.x < 17
+            && super::workspace::help_button(frame.rows).contains(event.position)
         {
             if frame.ui.notifications.iter().any(|item| !item.read) {
                 self.pending_modal = true;
