@@ -804,11 +804,11 @@ fn live_server_attach_layout_read_fullscreen_detach_reconnect_preserves_shell() 
     wait_header(
         &mut tty,
         usize::from(read.y) * 80 + usize::from(read.x),
-        "↗",
+        "⛶",
     );
     tty.input(format!("\x1b[<0;{};{}M", read.x + 1, read.y + 1).as_bytes());
     wait_state(&server, &mut tty, |_, reading, _| {
-        reading == ReadingMode::Tabs(original.id)
+        reading == ReadingMode::Fullscreen(original.id)
     });
     let deadline = Instant::now() + Duration::from_secs(5);
     loop {
@@ -824,6 +824,11 @@ fn live_server_attach_layout_read_fullscreen_detach_reconnect_preserves_shell() 
         );
         thread::sleep(Duration::from_millis(10));
     }
+    // Wait for the frontend's selected pane before sending pane-addressed keys.
+    tty.input(b"\x02f");
+    wait_state(&server, &mut tty, |_, reading, _| {
+        reading == ReadingMode::Tabs(original.id)
+    });
     // Full width remains available from the keyboard without a footer button.
     tty.input(b"\x02f");
     wait_state(&server, &mut tty, |_, reading, _| {
@@ -955,7 +960,7 @@ fn header_button(server: &LiveServer, id: PaneId, reading: ReadingMode, slot: u1
         .rev()
         .find(|view| view.pane.id == id && view.rect.cols > 0)
         .unwrap();
-    let buttons = 2;
+    let buttons = if reading == ReadingMode::Grid { 1 } else { 2 };
     Point {
         x: view.rect.x + view.rect.cols - buttons * 3 + slot * 3 + 1,
         y: view.rect.y,

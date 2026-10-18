@@ -389,9 +389,11 @@ fn parked_table_animates_status_and_modals_dim_without_altering_terminal_content
     let bounds = dialog_bounds_for(ws.cols, ws.rows, DialogKind::Parked);
     let a = compose(&ws, &screens, true, None, 0);
     let b = compose(&ws, &screens, true, None, 1);
-    let marker = usize::from((bounds.y + 3) * ws.cols + bounds.x + 7);
-    assert_eq!(a.cells[marker].text, "⠋");
-    assert_eq!(b.cells[marker].text, "⠙");
+    assert_ne!(a.cells, b.cells);
+    for (before, after) in a.cells.iter().zip(&b.cells) {
+        assert_eq!(before.text, after.text);
+        assert_eq!(before.fg, after.fg);
+    }
     let accent = usize::from((bounds.y + 2) * ws.cols + bounds.x);
     assert_eq!(a.cells[accent].text, "▎");
     assert_eq!(
@@ -1259,7 +1261,14 @@ fn tab_folder_subtitles_and_horizontal_rules_stay_outside_terminal_hit_targets()
                 f.rows - 5
             };
             for x in 0..f.cols {
-                assert_eq!(f.cells[usize::from(y * f.cols + x)].text, "━");
+                assert_eq!(
+                    f.cells[usize::from(y * f.cols + x)].text,
+                    if position == TabPosition::Top {
+                        "▔"
+                    } else {
+                        "▁"
+                    }
+                );
                 assert!(
                     Router::default()
                         .route(click(Point { x, y }), &f)
@@ -1356,7 +1365,7 @@ fn horizontal_tabs_have_three_rows_a_new_tab_gap_and_right_anchored_parked() {
 fn parked_three_row_entries_scroll_and_every_row_restores_the_correct_tab() {
     use kelpmux::native::{
         ui::DialogKind,
-        workspace::{dialog_bounds_for, parked_cards},
+        workspace::{dialog_bounds_for, parked_cards, parked_controls},
     };
     for size in [(40, 10), (120, 40)] {
         let mut ws = workspace(size, (3, 3));
@@ -1387,6 +1396,27 @@ fn parked_three_row_entries_scroll_and_every_row_restores_the_correct_tab() {
                             &f
                         )),
                         vec![Action::RestoreRequest(index as u64 + 1)]
+                    );
+                    let [restore, close] = parked_controls(rect);
+                    assert_eq!(
+                        actions(Router::default().route(
+                            click(Point {
+                                x: restore.x,
+                                y: rect.y + row
+                            }),
+                            &f
+                        )),
+                        vec![Action::RestoreRequest(index as u64 + 1)]
+                    );
+                    assert_eq!(
+                        actions(Router::default().route(
+                            click(Point {
+                                x: close.x,
+                                y: rect.y + row
+                            }),
+                            &f
+                        )),
+                        vec![Action::ClosePaneRequest(index as u64 + 1)]
                     );
                 }
             }
