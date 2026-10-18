@@ -9,6 +9,20 @@ use crate::{
 use serde::{Deserialize, Serialize};
 use std::{collections::BTreeMap, path::Path};
 
+/// Idle shells use a neutral label; aliases and running application titles win.
+pub fn shell_tab_name(terminal: Option<&str>, alias: Option<&str>, idle: bool) -> String {
+    alias
+        .or_else(|| {
+            terminal.filter(|title| {
+                !idle && !title.trim().is_empty() && !title.eq_ignore_ascii_case("shell")
+            })
+        })
+        .unwrap_or("Shell")
+        .chars()
+        .take(1024)
+        .collect()
+}
+
 /// A directory is useful context but is not evidence of a conversation's name.
 /// The boolean means metadata/override owns the title; otherwise OSC may update it.
 pub fn tab_name(agent: &Agent, terminal: Option<&str>, alias: Option<&str>) -> (String, bool) {

@@ -1016,8 +1016,9 @@ pub fn tab_body(
     }
     let cap = config.remembered_read_widths[super::ui::geometry_bucket(cols)]
         .unwrap_or(config.read_width);
-    // Reserve only the actual divider, and only where the width toggle helps.
-    let effective = cap < area.cols.saturating_sub(1);
+    // A narrow leftover strip is not useful on tablets and small terminals.
+    // Count usable terminal columns after the sidebar, before the divider.
+    let effective = area.cols.saturating_sub(cap) >= 20;
     if effective {
         area.cols = area.cols.saturating_sub(1);
     }
