@@ -216,6 +216,10 @@ fn viewport_reading_preferences_and_automatic_grid_preserve_all_ids() {
     assert_eq!(ws.layout()[0].body.cols, 40);
     ws.apply(&Action::ReadResize { cols: 30, rows: 3 }).unwrap();
     ws.resize(120, 40).unwrap();
+    // Ignore narrow leftover strips without forgetting the saved preference.
+    assert_eq!(ws.layout()[0].body.cols, 96);
+    assert_eq!(ws.ui.config.remembered_read_widths[1], Some(85));
+    ws.resize(140, 40).unwrap();
     assert_eq!(ws.layout()[0].body.cols, 85);
     ws.resize(240, 70).unwrap();
     assert_eq!(ws.layout()[0].body.cols, 140);

@@ -1130,9 +1130,15 @@ fn width_switch_reserves_only_a_useful_divider_at_the_cap_boundary() {
         } else {
             120
         };
-        for cap in [available - 2, available - 1, available, available + 1] {
+        for cap in [
+            available - 21,
+            available - 20,
+            available - 19,
+            available,
+            available + 1,
+        ] {
             ws.ui.config.read_width = cap;
-            let effective = cap < available - 1;
+            let effective = available.saturating_sub(cap) >= 20;
             assert_eq!(
                 reading_limit_effective(ws.cols, ws.rows, &ws.ui.config),
                 effective
@@ -1546,7 +1552,7 @@ fn active_palette_connects_sidebar_and_width_dividers_in_capped_and_full_modes()
             for y in 0..f.rows - 1 {
                 let cell = &f.cells[usize::from(y * f.cols + body.x - 1)];
                 assert_eq!(cell.text, "▎");
-                assert_eq!(cell.fg, Color::Indexed(muted));
+                assert_eq!(cell.fg, Color::Indexed(bright));
                 assert_eq!(cell.bg, Color::Default);
             }
             let right = body.x + body.cols;
