@@ -652,6 +652,26 @@ fn fake_codex_lifecycle_notifications_deduplicate_acknowledge_reconnect_and_bell
             .count()
             == 1
     });
+    peer.action(Action::Focus(pane));
+    peer.wait(|frame| {
+        !frame.ui.notifications.is_empty()
+            && frame
+                .ui
+                .notifications
+                .iter()
+                .filter(|event| event.pane == pane)
+                .all(|event| event.read)
+    });
+    let persisted: serde_json::Value =
+        serde_json::from_slice(&fs::read(daemon.state.join("activity.json")).unwrap()).unwrap();
+    assert!(
+        persisted["events"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|event| event["pane"] == pane)
+            .all(|event| event["read"] == true)
+    );
     for name in ["registry.json", "journal.jsonl"] {
         assert!(
             !fs::read_to_string(daemon.state.join("native").join(name))
@@ -670,6 +690,10 @@ fn incremental_frames_survive_backpressure_takeover_and_metadata_only_diagnostic
     let initial = observer.full;
     controller.input("i=0; while [ $i -lt 80 ]; do printf '\\033[41m\\033[2K\\033[0m\\033[31mCOLOR_%s\\033[0m\\n' $i; i=$((i+1)); sleep 0.04; done; printf 'TRANSPORT_''DONE\\n'\n");
     controller.wait(|frame| text(frame).contains("TRANSPORT_DONE"));
+    // Exercise a deliberate small update after the burst, rather than relying
+    // on incidental tab animations to produce a patch under scheduler load.
+    controller.input("sleep 0.2; printf '\\033[HPATCH_''CHECK\\n'\n");
+    controller.wait(|frame| text(frame).contains("PATCH_CHECK"));
     assert!(controller.patch > 0);
     let received = observer.wait(|frame| text(frame).contains("TRANSPORT_DONE"));
     assert!(

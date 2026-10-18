@@ -109,7 +109,7 @@ fn sidebar_new_follows_tabs_and_parked_stays_at_bottom_with_contextual_headers()
         .find(|(t, _)| *t == TabTarget::Parked)
         .unwrap()
         .1;
-    assert_eq!((new.rows, parked.rows), (2, 1));
+    assert_eq!((new.rows, parked.rows), (3, 1));
     assert_eq!(parked.y + parked.rows, f.rows);
     let last_tab = targets
         .iter()
@@ -161,7 +161,7 @@ fn sidebar_new_follows_tabs_and_parked_stays_at_bottom_with_contextual_headers()
     let bounds = help_bounds(f.cols, f.rows);
     assert_eq!(
         help.cells[usize::from(bounds.y * f.cols + bounds.x)].bg,
-        f.cells[usize::from((f.rows - 1) * f.cols + 32)].bg
+        f.cells[usize::from((f.rows - 1) * f.cols + 29)].bg
     );
     ws.help = false;
     for action in [Action::ClosePaneRequest(2), Action::ParkRequest(2)] {
@@ -172,7 +172,11 @@ fn sidebar_new_follows_tabs_and_parked_stays_at_bottom_with_contextual_headers()
         let popup = frame(&ws);
         assert_eq!(
             popup.cells[usize::from(bounds.y * f.cols + bounds.x)].bg,
-            Color::Indexed(PALETTE[2].1)
+            Color::Indexed(if kind == DialogKind::ParkConfirm {
+                kelpmux::native::ui::PARKED_BG
+            } else {
+                PALETTE[2].1
+            })
         );
     }
 }
@@ -388,10 +392,11 @@ fn parked_table_animates_status_and_modals_dim_without_altering_terminal_content
     ws.apply(&Action::Parked).unwrap();
     let bounds = dialog_bounds_for(ws.cols, ws.rows, DialogKind::Parked);
     let a = compose(&ws, &screens, true, None, 0);
-    let b = compose(&ws, &screens, true, None, 1);
+    let b = compose(&ws, &screens, true, None, 2);
     assert_ne!(a.cells, b.cells);
     for (before, after) in a.cells.iter().zip(&b.cells) {
-        if before.text != "●" && after.text != "●" {
+        assert_eq!(before.bg, after.bg);
+        if !matches!(before.text.as_str(), "⣤" | "⠶" | "⠛") {
             assert_eq!(before.text, after.text);
             assert_eq!(before.fg, after.fg);
         }
@@ -790,7 +795,7 @@ fn footer_buttons_and_compact_vitals_have_disjoint_hit_targets() {
     assert_eq!(
         actions(Router::default().route(
             click(Point {
-                x: 32,
+                x: 29,
                 y: f.rows - 1
             }),
             &f
@@ -808,7 +813,7 @@ fn grid_headers_separate_rows_without_gaps_and_vertical_lines_keep_the_left_pane
         for view in &views {
             if view.rect.x > 0 {
                 let x = view.rect.x - 1;
-                assert_eq!(f.cells[usize::from(view.body.y * f.cols + x)].text, "│");
+                assert_eq!(f.cells[usize::from(view.body.y * f.cols + x)].text, "┃");
                 let left = views
                     .iter()
                     .find(|left| left.rect.y == view.rect.y && left.rect.x + left.rect.cols == x)
@@ -881,7 +886,7 @@ fn responsive_new_tabs_wrap_controls_and_graphic_confirmation_have_disjoint_targ
                         .unwrap()
                         .1
                         .rows,
-                    2
+                    3
                 );
             }
             let capped = ws.layout()[0].body;
@@ -1158,7 +1163,7 @@ fn width_switch_reserves_only_a_useful_divider_at_the_cap_boundary() {
 }
 
 #[test]
-fn working_tabs_animate_only_backgrounds_and_keep_bells_beside_titles() {
+fn working_tabs_animate_only_one_character_and_keep_bells_beside_titles() {
     use kelpmux::native::{
         ui::TabPosition,
         workspace::{TabTarget, tab_close, tab_number, tab_park, tab_targets},
@@ -1203,10 +1208,10 @@ fn working_tabs_animate_only_backgrounds_and_keep_bells_beside_titles() {
             terminal.feed(b"\x1b[48;2;31;31;31mcontent\x1b[0m");
             let screens = BTreeMap::from([(active as u64, terminal.snapshot())]);
             let a = compose(&ws, &screens, true, None, 0);
-            let b = compose(&ws, &screens, true, None, 16);
+            let b = compose(&ws, &screens, true, None, 2);
             assert_ne!(a.cells, b.cells);
             for (index, (before, after)) in a.cells.iter().zip(&b.cells).enumerate() {
-                assert_eq!(before.text, after.text);
+                assert_eq!(before.bg, after.bg);
                 assert_eq!(before.fg, after.fg);
                 if before != after {
                     assert!(tab.contains(Point {
@@ -1256,7 +1261,11 @@ fn tab_folder_subtitles_and_horizontal_rules_stay_outside_terminal_hit_targets()
             .find(|(target, _)| *target == TabTarget::Pane(0))
             .unwrap()
             .1;
-        let folder = usize::from(tab.y * f.cols + tab.x + 7);
+        let folder = usize::from(if position == TabPosition::Left {
+            (tab.y + 2) * f.cols + tab.x + 2
+        } else {
+            tab.y * f.cols + tab.x + 7
+        });
         let name = usize::from((tab.y + 1) * f.cols + tab.x + 2);
         assert_eq!(
             f.cells[folder..folder + 7]
@@ -1293,7 +1302,7 @@ fn tab_folder_subtitles_and_horizontal_rules_stay_outside_terminal_hit_targets()
 }
 
 #[test]
-fn horizontal_tabs_have_three_rows_an_attached_wider_add_button_and_right_anchored_parked() {
+fn horizontal_tabs_have_two_rows_an_attached_add_button_and_footer_parked() {
     use kelpmux::native::{
         ui::TabPosition,
         workspace::{TabTarget, tab_targets},
@@ -1579,7 +1588,7 @@ fn active_palette_connects_sidebar_and_width_dividers_in_capped_and_full_modes()
             );
             for y in 0..f.rows - 1 {
                 let cell = &f.cells[usize::from(y * f.cols + body.x - 1)];
-                assert_eq!(cell.text, "│");
+                assert_eq!(cell.text, "▎");
                 assert_eq!(cell.fg, Color::Indexed(muted));
                 assert_eq!(cell.bg, Color::Default);
             }
@@ -1639,13 +1648,15 @@ fn automatic_grid_parking_controls_alert_colors_and_three_row_tabs() {
         );
         ws.apply(&Action::Restore(1)).unwrap();
         assert_eq!(ws.panes.iter().map(|p| p.id).collect::<Vec<_>>(), ids);
+        assert_eq!(ws.reading, ReadingMode::Grid);
+        ws.apply(&Action::Read(1)).unwrap();
         let f = frame(&ws);
         let tab = tab_targets(f.cols, f.rows, &f.ui.config, 1, 0)
             .into_iter()
             .find(|(t, _)| *t == TabTarget::Pane(0))
             .unwrap()
             .1;
-        assert_eq!(tab.rows, 2);
+        assert_eq!(tab.rows, if size.1 >= 14 { 3 } else { 1 });
         let park = tab_park(tab);
         assert_eq!(
             actions(Router::default().route(
@@ -1657,7 +1668,7 @@ fn automatic_grid_parking_controls_alert_colors_and_three_row_tabs() {
             )),
             vec![Action::ParkRequest(1)]
         );
-        let at = usize::from((f.rows - 1) * f.cols + 32);
+        let at = usize::from((f.rows - 1) * f.cols + 29);
         assert_eq!(f.cells[at].bg, Color::Indexed(94));
         ws.ui.notifications.push(Notification {
             id: 1,
@@ -1858,7 +1869,7 @@ fn grid_header_numbers_zoom_park_close_and_footer_have_distinct_targets() {
             );
         }
     }
-    for x in 19..31 {
+    for x in 14..28 {
         assert_eq!(
             actions(Router::default().route(click(Point { x, y: f.rows - 1 }), &f)),
             vec![Action::Parked]
@@ -1911,7 +1922,7 @@ fn working_ball_bounces_in_tabs_grid_and_parked_cards_without_animating_idle_pan
 }
 
 #[test]
-fn two_line_tabs_keep_name_separate_from_metadata_and_horizontal_controls_flush() {
+fn tabs_keep_name_separate_from_metadata_and_controls_centered() {
     use kelpmux::native::{
         ui::TabPosition,
         workspace::{TabTarget, tab_close, tab_park, tab_targets},
@@ -1929,7 +1940,7 @@ fn two_line_tabs_keep_name_separate_from_metadata_and_horizontal_controls_flush(
             .find(|(target, _)| *target == TabTarget::Pane(0))
             .unwrap()
             .1;
-        assert_eq!(tab.rows, 2);
+        assert_eq!(tab.rows, if position == TabPosition::Left { 3 } else { 2 });
         let row: String = f.cells[usize::from((tab.y + 1) * f.cols + tab.x)
             ..usize::from((tab.y + 1) * f.cols + tab.x + tab.cols)]
             .iter()
@@ -1943,6 +1954,11 @@ fn two_line_tabs_keep_name_separate_from_metadata_and_horizontal_controls_flush(
         assert_eq!(close.y, tab.y);
         assert_eq!(park.y, tab.y);
         if position == TabPosition::Left {
+            assert_eq!(close.x + close.cols, ws.layout()[0].body.x - 1);
+            let start = usize::from(close.y * f.cols + close.x);
+            assert_eq!(f.cells[start].text, " ");
+            assert_eq!(f.cells[start + 1].text, "×");
+            assert_eq!(f.cells[start + 2].text, " ");
             let end = targets
                 .iter()
                 .filter_map(|(target, rect)| {
@@ -2025,10 +2041,10 @@ fn tab_surfaces_follow_dark_and_light_backgrounds_without_repainting_terminal_de
                 kelpmux::native::ui::DialogKind::Parked,
             );
             let card = kelpmux::native::workspace::parked_cards(bounds, 0, 2)[1].1;
-            let title = &parked.cells[usize::from((card.y + 1) * parked.cols + card.x + 6)];
+            let title = &parked.cells[usize::from((card.y + 1) * parked.cols + card.x + 8)];
             assert_eq!(title.fg, Color::Indexed(if light { 232 } else { 231 }));
             assert_eq!(
-                parked.cells[usize::from(card.y * parked.cols + card.x + 6)].fg,
+                parked.cells[usize::from((card.y + 1) * parked.cols + card.x + 6)].fg,
                 Color::Indexed(if light { 232 } else { 231 })
             );
         }
@@ -2036,29 +2052,24 @@ fn tab_surfaces_follow_dark_and_light_backgrounds_without_repainting_terminal_de
 }
 
 #[test]
-fn footer_new_parked_help_order_supports_grid_creation_and_the_tab_limit() {
-    use kelpmux::native::workspace::{help_button, new_button, parked_button};
+fn footer_parked_help_order_has_no_new_tab_button() {
+    use kelpmux::native::workspace::{help_button, parked_button};
     for size in [(40, 10), (120, 40)] {
         for count in [1, 9] {
             let mut ws = workspace(size, (3, 3));
             ws.panes.truncate(count);
             ws.reflow();
             let f = frame(&ws);
-            let new = new_button(f.rows);
             let parked = parked_button(f.rows);
             let help = help_button(f.rows);
-            assert_eq!(new.x + new.cols, parked.x);
+            let footer: String = f.cells[usize::from((f.rows - 1) * f.cols)..]
+                .iter()
+                .map(|cell| cell.text.as_str())
+                .collect();
+            assert!(!footer.contains('+'));
+            assert!(footer.contains("Parked") && !footer.contains("(0)"));
+            assert_eq!(parked.x, 14);
             assert_eq!(parked.x + parked.cols, help.x);
-            for x in new.x..new.x + new.cols {
-                assert_eq!(
-                    actions(Router::default().route(click(Point { x, y: new.y }), &f)),
-                    if count < 9 {
-                        vec![Action::NewTab]
-                    } else {
-                        vec![]
-                    }
-                );
-            }
             assert_eq!(
                 actions(Router::default().route(
                     click(Point {
