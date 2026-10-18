@@ -1451,7 +1451,7 @@ fn draw_tabs(frame: &mut Frame, workspace: &Workspace, spinner: usize) {
         workspace.ui.reading_size,
     );
     let active = panes.iter().find(|pane| pane.id == active_id);
-    let (bright, muted) = active
+    let (bright, _) = active
         .map(|pane| PALETTE[usize::from(pane.palette) % PALETTE.len()])
         .unwrap_or(PALETTE[0]);
     if position != TabPosition::Left {
@@ -1471,7 +1471,7 @@ fn draw_tabs(frame: &mut Frame, workspace: &Workspace, spinner: usize) {
                 } else {
                     "▁"
                 },
-                Color::Indexed(muted),
+                Color::Indexed(bright),
                 Color::Default,
                 false,
             );
@@ -1486,7 +1486,7 @@ fn draw_tabs(frame: &mut Frame, workspace: &Workspace, spinner: usize) {
                 y,
                 1,
                 "▎",
-                Color::Indexed(muted),
+                Color::Indexed(bright),
                 Color::Default,
                 false,
             );

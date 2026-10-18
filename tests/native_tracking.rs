@@ -390,6 +390,25 @@ fn native_hook_command_inherits_custom_state_and_explicit_flag_wins() {
 }
 
 #[test]
+fn shell_names_hide_prompt_identity_but_preserve_application_titles_and_aliases() {
+    use kelpmux::native::tracking::shell_tab_name;
+    assert_eq!(shell_tab_name(None, None, true), "Shell");
+    assert_eq!(
+        shell_tab_name(Some("joan@jbox: ~/scratch"), None, true),
+        "Shell"
+    );
+    assert_eq!(shell_tab_name(Some("htop"), None, false), "htop");
+    assert_eq!(shell_tab_name(Some(""), None, false), "Shell");
+    for idle in [true, false] {
+        assert_eq!(shell_tab_name(Some("shell"), None, idle), "Shell");
+        assert_eq!(
+            shell_tab_name(Some("joan@jbox"), Some("Tools"), idle),
+            "Tools"
+        );
+    }
+}
+
+#[test]
 fn tab_names_never_use_directory_as_conversation_identity_and_preserve_osc_fallback() {
     use kelpmux::native::tracking::tab_name;
     let mut agent = agent(100);
