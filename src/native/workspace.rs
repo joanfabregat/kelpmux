@@ -1003,15 +1003,15 @@ pub fn tab_body(
     };
     match position {
         TabPosition::Top => {
-            area.y = 4;
-            area.rows = area.rows.saturating_sub(4);
+            area.y = 3;
+            area.rows = area.rows.saturating_sub(3);
         }
         TabPosition::Left => {
             let sidebar = (cols / 5).clamp(18, 28);
             area.x = sidebar;
             area.cols = cols - sidebar;
         }
-        TabPosition::Bottom => area.rows = area.rows.saturating_sub(4),
+        TabPosition::Bottom => area.rows = area.rows.saturating_sub(3),
         TabPosition::Auto => unreachable!(),
     }
     let cap = config.remembered_read_widths[super::ui::geometry_bucket(cols)]
@@ -1105,7 +1105,7 @@ pub fn tab_number(rect: Rect) -> Rect {
 }
 pub fn tab_close(rect: Rect) -> Rect {
     Rect {
-        x: rect.x + rect.cols.saturating_sub(4),
+        x: rect.x + rect.cols.saturating_sub(3),
         ..tab_number(rect)
     }
 }
@@ -1156,9 +1156,25 @@ pub fn grid_controls(rect: Rect) -> [Rect; 3] {
 }
 pub fn parked_button(rows: u16) -> Rect {
     Rect {
-        x: 17,
+        x: 19,
         y: rows - 1,
         cols: 12,
+        rows: 1,
+    }
+}
+pub fn new_button(rows: u16) -> Rect {
+    Rect {
+        x: 14,
+        y: rows - 1,
+        cols: 5,
+        rows: 1,
+    }
+}
+pub fn help_button(rows: u16) -> Rect {
+    Rect {
+        x: 31,
+        y: rows - 1,
+        cols: 3,
         rows: 1,
     }
 }
@@ -1178,7 +1194,7 @@ pub fn color_cards(bounds: Rect) -> Vec<Rect> {
         .collect()
 }
 pub fn sidebar_actions(cols: u16, rows: u16) -> [Rect; 2] {
-    let height = if rows >= 14 { 3 } else { 1 };
+    let height = if rows >= 14 { 2 } else { 1 };
     let new = Rect {
         x: 0,
         y: rows - 1 - height,
@@ -1209,7 +1225,7 @@ pub fn tab_targets(
             return vec![(TabTarget::New, new), (TabTarget::Parked, parked)];
         }
         let y = if position == TabPosition::Bottom {
-            rows - 4
+            rows - 3
         } else {
             0
         };
@@ -1220,7 +1236,7 @@ pub fn tab_targets(
                     x: 0,
                     y,
                     cols: 5,
-                    rows: 3,
+                    rows: 2,
                 },
             ),
             (TabTarget::Parked, parked_button(rows)),
@@ -1241,7 +1257,7 @@ pub fn tab_targets(
             let width = ((cols - reserve) / capacity as u16).min(40);
             let x = if overflow { 3 } else { 0 };
             let y = if position == TabPosition::Bottom {
-                rows - 4
+                rows - 3
             } else {
                 0
             };
@@ -1254,7 +1270,7 @@ pub fn tab_targets(
                             x: x + i as u16 * width,
                             y,
                             cols: width,
-                            rows: 3,
+                            rows: 2,
                         },
                     )
                 })
@@ -1265,7 +1281,7 @@ pub fn tab_targets(
                     x: x + tabs.len() as u16 * width,
                     y,
                     cols: 5,
-                    rows: 3,
+                    rows: 2,
                 },
             ));
             tabs.push((TabTarget::Parked, parked_button(rows)));
@@ -1276,7 +1292,7 @@ pub fn tab_targets(
                         x: 0,
                         y,
                         cols: 3,
-                        rows: 3,
+                        rows: 2,
                     },
                 ));
                 tabs.push((
@@ -1285,7 +1301,7 @@ pub fn tab_targets(
                         x: cols - 3,
                         y,
                         cols: 3,
-                        rows: 3,
+                        rows: 2,
                     },
                 ));
             }
@@ -1294,10 +1310,10 @@ pub fn tab_targets(
         TabPosition::Left => {
             let width = (cols / 5).clamp(18, 28);
             let [mut new, parked] = sidebar_actions(cols, rows);
-            let area = new.y.saturating_sub(1);
+            let area = new.y;
             let overflow = count > usize::from(area);
             let available = area.saturating_sub(if overflow { 2 } else { 0 });
-            let height = (available / count as u16).clamp(1, 3);
+            let height = (available / count as u16).clamp(1, 2);
             let capacity = usize::from(available / height).max(1);
             let start = if overflow {
                 active.saturating_sub(capacity - 1)
@@ -1320,7 +1336,7 @@ pub fn tab_targets(
                 })
                 .collect();
             let end = top + tabs.len() as u16 * height;
-            new.y = end + u16::from(overflow) + 1;
+            new.y = end + u16::from(overflow);
             if overflow {
                 tabs.push((
                     TabTarget::Previous,

@@ -50,8 +50,8 @@ pub fn compose(
                             cell.width = 1;
                         }
                         if workspace.reading == ReadingMode::Grid && !selected && !view.overlay {
-                            cell.fg = inactive_color(cell.fg, true);
-                            cell.bg = inactive_color(cell.bg, false);
+                            cell.fg = inactive_color(cell.fg, true, workspace.ui.terminal_theme);
+                            cell.bg = inactive_color(cell.bg, false, workspace.ui.terminal_theme);
                         }
                         put(
                             &mut frame,
@@ -150,7 +150,7 @@ pub fn compose(
             )
         } else {
             format!(
-                "Observer · Ctrl-{} {} take control",
+                "Obs · Ctrl-{} {} take control",
                 char::from(b'A' + workspace.ui.config.prefix - 1),
                 binding_label(&workspace.ui.config, "tT", "takeover")
             )
@@ -207,11 +207,12 @@ pub fn compose(
             Color::Indexed(67),
             true,
         );
+        let help = super::workspace::help_button(frame.rows);
         write_text(
             &mut frame,
-            14,
-            y,
-            3,
+            help.x,
+            help.y,
+            help.cols,
             if workspace.ui.notifications.iter().any(|item| !item.read) {
                 " ! "
             } else {
@@ -239,6 +240,23 @@ pub fn compose(
             ),
             Color::Indexed(231),
             Color::Indexed(super::ui::PARKED_BG),
+            true,
+        );
+        let new = super::workspace::new_button(frame.rows);
+        let enabled = workspace
+            .panes
+            .iter()
+            .filter(|pane| Some(pane.id) != workspace.ui.scratch)
+            .count()
+            < 9;
+        write_text(
+            &mut frame,
+            new.x,
+            new.y,
+            new.cols,
+            "  +  ",
+            Color::Indexed(if enabled { 231 } else { 245 }),
+            Color::Indexed(if enabled { 238 } else { 236 }),
             true,
         );
     }
@@ -448,7 +466,7 @@ fn draw_grid_separators(frame: &mut Frame, workspace: &Workspace) {
                     right,
                     y,
                     1,
-                    "▎",
+                    "│",
                     Color::Indexed(PALETTE[usize::from(view.pane.palette) % PALETTE.len()].1),
                     Color::Default,
                     false,
@@ -481,14 +499,48 @@ fn header(
     );
 }
 
-fn inactive_color(color: Color, foreground: bool) -> Color {
+fn inactive_color(color: Color, foreground: bool, theme: [Option<[u8; 3]>; 2]) -> Color {
     if color == Color::Default && !foreground {
         return Color::Default;
     }
-    let (r, g, b) = color_rgb(color, foreground);
-    let luminance = (u16::from(r) * 3 + u16::from(g) * 6 + u16::from(b)) / 10;
-    let gray = (luminance * if foreground { 7 } else { 5 } / 10) as u8;
-    Color::Rgb(gray, gray, gray)
+    let (r, g, b) = if color == Color::Default {
+        theme[usize::from(!foreground)]
+            .map(|[r, g, b]| (r, g, b))
+            .unwrap_or_else(|| color_rgb(color, foreground))
+    } else {
+        color_rgb(color, foreground)
+    };
+    let backdrop = theme[1].unwrap_or([0, 0, 0]);
+    let blend = |value, base| ((u16::from(value) * 3 + u16::from(base)) / 4) as u8;
+    Color::Rgb(
+        blend(r, backdrop[0]),
+        blend(g, backdrop[1]),
+        blend(b, backdrop[2]),
+    )
+}
+
+fn tab_surface(workspace: &Workspace) -> Color {
+    workspace.ui.terminal_theme[1].map_or(Color::Indexed(super::ui::TAB_BG), |rgb| {
+        let light = u16::from(rgb[0]) * 3 + u16::from(rgb[1]) * 6 + u16::from(rgb[2]) >= 1280;
+        let [r, g, b] = rgb.map(|value| {
+            if light {
+                value.saturating_sub(14)
+            } else {
+                value.saturating_add(14)
+            }
+        });
+        Color::Rgb(r, g, b)
+    })
+}
+fn tab_text(workspace: &Workspace, selected: bool) -> Color {
+    if !selected
+        && workspace.ui.terminal_theme[1]
+            .is_some_and(|[r, g, b]| u16::from(r) * 3 + u16::from(g) * 6 + u16::from(b) >= 1280)
+    {
+        Color::Indexed(232)
+    } else {
+        Color::Indexed(231)
+    }
 }
 fn draw_dialog(
     frame: &mut Frame,
@@ -1279,18 +1331,18 @@ fn draw_tabs(frame: &mut Frame, workspace: &Workspace, spinner: usize) {
         },
         TabPosition::Bottom => Rect {
             x: 0,
-            y: frame.rows - 4,
+            y: frame.rows - 3,
             cols: frame.cols,
-            rows: 3,
+            rows: 2,
         },
         _ => Rect {
             x: 0,
             y: 0,
             cols: frame.cols,
-            rows: 3,
+            rows: 2,
         },
     };
-    fill(frame, area, Color::Indexed(super::ui::TAB_BG));
+    fill(frame, area, tab_surface(workspace));
     let panes: Vec<_> = workspace
         .panes
         .iter()
@@ -1392,9 +1444,9 @@ fn draw_tabs(frame: &mut Frame, workspace: &Workspace, spinner: usize) {
         .unwrap_or(PALETTE[0]);
     if position != TabPosition::Left {
         let y = if position == TabPosition::Top {
-            3
+            2
         } else {
-            frame.rows - 5
+            frame.rows - 4
         };
         for x in 0..frame.cols {
             write_text(
@@ -1421,7 +1473,7 @@ fn draw_tabs(frame: &mut Frame, workspace: &Workspace, spinner: usize) {
                 x,
                 y,
                 1,
-                "▎",
+                "│",
                 Color::Indexed(accent),
                 Color::Default,
                 false,
@@ -1443,7 +1495,7 @@ fn draw_tabs(frame: &mut Frame, workspace: &Workspace, spinner: usize) {
                 if y == body.y {
                     if wrapping { "+" } else { "−" }
                 } else {
-                    "┃"
+                    "│"
                 },
                 Color::Indexed(accent),
                 Color::Default,
@@ -1482,7 +1534,11 @@ fn draw_tab(
 ) {
     let grid = workspace.reading == ReadingMode::Grid;
     let (_, accent) = PALETTE[usize::from(pane.palette) % PALETTE.len()];
-    let bg = Color::Indexed(if selected { accent } else { super::ui::TAB_BG });
+    let bg = if selected {
+        Color::Indexed(accent)
+    } else {
+        tab_surface(workspace)
+    };
     fill(frame, rect, bg);
     let number = super::workspace::tab_number(rect);
     write_text(
@@ -1491,7 +1547,11 @@ fn draw_tab(
         number.y,
         number.cols,
         &format!(" {} ", pane.number),
-        Color::Indexed(if selected { 226 } else { 231 }),
+        if selected {
+            Color::Indexed(226)
+        } else {
+            tab_text(workspace, false)
+        },
         bg,
         true,
     );
@@ -1524,14 +1584,14 @@ fn draw_tab(
         Rect {
             x: number.x + number.cols + 1,
             y: rect.y,
-            cols: park.x.saturating_sub(number.x + number.cols + 1).min(5),
+            cols: park.x.saturating_sub(number.x + number.cols + 1).min(1),
             rows: 1,
         }
     } else {
         Rect {
             x: title_x,
             y: title_y,
-            cols: if title_width >= 12 { 5 } else { 0 },
+            cols: if title_width >= 3 { 1 } else { 0 },
             rows: 1,
         }
     };
@@ -1564,22 +1624,26 @@ fn draw_tab(
         title_y,
         title_width.saturating_sub(bell_width),
         &title,
-        Color::Indexed(231),
+        tab_text(workspace, selected),
         bg,
         false,
     );
-    if rect.rows >= 3 {
+    if rect.rows >= 2 {
         let folder = std::path::Path::new(&pane.cwd)
             .file_name()
             .and_then(|name| name.to_str())
             .unwrap_or(&pane.cwd);
         write_text(
             frame,
-            rect.x + 2,
-            rect.y + 2,
-            rect.cols.saturating_sub(4),
+            track.x + track.cols + 1,
+            rect.y,
+            park.x.saturating_sub(track.x + track.cols + 2),
             &safe_text(folder),
-            Color::Indexed(if selected { 250 } else { 245 }),
+            if tab_text(workspace, selected) == Color::Indexed(232) {
+                Color::Indexed(240)
+            } else {
+                Color::Indexed(if selected { 250 } else { 245 })
+            },
             bg,
             false,
         );
@@ -1633,7 +1697,7 @@ fn draw_tab(
         );
     }
     for y in rect.y..rect.y + rect.rows {
-        write_text(frame, rect.x, y, 1, "▎", Color::Indexed(accent), bg, false);
+        write_text(frame, rect.x, y, 1, "▌", Color::Indexed(accent), bg, false);
     }
     if pane.status == crate::model::Status::Working {
         activity_background(
@@ -1654,7 +1718,16 @@ fn draw_tab(
                 if grid { zoom } else { Rect::default() },
             ],
         );
-        activity_ball(frame, track, selected, spinner);
+        activity_ball(
+            frame,
+            track,
+            if selected {
+                Color::Indexed(226)
+            } else {
+                tab_text(workspace, false)
+            },
+            spinner,
+        );
     }
 }
 
@@ -1708,21 +1781,14 @@ fn activity_background(
     }
 }
 
-fn activity_ball(frame: &mut Frame, track: Rect, selected: bool, tick: usize) {
+fn activity_ball(frame: &mut Frame, track: Rect, foreground: Color, tick: usize) {
     if track.cols == 0 {
         return;
     }
-    let span = usize::from(track.cols.saturating_sub(1));
-    let phase = tick % (span * 2).max(1);
-    let offset = if phase <= span {
-        phase
-    } else {
-        span * 2 - phase
-    };
-    let index = usize::from(track.y) * usize::from(frame.cols) + usize::from(track.x) + offset;
+    let index = usize::from(track.y) * usize::from(frame.cols) + usize::from(track.x);
     if let Some(cell) = frame.cells.get_mut(index) {
-        cell.text = "●".into();
-        cell.fg = Color::Indexed(if selected { 226 } else { 231 });
+        cell.text = ["⣤", "⠶", "⠛", "⠶"][(tick / 2) % 4].into();
+        cell.fg = foreground;
         cell.width = 1;
     }
 }
@@ -1858,7 +1924,11 @@ fn draw_parked(
         let y = rect.y + 1;
         let selected = index == dialog.selection;
         let (_, accent) = PALETTE[usize::from(pane.palette) % PALETTE.len()];
-        let bg = Color::Indexed(if selected { accent } else { super::ui::TAB_BG });
+        let bg = if selected {
+            Color::Indexed(accent)
+        } else {
+            tab_surface(workspace)
+        };
         fill(frame, rect, bg);
         for row in rect.y..rect.y + rect.rows {
             write_text(
@@ -1866,7 +1936,7 @@ fn draw_parked(
                 bounds.x,
                 row,
                 1,
-                "▎",
+                "▌",
                 Color::Indexed(accent),
                 bg,
                 false,
@@ -1878,7 +1948,11 @@ fn draw_parked(
             y,
             4,
             &format!(" {} ", pane.id),
-            Color::Indexed(if selected { 226 } else { 231 }),
+            if selected {
+                Color::Indexed(226)
+            } else {
+                tab_text(workspace, false)
+            },
             bg,
             true,
         );
@@ -1894,7 +1968,7 @@ fn draw_parked(
             y,
             title_width,
             &title,
-            Color::Indexed(231),
+            tab_text(workspace, selected),
             bg,
             false,
         );
@@ -1904,7 +1978,7 @@ fn draw_parked(
             y,
             16,
             pane.status.text(),
-            Color::Indexed(231),
+            tab_text(workspace, selected),
             bg,
             false,
         );
@@ -1947,10 +2021,14 @@ fn draw_parked(
                 Rect {
                     x: rect.x + 6,
                     y: rect.y,
-                    cols: status_x.saturating_sub(rect.x + 6).min(5),
+                    cols: status_x.saturating_sub(rect.x + 6).min(1),
                     rows: 1,
                 },
-                selected,
+                if selected {
+                    Color::Indexed(226)
+                } else {
+                    tab_text(workspace, false)
+                },
                 spinner,
             );
         }

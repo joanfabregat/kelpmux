@@ -1504,6 +1504,7 @@ impl Server {
             }
             ClientMessage::ThemeColor { background, rgb } if self.clients[&id].attached => {
                 self.clients.get_mut(&id).unwrap().theme[usize::from(background)] = Some(rgb);
+                self.dirty = true;
                 if self.controller == Some(id) {
                     self.apply_theme();
                 }
@@ -2040,28 +2041,24 @@ impl Server {
             .iter()
             .map(|(id, pane)| (*id, pane.terminal.snapshot()))
             .collect();
-        let observer_frame = render::compose(
-            &self.workspace,
-            &screens,
-            false,
-            self.notice.as_deref(),
-            spinner,
-        );
-        let controller_frame = render::compose(
-            &self.workspace,
-            &screens,
-            true,
-            self.notice.as_deref(),
-            spinner,
-        );
+        let mut presentations = BTreeMap::new();
         let mut removed = vec![];
         for (id, client) in &mut self.clients {
             if client.attached {
-                let frame = if self.controller == Some(*id) {
-                    &controller_frame
-                } else {
-                    &observer_frame
-                };
+                let controller = self.controller == Some(*id);
+                let frame = presentations
+                    .entry((client.theme, controller))
+                    .or_insert_with(|| {
+                        let mut workspace = self.workspace.clone();
+                        workspace.ui.terminal_theme = client.theme;
+                        render::compose(
+                            &workspace,
+                            &screens,
+                            controller,
+                            self.notice.as_deref(),
+                            spinner,
+                        )
+                    });
                 if client.latest(frame).is_err() {
                     removed.push(*id);
                 }
