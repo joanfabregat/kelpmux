@@ -1006,7 +1006,7 @@ fn tab_colors_keep_bright_titles_selected_outline_and_disjoint_picker_controls()
             let number_cell = &f.cells[usize::from(number.y * f.cols + number.x + 1)];
             assert_eq!(
                 number_cell.fg,
-                Color::Indexed(if index == 0 { 226 } else { 117 })
+                Color::Indexed(if index == 0 { 226 } else { 231 })
             );
             for x in number.x + 3..number.x + 5 {
                 assert_eq!(f.cells[usize::from(number.y * f.cols + x)].text, " ");
@@ -1287,7 +1287,7 @@ fn tab_folder_subtitles_and_horizontal_rules_stay_outside_terminal_hit_targets()
 }
 
 #[test]
-fn horizontal_tabs_have_three_rows_a_new_tab_gap_and_right_anchored_parked() {
+fn horizontal_tabs_have_three_rows_an_attached_wider_add_button_and_right_anchored_parked() {
     use kelpmux::native::{
         ui::TabPosition,
         workspace::{TabTarget, tab_targets},
@@ -1324,12 +1324,23 @@ fn horizontal_tabs_have_three_rows_a_new_tab_gap_and_right_anchored_parked() {
                     .1;
                 assert_eq!(parked.x + parked.cols, ws.cols);
                 assert!(parked.x > new.x + new.cols);
+                assert_eq!(new.cols, 5);
+                assert_eq!(
+                    f.cells[usize::from((new.y + 1) * f.cols + new.x + 2)].text,
+                    "+"
+                );
                 for y in new.y..new.y + 3 {
-                    assert!(
-                        Router::default()
-                            .route(click(Point { x: new.x - 1, y }), &f)
-                            .is_empty()
-                    );
+                    for x in new.x..new.x + new.cols {
+                        let actual = actions(Router::default().route(click(Point { x, y }), &f));
+                        assert_eq!(
+                            actual,
+                            if count < 9 {
+                                vec![Action::NewTab]
+                            } else {
+                                vec![]
+                            }
+                        );
+                    }
                     assert_eq!(
                         actions(Router::default().route(click(Point { x: parked.x, y }), &f)),
                         vec![Action::Parked]
@@ -1348,7 +1359,7 @@ fn horizontal_tabs_have_three_rows_a_new_tab_gap_and_right_anchored_parked() {
                         })
                         .max()
                         .unwrap();
-                    assert_eq!(new.x, last_tab + 1);
+                    assert_eq!(new.x, last_tab);
                     assert!(
                         !f.cells[usize::from(tab.y * f.cols + tab.x)
                             ..usize::from(tab.y * f.cols + tab.x + tab.cols)]
