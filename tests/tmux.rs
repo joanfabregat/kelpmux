@@ -78,6 +78,25 @@ impl Server {
                 .all(|p| process::idle(&tree, p.pid, false))
         });
     }
+    fn resize_idle(&self, window: &str, grid: Grid) {
+        // SIGWINCH can briefly wake an idle shell between safety snapshots.
+        // Retry only the guard's transient refusals; never relax the guard.
+        wait(
+            || match workspace::resize(&self.tmux, &self.state(), window, grid, false) {
+                Ok(_) => true,
+                Err(error) => {
+                    let message = error.to_string();
+                    assert!(
+                        message.starts_with("shrink refused: need ")
+                            || message == "pane changed during validation; shrink cancelled"
+                            || message == "pane became busy; remaining removals cancelled",
+                        "unexpected resize failure: {message}"
+                    );
+                    false
+                }
+            },
+        );
+    }
     fn cli(&self, args: &[&str]) -> std::process::Output {
         Command::new(env!("CARGO_BIN_EXE_kelpmux"))
             .args([
@@ -117,7 +136,7 @@ fn grows_and_shrinks_every_grid_without_losing_original_shell() {
     for shape in ["2x1", "2x2", "3x2", "3x3", "2x3", "2x2", "2x1", "1x1"] {
         server.wait_idle();
         let grid = Grid::parse(shape).unwrap();
-        workspace::resize(&server.tmux, &server.state(), &window, grid, false).unwrap();
+        server.resize_idle(&window, grid);
         let panes = server.tmux.panes().unwrap();
         assert_eq!(panes.len(), grid.count());
         assert!(
@@ -1546,14 +1565,7 @@ fn native_reading_keyboard_resize_and_single_pane_work() {
     assert_eq!(server.tmux.panes().unwrap().len(), 2);
     drop(client);
     server.wait_idle();
-    workspace::resize(
-        &server.tmux,
-        &server.state(),
-        &window,
-        Grid::parse("1x1").unwrap(),
-        false,
-    )
-    .unwrap();
+    server.resize_idle(&window, Grid::parse("1x1").unwrap());
     let single = server.tmux.panes().unwrap()[0].clone();
     assert!(server.cli(&["read", "--pane", &single.id]).status.success());
     assert!(server.cli(&["grid", "--window", &window]).status.success());

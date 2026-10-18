@@ -685,6 +685,20 @@ impl Router {
         }
         if let Some(dialog) = frame.ui.dialog {
             let bounds = super::workspace::dialog_bounds_for(frame.cols, frame.rows, dialog.kind);
+            if dialog.kind == super::ui::DialogKind::Parked && event.kind == MouseKind::Press {
+                let entries = frame_entries(frame);
+                if let Some((index, _)) =
+                    super::workspace::parked_cards(bounds, dialog.selection, entries.len())
+                        .into_iter()
+                        .find(|(_, rect)| {
+                            super::workspace::parked_controls(*rect)[1].contains(event.position)
+                        })
+                {
+                    self.pending_modal = true;
+                    emit(&mut output, Action::ClosePaneRequest(entries[index]), true);
+                    return output;
+                }
+            }
             if event.kind == MouseKind::Press
                 && (!bounds.contains(event.position)
                     || (event.position.y == bounds.y
@@ -983,16 +997,10 @@ impl Router {
             if event.kind != MouseKind::Press {
                 return output;
             }
-            let buttons = 2;
             let right = view.rect.x + view.rect.cols;
-            let first = right.saturating_sub(buttons * 3);
+            let first = right.saturating_sub(3);
             let action = if event.position.x >= first {
-                let slot = (event.position.x - first) / 3;
-                if slot == 0 {
-                    Action::Read(id)
-                } else {
-                    Action::Fullscreen(id)
-                }
+                Action::Fullscreen(id)
             } else {
                 self.header_drag = Some(id);
                 Action::Focus(id)
