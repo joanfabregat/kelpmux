@@ -1,5 +1,5 @@
 //! Native grid/tab composition and ANSI damage output. Grid header controls
-//! occupy six columns; tab navigation uses shared geometry from workspace.
+//! occupy three columns; tab navigation uses shared geometry from workspace.
 use super::{engine::safe_text, protocol::*, ui::PALETTE, workspace::Workspace};
 use std::{collections::BTreeMap, fmt::Write};
 use unicode_width::UnicodeWidthChar;
@@ -455,7 +455,7 @@ fn header(
     frame: &mut Frame,
     view: &PaneView,
     selected: bool,
-    _reading: ReadingMode,
+    reading: ReadingMode,
     spinner: usize,
 ) {
     if view.rect.rows == 0 {
@@ -472,11 +472,16 @@ fn header(
         },
         bg,
     );
-    let badge = format!(
-        " {} {} ",
-        if selected { "▶" } else { " " },
-        view.pane.number
-    );
+    let grid = reading == ReadingMode::Grid && !view.overlay;
+    let badge = if grid {
+        format!(" {} ", view.pane.number)
+    } else {
+        format!(
+            " {} {} ",
+            if selected { "▶" } else { " " },
+            view.pane.number
+        )
+    };
     let badge_width = badge.chars().count() as u16;
     write_text(
         frame,
@@ -488,7 +493,11 @@ fn header(
         Color::Indexed(if selected { 24 } else { 17 }),
         true,
     );
-    let buttons: &[(&str, u8, u8)] = &[(" ↗ ", 231, 24), (" ⛶ ", 16, 39)];
+    let buttons: &[(&str, u8, u8)] = if grid {
+        &[(" ⛶ ", 16, 39)]
+    } else {
+        &[(" ↗ ", 231, 24), (" ⛶ ", 16, 39)]
+    };
     let button_width = buttons.len() as u16 * 3;
     let title_width = view.rect.cols.saturating_sub(badge_width + button_width);
     let marker = if view.pane.status == crate::model::Status::Working {
@@ -1457,7 +1466,11 @@ fn draw_tabs(frame: &mut Frame, workspace: &Workspace, spinner: usize) {
                 x,
                 y,
                 1,
-                "━",
+                if position == TabPosition::Top {
+                    "▔"
+                } else {
+                    "▁"
+                },
                 Color::Indexed(muted),
                 Color::Default,
                 false,
@@ -1676,7 +1689,7 @@ fn activity_background(
 ) {
     let (br, bg, bb) = color_rgb(base, false);
     let (tr, tg, tb) = color_rgb(tint, false);
-    let time = tick as f64 * 0.16;
+    let time = tick as f64 * 0.20;
     let amplitude = if selected { 0.34 } else { 0.085 };
     for y in rect.y..rect.y + rect.rows {
         for x in rect.x + 1..rect.x + rect.cols {
@@ -1792,14 +1805,15 @@ fn draw_parked(
     bounds: Rect,
     spinner: usize,
 ) {
-    let status_x = bounds.x + bounds.cols.saturating_sub(22);
-    let restore_x = bounds.x + bounds.cols.saturating_sub(5);
-    let title_x = bounds.x + 9;
+    let status_x = bounds.x + bounds.cols.saturating_sub(25);
+    let [restore, close] = super::workspace::parked_controls(bounds);
+    let title_x = bounds.x + 6;
     for (x, width, label) in [
         (bounds.x + 2, 6, "Tab"),
         (title_x, status_x.saturating_sub(title_x), "Name"),
         (status_x, 16, "Status"),
-        (restore_x, 3, " ↥ "),
+        (restore.x, 3, " ↥ "),
+        (close.x, 3, " × "),
     ] {
         write_text(
             frame,
@@ -1854,21 +1868,6 @@ fn draw_parked(
             bg,
             true,
         );
-        let marker = if pane.status == crate::model::Status::Working {
-            SPINNER[spinner % SPINNER.len()].to_string()
-        } else {
-            pane.status.marker().to_owned()
-        };
-        write_text(
-            frame,
-            bounds.x + 6,
-            y,
-            3,
-            &format!(" {marker} "),
-            Color::Indexed(16),
-            Color::Indexed(bright),
-            true,
-        );
         let title_width = status_x.saturating_sub(title_x + 1);
         let title = marquee_title(
             &pane.title,
@@ -1895,16 +1894,37 @@ fn draw_parked(
             bg,
             false,
         );
-        write_text(
-            frame,
-            restore_x,
-            y,
-            3,
-            " ↥ ",
-            Color::Indexed(231),
-            Color::Indexed(29),
-            true,
-        );
+        let [restore, close] = super::workspace::parked_controls(rect);
+        for (control, label, color) in [(restore, " ↥ ", 29), (close, " × ", 88)] {
+            fill(frame, control, Color::Indexed(color));
+            write_text(
+                frame,
+                control.x,
+                y,
+                control.cols,
+                label,
+                Color::Indexed(231),
+                Color::Indexed(color),
+                true,
+            );
+        }
+        if pane.status == crate::model::Status::Working {
+            let number = Rect {
+                x: rect.x + 1,
+                y,
+                cols: 4,
+                rows: 1,
+            };
+            activity_background(
+                frame,
+                rect,
+                bg,
+                Color::Indexed(bright),
+                selected,
+                spinner,
+                &[number, restore, close],
+            );
+        }
     }
 }
 fn draw_dashboard(
@@ -2084,7 +2104,7 @@ mod tests {
     fn header_palette_buttons_title_sanitization_and_wide_clipping() {
         for cols in [40, 80, 120, 240, 400] {
             for (reading, overlay, buttons) in [
-                (ReadingMode::Grid, false, 6),
+                (ReadingMode::Grid, false, 3),
                 (ReadingMode::Capped(1), true, 6),
                 (ReadingMode::Fullscreen(1), true, 6),
             ] {
@@ -2102,6 +2122,10 @@ mod tests {
                     .collect::<String>();
                 assert!(text.contains("#{literal}"));
                 assert!(!text.contains('\x1b'));
+                if reading == ReadingMode::Grid && !overlay {
+                    assert!(!text.contains('↗') && !text.contains('▶'));
+                    assert!(text.contains('⛶'));
+                }
                 let mut display = Terminal::new(cols, 10);
                 display.feed(&terminal_diff(None, &frame));
                 assert_eq!(display.snapshot().cells, frame.cells);

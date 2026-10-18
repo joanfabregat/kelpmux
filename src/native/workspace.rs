@@ -1350,6 +1350,22 @@ pub fn tab_targets(
     }
 }
 
+/// Restore and close buttons occupy the full height of a parked entry.
+pub fn parked_controls(rect: Rect) -> [Rect; 2] {
+    let close = Rect {
+        x: rect.x + rect.cols.saturating_sub(4),
+        cols: 3,
+        ..rect
+    };
+    [
+        Rect {
+            x: close.x.saturating_sub(3),
+            ..close
+        },
+        close,
+    ]
+}
+
 /// Shared three-row parked entry bounds for drawing, hover and click routing.
 pub fn parked_cards(bounds: Rect, selection: usize, count: usize) -> Vec<(usize, Rect)> {
     let visible = usize::from(bounds.rows.saturating_sub(2) / 3);
