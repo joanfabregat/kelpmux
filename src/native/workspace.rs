@@ -1203,9 +1203,9 @@ pub fn tab_targets(
             (
                 TabTarget::New,
                 Rect {
-                    x: 1,
+                    x: 0,
                     y,
-                    cols: 3,
+                    cols: 5,
                     rows: 3,
                 },
             ),
@@ -1222,8 +1222,8 @@ pub fn tab_targets(
     }
     match position {
         TabPosition::Top | TabPosition::Bottom => {
-            let overflow = count * 18 + 17 > usize::from(cols);
-            let reserve = if overflow { 23 } else { 17 };
+            let overflow = count * 18 + 18 > usize::from(cols);
+            let reserve = if overflow { 24 } else { 18 };
             let capacity = usize::from(cols.saturating_sub(reserve) / 18)
                 .max(1)
                 .min(count);
@@ -1256,9 +1256,9 @@ pub fn tab_targets(
             tabs.push((
                 TabTarget::New,
                 Rect {
-                    x: x + tabs.len() as u16 * width + 1,
+                    x: x + tabs.len() as u16 * width,
                     y,
-                    cols: 3,
+                    cols: 5,
                     rows: 3,
                 },
             ));
