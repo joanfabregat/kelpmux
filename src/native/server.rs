@@ -1283,7 +1283,7 @@ impl Server {
         let title = specification
             .as_ref()
             .map(|specification| specification.name.clone())
-            .unwrap_or_else(|| "shell".into());
+            .unwrap_or_else(|| "Shell".into());
         if specification.is_some() {
             self.aliases.insert(id, title.clone());
         }
@@ -1835,10 +1835,17 @@ impl Server {
                                                 continue;
                                             }
                                         }
-                                        info.title =
+                                        info.title = if info.kind.is_none() {
+                                            super::tracking::shell_tab_name(
+                                                Some(title),
+                                                self.aliases.get(id).map(String::as_str),
+                                                info.status == Status::Idle,
+                                            )
+                                        } else {
                                             self.aliases.get(id).cloned().unwrap_or_else(|| {
                                                 title.chars().take(1024).collect()
-                                            });
+                                            })
+                                        };
                                     }
                                 }
                                 Effect::Clipboard(text) if text.len() <= MAX_INPUT => {
@@ -1977,11 +1984,6 @@ impl Server {
                 if let Some(pane) = self.panes.get_mut(&info.id) {
                     if std::mem::take(&mut pane.agent_named) || before.kind.is_some() {
                         pane.terminal_title = None;
-                        info.title = self
-                            .aliases
-                            .get(&info.id)
-                            .cloned()
-                            .unwrap_or_else(|| "shell".into());
                     }
                 }
                 info.session_id = None;
@@ -1993,6 +1995,13 @@ impl Server {
                 } else {
                     Status::Unknown
                 };
+                info.title = super::tracking::shell_tab_name(
+                    self.panes
+                        .get(&info.id)
+                        .and_then(|pane| pane.terminal_title.as_deref()),
+                    self.aliases.get(&info.id).map(String::as_str),
+                    info.status == Status::Idle,
+                );
                 info.observation = crate::model::Observation::checked(
                     crate::model::StatusSource::Process,
                     crate::now(),

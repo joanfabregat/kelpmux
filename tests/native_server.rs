@@ -618,6 +618,43 @@ fn start_background(stream: &mut UnixStream, pane: &PaneInfo) {
     });
 }
 #[test]
+fn idle_shell_label_survives_prompt_titles_and_returns_after_application_exit() {
+    let daemon = Daemon::start();
+    let (mut stream, _, _) = daemon.attach();
+    write_message(
+        &mut stream,
+        &ClientMessage::Input(
+            b"printf '\\033]0;joan@jbox: ~/scratch\\007'; printf 'PROMPT_%s\\n' ready\n".to_vec(),
+        ),
+    )
+    .unwrap();
+    wait_frame(&mut stream, |frame| {
+        let output: String = frame.cells.iter().map(|cell| cell.text.as_str()).collect();
+        output.contains("PROMPT_ready")
+            && frame.panes.iter().any(|view| {
+                view.pane.status == kelpmux::model::Status::Idle && view.pane.title == "Shell"
+            })
+    });
+    write_message(
+        &mut stream,
+        &ClientMessage::Input(b"printf '\\033]0;Application title\\007'; sleep 30\n".to_vec()),
+    )
+    .unwrap();
+    wait_frame(&mut stream, |frame| {
+        frame
+            .panes
+            .iter()
+            .any(|view| view.pane.title == "Application title")
+    });
+    write_message(&mut stream, &ClientMessage::Input(vec![3])).unwrap();
+    wait_frame(&mut stream, |frame| {
+        frame.panes.iter().any(|view| {
+            view.pane.status == kelpmux::model::Status::Idle && view.pane.title == "Shell"
+        })
+    });
+}
+
+#[test]
 fn child_shell_has_native_color_environment_without_ssh_autoattach_markers() {
     let daemon = Daemon::start();
     let (mut stream, _, _) = daemon.attach();
