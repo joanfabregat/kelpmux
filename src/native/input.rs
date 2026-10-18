@@ -849,20 +849,6 @@ impl Router {
             return output;
         }
         if event.kind == MouseKind::Press
-            && super::workspace::new_button(frame.rows).contains(event.position)
-        {
-            if frame
-                .panes
-                .iter()
-                .filter(|view| Some(view.pane.id) != frame.ui.scratch)
-                .count()
-                < 9
-            {
-                emit(&mut output, Action::NewTab, true);
-            }
-            return output;
-        }
-        if event.kind == MouseKind::Press
             && super::workspace::parked_button(frame.rows).contains(event.position)
         {
             self.pending_modal = true;

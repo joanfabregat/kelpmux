@@ -347,7 +347,9 @@ impl Workspace {
                 let index = self.require_pane(id)?;
                 self.panes[index].parked = false;
                 self.active = id;
-                self.reading = ReadingMode::Tabs(id);
+                if self.reading != ReadingMode::Grid {
+                    self.reading = ReadingMode::Tabs(id);
+                }
                 self.ui.dialog = None;
                 self.reflow();
             }
@@ -794,6 +796,16 @@ impl Workspace {
         }
         if matches!(
             action,
+            Action::Focus(_) | Action::Select(_) | Action::Read(_) | Action::Fullscreen(_)
+        ) {
+            for notification in &mut self.ui.notifications {
+                if notification.pane == self.active {
+                    notification.read = true;
+                }
+            }
+        }
+        if matches!(
+            action,
             Action::Read(_)
                 | Action::Fullscreen(_)
                 | Action::Select(_)
@@ -1156,23 +1168,15 @@ pub fn grid_controls(rect: Rect) -> [Rect; 3] {
 }
 pub fn parked_button(rows: u16) -> Rect {
     Rect {
-        x: 19,
-        y: rows - 1,
-        cols: 12,
-        rows: 1,
-    }
-}
-pub fn new_button(rows: u16) -> Rect {
-    Rect {
         x: 14,
         y: rows - 1,
-        cols: 5,
+        cols: 14,
         rows: 1,
     }
 }
 pub fn help_button(rows: u16) -> Rect {
     Rect {
-        x: 31,
+        x: 28,
         y: rows - 1,
         cols: 3,
         rows: 1,
@@ -1194,11 +1198,11 @@ pub fn color_cards(bounds: Rect) -> Vec<Rect> {
         .collect()
 }
 pub fn sidebar_actions(cols: u16, rows: u16) -> [Rect; 2] {
-    let height = if rows >= 14 { 2 } else { 1 };
+    let height = if rows >= 14 { 3 } else { 1 };
     let new = Rect {
         x: 0,
         y: rows - 1 - height,
-        cols: (cols / 5).clamp(18, 28),
+        cols: (cols / 5).clamp(18, 28) - 1,
         rows: height,
     };
     [new, parked_button(rows)]
@@ -1308,12 +1312,12 @@ pub fn tab_targets(
             tabs
         }
         TabPosition::Left => {
-            let width = (cols / 5).clamp(18, 28);
+            let width = (cols / 5).clamp(18, 28) - 1;
             let [mut new, parked] = sidebar_actions(cols, rows);
             let area = new.y;
-            let overflow = count > usize::from(area);
+            let height = new.rows;
+            let overflow = count > usize::from(area / height);
             let available = area.saturating_sub(if overflow { 2 } else { 0 });
-            let height = (available / count as u16).clamp(1, 2);
             let capacity = usize::from(available / height).max(1);
             let start = if overflow {
                 active.saturating_sub(capacity - 1)

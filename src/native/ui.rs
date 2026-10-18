@@ -2,7 +2,7 @@
 use crate::Result;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
-pub const FOOTER_COLS: u16 = 34;
+pub const FOOTER_COLS: u16 = 31;
 pub const FOOTER_BG: u8 = 239;
 pub const TAB_BG: u8 = 236;
 pub const PARKED_BG: u8 = 60;

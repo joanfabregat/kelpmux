@@ -1697,6 +1697,28 @@ impl Server {
                 }
             }
         }
+        self.persist_notification_reads()?;
+        Ok(())
+    }
+    fn persist_notification_reads(&mut self) -> Result<()> {
+        let ids: Vec<_> = self
+            .workspace
+            .ui
+            .notifications
+            .iter()
+            .filter(|event| {
+                event.read
+                    && self
+                        .activity
+                        .all()
+                        .iter()
+                        .any(|saved| saved.id == event.id && !saved.read)
+            })
+            .map(|event| event.id)
+            .collect();
+        for id in ids {
+            self.activity.acknowledge(id)?;
+        }
         Ok(())
     }
     fn mouse(&mut self, mouse: MouseEvent) -> Result<()> {
