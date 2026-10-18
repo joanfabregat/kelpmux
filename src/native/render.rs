@@ -234,29 +234,12 @@ pub fn compose(
             parked.x,
             parked.y,
             parked.cols,
-            &format!(
-                " ⊟ Parked {} ",
-                workspace.panes.iter().filter(|pane| pane.parked).count()
-            ),
+            &match workspace.panes.iter().filter(|pane| pane.parked).count() {
+                0 => " ⊟ Parked ".into(),
+                count => format!(" ⊟ Parked ({count}) "),
+            },
             Color::Indexed(231),
             Color::Indexed(super::ui::PARKED_BG),
-            true,
-        );
-        let new = super::workspace::new_button(frame.rows);
-        let enabled = workspace
-            .panes
-            .iter()
-            .filter(|pane| Some(pane.id) != workspace.ui.scratch)
-            .count()
-            < 9;
-        write_text(
-            &mut frame,
-            new.x,
-            new.y,
-            new.cols,
-            "  +  ",
-            Color::Indexed(if enabled { 231 } else { 245 }),
-            Color::Indexed(if enabled { 238 } else { 236 }),
             true,
         );
     }
@@ -466,7 +449,7 @@ fn draw_grid_separators(frame: &mut Frame, workspace: &Workspace) {
                     right,
                     y,
                     1,
-                    "│",
+                    "┃",
                     Color::Indexed(PALETTE[usize::from(view.pane.palette) % PALETTE.len()].1),
                     Color::Default,
                     false,
@@ -554,8 +537,10 @@ fn draw_dialog(
     let header_bg = Color::Indexed(
         if matches!(
             dialog.kind,
-            DialogKind::CloseConfirm | DialogKind::ParkConfirm | DialogKind::RestoreConfirm
+            DialogKind::ParkConfirm | DialogKind::RestoreConfirm
         ) {
+            super::ui::PARKED_BG
+        } else if dialog.kind == DialogKind::CloseConfirm {
             workspace
                 .panes
                 .iter()
@@ -703,10 +688,7 @@ fn draw_dialog(
                 (0, false) => 24,
                 (_, true) if dialog.kind == DialogKind::CloseConfirm => 196,
                 _ if dialog.kind == DialogKind::CloseConfirm => 88,
-                (_, true) if dialog.kind == DialogKind::ParkConfirm => 136,
-                _ if dialog.kind == DialogKind::ParkConfirm => 58,
-                (_, true) => 35,
-                _ => 29,
+                _ => super::ui::PARKED_BG,
             });
             fill(frame, rect, bg);
             let label = if index == 0 {
@@ -1473,7 +1455,7 @@ fn draw_tabs(frame: &mut Frame, workspace: &Workspace, spinner: usize) {
                 x,
                 y,
                 1,
-                "│",
+                "▎",
                 Color::Indexed(accent),
                 Color::Default,
                 false,
@@ -1596,7 +1578,8 @@ fn draw_tab(
         }
     };
     let (title_x, title_width) = if rect.rows == 1 {
-        (title_x + track.cols, title_width.saturating_sub(track.cols))
+        let occupied = track.cols + u16::from(track.cols > 0);
+        (title_x + occupied, title_width.saturating_sub(occupied))
     } else {
         (title_x, title_width)
     };
@@ -1635,9 +1618,17 @@ fn draw_tab(
             .unwrap_or(&pane.cwd);
         write_text(
             frame,
-            track.x + track.cols + 1,
-            rect.y,
-            park.x.saturating_sub(track.x + track.cols + 2),
+            if rect.rows >= 3 {
+                rect.x + 2
+            } else {
+                track.x + track.cols + 1
+            },
+            if rect.rows >= 3 { rect.y + 2 } else { rect.y },
+            if rect.rows >= 3 {
+                rect.cols.saturating_sub(4)
+            } else {
+                park.x.saturating_sub(track.x + track.cols + 2)
+            },
             &safe_text(folder),
             if tab_text(workspace, selected) == Color::Indexed(232) {
                 Color::Indexed(240)
@@ -1700,24 +1691,6 @@ fn draw_tab(
         write_text(frame, rect.x, y, 1, "▌", Color::Indexed(accent), bg, false);
     }
     if pane.status == crate::model::Status::Working {
-        activity_background(
-            frame,
-            rect,
-            bg,
-            if selected {
-                Color::Indexed(231)
-            } else {
-                Color::Indexed(accent)
-            },
-            selected,
-            spinner,
-            &[
-                number,
-                close,
-                park,
-                if grid { zoom } else { Rect::default() },
-            ],
-        );
         activity_ball(
             frame,
             track,
@@ -1728,56 +1701,6 @@ fn draw_tab(
             },
             spinner,
         );
-    }
-}
-
-/// A slow, bounded highlight across the tab background; terminal cells and
-/// foreground colors are untouched, and controls retain their own backgrounds.
-fn activity_background(
-    frame: &mut Frame,
-    rect: Rect,
-    base: Color,
-    tint: Color,
-    selected: bool,
-    tick: usize,
-    controls: &[Rect],
-) {
-    let (br, bg, bb) = color_rgb(base, false);
-    let (tr, tg, tb) = color_rgb(tint, false);
-    let time = tick as f64 * 0.65;
-    let amplitude = if selected { 0.34 } else { 0.085 };
-    for y in rect.y..rect.y + rect.rows {
-        for x in rect.x + 1..rect.x + rect.cols {
-            let point = Point { x, y };
-            if controls.iter().any(|control| control.contains(point)) {
-                continue;
-            }
-            // A broad curved reflection with a narrow specular ridge, slightly
-            // angled across rows and eased in speed rather than resetting a band.
-            let phase = f64::from(x - rect.x) * std::f64::consts::TAU / f64::from(rect.cols + 8)
-                + f64::from(y - rect.y) * 0.2
-                - time
-                - (time * 0.37).sin() * 0.15;
-            let wave = (phase.cos() + 1.0) * 0.5;
-            let weight = amplitude * (wave * 0.2 + wave.powi(10) * 0.8);
-            let mix = |a: u8, b: u8| {
-                (f64::from(a) * (1.0 - weight) + f64::from(b) * weight).round() as u8
-            };
-            let cell = &mut frame.cells[usize::from(y) * usize::from(frame.cols) + usize::from(x)];
-            if cell.width == 0 || cell.bg != base {
-                continue;
-            }
-            let color = Color::Rgb(mix(br, tr), mix(bg, tg), mix(bb, tb));
-            let width = cell.width;
-            cell.bg = color;
-            for offset in 1..u16::from(width) {
-                if x + offset < rect.x + rect.cols {
-                    frame.cells
-                        [usize::from(y) * usize::from(frame.cols) + usize::from(x + offset)]
-                    .bg = color;
-                }
-            }
-        }
     }
 }
 
@@ -1885,13 +1808,11 @@ fn draw_parked(
     bounds: Rect,
     spinner: usize,
 ) {
-    let status_x = bounds.x + bounds.cols.saturating_sub(25);
     let [restore, close] = super::workspace::parked_controls(bounds);
-    let title_x = bounds.x + 6;
+    let title_x = bounds.x + 8;
     for (x, width, label) in [
         (bounds.x + 2, 6, "Tab"),
-        (title_x, status_x.saturating_sub(title_x), "Name"),
-        (status_x, 16, "Status"),
+        (title_x, restore.x.saturating_sub(title_x + 1), "Name"),
         (restore.x, 3, " ↥ "),
         (close.x, 3, " × "),
     ] {
@@ -1956,7 +1877,7 @@ fn draw_parked(
             bg,
             true,
         );
-        let title_width = status_x.saturating_sub(title_x + 1);
+        let title_width = restore.x.saturating_sub(title_x + 1);
         let title = marquee_title(
             &pane.title,
             title_width,
@@ -1968,16 +1889,6 @@ fn draw_parked(
             y,
             title_width,
             &title,
-            tab_text(workspace, selected),
-            bg,
-            false,
-        );
-        write_text(
-            frame,
-            status_x,
-            y,
-            16,
-            pane.status.text(),
             tab_text(workspace, selected),
             bg,
             false,
@@ -1997,31 +1908,12 @@ fn draw_parked(
             );
         }
         if pane.status == crate::model::Status::Working {
-            let number = Rect {
-                x: rect.x + 1,
-                y,
-                cols: 4,
-                rows: 1,
-            };
-            activity_background(
-                frame,
-                rect,
-                bg,
-                if selected {
-                    Color::Indexed(231)
-                } else {
-                    Color::Indexed(accent)
-                },
-                selected,
-                spinner,
-                &[number, restore, close],
-            );
             activity_ball(
                 frame,
                 Rect {
                     x: rect.x + 6,
-                    y: rect.y,
-                    cols: status_x.saturating_sub(rect.x + 6).min(1),
+                    y,
+                    cols: 1,
                     rows: 1,
                 },
                 if selected {
@@ -2239,50 +2131,6 @@ mod tests {
                 header(&mut frame, &workspace, &view(cols, overlay), false, 0);
                 assert_eq!(frame.cells[5].bg, Color::Indexed(super::super::ui::TAB_BG));
             }
-        }
-    }
-    #[test]
-    fn inactive_material_sheen_is_subtler_and_both_states_keep_the_pane_hue() {
-        for (bright, muted) in PALETTE {
-            let mut strengths = Vec::new();
-            for selected in [true, false] {
-                let ws = Workspace::new(80, 24).unwrap();
-                let mut f = compose(&ws, &BTreeMap::new(), true, None, 0);
-                let rect = Rect {
-                    x: 0,
-                    y: 0,
-                    cols: 40,
-                    rows: 3,
-                };
-                let base = Color::Indexed(if selected { muted } else { 234 });
-                let tint = Color::Indexed(bright);
-                fill(&mut f, rect, base);
-                let rgb = color_rgb(base, false);
-                let target = color_rgb(tint, false);
-                activity_background(&mut f, rect, base, tint, selected, 0, &[]);
-                let mut strength = 0;
-                for y in 0..3 {
-                    for x in 1..40 {
-                        let cell = &f.cells[usize::from(y * f.cols + x)];
-                        let color = color_rgb(cell.bg, false);
-                        for (actual, from, to) in [
-                            (color.0, rgb.0, target.0),
-                            (color.1, rgb.1, target.1),
-                            (color.2, rgb.2, target.2),
-                        ] {
-                            assert!((from.min(to)..=from.max(to)).contains(&actual));
-                            strength = strength.max(actual.abs_diff(from));
-                        }
-                    }
-                }
-                assert!(strength > 0);
-                strengths.push(strength);
-                let first = f.cells.clone();
-                fill(&mut f, rect, base);
-                activity_background(&mut f, rect, base, tint, selected, 4, &[]);
-                assert_ne!(f.cells, first);
-            }
-            assert!(strengths[1] < strengths[0]);
         }
     }
     #[test]
