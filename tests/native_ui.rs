@@ -1977,6 +1977,7 @@ fn tab_surfaces_follow_dark_and_light_backgrounds_without_repainting_terminal_de
             let mut ws = workspace((240, 60), (2, 1));
             ws.ui.config.tab_position = position;
             ws.ui.terminal_theme[1] = Some(background);
+            ws.panes[1].status = Status::Working;
             ws.apply(&Action::Read(1)).unwrap();
             let f = frame(&ws);
             let point = match position {
@@ -2007,10 +2008,28 @@ fn tab_surfaces_follow_dark_and_light_backgrounds_without_repainting_terminal_de
                 f.cells[usize::from(number.y * f.cols + number.x + 1)].fg,
                 Color::Indexed(if light { 232 } else { 231 })
             );
+            let ball = f.cells.iter().find(|cell| cell.text == "⣤").unwrap();
+            assert_eq!(ball.fg, Color::Indexed(if light { 232 } else { 231 }));
             let body = f.panes.iter().find(|view| view.pane.id == 1).unwrap().body;
             assert_eq!(
                 f.cells[usize::from(body.y * f.cols + body.x)].bg,
                 Color::Default
+            );
+            ws.apply(&Action::Park(1)).unwrap();
+            ws.apply(&Action::Park(2)).unwrap();
+            ws.apply(&Action::Parked).unwrap();
+            let parked = frame(&ws);
+            let bounds = kelpmux::native::workspace::dialog_bounds_for(
+                parked.cols,
+                parked.rows,
+                kelpmux::native::ui::DialogKind::Parked,
+            );
+            let card = kelpmux::native::workspace::parked_cards(bounds, 0, 2)[1].1;
+            let title = &parked.cells[usize::from((card.y + 1) * parked.cols + card.x + 6)];
+            assert_eq!(title.fg, Color::Indexed(if light { 232 } else { 231 }));
+            assert_eq!(
+                parked.cells[usize::from(card.y * parked.cols + card.x + 6)].fg,
+                Color::Indexed(if light { 232 } else { 231 })
             );
         }
     }

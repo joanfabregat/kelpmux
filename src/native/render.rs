@@ -1718,7 +1718,16 @@ fn draw_tab(
                 if grid { zoom } else { Rect::default() },
             ],
         );
-        activity_ball(frame, track, selected, spinner);
+        activity_ball(
+            frame,
+            track,
+            if selected {
+                Color::Indexed(226)
+            } else {
+                tab_text(workspace, false)
+            },
+            spinner,
+        );
     }
 }
 
@@ -1772,14 +1781,14 @@ fn activity_background(
     }
 }
 
-fn activity_ball(frame: &mut Frame, track: Rect, selected: bool, tick: usize) {
+fn activity_ball(frame: &mut Frame, track: Rect, foreground: Color, tick: usize) {
     if track.cols == 0 {
         return;
     }
     let index = usize::from(track.y) * usize::from(frame.cols) + usize::from(track.x);
     if let Some(cell) = frame.cells.get_mut(index) {
         cell.text = ["⣤", "⠶", "⠛", "⠶"][(tick / 2) % 4].into();
-        cell.fg = Color::Indexed(if selected { 226 } else { 231 });
+        cell.fg = foreground;
         cell.width = 1;
     }
 }
@@ -1939,7 +1948,11 @@ fn draw_parked(
             y,
             4,
             &format!(" {} ", pane.id),
-            Color::Indexed(if selected { 226 } else { 231 }),
+            if selected {
+                Color::Indexed(226)
+            } else {
+                tab_text(workspace, false)
+            },
             bg,
             true,
         );
@@ -1955,7 +1968,7 @@ fn draw_parked(
             y,
             title_width,
             &title,
-            Color::Indexed(231),
+            tab_text(workspace, selected),
             bg,
             false,
         );
@@ -1965,7 +1978,7 @@ fn draw_parked(
             y,
             16,
             pane.status.text(),
-            Color::Indexed(231),
+            tab_text(workspace, selected),
             bg,
             false,
         );
@@ -2011,7 +2024,11 @@ fn draw_parked(
                     cols: status_x.saturating_sub(rect.x + 6).min(1),
                     rows: 1,
                 },
-                selected,
+                if selected {
+                    Color::Indexed(226)
+                } else {
+                    tab_text(workspace, false)
+                },
                 spinner,
             );
         }
