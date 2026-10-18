@@ -1384,7 +1384,7 @@ fn draw_tabs(frame: &mut Frame, workspace: &Workspace, spinner: usize) {
                 let label = if position == TabPosition::Left {
                     " + New tab "
                 } else {
-                    " + "
+                    "  +  "
                 };
                 let enabled = workspace
                     .panes
@@ -1554,7 +1554,7 @@ fn draw_tab(
         number.y,
         number.cols,
         &format!(" {} ", pane.number),
-        Color::Indexed(if selected { 226 } else { 117 }),
+        Color::Indexed(if selected { 226 } else { 231 }),
         Color::Indexed(muted),
         true,
     );
