@@ -178,7 +178,7 @@ fn notification_history_acknowledges_and_jumps_and_next_agent_navigation_wraps()
         actions(Router::default().route(
             mouse(
                 Point {
-                    x: 15,
+                    x: 32,
                     y: f.rows - 1
                 },
                 MouseKind::Press

@@ -465,7 +465,7 @@ fn controller_cursor_footer_and_observer_geometry_survive_takeover() {
         .iter()
         .map(|cell| cell.text.as_str())
         .collect();
-    assert!(!footer.contains("Observer"));
+    assert!(!footer.contains("Obs"));
     let mut observer = daemon.connect();
     write_message(
         &mut observer,
@@ -491,7 +491,7 @@ fn controller_cursor_footer_and_observer_geometry_survive_takeover() {
         .iter()
         .map(|cell| cell.text.as_str())
         .collect();
-    assert!(footer.contains("Observer"));
+    assert!(footer.contains("Obs"));
     write_message(
         &mut observer,
         &ClientMessage::Resize {
@@ -885,5 +885,40 @@ fn new_tabs_create_one_pty_preserve_existing_jobs_and_stop_at_nine() {
         settings["ui"]["pane_colors"]
             .get(original.0.to_string())
             .is_none()
+    );
+}
+
+#[test]
+fn controller_and_observer_surfaces_use_their_own_reported_themes() {
+    let daemon = Daemon::start();
+    let (mut controller, _, _) = daemon.attach();
+    write_message(&mut controller, &ClientMessage::Action(Action::Read(1))).unwrap();
+    wait_frame(&mut controller, |frame| {
+        frame.reading == ReadingMode::Tabs(1)
+    });
+    let (mut observer, _, _) = daemon.attach();
+    for (client, background, expected) in [
+        (&mut controller, [12, 18, 24], Color::Rgb(26, 32, 38)),
+        (&mut observer, [246, 244, 240], Color::Rgb(232, 230, 226)),
+    ] {
+        write_message(
+            client,
+            &ClientMessage::ThemeColor {
+                background: true,
+                rgb: background,
+            },
+        )
+        .unwrap();
+        let frame = wait_frame(client, |frame| {
+            frame.ui.terminal_theme[1] == Some(background)
+        });
+        assert_eq!(frame.cells[usize::from(frame.cols - 1)].bg, expected);
+    }
+    write_message(&mut controller, &ClientMessage::Action(Action::NewTab)).unwrap();
+    let frame = wait_frame(&mut controller, |frame| frame.panes.len() == 2);
+    assert_eq!(frame.ui.terminal_theme[1], Some([12, 18, 24]));
+    assert_eq!(
+        frame.cells[usize::from(frame.cols - 1)].bg,
+        Color::Rgb(26, 32, 38)
     );
 }
