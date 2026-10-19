@@ -454,6 +454,70 @@ fn wait_frame(stream: &mut UnixStream, predicate: impl Fn(&Frame) -> bool) -> Fr
     }
 }
 #[test]
+fn first_grid_mouse_gesture_focuses_without_reaching_a_mouse_reporting_pty() {
+    let daemon = Daemon::start();
+    let (mut stream, _, _) = daemon.attach();
+    let panes = create_tabs(&mut stream, 2, 1);
+    let target = panes[1].id;
+    let capture = daemon.root.join("mouse-byte");
+    write_message(&mut stream, &ClientMessage::Input(format!(
+        "stty -echo -icanon min 1 time 0; printf '\\033[?1000h\\033[?1006hMOUSE_''READY\\n'; dd bs=1 count=1 of={} 2>/dev/null; printf '\\033[?1000l\\033[?1006lMOUSE_''RECEIVED\\n'; stty sane\n", capture.display()
+    ).into_bytes())).unwrap();
+    wait_frame(&mut stream, |frame| {
+        frame
+            .panes
+            .iter()
+            .any(|view| view.pane.id == target && view.modes.mouse_sgr)
+    });
+    command(&mut stream, Action::CloseReading).unwrap();
+    command(&mut stream, Action::Focus(panes[0].id)).unwrap();
+    let grid = wait_frame(&mut stream, |frame| {
+        frame.reading == ReadingMode::Grid && frame.active == panes[0].id
+    });
+    let body = grid
+        .panes
+        .iter()
+        .find(|view| view.pane.id == target)
+        .unwrap()
+        .body;
+    let press = MouseEvent {
+        position: Point {
+            x: body.x + 2,
+            y: body.y + 2,
+        },
+        kind: MouseKind::Press,
+        button: 0,
+        shift: false,
+        alt: false,
+        ctrl: false,
+    };
+    for kind in [MouseKind::Press, MouseKind::Move, MouseKind::Release] {
+        write_message(
+            &mut stream,
+            &ClientMessage::Mouse(MouseEvent { kind, ..press }),
+        )
+        .unwrap();
+    }
+    wait_frame(&mut stream, |frame| frame.active == target);
+    // Give the fixture reader time to consume any mistakenly forwarded event.
+    let deadline = Instant::now() + Duration::from_millis(200);
+    while Instant::now() < deadline {
+        assert!(fs::read(&capture).unwrap_or_default().is_empty());
+        thread::sleep(Duration::from_millis(10));
+    }
+    write_message(&mut stream, &ClientMessage::Mouse(press)).unwrap();
+    wait_frame(&mut stream, |frame| {
+        frame
+            .cells
+            .iter()
+            .map(|cell| cell.text.as_str())
+            .collect::<String>()
+            .contains("MOUSE_RECEIVED")
+    });
+    assert_eq!(fs::read(capture).unwrap(), b"\x1b");
+}
+
+#[test]
 fn controller_cursor_footer_and_observer_geometry_survive_takeover() {
     let daemon = Daemon::start();
     let (mut controller, _, _) = daemon.attach();
