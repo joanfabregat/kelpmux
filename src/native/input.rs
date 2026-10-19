@@ -237,6 +237,7 @@ fn decode_mouse(bytes: &[u8]) -> Option<MouseEvent> {
 
 #[derive(Default)]
 pub struct Router {
+    focus_click: bool,
     search: Option<(String, bool)>,
     search_utf8: Vec<u8>,
     selecting: bool,
@@ -634,6 +635,15 @@ impl Router {
         if self.pending_modal {
             return output;
         }
+        if self.focus_click && matches!(event.kind, MouseKind::Move | MouseKind::Release) {
+            if event.kind == MouseKind::Release {
+                self.focus_click = false;
+            }
+            return output;
+        }
+        if event.kind == MouseKind::Press {
+            self.focus_click = false;
+        }
         if let Some((column, row)) = self.boundary_drag {
             if matches!(event.kind, MouseKind::Move | MouseKind::Release) {
                 emit(
@@ -963,18 +973,12 @@ impl Router {
                         let close = matches!(target, TabTarget::Pane(_))
                             && event.kind == MouseKind::Press
                             && super::workspace::tab_close(bounds).contains(event.position);
-                        let color = matches!(target, TabTarget::Pane(_))
-                            && event.kind == MouseKind::Press
-                            && super::workspace::tab_number(bounds).contains(event.position);
                         let park = matches!(target, TabTarget::Pane(_))
                             && event.kind == MouseKind::Press
                             && super::workspace::tab_park(bounds).contains(event.position);
                         if park {
                             self.pending_modal = true;
                             emit(&mut output, Action::ParkRequest(view.pane.id), true);
-                        } else if color {
-                            self.pending_modal = true;
-                            emit(&mut output, Action::TabColor(view.pane.id), true);
                         } else if close {
                             self.pending_modal = true;
                             emit(&mut output, Action::ClosePaneRequest(view.pane.id), true);
@@ -1015,8 +1019,7 @@ impl Router {
             } else if zoom.contains(event.position) {
                 Action::Fullscreen(id)
             } else if super::workspace::tab_number(view.rect).contains(event.position) {
-                self.pending_modal = true;
-                Action::TabColor(id)
+                Action::Focus(id)
             } else {
                 self.header_drag = Some(id);
                 Action::Focus(id)
@@ -1025,6 +1028,14 @@ impl Router {
             return output;
         }
         if !view.body.contains(event.position) {
+            return output;
+        }
+        if frame.reading == ReadingMode::Grid
+            && frame.active != id
+            && event.kind == MouseKind::Press
+        {
+            self.focus_click = true;
+            emit(&mut output, Action::Focus(id), true);
             return output;
         }
         let app_mouse = view.modes.mouse_click || view.modes.mouse_drag || view.modes.mouse_motion;

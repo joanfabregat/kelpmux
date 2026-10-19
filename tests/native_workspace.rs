@@ -521,6 +521,7 @@ fn selection_is_local_and_observers_cannot_inject() {
     let mut f = frame(&ws);
     let mut router = Router::default();
     let body = f.panes[1].body;
+    f.active = 2; // Text selection starts after the pane has already been focused.
     assert_eq!(
         action(&router.route(
             mouse(
@@ -572,6 +573,87 @@ fn selection_is_local_and_observers_cannot_inject() {
         action(&router.route(InputEvent::Bytes(b"\x02t\x02d".to_vec()), &f)),
         vec![Action::Takeover, Action::Detach]
     );
+}
+
+#[test]
+fn first_grid_click_consumes_the_whole_gesture_then_active_clicks_reach_the_app() {
+    let mut ws = workspace(120, 40, (2, 1));
+    let mut f = frame(&ws);
+    f.panes[1].modes.mouse_click = true;
+    let body = f.panes[1].body;
+    let press = MouseEvent {
+        position: Point {
+            x: body.x + 2,
+            y: body.y + 2,
+        },
+        kind: MouseKind::Press,
+        button: 0,
+        shift: false,
+        alt: false,
+        ctrl: false,
+    };
+    let mut router = Router::default();
+    let messages = router.route(InputEvent::Mouse(press), &f);
+    assert_eq!(messages.len(), 1);
+    assert_eq!(action(&messages), vec![Action::Focus(2)]);
+    ws.apply(&Action::Focus(2)).unwrap();
+    f.active = 2;
+    for kind in [MouseKind::Move, MouseKind::Release] {
+        assert!(
+            router
+                .route(InputEvent::Mouse(MouseEvent { kind, ..press }), &f)
+                .is_empty()
+        );
+    }
+    assert!(
+        matches!(router.route(InputEvent::Mouse(press), &f).last(), Some(ClientMessage::Mouse(event)) if *event == press)
+    );
+}
+
+#[test]
+fn canceling_restore_returns_to_parked_list_without_changing_the_view_or_jobs() {
+    use kelpmux::native::{
+        ui::DialogKind,
+        workspace::{close_buttons, dialog_bounds_for},
+    };
+    for grid in [true, false] {
+        for pointer in [false, true] {
+            let mut ws = workspace(160, 50, (2, 2));
+            ws.apply(&Action::Park(2)).unwrap();
+            ws.apply(&Action::Park(4)).unwrap();
+            if !grid {
+                ws.apply(&Action::Read(1)).unwrap();
+            }
+            let before = ws.reading;
+            ws.apply(&Action::Parked).unwrap();
+            ws.apply(&Action::RestoreRequest(4)).unwrap();
+            let f = frame(&ws);
+            let event = if pointer {
+                let rect = close_buttons(dialog_bounds_for(
+                    f.cols,
+                    f.rows,
+                    DialogKind::RestoreConfirm,
+                ))[0];
+                mouse(
+                    Point {
+                        x: rect.x,
+                        y: rect.y,
+                    },
+                    MouseKind::Press,
+                )
+            } else {
+                InputEvent::Bytes(vec![27])
+            };
+            for action in action(&Router::default().route(event, &f)) {
+                ws.apply(&action).unwrap();
+            }
+            assert_eq!(ws.ui.dialog.unwrap().kind, DialogKind::Parked);
+            assert_eq!(ws.ui.dialog.unwrap().selection, 1);
+            assert_eq!(ws.reading, before);
+            assert!(ws.panes[3].parked);
+            assert_eq!(ws.panes.len(), 4);
+        }
+    }
 }
 
 #[test]
