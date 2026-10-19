@@ -804,8 +804,7 @@ impl Router {
             let bounds = help_bounds(frame.cols, frame.rows);
             let close = event.position.y == bounds.y
                 && event.position.x >= bounds.x + bounds.cols.saturating_sub(3);
-            let toggle = event.position.y == frame.rows.saturating_sub(1)
-                && super::workspace::help_button(frame.rows).contains(event.position);
+            let toggle = frame.controls()[3].contains(event.position);
             if event.kind == MouseKind::Press
                 && (!bounds.contains(event.position) || close || toggle)
             {
@@ -830,19 +829,13 @@ impl Router {
                 }
             }
         }
-        if event.kind == MouseKind::Press
-            && event.position.y == frame.rows - 1
-            && event.position.x < 8
-        {
+        let [config, mode, parked, help] = frame.controls();
+        if event.kind == MouseKind::Press && config.contains(event.position) {
             self.pending_modal = true;
             emit(&mut output, Action::Config, true);
             return output;
         }
-        if event.kind == MouseKind::Press
-            && event.position.y == frame.rows - 1
-            && event.position.x >= 8
-            && event.position.x < 14
-        {
+        if event.kind == MouseKind::Press && mode.contains(event.position) {
             if frame.active == 0 {
                 if frame
                     .panes
@@ -858,16 +851,12 @@ impl Router {
             emit(&mut output, Action::Read(frame.active), true);
             return output;
         }
-        if event.kind == MouseKind::Press
-            && super::workspace::parked_button(frame.rows).contains(event.position)
-        {
+        if event.kind == MouseKind::Press && parked.contains(event.position) {
             self.pending_modal = true;
             emit(&mut output, Action::Parked, true);
             return output;
         }
-        if event.kind == MouseKind::Press
-            && super::workspace::help_button(frame.rows).contains(event.position)
-        {
+        if event.kind == MouseKind::Press && help.contains(event.position) {
             if frame.ui.notifications.iter().any(|item| !item.read) {
                 self.pending_modal = true;
                 emit(&mut output, Action::Notifications, true);
@@ -928,6 +917,7 @@ impl Router {
                 &frame.ui.config,
                 tabviews.len(),
                 active,
+                frame.panes.iter().filter(|view| view.pane.parked).count(),
             )
             .into_iter()
             .find(|(_, rect)| rect.contains(event.position))
@@ -965,6 +955,7 @@ impl Router {
                             &frame.ui.config,
                             tabviews.len(),
                             active,
+                            frame.panes.iter().filter(|view| view.pane.parked).count(),
                         )
                         .into_iter()
                         .find(|(item, _)| *item == target)

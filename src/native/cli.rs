@@ -697,13 +697,31 @@ fn validate_frame(frame: &Frame) -> Result<()> {
     }
     Ok(())
 }
+fn fitted_mouse(frame: &Frame, size: (u16, u16), mut point: Point) -> Option<Point> {
+    if frame.sidebar_status() {
+        let height = super::workspace::sidebar_status_rows(frame.rows).min(size.1);
+        let width = super::workspace::sidebar_width(frame.cols) - 1;
+        if point.x < width && point.y >= size.1 - height {
+            point.y = frame.rows - height + point.y - (size.1 - height);
+        }
+    } else if point.y == size.1 - 1 && point.x < frame.footer_cols().min(frame.cols) {
+        point.y = frame.rows - 1;
+    } else if point.y >= size.1.saturating_sub(1) {
+        return None;
+    }
+    Some(point)
+}
 fn fitted(frame: &Frame, size: (u16, u16), notice: Option<&str>) -> Frame {
     let mut fit = frame.clone();
     fit.cols = size.0;
     fit.rows = size.1;
     fit.cells = vec![Cell::default(); usize::from(size.0) * usize::from(size.1)];
-    // Reserve the actual bottom row for the footer, including narrow observers.
-    for y in 0..size.1.saturating_sub(1).min(frame.rows.saturating_sub(1)) {
+    let footer_rows = u16::from(!frame.sidebar_status());
+    for y in 0..size
+        .1
+        .saturating_sub(footer_rows)
+        .min(frame.rows.saturating_sub(footer_rows))
+    {
         for x in 0..size.0.min(frame.cols) {
             let mut cell =
                 frame.cells[usize::from(y) * usize::from(frame.cols) + usize::from(x)].clone();
@@ -714,12 +732,56 @@ fn fitted(frame: &Frame, size: (u16, u16), notice: Option<&str>) -> Frame {
             fit.cells[usize::from(y) * usize::from(size.0) + usize::from(x)] = cell;
         }
     }
+    if frame.sidebar_status() {
+        let height = super::workspace::sidebar_status_rows(frame.rows).min(size.1);
+        let width = (super::workspace::sidebar_width(frame.cols) - 1).min(size.0);
+        let source_top = frame.rows - super::workspace::sidebar_status_rows(frame.rows);
+        let bg = frame.cells[usize::from(source_top * frame.cols)].bg;
+        for y in source_top..frame.rows.min(size.1) {
+            for x in 0..width {
+                fit.cells[usize::from(y * size.0 + x)] = Cell {
+                    bg,
+                    ..Cell::default()
+                };
+            }
+        }
+        for y in 0..height {
+            for x in 0..width {
+                fit.cells[usize::from((size.1 - height + y) * size.0 + x)] =
+                    frame.cells[usize::from((frame.rows - height + y) * frame.cols + x)].clone();
+            }
+        }
+        if let Some(notice) = notice {
+            let y = size.1.saturating_sub(3);
+            for x in 0..width {
+                fit.cells[usize::from(y * size.0 + x)] = Cell {
+                    fg: Color::Indexed(231),
+                    bg: Color::Indexed(88),
+                    ..Cell::default()
+                };
+            }
+            super::render::write_text(
+                &mut fit,
+                0,
+                y,
+                width,
+                notice,
+                Color::Indexed(231),
+                Color::Indexed(88),
+                false,
+            );
+        }
+        fit.cursor = frame
+            .cursor
+            .filter(|c| frame.controller && c.position.x < size.0 && c.position.y < size.1);
+        return fit;
+    }
     let target = usize::from(size.1 - 1) * usize::from(size.0);
     let source = usize::from(frame.rows - 1) * usize::from(frame.cols);
     for cell in &mut fit.cells[target..target + usize::from(size.0)] {
         cell.bg = Color::Indexed(super::ui::FOOTER_BG);
     }
-    let controls = super::ui::FOOTER_COLS.min(size.0).min(frame.cols);
+    let controls = frame.footer_cols().min(size.0).min(frame.cols);
     let fixed = (controls + if frame.controller { 0 } else { 10 })
         .min(size.0)
         .min(frame.cols);
@@ -961,16 +1023,10 @@ fn attach(mut socket: UnixStream, takeover: bool) -> Result<()> {
                 // Footer controls stay at the left edge when fitted.
                 // Pane and help-panel coordinates stay in backend geometry.
                 if let InputEvent::Mouse(mouse) = &mut event {
-                    if mouse.position.y == size.1 - 1
-                        && mouse.position.x < super::ui::FOOTER_COLS.min(frame.cols)
-                    {
-                        mouse.position = Point {
-                            x: mouse.position.x,
-                            y: frame.rows - 1,
-                        };
-                    } else if mouse.position.y >= size.1.saturating_sub(1) {
+                    let Some(point) = fitted_mouse(frame, size, mouse.position) else {
                         continue;
-                    }
+                    };
+                    mouse.position = point;
                 }
                 let messages = router.route(event, frame);
                 if !messages.is_empty() && notice.take().is_some() {
@@ -1034,8 +1090,41 @@ fn attach(mut socket: UnixStream, takeover: bool) -> Result<()> {
 mod fit_tests {
     use super::*;
     #[test]
+    fn fitted_sidebar_keeps_controls_bottom_aligned_and_maps_their_clicks() {
+        let mut workspace = super::super::workspace::Workspace::new(120, 40).unwrap();
+        workspace.ui.config.tab_position = super::super::ui::TabPosition::Left;
+        workspace.ui.vitals = vec![("cpu 12%".into(), 114), ("12:34".into(), 250)];
+        let frame = super::super::render::compose(&workspace, &Default::default(), false, None, 0);
+        for size in [(40, 10), (120, 40), (160, 50)] {
+            for notice in [None, Some("connection notice")] {
+                let fit = fitted(&frame, size, notice);
+                for control in frame.controls() {
+                    let point = Point {
+                        x: control.x,
+                        y: size.1 - (frame.rows - control.y),
+                    };
+                    assert_eq!(
+                        fitted_mouse(&frame, size, point),
+                        Some(Point {
+                            x: control.x,
+                            y: control.y
+                        })
+                    );
+                    assert_eq!(
+                        fit.cells[usize::from(point.y * fit.cols + point.x)].bg,
+                        frame.cells[usize::from(control.y * frame.cols + control.x)].bg
+                    );
+                }
+                let mut terminal = super::super::engine::Terminal::new(size.0, size.1);
+                terminal.feed(&super::super::render::terminal_diff(None, &fit));
+                assert_eq!(terminal.snapshot().cells, fit.cells);
+            }
+        }
+    }
+    #[test]
     fn fitted_narrow_observer_preserves_observer_marker() {
         let mut workspace = super::super::workspace::Workspace::new(120, 40).unwrap();
+        workspace.ui.config.tab_position = super::super::ui::TabPosition::Top;
         workspace.ui.vitals = vec![("clock 12:34".into(), 250)];
         let frame = super::super::render::compose(&workspace, &Default::default(), false, None, 0);
         let fit = fitted(&frame, (40, 10), None);
@@ -1049,6 +1138,7 @@ mod fit_tests {
     #[test]
     fn fitted_footer_keeps_controls_left_vitals_right_and_notices_separate() {
         let mut workspace = super::super::workspace::Workspace::new(120, 40).unwrap();
+        workspace.ui.config.tab_position = super::super::ui::TabPosition::Top;
         workspace.ui.vitals = vec![("clock 12:34".into(), 250)];
         let frame = super::super::render::compose(&workspace, &Default::default(), true, None, 0);
         for size in [(40, 10), (120, 40), (160, 50)] {
@@ -1057,8 +1147,8 @@ mod fit_tests {
                 let row = usize::from((size.1 - 1) * size.0);
                 let source = usize::from((frame.rows - 1) * frame.cols);
                 assert_eq!(
-                    &fit.cells[row..row + usize::from(super::super::ui::FOOTER_COLS)],
-                    &frame.cells[source..source + usize::from(super::super::ui::FOOTER_COLS)]
+                    &fit.cells[row..row + usize::from(frame.footer_cols())],
+                    &frame.cells[source..source + usize::from(frame.footer_cols())]
                 );
                 let text: String = fit.cells[row..].iter().map(|c| c.text.as_str()).collect();
                 assert!(text.starts_with(" Config "));

@@ -89,7 +89,14 @@ fn seeded_layout_and_terminal_sequences_preserve_all_nine_identities() {
         for view in views.iter().filter(|v| v.body.cols > 0) {
             assert!(view.body.rows > 0);
             assert!(view.body.x + view.body.cols <= ws.cols);
-            assert!(view.body.y + view.body.rows < ws.rows);
+            assert!(view.body.y + view.body.rows <= ws.rows);
+            if view.body.y + view.body.rows == ws.rows {
+                assert_ne!(ws.reading, ReadingMode::Grid);
+                assert_eq!(
+                    ws.ui.config.tab_position.resolve(ws.cols, ws.rows),
+                    kelpmux::native::ui::TabPosition::Left
+                );
+            }
         }
         for (id, cols, rows) in ws.terminal_sizes() {
             let term = engines.get_mut(&id).unwrap();

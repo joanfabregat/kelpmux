@@ -178,7 +178,7 @@ fn notification_history_acknowledges_and_jumps_and_next_agent_navigation_wraps()
         actions(Router::default().route(
             mouse(
                 Point {
-                    x: 29,
+                    x: f.footer_cols() - 2,
                     y: f.rows - 1
                 },
                 MouseKind::Press
@@ -217,7 +217,10 @@ fn viewport_reading_preferences_and_automatic_grid_preserve_all_ids() {
     ws.apply(&Action::ReadResize { cols: 30, rows: 3 }).unwrap();
     ws.resize(120, 40).unwrap();
     // Ignore narrow leftover strips without forgetting the saved preference.
-    assert_eq!(ws.layout()[0].body.cols, 96);
+    assert_eq!(
+        ws.layout()[0].body.cols,
+        ws.cols - kelpmux::native::workspace::sidebar_width(ws.cols)
+    );
     assert_eq!(ws.ui.config.remembered_read_widths[1], Some(85));
     ws.resize(140, 40).unwrap();
     assert_eq!(ws.layout()[0].body.cols, 85);

@@ -160,6 +160,40 @@ pub struct Frame {
     #[serde(default)]
     pub ui: super::ui::UiState,
 }
+impl Frame {
+    pub fn sidebar_status(&self) -> bool {
+        (self.reading != ReadingMode::Grid || self.active == 0)
+            && self.ui.config.tab_position.resolve(self.cols, self.rows)
+                == super::ui::TabPosition::Left
+    }
+    pub fn controls(&self) -> [Rect; 4] {
+        let count = self.panes.iter().filter(|view| view.pane.parked).count();
+        if self.sidebar_status() {
+            super::workspace::sidebar_controls(self.cols, self.rows, count)
+        } else {
+            [
+                Rect {
+                    x: 0,
+                    y: self.rows - 1,
+                    cols: 8,
+                    rows: 1,
+                },
+                Rect {
+                    x: 8,
+                    y: self.rows - 1,
+                    cols: 6,
+                    rows: 1,
+                },
+                super::workspace::parked_button(self.rows, count),
+                super::workspace::help_button(self.rows, count),
+            ]
+        }
+    }
+    pub fn footer_cols(&self) -> u16 {
+        let help = self.controls()[3];
+        help.x + help.cols
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum MouseKind {

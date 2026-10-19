@@ -1284,7 +1284,7 @@ impl Server {
         let title = specification
             .as_ref()
             .map(|specification| specification.name.clone())
-            .unwrap_or_else(|| "Shell".into());
+            .unwrap_or_else(|| "shell".into());
         if specification.is_some() {
             self.aliases.insert(id, title.clone());
         }

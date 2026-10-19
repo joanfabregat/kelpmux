@@ -1014,6 +1014,11 @@ pub fn move_cards(bounds: Rect, columns: u8, rows: u8) -> Vec<Rect> {
         })
         .collect()
 }
+/// Grow with the screen while staying within the original width and +20%.
+pub fn sidebar_width(cols: u16) -> u16 {
+    let minimum = (cols / 5).clamp(18, 28);
+    (cols / 4).clamp(minimum, minimum * 6 / 5)
+}
 /// Terminal content occupies every column except visible UI dividers.
 pub fn tab_body(
     cols: u16,
@@ -1036,9 +1041,10 @@ pub fn tab_body(
             area.rows = area.rows.saturating_sub(3);
         }
         TabPosition::Left => {
-            let sidebar = (cols / 5).clamp(18, 28);
+            let sidebar = sidebar_width(cols);
             area.x = sidebar;
             area.cols = cols - sidebar;
+            area.rows = rows;
         }
         TabPosition::Bottom => area.rows = area.rows.saturating_sub(3),
         TabPosition::Auto => unreachable!(),
@@ -1183,21 +1189,57 @@ pub fn grid_controls(rect: Rect) -> [Rect; 3] {
         close,
     ]
 }
-pub fn parked_button(rows: u16) -> Rect {
+pub fn parked_label(count: usize) -> String {
+    match count {
+        0 => " ⊟ Parked ".into(),
+        count => format!(" ⊟ Parked ({count}) "),
+    }
+}
+pub fn parked_button(rows: u16, count: usize) -> Rect {
     Rect {
         x: 14,
         y: rows - 1,
-        cols: 14,
+        cols: parked_label(count).chars().count() as u16,
         rows: 1,
     }
 }
-pub fn help_button(rows: u16) -> Rect {
+pub fn help_button(rows: u16, count: usize) -> Rect {
+    let parked = parked_button(rows, count);
     Rect {
-        x: 28,
+        x: parked.x + parked.cols,
         y: rows - 1,
         cols: 3,
         rows: 1,
     }
+}
+pub fn sidebar_status_rows(rows: u16) -> u16 {
+    if rows >= 24 {
+        9
+    } else if rows >= 18 {
+        7
+    } else {
+        3
+    }
+}
+pub fn sidebar_controls(cols: u16, rows: u16, count: usize) -> [Rect; 4] {
+    let width = sidebar_width(cols) - 1;
+    let rect = |x, y, cols| Rect {
+        x,
+        y,
+        cols,
+        rows: 1,
+    };
+    let parked = parked_button(rows, count);
+    [
+        rect(0, rows - 2, 8),
+        rect(8, rows - 2, 6),
+        rect(0, rows - 1, parked.cols),
+        rect(
+            parked.cols,
+            rows - 1,
+            3.min(width.saturating_sub(parked.cols)),
+        ),
+    ]
 }
 pub fn color_cards(bounds: Rect) -> Vec<Rect> {
     let height = bounds.rows.saturating_sub(2) / 3;
@@ -1214,15 +1256,15 @@ pub fn color_cards(bounds: Rect) -> Vec<Rect> {
         })
         .collect()
 }
-pub fn sidebar_actions(cols: u16, rows: u16) -> [Rect; 2] {
-    let height = if rows >= 14 { 3 } else { 1 };
+pub fn sidebar_actions(cols: u16, rows: u16, parked_count: usize) -> [Rect; 2] {
+    let height = 3;
     let new = Rect {
         x: 0,
-        y: rows - 1 - height,
-        cols: (cols / 5).clamp(18, 28) - 1,
+        y: rows - sidebar_status_rows(rows) - height,
+        cols: sidebar_width(cols) - 1,
         rows: height,
     };
-    [new, parked_button(rows)]
+    [new, sidebar_controls(cols, rows, parked_count)[2]]
 }
 /// The width switch is useful only when the configured cap is narrower than
 /// the available terminal, regardless of the current wrap/full-width mode.
@@ -1236,12 +1278,13 @@ pub fn tab_targets(
     config: &super::ui::UiConfig,
     count: usize,
     active: usize,
+    parked_count: usize,
 ) -> Vec<(TabTarget, Rect)> {
     use super::ui::TabPosition;
     let position = config.tab_position.resolve(cols, rows);
     if count == 0 {
         if position == TabPosition::Left {
-            let [mut new, parked] = sidebar_actions(cols, rows);
+            let [mut new, parked] = sidebar_actions(cols, rows, parked_count);
             new.y = 1;
             return vec![(TabTarget::New, new), (TabTarget::Parked, parked)];
         }
@@ -1260,7 +1303,7 @@ pub fn tab_targets(
                     rows: 2,
                 },
             ),
-            (TabTarget::Parked, parked_button(rows)),
+            (TabTarget::Parked, parked_button(rows, parked_count)),
         ];
     }
     match position {
@@ -1305,7 +1348,7 @@ pub fn tab_targets(
                     rows: 2,
                 },
             ));
-            tabs.push((TabTarget::Parked, parked_button(rows)));
+            tabs.push((TabTarget::Parked, parked_button(rows, parked_count)));
             if overflow {
                 tabs.push((
                     TabTarget::Previous,
@@ -1329,12 +1372,17 @@ pub fn tab_targets(
             tabs
         }
         TabPosition::Left => {
-            let width = (cols / 5).clamp(18, 28) - 1;
-            let [mut new, parked] = sidebar_actions(cols, rows);
+            let width = sidebar_width(cols) - 1;
+            let [mut new, parked] = sidebar_actions(cols, rows, parked_count);
             let area = new.y;
             let height = new.rows;
             let overflow = count > usize::from(area / height);
-            let available = area.saturating_sub(if overflow { 2 } else { 0 });
+            let compact = area < height + 2;
+            let available = area.saturating_sub(if overflow {
+                if compact { 1 } else { 2 }
+            } else {
+                0
+            });
             let capacity = usize::from(available / height).max(1);
             let start = if overflow {
                 active.saturating_sub(capacity - 1)
@@ -1357,23 +1405,23 @@ pub fn tab_targets(
                 })
                 .collect();
             let end = top + tabs.len() as u16 * height;
-            new.y = end + u16::from(overflow);
+            new.y = end + u16::from(overflow && !compact);
             if overflow {
                 tabs.push((
                     TabTarget::Previous,
                     Rect {
                         x: 0,
                         y: 0,
-                        cols: width,
+                        cols: if compact { width / 2 } else { width },
                         rows: 1,
                     },
                 ));
                 tabs.push((
                     TabTarget::Next,
                     Rect {
-                        x: 0,
-                        y: end,
-                        cols: width,
+                        x: if compact { width / 2 } else { 0 },
+                        y: if compact { 0 } else { end },
+                        cols: if compact { width - width / 2 } else { width },
                         rows: 1,
                     },
                 ));

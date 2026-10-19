@@ -696,7 +696,7 @@ fn idle_shell_label_survives_prompt_titles_and_returns_after_application_exit() 
         let output: String = frame.cells.iter().map(|cell| cell.text.as_str()).collect();
         output.contains("PROMPT_ready")
             && frame.panes.iter().any(|view| {
-                view.pane.status == kelpmux::model::Status::Idle && view.pane.title == "Shell"
+                view.pane.status == kelpmux::model::Status::Idle && view.pane.title == "shell"
             })
     });
     write_message(
@@ -713,7 +713,7 @@ fn idle_shell_label_survives_prompt_titles_and_returns_after_application_exit() 
     write_message(&mut stream, &ClientMessage::Input(vec![3])).unwrap();
     wait_frame(&mut stream, |frame| {
         frame.panes.iter().any(|view| {
-            view.pane.status == kelpmux::model::Status::Idle && view.pane.title == "Shell"
+            view.pane.status == kelpmux::model::Status::Idle && view.pane.title == "shell"
         })
     });
 }

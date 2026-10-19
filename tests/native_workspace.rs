@@ -254,7 +254,7 @@ fn tabs_resize_only_selected_terminal_and_restore_grid() {
             .unwrap()
             .body
             .cols,
-        171
+        ws.cols - kelpmux::native::workspace::sidebar_width(ws.cols) - 1
     );
     assert_eq!(
         ws.layout()
@@ -263,7 +263,7 @@ fn tabs_resize_only_selected_terminal_and_restore_grid() {
             .unwrap()
             .body
             .rows,
-        79
+        ws.rows
     );
     ws.apply(&Action::Fullscreen(2)).unwrap();
     assert_eq!(ws.terminal_sizes(), capped);
@@ -320,7 +320,7 @@ fn tabs_toggle_exits_fullscreen_and_navigation_never_sends_application_clicks() 
     ws.apply(&Action::Read(1)).unwrap();
     let f = frame(&ws);
     let (_, rect) =
-        kelpmux::native::workspace::tab_targets(f.cols, f.rows, &f.ui.config, f.panes.len(), 0)
+        kelpmux::native::workspace::tab_targets(f.cols, f.rows, &f.ui.config, f.panes.len(), 0, 0)
             .into_iter()
             .find(|(target, _)| *target == kelpmux::native::workspace::TabTarget::Pane(1))
             .unwrap();
@@ -347,7 +347,10 @@ fn help_close_button_and_footer_toggle_close_without_application_input() {
             x: bounds.x + bounds.cols - 2,
             y: bounds.y,
         },
-        Point { x: 29, y: 29 },
+        Point {
+            x: f.footer_cols() - 2,
+            y: f.rows - 1,
+        },
     ] {
         let messages = router.route(mouse(point, MouseKind::Press), &f);
         assert_eq!(action(&messages), vec![Action::Help]);
@@ -505,7 +508,7 @@ fn grid_headers_and_tab_footer_have_distinct_hit_targets() {
         action(&router.route(
             mouse(
                 Point {
-                    x: 29,
+                    x: f.footer_cols() - 2,
                     y: f.rows - 1
                 },
                 MouseKind::Press
