@@ -229,6 +229,7 @@ pub fn compose(
             true,
         );
         let parked = super::workspace::parked_button(frame.rows);
+        fill(&mut frame, parked, Color::Indexed(super::ui::PARKED_BG));
         write_text(
             &mut frame,
             parked.x,
@@ -450,7 +451,7 @@ fn draw_grid_separators(frame: &mut Frame, workspace: &Workspace) {
                     y,
                     1,
                     "┃",
-                    Color::Indexed(PALETTE[usize::from(view.pane.palette) % PALETTE.len()].1),
+                    tab_accent(workspace, view.pane.id == workspace.active),
                     Color::Default,
                     false,
                 );
@@ -503,22 +504,39 @@ fn inactive_color(color: Color, foreground: bool, theme: [Option<[u8; 3]>; 2]) -
 }
 
 fn tab_surface(workspace: &Workspace) -> Color {
-    workspace.ui.terminal_theme[1].map_or(Color::Indexed(super::ui::TAB_BG), |rgb| {
-        let light = u16::from(rgb[0]) * 3 + u16::from(rgb[1]) * 6 + u16::from(rgb[2]) >= 1280;
-        let [r, g, b] = rgb.map(|value| {
-            if light {
-                value.saturating_sub(14)
-            } else {
-                value.saturating_add(14)
-            }
-        });
-        Color::Rgb(r, g, b)
-    })
+    theme_surface(workspace, 14)
 }
-fn tab_text(workspace: &Workspace, selected: bool) -> Color {
-    if !selected
-        && workspace.ui.terminal_theme[1]
-            .is_some_and(|[r, g, b]| u16::from(r) * 3 + u16::from(g) * 6 + u16::from(b) >= 1280)
+fn theme_surface(workspace: &Workspace, offset: u8) -> Color {
+    workspace.ui.terminal_theme[1].map_or_else(
+        || match offset {
+            14 => Color::Indexed(super::ui::TAB_BG),
+            24 => Color::Indexed(238),
+            32 => Color::Indexed(240),
+            50 => Color::Indexed(244),
+            _ => Color::Indexed(250),
+        },
+        |rgb| {
+            let light = u16::from(rgb[0]) * 3 + u16::from(rgb[1]) * 6 + u16::from(rgb[2]) >= 1280;
+            let [r, g, b] = rgb.map(|value| {
+                if light {
+                    value.saturating_sub(offset)
+                } else {
+                    value.saturating_add(offset)
+                }
+            });
+            Color::Rgb(r, g, b)
+        },
+    )
+}
+fn tab_accent(workspace: &Workspace, selected: bool) -> Color {
+    theme_surface(workspace, if selected { 88 } else { 50 })
+}
+fn tab_background(workspace: &Workspace, selected: bool) -> Color {
+    theme_surface(workspace, if selected { 32 } else { 14 })
+}
+fn tab_text(workspace: &Workspace, _selected: bool) -> Color {
+    if workspace.ui.terminal_theme[1]
+        .is_some_and(|[r, g, b]| u16::from(r) * 3 + u16::from(g) * 6 + u16::from(b) >= 1280)
     {
         Color::Indexed(232)
     } else {
@@ -537,16 +555,11 @@ fn draw_dialog(
     let header_bg = Color::Indexed(
         if matches!(
             dialog.kind,
-            DialogKind::ParkConfirm | DialogKind::RestoreConfirm
+            DialogKind::Parked | DialogKind::ParkConfirm | DialogKind::RestoreConfirm
         ) {
             super::ui::PARKED_BG
         } else if dialog.kind == DialogKind::CloseConfirm {
-            workspace
-                .panes
-                .iter()
-                .find(|p| Some(p.id) == dialog.source)
-                .map(|p| PALETTE[usize::from(p.palette) % PALETTE.len()].1)
-                .unwrap_or(24)
+            88
         } else {
             24
         },
@@ -768,9 +781,9 @@ fn draw_dialog(
                 ),
             };
             let label = format!("{} {label}", if checked { "●" } else { "○" });
-            let bg = Color::Indexed(if index == dialog.selection && (index < 4 || checked) {
+            let bg = Color::Indexed(if index >= 4 && index == dialog.selection && checked {
                 24
-            } else if checked {
+            } else if index >= 4 && checked {
                 29
             } else {
                 238
@@ -782,7 +795,11 @@ fn draw_dialog(
                 rect.y + rect.rows / 2,
                 rect.cols.saturating_sub(1),
                 &label,
-                Color::Indexed(231),
+                Color::Indexed(if index < 4 && index == dialog.selection {
+                    226
+                } else {
+                    231
+                }),
                 bg,
                 true,
             );
@@ -1362,7 +1379,7 @@ fn draw_tabs(frame: &mut Frame, workspace: &Workspace, spinner: usize) {
                     .filter(|p| Some(p.id) != workspace.ui.scratch)
                     .count()
                     < 9;
-                let bg = Color::Indexed(if enabled { 238 } else { 236 });
+                let bg = theme_surface(workspace, if enabled { 24 } else { 14 });
                 fill(frame, rect, bg);
                 write_text(
                     frame,
@@ -1370,7 +1387,11 @@ fn draw_tabs(frame: &mut Frame, workspace: &Workspace, spinner: usize) {
                     rect.y + rect.rows / 2,
                     rect.cols,
                     label,
-                    Color::Indexed(if enabled { 231 } else { 245 }),
+                    if enabled {
+                        tab_text(workspace, false)
+                    } else {
+                        tab_accent(workspace, false)
+                    },
                     bg,
                     true,
                 );
@@ -1420,10 +1441,7 @@ fn draw_tabs(frame: &mut Frame, workspace: &Workspace, spinner: usize) {
         matches!(workspace.reading, ReadingMode::Fullscreen(_)),
         workspace.ui.reading_size,
     );
-    let active = panes.iter().find(|pane| pane.id == active_id);
-    let (_, accent) = active
-        .map(|pane| PALETTE[usize::from(pane.palette) % PALETTE.len()])
-        .unwrap_or(PALETTE[0]);
+    let accent = tab_accent(workspace, true);
     if position != TabPosition::Left {
         let y = if position == TabPosition::Top {
             2
@@ -1441,7 +1459,7 @@ fn draw_tabs(frame: &mut Frame, workspace: &Workspace, spinner: usize) {
                 } else {
                     "▁"
                 },
-                Color::Indexed(accent),
+                accent,
                 Color::Default,
                 false,
             );
@@ -1450,16 +1468,7 @@ fn draw_tabs(frame: &mut Frame, workspace: &Workspace, spinner: usize) {
     if position == TabPosition::Left {
         let x = body.x - 1;
         for y in 0..frame.rows - 1 {
-            write_text(
-                frame,
-                x,
-                y,
-                1,
-                "▎",
-                Color::Indexed(accent),
-                Color::Default,
-                false,
-            );
+            write_text(frame, x, y, 1, "▎", accent, Color::Default, false);
         }
     }
     let wrapping =
@@ -1479,7 +1488,7 @@ fn draw_tabs(frame: &mut Frame, workspace: &Workspace, spinner: usize) {
                 } else {
                     "│"
                 },
-                Color::Indexed(accent),
+                accent,
                 Color::Default,
                 y == body.y,
             );
@@ -1515,12 +1524,8 @@ fn draw_tab(
     spinner: usize,
 ) {
     let grid = workspace.reading == ReadingMode::Grid;
-    let (_, accent) = PALETTE[usize::from(pane.palette) % PALETTE.len()];
-    let bg = if selected {
-        Color::Indexed(accent)
-    } else {
-        tab_surface(workspace)
-    };
+    let accent = tab_accent(workspace, selected);
+    let bg = tab_background(workspace, selected);
     fill(frame, rect, bg);
     let number = super::workspace::tab_number(rect);
     write_text(
@@ -1688,7 +1693,7 @@ fn draw_tab(
         );
     }
     for y in rect.y..rect.y + rect.rows {
-        write_text(frame, rect.x, y, 1, "▌", Color::Indexed(accent), bg, false);
+        write_text(frame, rect.x, y, 1, "▌", accent, bg, false);
     }
     if pane.status == crate::model::Status::Working {
         activity_ball(
@@ -1809,6 +1814,30 @@ fn draw_parked(
     spinner: usize,
 ) {
     let [restore, close] = super::workspace::parked_controls(bounds);
+    let panes: Vec<_> = workspace.panes.iter().filter(|p| p.parked).collect();
+    if panes.is_empty() {
+        let middle = bounds.y + bounds.rows / 2;
+        for (y, label, color, bold) in [
+            (middle.saturating_sub(2), "⊟", super::ui::PARKED_BG, true),
+            (middle, "No parked tabs", 231, true),
+            (middle + 1, "Park tabs to keep jobs running.", 250, false),
+            (bounds.y + bounds.rows - 2, "Esc to close", 245, false),
+        ] {
+            let width = bounds.cols.saturating_sub(4);
+            let text_width: u16 = label.chars().map(char_width).sum();
+            write_text(
+                frame,
+                bounds.x + 2 + width.saturating_sub(text_width) / 2,
+                y,
+                width,
+                label,
+                Color::Indexed(color),
+                Color::Indexed(236),
+                bold,
+            );
+        }
+        return;
+    }
     let title_x = bounds.x + 8;
     for (x, width, label) in [
         (bounds.x + 2, 6, "Tab"),
@@ -1827,41 +1856,15 @@ fn draw_parked(
             true,
         );
     }
-    let panes: Vec<_> = workspace.panes.iter().filter(|p| p.parked).collect();
-    if panes.is_empty() {
-        write_text(
-            frame,
-            bounds.x + 2,
-            bounds.y + 2,
-            bounds.cols.saturating_sub(4),
-            "No parked tabs",
-            Color::Indexed(250),
-            Color::Indexed(236),
-            false,
-        );
-    }
     for (index, rect) in super::workspace::parked_cards(bounds, dialog.selection, panes.len()) {
         let pane = panes[index];
         let y = rect.y + 1;
         let selected = index == dialog.selection;
-        let (_, accent) = PALETTE[usize::from(pane.palette) % PALETTE.len()];
-        let bg = if selected {
-            Color::Indexed(accent)
-        } else {
-            tab_surface(workspace)
-        };
+        let accent = tab_accent(workspace, selected);
+        let bg = tab_background(workspace, selected);
         fill(frame, rect, bg);
         for row in rect.y..rect.y + rect.rows {
-            write_text(
-                frame,
-                bounds.x,
-                row,
-                1,
-                "▌",
-                Color::Indexed(accent),
-                bg,
-                false,
-            );
+            write_text(frame, bounds.x, row, 1, "▌", accent, bg, false);
         }
         write_text(
             frame,
@@ -2110,8 +2113,8 @@ mod tests {
                 let workspace = Workspace::new(cols, 10).unwrap();
                 let mut frame = compose(&workspace, &BTreeMap::new(), true, None, 0);
                 header(&mut frame, &workspace, &view(cols, overlay), true, 0);
-                assert_eq!(frame.cells[0].bg, Color::Indexed(24));
-                assert_eq!(frame.cells[5].bg, Color::Indexed(24));
+                assert_eq!(frame.cells[0].bg, Color::Indexed(240));
+                assert_eq!(frame.cells[5].bg, Color::Indexed(240));
                 let button_start = usize::from(cols - 10);
                 assert_eq!(frame.cells[button_start].text, " ");
                 assert_eq!(frame.cells[usize::from(cols) - 1].text, " ");

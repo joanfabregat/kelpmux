@@ -575,7 +575,24 @@ impl Workspace {
                     }),
                 });
             }
-            Action::DialogClose => self.ui.dialog = None,
+            Action::DialogClose => {
+                if let Some(dialog) = self
+                    .ui
+                    .dialog
+                    .filter(|dialog| dialog.kind == DialogKind::RestoreConfirm)
+                {
+                    let selection = self
+                        .panes
+                        .iter()
+                        .filter(|pane| pane.parked)
+                        .position(|pane| Some(pane.id) == dialog.source)
+                        .unwrap_or(0);
+                    self.apply(&Action::Parked)?;
+                    self.ui.dialog.as_mut().unwrap().selection = selection;
+                } else {
+                    self.ui.dialog = None;
+                }
+            }
             Action::DialogNavigate { dx, dy } => {
                 let count = self.dialog_entries().len();
                 if let Some(dialog) = self.ui.dialog.as_mut() {

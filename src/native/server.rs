@@ -538,6 +538,7 @@ impl Drop for RecoveryJob {
     }
 }
 struct Server {
+    focus_click: bool,
     title_animation: BTreeMap<PaneId, (String, u16)>,
     epoch: String,
     leases: BTreeMap<PaneId, PaneLease>,
@@ -1722,6 +1723,15 @@ impl Server {
         Ok(())
     }
     fn mouse(&mut self, mouse: MouseEvent) -> Result<()> {
+        if self.focus_click && matches!(mouse.kind, MouseKind::Move | MouseKind::Release) {
+            if mouse.kind == MouseKind::Release {
+                self.focus_click = false;
+            }
+            return Ok(());
+        }
+        if mouse.kind == MouseKind::Press {
+            self.focus_click = false;
+        }
         let Some(view) = self
             .workspace
             .layout()
@@ -1733,8 +1743,14 @@ impl Server {
         };
         self.tui_write_allowed(view.pane.id)?;
         if mouse.kind == MouseKind::Press {
+            let focus_only = self.workspace.reading == ReadingMode::Grid
+                && self.workspace.active != view.pane.id;
             self.workspace.apply(&Action::Focus(view.pane.id))?;
             self.resize();
+            if focus_only {
+                self.focus_click = true;
+                return Ok(());
+            }
         }
         if !view.body.contains(mouse.position) {
             return Ok(());
@@ -2178,6 +2194,7 @@ pub fn serve(config: ServerConfig) -> Result<()> {
     let (listener, _endpoint) = endpoint(&config)?;
     super::lifecycle::save_pid(&config.state_dir)?;
     let mut server = Server {
+        focus_click: false,
         title_animation: BTreeMap::new(),
         epoch: fs::read_to_string("/proc/sys/kernel/random/uuid")?
             .trim()
