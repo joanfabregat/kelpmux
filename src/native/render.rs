@@ -1311,7 +1311,15 @@ fn draw_tabs(frame: &mut Frame, workspace: &Workspace, spinner: usize) {
             rows: 2,
         },
     };
-    fill(frame, area, tab_surface(workspace));
+    fill(
+        frame,
+        area,
+        if position == TabPosition::Left {
+            tab_surface(workspace)
+        } else {
+            Color::Indexed(234)
+        },
+    );
     let panes: Vec<_> = workspace
         .panes
         .iter()
@@ -1351,7 +1359,11 @@ fn draw_tabs(frame: &mut Frame, workspace: &Workspace, spinner: usize) {
                     .count()
                     < 9;
                 let sidebar = position == TabPosition::Left;
-                let bg = theme_surface(workspace, if enabled && !sidebar { 24 } else { 14 });
+                let bg = if sidebar {
+                    tab_surface(workspace)
+                } else {
+                    Color::Indexed(234)
+                };
                 fill(frame, rect, bg);
                 if sidebar {
                     write_text(
@@ -1385,7 +1397,7 @@ fn draw_tabs(frame: &mut Frame, workspace: &Workspace, spinner: usize) {
                             75
                         })
                     } else if enabled {
-                        tab_text(workspace, false)
+                        Color::Indexed(250)
                     } else {
                         tab_accent(workspace, false)
                     },
@@ -1394,7 +1406,12 @@ fn draw_tabs(frame: &mut Frame, workspace: &Workspace, spinner: usize) {
                 );
             }
             TabTarget::Previous | TabTarget::Next => {
-                fill(frame, rect, Color::Indexed(67));
+                let bg = if position == TabPosition::Left {
+                    Color::Indexed(67)
+                } else {
+                    Color::Indexed(234)
+                };
+                fill(frame, rect, bg);
                 let label = if position == TabPosition::Left && target == TabTarget::Previous {
                     " ↑ "
                 } else if position == TabPosition::Left {
@@ -1411,7 +1428,7 @@ fn draw_tabs(frame: &mut Frame, workspace: &Workspace, spinner: usize) {
                     rect.cols,
                     label,
                     Color::Indexed(231),
-                    Color::Indexed(67),
+                    bg,
                     true,
                 );
             }
@@ -1439,29 +1456,6 @@ fn draw_tabs(frame: &mut Frame, workspace: &Workspace, spinner: usize) {
         workspace.ui.reading_size,
     );
     let accent = tab_accent(workspace, true);
-    if position != TabPosition::Left {
-        let y = if position == TabPosition::Top {
-            2
-        } else {
-            frame.rows - 4
-        };
-        for x in 0..frame.cols {
-            write_text(
-                frame,
-                x,
-                y,
-                1,
-                if position == TabPosition::Top {
-                    "▔"
-                } else {
-                    "▁"
-                },
-                accent,
-                Color::Default,
-                false,
-            );
-        }
-    }
     if position == TabPosition::Left {
         let x = body.x - 1;
         for y in 0..frame.rows {
@@ -1498,15 +1492,26 @@ fn draw_tab(
     spinner: usize,
 ) {
     let grid = workspace.reading == ReadingMode::Grid;
+    let horizontal = !grid
+        && workspace
+            .ui
+            .config
+            .tab_position
+            .resolve(frame.cols, frame.rows)
+            != super::ui::TabPosition::Left;
     let accent = tab_accent(workspace, selected);
     let bg = if grid {
         Color::Default
+    } else if horizontal {
+        Color::Indexed(if selected { 250 } else { 234 })
     } else if selected {
         tab_accent(workspace, true)
     } else {
         tab_background(workspace, selected)
     };
-    let text_color = if selected && !grid {
+    let text_color = if horizontal {
+        Color::Indexed(if selected { 232 } else { 250 })
+    } else if selected && !grid {
         let (r, g, b) = color_rgb(bg, false);
         Color::Indexed(
             if u16::from(r) * 3 + u16::from(g) * 6 + u16::from(b) >= 1280 {
@@ -1538,7 +1543,9 @@ fn draw_tab(
         number.y,
         number.cols,
         &format!(" {} ", pane.number),
-        if selected {
+        if horizontal {
+            text_color
+        } else if selected {
             Color::Indexed(226)
         } else {
             tab_text(workspace, false)
@@ -1612,7 +1619,7 @@ fn draw_tab(
             title_y,
             bell_width,
             &format!("{} ", super::ui::ALERT_ICON),
-            Color::Indexed(226),
+            Color::Indexed(if horizontal && selected { 172 } else { 226 }),
             bg,
             true,
         );
@@ -1709,19 +1716,29 @@ fn draw_tab(
             if rect.rows >= 2 { rect.y + 1 } else { number.y },
             count_width,
             count,
-            Color::Indexed(231),
+            if horizontal {
+                Color::Indexed(if selected { 232 } else { 250 })
+            } else {
+                Color::Indexed(231)
+            },
             bg,
             true,
         );
     }
+    let light_controls = if grid {
+        tab_text(workspace, false) == Color::Indexed(232)
+    } else {
+        let (r, g, b) = color_rgb(bg, false);
+        u16::from(r) * 3 + u16::from(g) * 6 + u16::from(b) >= 1280
+    };
     write_text(
         frame,
         close.x,
         close.y,
         close.cols,
         " × ",
-        Color::Indexed(231),
-        Color::Indexed(88),
+        Color::Indexed(if light_controls { 160 } else { 203 }),
+        bg,
         true,
     );
     write_text(
@@ -1730,8 +1747,8 @@ fn draw_tab(
         park.y,
         park.cols,
         " ⊟ ",
-        Color::Indexed(231),
-        Color::Indexed(super::ui::PARKED_BG),
+        Color::Indexed(if light_controls { 91 } else { 141 }),
+        bg,
         true,
     );
     if grid {
@@ -1752,7 +1769,13 @@ fn draw_tab(
             rect.x,
             y,
             1,
-            if grid { "─" } else { "▌" },
+            if grid {
+                "─"
+            } else if horizontal {
+                " "
+            } else {
+                "▌"
+            },
             accent,
             bg,
             false,
@@ -1762,7 +1785,9 @@ fn draw_tab(
         activity_ball(
             frame,
             track,
-            if selected {
+            if horizontal {
+                Color::Indexed(if selected { 232 } else { 250 })
+            } else if selected {
                 Color::Indexed(226)
             } else {
                 tab_text(workspace, false)
@@ -2701,6 +2726,11 @@ fn draw_status_summary(frame: &mut Frame, workspace: &Workspace, bounds: Rect, h
         data.uptime / 3600 % 24,
         data.uptime / 60 % 60
     );
+    let clock_uptime = if clock.is_empty() {
+        uptime
+    } else {
+        format!("{clock} · {uptime}")
+    };
     let mut details = if two_columns {
         vec![
             (
@@ -2708,8 +2738,7 @@ fn draw_status_summary(frame: &mut Frame, workspace: &Workspace, bounds: Rect, h
                 250,
             ),
             (format!("Load {}", data.load), 250),
-            (uptime, 39),
-            (clock, 39),
+            (clock_uptime, 39),
         ]
     } else {
         vec![
@@ -2720,7 +2749,7 @@ fn draw_status_summary(frame: &mut Frame, workspace: &Workspace, bounds: Rect, h
                 ),
                 250,
             ),
-            (format!("{uptime} · {clock}"), 39),
+            (clock_uptime, 39),
         ]
     };
     details.push((

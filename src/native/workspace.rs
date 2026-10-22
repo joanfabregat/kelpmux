@@ -1102,8 +1102,8 @@ pub fn tab_body(
     };
     match position {
         TabPosition::Top => {
-            area.y = 3;
-            area.rows = area.rows.saturating_sub(3);
+            area.y = 2;
+            area.rows = area.rows.saturating_sub(2);
         }
         TabPosition::Left => {
             let sidebar = sidebar_width(cols);
@@ -1111,7 +1111,7 @@ pub fn tab_body(
             area.cols = cols - sidebar;
             area.rows = rows;
         }
-        TabPosition::Bottom => area.rows = area.rows.saturating_sub(3),
+        TabPosition::Bottom => area.rows = area.rows.saturating_sub(2),
         TabPosition::Auto => unreachable!(),
     }
     area

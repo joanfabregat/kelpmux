@@ -919,6 +919,29 @@ fn configuration_tab_position_persists_for_the_named_workspace() {
             .collect::<String>()
             .contains(&output)
     });
+    for position in [
+        kelpmux::native::ui::TabPosition::Top,
+        kelpmux::native::ui::TabPosition::Bottom,
+    ] {
+        command(&mut stream, Action::TabPositionSet(position)).unwrap();
+        let horizontal = wait_frame(&mut stream, |frame| {
+            frame.ui.config.tab_position == position && frame.panes[0].body.rows == 37
+        });
+        assert_eq!(
+            (horizontal.panes[0].pane.id, horizontal.panes[0].pane.pid),
+            identity
+        );
+        assert_eq!(horizontal.panes[0].body.cols, 240);
+        write_message(&mut stream, &ClientMessage::Input(b"stty size\n".to_vec())).unwrap();
+        wait_frame(&mut stream, |frame| {
+            frame
+                .cells
+                .iter()
+                .map(|cell| cell.text.as_str())
+                .collect::<String>()
+                .contains("37 240")
+        });
+    }
 }
 
 #[test]
@@ -978,9 +1001,14 @@ fn new_tabs_create_one_pty_preserve_existing_jobs_and_stop_at_nine() {
 }
 
 #[test]
-fn controller_and_observer_surfaces_use_their_own_reported_themes() {
+fn controller_and_observer_sidebar_surfaces_use_their_own_reported_themes() {
     let daemon = Daemon::start();
     let (mut controller, _, _) = daemon.attach();
+    command(
+        &mut controller,
+        Action::TabPositionSet(kelpmux::native::ui::TabPosition::Left),
+    )
+    .unwrap();
     write_message(&mut controller, &ClientMessage::Action(Action::Read(1))).unwrap();
     wait_frame(&mut controller, |frame| {
         frame.reading == ReadingMode::Tabs(1)
@@ -1001,13 +1029,16 @@ fn controller_and_observer_surfaces_use_their_own_reported_themes() {
         let frame = wait_frame(client, |frame| {
             frame.ui.terminal_theme[1] == Some(background)
         });
-        assert_eq!(frame.cells[usize::from(frame.cols - 1)].bg, expected);
+        assert_eq!(
+            frame.cells[usize::from(frame.rows / 2 * frame.cols)].bg,
+            expected
+        );
     }
     write_message(&mut controller, &ClientMessage::Action(Action::NewTab)).unwrap();
     let frame = wait_frame(&mut controller, |frame| frame.panes.len() == 2);
     assert_eq!(frame.ui.terminal_theme[1], Some([12, 18, 24]));
     assert_eq!(
-        frame.cells[usize::from(frame.cols - 1)].bg,
+        frame.cells[usize::from(frame.rows / 2 * frame.cols)].bg,
         Color::Rgb(26, 32, 38)
     );
 }

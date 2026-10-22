@@ -476,7 +476,7 @@ pub fn summary_height(bounds: super::protocol::Rect, data: &Snapshot) -> u16 {
         1
     } else {
         let meters = data.cpus.len() + 2;
-        let details = if summary_columns(bounds) == 2 { 6 } else { 4 } + data.disks.len();
+        let details = if summary_columns(bounds) == 2 { 5 } else { 4 } + data.disks.len();
         if summary_columns(bounds) == 2 {
             meters.max(details)
         } else {

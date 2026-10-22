@@ -368,6 +368,34 @@ fn parked_tab_control_fits_all_positions_and_remains_reachable_when_all_parked()
                     .find(|(t, _)| *t == TabTarget::Parked)
                     .unwrap()
                     .1;
+                for (target, rect) in &targets {
+                    if let TabTarget::Pane(index) = target {
+                        if position.resolve(f.cols, f.rows) == TabPosition::Left {
+                            continue;
+                        }
+                        let bg = Color::Indexed(if *index == 0 { 250 } else { 234 });
+                        assert_eq!(f.cells[usize::from(rect.y * f.cols + rect.x)].bg, bg);
+                        for (control, symbol, color) in [
+                            (
+                                kelpmux::native::workspace::tab_park(*rect),
+                                "⊟",
+                                if *index == 0 { 91 } else { 141 },
+                            ),
+                            (
+                                kelpmux::native::workspace::tab_close(*rect),
+                                "×",
+                                if *index == 0 { 160 } else { 203 },
+                            ),
+                        ] {
+                            let cell = &f.cells[usize::from(control.y * f.cols + control.x + 1)];
+                            assert_eq!(cell.text, symbol);
+                            assert_eq!(cell.fg, Color::Indexed(color));
+                            for x in control.x..control.x + control.cols {
+                                assert_eq!(f.cells[usize::from(control.y * f.cols + x)].bg, bg);
+                            }
+                        }
+                    }
+                }
                 assert_eq!(
                     actions(Router::default().route(
                         click(Point {
@@ -752,8 +780,8 @@ fn selecting_same_tab_keeps_tabs_and_legacy_width_actions_do_not_limit_content()
     ws.apply(&Action::ReadResize { cols: 90, rows: 3 }).unwrap();
     let cap = ws.layout()[4].body;
     assert_eq!(cap.cols, 240);
-    assert_eq!(cap.rows, 66);
-    assert_eq!(cap.y, 3);
+    assert_eq!(cap.rows, 67);
+    assert_eq!(cap.y, 2);
     assert_eq!(cap.x, 0);
     ws.apply(&Action::Fullscreen(5)).unwrap();
     assert_eq!(ws.layout()[4].body.cols, 240);
@@ -1275,7 +1303,7 @@ fn working_tabs_animate_only_one_character_and_keep_bells_beside_titles() {
 }
 
 #[test]
-fn tab_folder_subtitles_and_horizontal_rules_stay_outside_terminal_hit_targets() {
+fn tab_folder_subtitles_and_horizontal_bars_touch_terminal_content() {
     use kelpmux::native::{
         ui::TabPosition,
         workspace::{TabTarget, tab_targets},
@@ -1307,26 +1335,12 @@ fn tab_folder_subtitles_and_horizontal_rules_stay_outside_terminal_hit_targets()
         );
         assert_ne!(f.cells[folder].fg, f.cells[name].fg);
         if position != TabPosition::Left {
-            let y = if position == TabPosition::Top {
-                2
+            let body = f.panes[0].body;
+            assert_eq!(body.rows, f.rows - 3);
+            if position == TabPosition::Top {
+                assert_eq!(body.y, tab.y + tab.rows);
             } else {
-                f.rows - 4
-            };
-            for x in 0..f.cols {
-                assert_eq!(
-                    f.cells[usize::from(y * f.cols + x)].text,
-                    if position == TabPosition::Top {
-                        "▔"
-                    } else {
-                        "▁"
-                    }
-                );
-                assert!(
-                    Router::default()
-                        .route(click(Point { x, y }), &f)
-                        .is_empty()
-                );
-                assert!(!f.panes[0].body.contains(Point { x, y }));
+                assert_eq!(body.y + body.rows, tab.y);
             }
         }
     }
@@ -1866,6 +1880,17 @@ fn grid_header_numbers_zoom_park_close_and_footer_have_distinct_targets() {
             Color::Indexed(if id == ws.active { 226 } else { 231 })
         );
         let [zoom, park, close] = grid_controls(header);
+        for (control, symbol, color) in [(park, "⊟", 141), (close, "×", 203)] {
+            let cell = &f.cells[usize::from(control.y * f.cols + control.x + 1)];
+            assert_eq!(cell.text, symbol);
+            assert_eq!(cell.fg, Color::Indexed(color));
+            for x in control.x..control.x + control.cols {
+                assert_eq!(
+                    f.cells[usize::from(control.y * f.cols + x)].bg,
+                    Color::Default
+                );
+            }
+        }
         for (control, expected) in [
             (number, Action::Focus(id)),
             (zoom, Action::Fullscreen(id)),
@@ -2029,7 +2054,11 @@ fn tab_surfaces_follow_dark_and_light_backgrounds_without_repainting_terminal_de
             };
             assert_eq!(
                 f.cells[usize::from(point.y * f.cols + point.x)].bg,
-                expected
+                if position == TabPosition::Left {
+                    expected
+                } else {
+                    Color::Indexed(234)
+                }
             );
             let new = tab_targets(f.cols, f.rows, &f.ui.config, 2, 0, 0)
                 .into_iter()
@@ -2050,7 +2079,11 @@ fn tab_surfaces_follow_dark_and_light_backgrounds_without_repainting_terminal_de
             });
             assert_eq!(
                 f.cells[usize::from(new.y * f.cols + new.x)].bg,
-                Color::Rgb(r, g, b)
+                if position == TabPosition::Left {
+                    Color::Rgb(r, g, b)
+                } else {
+                    Color::Indexed(234)
+                }
             );
             let inactive = tab_targets(f.cols, f.rows, &f.ui.config, 2, 0, 0)
                 .into_iter()
@@ -2084,17 +2117,40 @@ fn tab_surfaces_follow_dark_and_light_backgrounds_without_repainting_terminal_de
                 },
                 TabPosition::Auto => unreachable!(),
             };
-            assert_eq!(
-                title[0].bg,
-                f.cells[usize::from(divider.y * f.cols + divider.x)].fg
-            );
+            if position == TabPosition::Left {
+                assert_eq!(
+                    title[0].bg,
+                    f.cells[usize::from(divider.y * f.cols + divider.x)].fg
+                );
+            } else {
+                assert_eq!(title[0].bg, Color::Indexed(250));
+                assert_eq!(
+                    f.cells[usize::from(inactive.y * f.cols + inactive.x)].bg,
+                    Color::Indexed(234)
+                );
+            }
             let number = tab_number(inactive);
             assert_eq!(
                 f.cells[usize::from(number.y * f.cols + number.x + 1)].fg,
-                Color::Indexed(if light { 232 } else { 231 })
+                Color::Indexed(if position != TabPosition::Left {
+                    250
+                } else if light {
+                    232
+                } else {
+                    231
+                })
             );
             let ball = f.cells.iter().find(|cell| cell.text == "⣤").unwrap();
-            assert_eq!(ball.fg, Color::Indexed(if light { 232 } else { 231 }));
+            assert_eq!(
+                ball.fg,
+                Color::Indexed(if position != TabPosition::Left {
+                    250
+                } else if light {
+                    232
+                } else {
+                    231
+                })
+            );
             let body = f.panes.iter().find(|view| view.pane.id == 1).unwrap().body;
             assert_eq!(
                 f.cells[usize::from(body.y * f.cols + body.x)].bg,
@@ -2628,7 +2684,7 @@ fn status_summary_is_compact_uses_two_columns_and_draws_horizontal_meters() {
     for size in [(80, 30), (120, 40), (240, 70)] {
         let mut ws = workspace(size, (1, 1));
         ws.apply(&Action::StatusOpen(Sort::Cpu)).unwrap();
-        ws.ui.vitals = vec![("12:34".into(), 250)];
+        ws.ui.vitals = vec![("2026-10-22".into(), 39), ("12:34".into(), 250)];
         ws.ui.status = Snapshot {
             ready: true,
             cpus: vec![0, 51, 100, 25],
@@ -2655,7 +2711,7 @@ fn status_summary_is_compact_uses_two_columns_and_draws_horizontal_meters() {
         let f = frame(&ws);
         let bounds = status::bounds(f.cols, f.rows);
         let height = status::summary_height(bounds, &ws.ui.status);
-        assert_eq!(height, if size.0 >= 120 { 8 } else { 12 });
+        assert_eq!(height, if size.0 >= 120 { 7 } else { 12 });
         let row_text = |y: u16| {
             f.cells[usize::from(y * f.cols + bounds.x + 1)
                 ..usize::from(y * f.cols + bounds.x + bounds.cols - 1)]
@@ -2666,6 +2722,11 @@ fn status_summary_is_compact_uses_two_columns_and_draws_horizontal_meters() {
         for y in bounds.y + 1..bounds.y + 1 + height {
             assert!(!row_text(y).trim().is_empty(), "empty metric row {y}");
         }
+        let date_row = (bounds.y + 1..bounds.y + 1 + height)
+            .map(row_text)
+            .find(|row| row.contains("2026-10-22"))
+            .unwrap();
+        assert!(date_row.contains("2026-10-22 12:34 · Uptime 0d 00:00"));
         let tabs_y = bounds.y + 1 + height;
         assert!(row_text(tabs_y).starts_with("[ Main ]"));
         assert!(row_text(status::table_y(bounds, &ws.ui.status)).contains("CPU%"));
