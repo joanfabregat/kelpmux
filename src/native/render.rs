@@ -2768,18 +2768,25 @@ fn draw_status_summary(frame: &mut Frame, workspace: &Workspace, bounds: Rect, h
         ),
         222,
     ));
-    for disk in &data.disks {
-        details.push((
-            format!(
-                "{} {:>3}%  {} / {}  {}",
-                super::vitals::pie_glyph(disk.percent),
-                disk.percent,
-                status::bytes(disk.used),
-                status::bytes(disk.total),
-                safe_text(&disk.mount)
-            ),
-            if disk.percent >= 90 { 196 } else { 222 },
-        ));
+    let disks: Vec<_> = data
+        .disks
+        .iter()
+        .map(|disk| {
+            (
+                format!(
+                    "{} {:>3}%  {} / {}  {}",
+                    super::vitals::pie_glyph(disk.percent),
+                    disk.percent,
+                    status::bytes(disk.used),
+                    status::bytes(disk.total),
+                    safe_text(&disk.mount)
+                ),
+                if disk.percent >= 90 { 196 } else { 222 },
+            )
+        })
+        .collect();
+    if !two_columns {
+        details.extend(disks.iter().cloned());
     }
     let percent =
         |used: u64, total: u64| (u128::from(used) * 100 / u128::from(total.max(1))).min(100) as u8;
@@ -2826,18 +2833,18 @@ fn draw_status_summary(frame: &mut Frame, workspace: &Workspace, bounds: Rect, h
         }
         return;
     }
-    let cpu_slots = usize::from(
-        height
-            .saturating_sub(
-                2 + if two_columns {
-                    0
-                } else {
-                    details.len().min(usize::from(u16::MAX)) as u16
-                },
-            )
-            .max(1),
-    )
-    .min(data.cpus.len());
+    let lower_rows = if two_columns {
+        details.len().max(disks.len())
+    } else {
+        details.len()
+    }
+    .min(usize::from(u16::MAX)) as u16;
+    let memory_rows = if two_columns { 1 } else { 2 };
+    let cpu_columns = if two_columns { 2 } else { 1 };
+    let cpu_slots = (usize::from(height.saturating_sub(lower_rows + memory_rows).max(1))
+        * cpu_columns)
+        .min(data.cpus.len());
+    let cpu_rows = cpu_slots.div_ceil(cpu_columns) as u16;
     for index in 0..cpu_slots {
         let grouped = index + 1 == cpu_slots && data.cpus.len() > cpu_slots;
         let (label, cpu, detail) = if grouped {
@@ -2854,8 +2861,8 @@ fn draw_status_summary(frame: &mut Frame, workspace: &Workspace, bounds: Rect, h
         draw_status_meter(
             frame,
             Rect {
-                x,
-                y: y + index as u16,
+                x: x + (index % cpu_columns) as u16 * (meter_width + 3),
+                y: y + (index / cpu_columns) as u16,
                 cols: meter_width,
                 rows: 1,
             },
@@ -2866,15 +2873,20 @@ fn draw_status_summary(frame: &mut Frame, workspace: &Workspace, bounds: Rect, h
         );
     }
     for (row, label, value, detail, color) in [
-        (cpu_slots, "RAM", ram, ram_detail.as_str(), 141),
-        (cpu_slots + 1, "Swap", swap, swap_detail.as_str(), 73),
+        (0, "RAM", ram, ram_detail.as_str(), 141),
+        (1, "Swap", swap, swap_detail.as_str(), 73),
     ] {
-        if row < usize::from(height) {
+        let meter_y = cpu_rows + if two_columns { 0 } else { row };
+        if meter_y < height {
             draw_status_meter(
                 frame,
                 Rect {
-                    x,
-                    y: y + row as u16,
+                    x: x + if two_columns {
+                        row * (meter_width + 3)
+                    } else {
+                        0
+                    },
+                    y: y + meter_y,
                     cols: meter_width,
                     rows: 1,
                 },
@@ -2885,15 +2897,34 @@ fn draw_status_summary(frame: &mut Frame, workspace: &Workspace, bounds: Rect, h
             );
         }
     }
+    let lower_y = cpu_rows + memory_rows;
+    if two_columns {
+        for (index, (text, color)) in disks
+            .iter()
+            .take(usize::from(height.saturating_sub(lower_y)))
+            .enumerate()
+        {
+            write_text(
+                frame,
+                x,
+                y + lower_y + index as u16,
+                meter_width,
+                text,
+                Color::Indexed(*color),
+                Color::Indexed(236),
+                false,
+            );
+        }
+    }
     let (detail_x, detail_y, detail_width, capacity) = if two_columns {
-        (x + meter_width + 3, y, width - meter_width - 3, height)
-    } else {
         (
-            x,
-            y + cpu_slots as u16 + 2,
-            width,
-            height.saturating_sub(cpu_slots as u16 + 2),
+            x + meter_width + 3,
+            y + lower_y,
+            width - meter_width - 3,
+            height.saturating_sub(lower_y),
         )
+    } else {
+        (x, y + lower_y, width, height.saturating_sub(lower_y))
     };
     for (index, (text, color)) in details.iter().take(usize::from(capacity)).enumerate() {
         write_text(

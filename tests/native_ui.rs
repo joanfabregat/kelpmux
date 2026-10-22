@@ -2711,7 +2711,7 @@ fn status_summary_is_compact_uses_two_columns_and_draws_horizontal_meters() {
         let f = frame(&ws);
         let bounds = status::bounds(f.cols, f.rows);
         let height = status::summary_height(bounds, &ws.ui.status);
-        assert_eq!(height, if size.0 >= 120 { 7 } else { 12 });
+        assert_eq!(height, if size.0 >= 120 { 8 } else { 12 });
         let row_text = |y: u16| {
             f.cells[usize::from(y * f.cols + bounds.x + 1)
                 ..usize::from(y * f.cols + bounds.x + bounds.cols - 1)]
@@ -2742,7 +2742,14 @@ fn status_summary_is_compact_uses_two_columns_and_draws_horizontal_meters() {
             (4, 141, 50),
             (5, 73, 25),
         ] {
-            let start = usize::from((bounds.y + 1 + index) * f.cols + bounds.x + 1);
+            let (row, column) = if status::summary_columns(bounds) == 2 {
+                (index / 2, index % 2)
+            } else {
+                (index, 0)
+            };
+            let start = usize::from(
+                (bounds.y + 1 + row) * f.cols + bounds.x + 1 + column * (meter_width + 3),
+            );
             let cells = &f.cells[start..start + usize::from(meter_width)];
             let text: String = cells.iter().map(|cell| cell.text.as_str()).collect();
             assert!(!text.contains(['█', '░']));
@@ -2774,12 +2781,15 @@ fn status_summary_is_compact_uses_two_columns_and_draws_horizontal_meters() {
         }
         if size.0 >= 120 {
             let right = bounds.x + 1 + meter_width + 3;
-            let start = usize::from((bounds.y + 1) * f.cols + right);
+            let start = usize::from((bounds.y + 4) * f.cols + right);
             let text = f.cells[start..start + 5]
                 .iter()
                 .map(|cell| cell.text.as_str())
                 .collect::<String>();
             assert_eq!(text, "Tasks");
+            let disk_row = row_text(bounds.y + 4);
+            let (left, _) = disk_row.split_at(usize::from(meter_width));
+            assert!(left.contains("20%") && left.contains('/'));
             assert!(height < 12);
         }
         let mut terminal = Terminal::new(f.cols, f.rows);

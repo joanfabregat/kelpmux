@@ -474,14 +474,10 @@ pub fn summary_columns(bounds: super::protocol::Rect) -> u16 {
 pub fn summary_height(bounds: super::protocol::Rect, data: &Snapshot) -> u16 {
     let desired = if !data.ready {
         1
+    } else if summary_columns(bounds) == 2 {
+        data.cpus.len().div_ceil(2) + 1 + data.disks.len().max(5)
     } else {
-        let meters = data.cpus.len() + 2;
-        let details = if summary_columns(bounds) == 2 { 5 } else { 4 } + data.disks.len();
-        if summary_columns(bounds) == 2 {
-            meters.max(details)
-        } else {
-            meters + details
-        }
+        data.cpus.len() + 2 + 4 + data.disks.len()
     };
     (desired.min(usize::from(u16::MAX)) as u16)
         .min(bounds.rows.saturating_sub(7))

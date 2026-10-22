@@ -704,8 +704,20 @@ fn fitted_mouse(frame: &Frame, size: (u16, u16), mut point: Point) -> Option<Poi
         if point.x < width && point.y >= size.1 - height {
             point.y = frame.rows - height + point.y - (size.1 - height);
         }
-    } else if point.y == size.1 - 1 && point.x < frame.footer_cols().min(frame.cols) {
+    } else if point.y == size.1 - 1 {
         point.y = frame.rows - 1;
+        let fixed = (frame.footer_cols() + if frame.controller { 0 } else { 10 })
+            .min(size.0)
+            .min(frame.cols);
+        let tail = size
+            .0
+            .saturating_sub(fixed)
+            .min(frame.cols.saturating_sub(fixed));
+        if point.x >= size.0 - tail && point.x < size.0 {
+            point.x = frame.cols - tail + point.x - (size.0 - tail);
+        } else if point.x >= fixed {
+            return None;
+        }
     } else if point.y >= size.1.saturating_sub(1) {
         return None;
     }
@@ -1134,6 +1146,82 @@ mod fit_tests {
             .collect();
         assert!(footer.starts_with(" ⚙︎ Config"));
         assert!(footer.contains("Obs"));
+    }
+    #[test]
+    fn fitted_footer_metrics_open_status_in_both_horizontal_tab_modes() {
+        use super::super::{
+            input::Router,
+            protocol::{Action, ClientMessage, InputEvent, MouseEvent, MouseKind},
+            status::Sort,
+            ui::TabPosition,
+        };
+        for position in [TabPosition::Top, TabPosition::Bottom] {
+            for controller in [true, false] {
+                let mut workspace = super::super::workspace::Workspace::new(120, 40).unwrap();
+                workspace.ui.config.tab_position = position;
+                workspace.ui.vitals = vec![("cpu 51%".into(), 114), ("12:34".into(), 250)];
+                let frame = super::super::render::compose(
+                    &workspace,
+                    &Default::default(),
+                    controller,
+                    None,
+                    0,
+                );
+                for size in [(40, 10), (120, 40), (160, 50)] {
+                    if size.0 <= frame.footer_cols() + if controller { 0 } else { 10 } {
+                        continue;
+                    }
+                    let point = fitted_mouse(
+                        &frame,
+                        size,
+                        Point {
+                            x: size.0 - 2,
+                            y: size.1 - 1,
+                        },
+                    )
+                    .unwrap();
+                    assert_eq!(
+                        point,
+                        Point {
+                            x: frame.cols - 2,
+                            y: frame.rows - 1
+                        }
+                    );
+                    let messages = Router::default().route(
+                        InputEvent::Mouse(MouseEvent {
+                            position: point,
+                            kind: MouseKind::Press,
+                            button: 0,
+                            shift: false,
+                            alt: false,
+                            ctrl: false,
+                        }),
+                        &frame,
+                    );
+                    assert_eq!(
+                        messages.iter().any(|message| matches!(
+                            message,
+                            ClientMessage::Action(Action::StatusOpen(Sort::Cpu))
+                        )),
+                        controller
+                    );
+                    assert_eq!(
+                        fitted_mouse(
+                            &frame,
+                            size,
+                            Point {
+                                x: 1,
+                                y: size.1 - 1
+                            }
+                        ),
+                        Some(Point {
+                            x: 1,
+                            y: frame.rows - 1
+                        })
+                    );
+                }
+            }
+        }
     }
     #[test]
     fn fitted_footer_keeps_controls_left_vitals_right_and_notices_separate() {
