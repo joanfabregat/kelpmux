@@ -1224,7 +1224,7 @@ pub fn sidebar_status_rows(rows: u16) -> u16 {
         3
     }
 }
-pub fn sidebar_controls(cols: u16, rows: u16, count: usize) -> [Rect; 4] {
+pub fn sidebar_controls(cols: u16, rows: u16, _count: usize) -> [Rect; 4] {
     let width = sidebar_width(cols) - 1;
     let rect = |x, y, cols| Rect {
         x,
@@ -1232,18 +1232,12 @@ pub fn sidebar_controls(cols: u16, rows: u16, count: usize) -> [Rect; 4] {
         cols,
         rows: 1,
     };
-    let parked = parked_button(rows, count);
-    let right = width
-        .saturating_sub(8)
-        .max(11)
-        .max(parked.cols + 1)
-        .min(width - 3);
-    let action_width = if width - right >= 8 { 8 } else { 3 };
+    let right = width.div_ceil(2);
     [
-        rect(0, rows - 2, 10),
-        rect(right, rows - 2, action_width),
-        rect(0, rows - 1, parked.cols),
-        rect(right, rows - 1, action_width),
+        rect(0, rows - 2, right),
+        rect(right, rows - 2, width - right),
+        rect(0, rows - 1, right),
+        rect(right, rows - 1, width - right),
     ]
 }
 pub fn color_cards(bounds: Rect) -> Vec<Rect> {

@@ -2012,7 +2012,13 @@ fn draw_sidebar_status(frame: &mut Frame, workspace: &Workspace, notice: Option<
             let y = metric_top + index as u16;
             write_text(frame, 1, y, 6, metric.label, muted, bg, false);
             if metric.label == "Disks" {
-                let mut x = 8;
+                let total = metric
+                    .values
+                    .iter()
+                    .map(|(value, _)| value.chars().map(char_width).sum::<u16>())
+                    .sum::<u16>()
+                    + metric.values.len().saturating_sub(1) as u16;
+                let mut x = width - 1 - total.min(value_width);
                 for (value, color) in &metric.values {
                     let size = value.chars().map(char_width).sum::<u16>();
                     if x + size > width - 1 {
@@ -2036,18 +2042,13 @@ fn draw_sidebar_status(frame: &mut Frame, workspace: &Workspace, notice: Option<
             let (value, color) = &metric.values[0];
             if matches!(metric.label, "CPU" | "Memory" | "Swap") {
                 if let Some((bar, percent)) = value.split_once(' ') {
-                    write_text(frame, 8, y, 1, bar, Color::Indexed(*color), bg, false);
-                    let size = percent
-                        .chars()
-                        .map(char_width)
-                        .sum::<u16>()
-                        .min(value_width - 2);
+                    let display = format!("{bar} {percent:>4}");
                     write_text(
                         frame,
-                        width - 1 - size,
+                        width - 7,
                         y,
-                        size,
-                        percent,
+                        6,
+                        &display,
                         Color::Indexed(*color),
                         bg,
                         false,
@@ -2091,7 +2092,16 @@ fn draw_sidebar_status(frame: &mut Frame, workspace: &Workspace, notice: Option<
     let unread = workspace.ui.notifications.iter().any(|item| !item.read);
     let parked_count = workspace.panes.iter().filter(|pane| pane.parked).count();
     for (rect, label, color) in [
-        (config, " ⚙︎ Config ".into(), 24),
+        (
+            config,
+            if config.cols >= 10 {
+                " ⚙︎ Config "
+            } else {
+                "⚙︎ Config"
+            }
+            .into(),
+            24,
+        ),
         (
             mode,
             if workspace.active == 0 {
@@ -2106,7 +2116,18 @@ fn draw_sidebar_status(frame: &mut Frame, workspace: &Workspace, notice: Option<
         ),
         (
             parked,
-            super::workspace::parked_label(parked_count),
+            {
+                let label = super::workspace::parked_label(parked_count);
+                if label.chars().map(char_width).sum::<u16>() <= parked.cols {
+                    label
+                } else if label.trim().chars().map(char_width).sum::<u16>() <= parked.cols {
+                    label.trim().into()
+                } else if parked_count > 0 {
+                    format!(" ⊟ ({parked_count}) ")
+                } else {
+                    "⊟ Parked".into()
+                }
+            },
             super::ui::PARKED_BG,
         ),
         (
@@ -2128,19 +2149,13 @@ fn draw_sidebar_status(frame: &mut Frame, workspace: &Workspace, notice: Option<
     ] {
         let label_width = label.chars().map(char_width).sum::<u16>().min(rect.cols);
         let button_bg = Color::Indexed(color);
-        fill(
-            frame,
-            Rect {
-                cols: label_width,
-                ..rect
-            },
-            button_bg,
-        );
+        fill(frame, rect, button_bg);
+        let inset = (rect.cols - label_width) / 2;
         write_text(
             frame,
-            rect.x,
+            rect.x + inset,
             rect.y,
-            rect.cols,
+            rect.cols - inset,
             &label,
             Color::Indexed(231),
             button_bg,

@@ -1720,7 +1720,12 @@ fn automatic_grid_parking_controls_alert_colors_and_three_row_tabs() {
             vec![Action::ParkRequest(1)]
         );
         let help = f.controls()[3];
-        let at = usize::from(help.y * f.cols + help.x + 1);
+        let start = usize::from(help.y * f.cols + help.x);
+        let at = start
+            + f.cells[start..start + usize::from(help.cols)]
+                .iter()
+                .position(|cell| cell.text == "?")
+                .unwrap();
         assert_eq!(f.cells[at].text, "?");
         assert_eq!(f.cells[at].bg, Color::Indexed(94));
         ws.ui.notifications.push(Notification {
@@ -1732,7 +1737,12 @@ fn automatic_grid_parking_controls_alert_colors_and_three_row_tabs() {
             read: false,
             workspace: "test".into(),
         });
-        let alert = usize::from(help.y * f.cols + help.x + u16::from(help.cols < 8));
+        let unread = frame(&ws);
+        let alert = start
+            + unread.cells[start..start + usize::from(help.cols)]
+                .iter()
+                .position(|cell| cell.text == kelpmux::native::ui::ALERT_ICON)
+                .unwrap();
         assert_eq!(
             frame(&ws).cells[alert].text,
             kelpmux::native::ui::ALERT_ICON
@@ -2181,8 +2191,8 @@ fn sidebar_status_controls_and_metrics_leave_the_last_terminal_row_usable() {
             let mut ws = workspace(size, (3, 3));
             ws.ui.config.tab_position = position;
             ws.ui.vitals = vec![
-                ("cpu ▂ 12%".into(), 114),
-                ("mem ▄ 45%".into(), 141),
+                ("cpu ▂ 51%".into(), 114),
+                ("mem ▄ 100%".into(), 141),
                 ("swap ▁ 0%".into(), 73),
                 ("disk".into(), 222),
                 ("◔ 20%".into(), 222),
@@ -2246,8 +2256,8 @@ fn sidebar_status_controls_and_metrics_leave_the_last_terminal_row_usable() {
                 assert!(!utility.contains('^'));
                 if f.rows >= 24 {
                     for (offset, label, value, color) in [
-                        (1, "CPU", "12%", 114),
-                        (2, "Memory", "45%", 141),
+                        (1, "CPU", "51%", 114),
+                        (2, "Memory", "100%", 141),
                         (3, "Swap", "0%", 73),
                         (4, "Disks", "◔ 20% ● 95%", 196),
                         (5, "Clock", "12:34", 250),
@@ -2260,31 +2270,35 @@ fn sidebar_status_controls_and_metrics_leave_the_last_terminal_row_usable() {
                         assert!(row.trim_start().starts_with(label), "{row:?}");
                         assert!(row.trim_end().ends_with(value), "{row:?}");
                         assert_eq!(
-                            f.cells[start
-                                + usize::from(if label == "Disks" { 18 } else { width - 2 })]
-                            .fg,
+                            f.cells[start + usize::from(width - 2)].fg,
                             Color::Indexed(color)
                         );
                     }
-                    for (offset, bar) in [(1, "▂"), (2, "▄"), (3, "▁"), (4, "◔")] {
+                    for (offset, value) in [(1, "▂  51%"), (2, "▄ 100%"), (3, "▁   0%")] {
+                        let start = usize::from((status_top + offset) * f.cols + width - 7);
                         assert_eq!(
-                            f.cells[usize::from((status_top + offset) * f.cols + 8)].text,
-                            bar
+                            f.cells[start..start + 6]
+                                .iter()
+                                .map(|cell| cell.text.as_str())
+                                .collect::<String>(),
+                            value
                         );
                     }
                     assert_eq!(
-                        f.cells[usize::from((status_top + 4) * f.cols + 8)].fg,
+                        f.cells[usize::from((status_top + 4) * f.cols + width - 12)].fg,
                         Color::Indexed(222)
                     );
                     assert_eq!(
-                        f.cells[usize::from((status_top + 4) * f.cols + 14)].fg,
+                        f.cells[usize::from((status_top + 4) * f.cols + width - 6)].fg,
                         Color::Indexed(196)
                     );
                     for (control, color) in f.controls().into_iter().zip([24, 67, 60, 94]) {
-                        assert_eq!(
-                            f.cells[usize::from(control.y * f.cols + control.x)].bg,
-                            Color::Indexed(color)
-                        );
+                        for x in control.x..control.x + control.cols {
+                            assert_eq!(
+                                f.cells[usize::from(control.y * f.cols + x)].bg,
+                                Color::Indexed(color)
+                            );
+                        }
                     }
                     let notice = compose(
                         &ws,
@@ -2303,6 +2317,12 @@ fn sidebar_status_controls_and_metrics_leave_the_last_terminal_row_usable() {
                     let mut display = Terminal::new(notice.cols, notice.rows);
                     display.feed(&terminal_diff(None, &notice));
                     assert_eq!(display.snapshot().cells, notice.cells);
+                }
+                let [config, mode, parked, help] = f.controls();
+                for (left, right) in [(config, mode), (parked, help)] {
+                    assert_eq!(left.x, 0);
+                    assert_eq!(left.x + left.cols, right.x);
+                    assert_eq!(right.x + right.cols, width);
                 }
                 let minimum = (size.0 / 5).clamp(18, 28);
                 assert!((minimum..=minimum * 6 / 5).contains(&sidebar_width(size.0)));
@@ -2401,17 +2421,19 @@ fn footer_parked_help_order_has_no_new_tab_button() {
                 .iter()
                 .map(|cell| cell.text.as_str())
                 .collect();
-            assert_eq!(
-                label,
-                if count == 0 {
-                    " ⊟ Parked ".into()
-                } else {
-                    format!(" ⊟ Parked ({count}) ")
-                }
-            );
+            let expected = if count == 0 {
+                " ⊟ Parked ".into()
+            } else {
+                format!(" ⊟ Parked ({count}) ")
+            };
+            if f.sidebar_status() {
+                assert_eq!(label.trim(), expected.trim());
+            } else {
+                assert_eq!(label, expected);
+            }
             assert_eq!(parked.x, if f.sidebar_status() { 0 } else { 14 });
             if f.sidebar_status() {
-                assert!(parked.x + parked.cols <= help.x);
+                assert_eq!(parked.x + parked.cols, help.x);
                 assert_eq!(f.controls()[1].x, help.x);
             } else {
                 assert_eq!(parked.x + parked.cols, help.x);
