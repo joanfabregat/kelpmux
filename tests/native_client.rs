@@ -811,10 +811,6 @@ fn live_server_attach_layout_read_fullscreen_detach_reconnect_preserves_shell() 
     wait_state(&server, &mut tty, |_, reading, _| {
         reading == ReadingMode::Tabs(original.id)
     });
-    tty.input(b"\x02f");
-    wait_state(&server, &mut tty, |_, reading, _| {
-        reading == ReadingMode::Fullscreen(original.id)
-    });
     let deadline = Instant::now() + Duration::from_secs(5);
     loop {
         tty.drain();
@@ -833,6 +829,10 @@ fn live_server_attach_layout_read_fullscreen_detach_reconnect_preserves_shell() 
         thread::sleep(Duration::from_millis(10));
     }
     // Wait for the frontend's selected pane before sending pane-addressed keys.
+    tty.input(b"\x02f");
+    wait_state(&server, &mut tty, |_, reading, _| {
+        reading == ReadingMode::Fullscreen(original.id)
+    });
     tty.input(b"\x02f");
     wait_state(&server, &mut tty, |_, reading, _| {
         reading == ReadingMode::Tabs(original.id)
