@@ -162,6 +162,7 @@ pub fn compose(
         }
         let parked_count = workspace.panes.iter().filter(|pane| pane.parked).count();
         let help = super::workspace::help_button(frame.rows, parked_count);
+        let [config, mode, _, _] = frame.controls();
         let footer_cols = help.x + help.cols;
         let width = frame.cols.saturating_sub(footer_cols);
         write_text(
@@ -176,29 +177,20 @@ pub fn compose(
         );
         write_text(
             &mut frame,
-            0,
-            y,
-            9,
-            " ⚙︎ Config",
+            config.x,
+            config.y,
+            config.cols,
+            super::ui::CONFIG_BUTTON_LABEL,
             Color::Indexed(231),
             Color::Indexed(24),
             true,
         );
-        fill(
-            &mut frame,
-            Rect {
-                x: 9,
-                y,
-                cols: 8,
-                rows: 1,
-            },
-            Color::Indexed(67),
-        );
+        fill(&mut frame, mode, Color::Indexed(67));
         write_text(
             &mut frame,
-            9,
-            y,
-            8,
+            mode.x,
+            mode.y,
+            mode.cols,
             if workspace.active == 0 {
                 " + New "
             } else if workspace.reading == ReadingMode::Grid {
@@ -2623,7 +2615,7 @@ fn draw_status_meter(
         format!("{percent:>3}% {detail}")
     };
     let value_width = value.chars().map(char_width).sum::<u16>();
-    let bar_width = rect.cols.saturating_sub(6 + value_width + 3);
+    let bar_width = rect.cols.saturating_sub(8);
     write_text(
         frame,
         rect.x,
@@ -2645,8 +2637,8 @@ fn draw_status_meter(
                 start + 1 + index,
                 rect.y,
                 1,
-                if active { "█" } else { "░" },
-                Color::Indexed(if active { color } else { 240 }),
+                if active { "|" } else { " " },
+                Color::Indexed(if active { color } else { 245 }),
                 bg,
                 false,
             );
@@ -2664,9 +2656,9 @@ fn draw_status_meter(
     }
     write_text(
         frame,
-        rect.x + rect.cols.saturating_sub(value_width),
+        rect.x + rect.cols.saturating_sub(value_width + 1),
         rect.y,
-        rect.cols.min(value_width),
+        bar_width.min(value_width),
         &value,
         Color::Indexed(color),
         bg,

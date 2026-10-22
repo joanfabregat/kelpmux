@@ -3,7 +3,7 @@ use crate::{Result, model::Status};
 use serde::{Deserialize, Serialize};
 use std::io::{Read, Write};
 
-pub const VERSION: u16 = 24;
+pub const VERSION: u16 = 25;
 pub const MAX_MESSAGE: usize = 16 * 1024 * 1024;
 pub const MAX_INPUT: usize = 64 * 1024;
 pub type PaneId = u64;
@@ -175,13 +175,13 @@ impl Frame {
                 Rect {
                     x: 0,
                     y: self.rows - 1,
-                    cols: 9,
+                    cols: super::ui::FOOTER_CONFIG_COLS,
                     rows: 1,
                 },
                 Rect {
-                    x: 9,
+                    x: super::ui::FOOTER_CONFIG_COLS,
                     y: self.rows - 1,
-                    cols: 8,
+                    cols: super::ui::FOOTER_MODE_COLS,
                     rows: 1,
                 },
                 super::workspace::parked_button(self.rows, count),

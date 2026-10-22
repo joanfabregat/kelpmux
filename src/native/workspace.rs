@@ -1243,7 +1243,7 @@ pub fn parked_label(count: usize) -> String {
 }
 pub fn parked_button(rows: u16, count: usize) -> Rect {
     Rect {
-        x: 17,
+        x: super::ui::FOOTER_CONFIG_COLS + super::ui::FOOTER_MODE_COLS,
         y: rows - 1,
         cols: parked_label(count).chars().count() as u16,
         rows: 1,

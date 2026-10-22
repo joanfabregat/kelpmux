@@ -778,10 +778,14 @@ fn footer_buttons_and_compact_vitals_have_disjoint_hit_targets() {
     assert!(footer.contains("14:49"));
     assert!(footer.contains("Parked"));
     assert!(footer.starts_with(" ⚙︎ Config"));
-    assert!(footer.starts_with(" ⚙︎ Config ▦ Tabs "));
+    assert!(footer.starts_with(" ⚙︎ Config  ▦ Tabs "));
     assert!(footer.find("Parked").unwrap() < footer.find('?').unwrap());
     assert!(!footer.contains('⛶') && !footer.contains('▣'));
     let start = usize::from((f.rows - 1) * f.cols);
+    let config = f.controls()[0];
+    let trailing = &f.cells[start + usize::from(config.cols - 1)];
+    assert_eq!(trailing.text, " ");
+    assert_eq!(trailing.bg, Color::Indexed(24));
     assert!(
         f.cells[start + usize::from(f.footer_cols())..]
             .iter()
@@ -804,7 +808,7 @@ fn footer_buttons_and_compact_vitals_have_disjoint_hit_targets() {
     assert_eq!(
         actions(Router::default().route(
             click(Point {
-                x: 9,
+                x: f.controls()[1].x,
                 y: f.rows - 1
             }),
             &f
@@ -2367,7 +2371,7 @@ fn footer_parked_help_order_has_no_new_tab_button() {
             } else {
                 assert_eq!(label, expected);
             }
-            assert_eq!(parked.x, if f.sidebar_status() { 0 } else { 17 });
+            assert_eq!(parked.x, if f.sidebar_status() { 0 } else { 18 });
             if f.sidebar_status() {
                 assert_eq!(parked.x + parked.cols, help.x);
                 assert_eq!(f.controls()[1].x, help.x);
@@ -2679,14 +2683,31 @@ fn status_summary_is_compact_uses_two_columns_and_draws_horizontal_meters() {
         ] {
             let start = usize::from((bounds.y + 1 + index) * f.cols + bounds.x + 1);
             let cells = &f.cells[start..start + usize::from(meter_width)];
-            let filled = cells.iter().filter(|cell| cell.text == "█").count();
-            let empty = cells.iter().filter(|cell| cell.text == "░").count();
-            assert!(filled + empty >= 8);
-            assert_eq!(filled, ((filled + empty) * usize::from(percent) + 50) / 100);
+            let text: String = cells.iter().map(|cell| cell.text.as_str()).collect();
+            assert!(!text.contains(['█', '░']));
+            let left = cells.iter().position(|cell| cell.text == "[").unwrap();
+            let right = cells.iter().position(|cell| cell.text == "]").unwrap();
+            assert_eq!(right, cells.len() - 1);
+            let reading = format!("{percent:>3}%");
+            assert!(text.contains(&reading));
+            let value_width = if index == 4 {
+                " 50% 50B/100B".len()
+            } else if index == 5 {
+                " 25% 25B/100B".len()
+            } else {
+                reading.len()
+            };
+            let visible_width = right - left - 1 - value_width;
+            let filled = cells.iter().filter(|cell| cell.text == "|").count();
+            assert!(visible_width >= 8);
+            assert_eq!(
+                filled,
+                (((right - left - 1) * usize::from(percent) + 50) / 100).min(visible_width)
+            );
             assert!(
                 cells
                     .iter()
-                    .filter(|cell| cell.text == "█")
+                    .filter(|cell| cell.text == "|")
                     .all(|cell| cell.fg == Color::Indexed(color))
             );
         }
