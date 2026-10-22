@@ -42,6 +42,20 @@ fn pane(id: u64, status: Status) -> PaneInfo {
     }
 }
 #[test]
+fn notification_baselines_support_more_than_sixty_four_tabs() {
+    let fixture = Fixture::new();
+    let time = kelpmux::now();
+    let mut activity = Activity::load(&fixture.0, "large").unwrap();
+    let mut panes: Vec<_> = (1..=100).map(|id| pane(id, Status::Working)).collect();
+    activity.observe(&panes, time).unwrap();
+    panes[99].status = Status::InputNeeded;
+    activity.observe(&panes, time + 1).unwrap();
+    drop(activity);
+    let activity = Activity::load(&fixture.0, "large").unwrap();
+    assert!(activity.all().iter().any(|event| event.pane == 100));
+}
+
+#[test]
 fn initial_baseline_dedup_explicit_statuses_and_ack_persist_across_restart() {
     let fixture = Fixture::new();
     let time = kelpmux::now();

@@ -955,6 +955,48 @@ fn wait_text(tty: &mut Pty, expected: &str) {
         thread::sleep(Duration::from_millis(10));
     }
 }
+#[test]
+fn real_frontend_attaches_and_repaints_more_than_ten_tabs() {
+    let server = LiveServer::start();
+    for _ in 1..12 {
+        server.ctl(&["new"]);
+    }
+    let before: Vec<_> = server
+        .state()
+        .0
+        .iter()
+        .map(|pane| (pane.id, pane.pid))
+        .collect();
+    assert_eq!(before.len(), 12);
+    let mut tty = Pty::spawn(&server.socket, 80, 24);
+    wait_state(&server, &mut tty, |panes, _, controller| {
+        panes.len() == 12 && controller.is_some()
+    });
+    tty.input(b"printf 'TWELVE_''READY\\n'\r");
+    wait_text(&mut tty, "TWELVE_READY");
+    tty.input(b"\x02g");
+    wait_state(&server, &mut tty, |_, reading, _| {
+        reading == ReadingMode::Grid
+    });
+    tty.input(b"\x021");
+    wait_state(&server, &mut tty, |_, reading, _| {
+        reading == ReadingMode::Tabs(before[0].0)
+    });
+    tty.input(b"printf 'FIRST_''READY\\n'\r");
+    wait_text(&mut tty, "FIRST_READY");
+    tty.input(b"\x02d");
+    tty.finish(true);
+    assert_eq!(
+        server
+            .state()
+            .0
+            .iter()
+            .map(|pane| (pane.id, pane.pid))
+            .collect::<Vec<_>>(),
+        before
+    );
+}
+
 fn grid_number(server: &LiveServer, id: PaneId) -> Point {
     let (panes, _, _) = server.state();
     let mut workspace = kelpmux::native::workspace::Workspace::new(80, 24).unwrap();

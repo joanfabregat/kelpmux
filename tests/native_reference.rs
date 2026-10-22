@@ -55,6 +55,20 @@ fn as_json(s: &State) -> serde_json::Value {
     serde_json::to_value(s).unwrap()
 }
 #[test]
+fn stream_metadata_accepts_many_tabs_without_increasing_subscriptions() {
+    let mut state = State::default();
+    state.apply(hello()).unwrap();
+    let mut data = update();
+    data.panes = (1..=100)
+        .map(|id| PaneInfo {
+            id,
+            ..Default::default()
+        })
+        .collect();
+    state.apply(Event::Update(data)).unwrap();
+}
+
+#[test]
 fn epoch_handshake_and_missing_baseline_errors_are_transactional() {
     let mut s = State::default();
     assert!(s.apply(Event::Update(update())).is_err());

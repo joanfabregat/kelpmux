@@ -114,7 +114,6 @@ impl Default for UiConfig {
 impl UiConfig {
     pub fn validate(&self) -> Result<()> {
         if !(1..=26).contains(&self.prefix)
-            || self.pane_colors.len() > 10
             || self
                 .pane_colors
                 .iter()

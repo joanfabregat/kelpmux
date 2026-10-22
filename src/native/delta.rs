@@ -41,10 +41,9 @@ fn encoded_size(value: &impl Serialize, limit: usize) -> Option<usize> {
 fn shape(frame: &Frame) -> Result<usize> {
     validate_size(frame.cols, frame.rows)?;
     let cells = usize::from(frame.cols) * usize::from(frame.rows);
-    if frame.panes.len() > 10
-        || frame.cursor.is_some_and(|cursor| {
-            cursor.position.x >= frame.cols || cursor.position.y >= frame.rows
-        })
+    if frame
+        .cursor
+        .is_some_and(|cursor| cursor.position.x >= frame.cols || cursor.position.y >= frame.rows)
     {
         return Err("invalid delta frame metadata".into());
     }

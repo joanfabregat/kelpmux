@@ -662,9 +662,7 @@ impl Channel {
 fn validate_frame(frame: &Frame) -> Result<()> {
     frame.ui.config.validate()?;
     validate_size(frame.cols, frame.rows)?;
-    if frame.cells.len() != usize::from(frame.cols) * usize::from(frame.rows)
-        || frame.panes.len() > 10
-    {
+    if frame.cells.len() != usize::from(frame.cols) * usize::from(frame.rows) {
         return Err("invalid native frame dimensions".into());
     }
     for cell in &frame.cells {

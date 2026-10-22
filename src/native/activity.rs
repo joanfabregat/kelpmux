@@ -141,7 +141,7 @@ impl Activity {
                 serde_json::from_slice::<Persisted>(&bytes)?
             }
         };
-        if data.seen.len() > 64 || data.events.len() > MAX_EVENTS {
+        if data.events.len() > MAX_EVENTS {
             return Err("notification history exceeds entry limit".into());
         }
         let mut ids = BTreeSet::new();
@@ -177,9 +177,6 @@ impl Activity {
     }
     /// Initial observations establish a baseline; reconnecting loads the existing baseline.
     pub fn observe(&mut self, panes: &[PaneInfo], time: u64) -> Result<bool> {
-        if panes.len() > 64 {
-            return Err("too many notification pane observations".into());
-        }
         let mut current = BTreeMap::new();
         for pane in panes {
             if pane.id == 0 || current.insert(pane.id, Seen::from(pane)).is_some() {
