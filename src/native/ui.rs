@@ -52,6 +52,7 @@ pub enum AgentFilter {
 }
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum DialogKind {
+    Status,
     Parked,
     Overview,
     Notifications,
@@ -166,6 +167,18 @@ impl UiConfig {
 }
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct UiState {
+    #[serde(default)]
+    pub status: super::status::Snapshot,
+    #[serde(default)]
+    pub status_view: super::status::View,
+    #[serde(default)]
+    pub status_sort: super::status::Sort,
+    #[serde(default = "status_descending")]
+    pub status_descending: bool,
+    #[serde(default)]
+    pub status_query: String,
+    #[serde(default)]
+    pub status_offset: usize,
     /// Presentation colors reported by this client, never persisted as settings.
     #[serde(default)]
     pub terminal_theme: [Option<[u8; 3]>; 2],
@@ -190,6 +203,9 @@ pub struct UiState {
     pub reading_size: Option<(u16, u16)>,
     pub grid_shape: (u8, u8),
     pub vitals: Vec<(String, u8)>,
+}
+fn status_descending() -> bool {
+    true
 }
 pub fn geometry_bucket(cols: u16) -> usize {
     if cols <= 60 {

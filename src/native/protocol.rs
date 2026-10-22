@@ -3,7 +3,7 @@ use crate::{Result, model::Status};
 use serde::{Deserialize, Serialize};
 use std::io::{Read, Write};
 
-pub const VERSION: u16 = 22;
+pub const VERSION: u16 = 23;
 pub const MAX_MESSAGE: usize = 16 * 1024 * 1024;
 pub const MAX_INPUT: usize = 64 * 1024;
 pub type PaneId = u64;
@@ -221,6 +221,11 @@ pub enum InputEvent {
 }
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Action {
+    StatusOpen(super::status::Sort),
+    StatusView(super::status::View),
+    StatusSort(super::status::Sort),
+    StatusQuery(String),
+    StatusScroll(i16),
     /// Explicitly take this pane back from an independent native client.
     ClaimPane(PaneId),
     HelpScroll(i16),

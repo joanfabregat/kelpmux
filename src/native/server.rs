@@ -549,6 +549,7 @@ struct Server {
     started: Instant,
     pty_bytes: u64,
     vitals: super::vitals::Sampler,
+    status: super::status::Monitor,
     config: ServerConfig,
     workspace: Workspace,
     panes: BTreeMap<PaneId, NativePane>,
@@ -954,6 +955,15 @@ impl Server {
     }
     fn feature_action(&mut self, client: u64, action: &Action) -> Result<bool> {
         match action {
+            Action::StatusOpen(_)
+            | Action::StatusView(_)
+            | Action::StatusSort(_)
+            | Action::StatusQuery(_)
+            | Action::StatusScroll(_) => {
+                self.workspace.apply(action)?;
+                self.dirty = true;
+                return Ok(true);
+            }
             Action::Grid { .. } | Action::GridPicker | Action::ResizeGrid { .. } => {
                 return Err("grid layout is automatic; use New Tab, Park or Close".into());
             }
@@ -2058,6 +2068,18 @@ impl Server {
         }
         self.workspace.ui.notifications = self.activity.all().to_vec();
         let vitals = self.vitals.sample();
+        let status_open = self
+            .workspace
+            .ui
+            .dialog
+            .is_some_and(|dialog| dialog.kind == super::ui::DialogKind::Status)
+            && self.clients.values().any(|client| client.attached);
+        self.workspace.ui.status = if status_open {
+            self.status.poll(true).clone()
+        } else {
+            self.status.poll(false);
+            super::status::Snapshot::default()
+        };
         self.stream_frames(vitals.clone());
         self.workspace.ui.vitals = if self.workspace.cols <= 60 {
             let mut compact = Vec::new();
@@ -2214,6 +2236,7 @@ pub fn serve(config: ServerConfig) -> Result<()> {
         started: Instant::now(),
         pty_bytes: 0,
         vitals: super::vitals::Sampler::default(),
+        status: super::status::Monitor::default(),
         config,
         workspace,
         panes: BTreeMap::new(),

@@ -237,6 +237,8 @@ fn decode_mouse(bytes: &[u8]) -> Option<MouseEvent> {
 
 #[derive(Default)]
 pub struct Router {
+    status_search: bool,
+    status_query: Option<String>,
     focus_click: bool,
     search: Option<(String, bool)>,
     search_utf8: Vec<u8>,
@@ -262,6 +264,15 @@ impl Router {
             self.boundary_drag = None;
             self.selecting = false;
         }
+        if frame
+            .ui
+            .dialog
+            .is_some_and(|d| d.kind == super::ui::DialogKind::Status)
+        {
+            return self.status_event(event, frame);
+        }
+        self.status_search = false;
+        self.status_query = None;
         if frame
             .ui
             .dialog
@@ -822,6 +833,13 @@ impl Router {
             }
         }
         let [config, mode, parked, help] = frame.controls();
+        if event.kind == MouseKind::Press && frame.ui.dialog.is_none() && !frame.help {
+            if let Some(sort) = super::status::metric_target(frame, event.position) {
+                self.pending_modal = true;
+                emit(&mut output, Action::StatusOpen(sort), true);
+                return output;
+            }
+        }
         if event.kind == MouseKind::Press && config.contains(event.position) {
             self.pending_modal = true;
             emit(&mut output, Action::Config, true);
@@ -1492,5 +1510,146 @@ impl Router {
     }
     fn grid_resize(&self, _frame: &Frame, _dx: i16, _dy: i16) -> Option<Action> {
         None
+    }
+}
+
+impl Router {
+    fn status_event(&mut self, event: InputEvent, frame: &Frame) -> Vec<ClientMessage> {
+        use super::status::{self, Sort, View};
+        if !frame.controller {
+            return vec![];
+        }
+        if matches!(
+            event,
+            InputEvent::Mouse(MouseEvent {
+                kind: MouseKind::Press,
+                ..
+            })
+        ) {
+            self.focus_click = true;
+        }
+        self.pending_modal = false;
+        let ui = &frame.ui;
+        let bounds = status::bounds(frame.cols, frame.rows);
+        let mut query = self
+            .status_query
+            .clone()
+            .unwrap_or_else(|| ui.status_query.clone());
+        let action = match event {
+            InputEvent::Mouse(mouse) => match mouse.kind {
+                MouseKind::WheelUp => Some(Action::StatusScroll(-3)),
+                MouseKind::WheelDown => Some(Action::StatusScroll(3)),
+                MouseKind::Press => {
+                    if !bounds.contains(mouse.position)
+                        || (mouse.position.y == bounds.y
+                            && mouse.position.x >= bounds.x + bounds.cols - 3)
+                    {
+                        Some(Action::DialogClose)
+                    } else if mouse.position.y == bounds.y + 1 + status::summary_height(bounds) {
+                        Some(Action::StatusView(if mouse.position.x < bounds.x + 10 {
+                            View::Main
+                        } else {
+                            View::Io
+                        }))
+                    } else if mouse.position.y == status::table_y(bounds) {
+                        let mut x = bounds.x + 1;
+                        let mut selected = None;
+                        for (_, width, sort) in status::columns(bounds.cols - 2, ui.status_view) {
+                            if width > 0 && mouse.position.x >= x && mouse.position.x < x + width {
+                                selected = sort.map(Action::StatusSort);
+                                break;
+                            }
+                            x += width;
+                        }
+                        selected
+                    } else {
+                        None
+                    }
+                }
+                _ => None,
+            },
+            InputEvent::Bytes(mut bytes) => {
+                if let Some((normalized, event)) = enhanced_key(&bytes) {
+                    if event == 3 {
+                        return vec![];
+                    }
+                    bytes = normalized;
+                }
+                match bytes.as_slice() {
+                    b"\x1b" => Some(Action::DialogClose),
+                    b"\t" => Some(Action::StatusView(if ui.status_view == View::Main {
+                        View::Io
+                    } else {
+                        View::Main
+                    })),
+                    b"\x1b[A" => Some(Action::StatusScroll(-1)),
+                    b"\x1b[B" => Some(Action::StatusScroll(1)),
+                    b"\x1b[5~" => Some(Action::StatusScroll(-10)),
+                    b"\x1b[6~" => Some(Action::StatusScroll(10)),
+                    b"\x1b[H" => Some(Action::StatusScroll(i16::MIN)),
+                    b"\x1b[F" => Some(Action::StatusScroll(i16::MAX)),
+                    b"\r" | b"\n" => {
+                        self.status_search = false;
+                        None
+                    }
+                    b"\x7f" | b"\x08" => {
+                        query.pop();
+                        Some(Action::StatusQuery(query))
+                    }
+                    b"q" if !self.status_search => Some(Action::DialogClose),
+                    b"c" if !self.status_search => Some(Action::StatusSort(Sort::Cpu)),
+                    b"m" if !self.status_search => Some(Action::StatusSort(Sort::Memory)),
+                    b"p" if !self.status_search => Some(Action::StatusSort(Sort::Pid)),
+                    b"r" if !self.status_search => Some(Action::StatusSort(Sort::Read)),
+                    b"w" if !self.status_search => Some(Action::StatusSort(Sort::Write)),
+                    _ => {
+                        let input = if bytes.first() == Some(&b'/') && !self.status_search {
+                            self.status_search = true;
+                            query.clear();
+                            &bytes[1..]
+                        } else {
+                            &bytes[..]
+                        };
+                        if self.status_search && !input.starts_with(&[27]) {
+                            self.search_utf8.extend_from_slice(input);
+                            match std::str::from_utf8(&self.search_utf8) {
+                                Ok(text) => {
+                                    query.extend(
+                                        text.chars()
+                                            .filter(|c| !c.is_control())
+                                            .take(128usize.saturating_sub(query.chars().count())),
+                                    );
+                                    self.search_utf8.clear();
+                                    Some(Action::StatusQuery(query))
+                                }
+                                Err(error) if error.error_len().is_none() => None,
+                                Err(_) => {
+                                    self.search_utf8.clear();
+                                    None
+                                }
+                            }
+                        } else {
+                            None
+                        }
+                    }
+                }
+            }
+            InputEvent::Paste(bytes) if self.status_search => {
+                query.extend(
+                    String::from_utf8_lossy(&bytes)
+                        .chars()
+                        .filter(|c| !c.is_control())
+                        .take(128usize.saturating_sub(query.chars().count())),
+                );
+                Some(Action::StatusQuery(query))
+            }
+            _ => None,
+        };
+        if let Some(Action::StatusQuery(query)) = &action {
+            self.status_query = Some(query.clone());
+        }
+        action
+            .map(|action| vec![ClientMessage::Action(action)])
+            .unwrap_or_default()
     }
 }

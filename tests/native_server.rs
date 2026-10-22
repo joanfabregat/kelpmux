@@ -1011,3 +1011,47 @@ fn controller_and_observer_surfaces_use_their_own_reported_themes() {
         Color::Rgb(26, 32, 38)
     );
 }
+
+#[test]
+fn status_popup_samples_live_processes_and_closes_without_changing_the_shell() {
+    use kelpmux::native::{
+        status::{Sort, View},
+        ui::DialogKind,
+    };
+    let daemon = Daemon::start();
+    let (mut stream, _, _) = daemon.attach();
+    let original = state(&mut stream).0[0].clone();
+    command(&mut stream, Action::StatusOpen(Sort::Cpu)).unwrap();
+    let opened = wait_frame(&mut stream, |frame| {
+        frame
+            .ui
+            .dialog
+            .is_some_and(|dialog| dialog.kind == DialogKind::Status)
+            && frame.ui.status.ready
+            && frame
+                .ui
+                .status
+                .processes
+                .iter()
+                .any(|process| process.pid == original.pid)
+    });
+    assert_eq!(
+        (opened.panes[0].pane.id, opened.panes[0].pane.pid),
+        (original.id, original.pid)
+    );
+    assert!(!opened.ui.status.cpus.is_empty());
+    assert!(opened.ui.status.memory_total > 0);
+    command(&mut stream, Action::StatusView(View::Io)).unwrap();
+    wait_frame(&mut stream, |frame| frame.ui.status_view == View::Io);
+    command(&mut stream, Action::StatusQuery(original.pid.to_string())).unwrap();
+    command(&mut stream, Action::DialogClose).unwrap();
+    let closed = wait_frame(&mut stream, |frame| {
+        frame.ui.dialog.is_none() && !frame.ui.status.ready
+    });
+    assert_eq!(
+        (closed.panes[0].pane.id, closed.panes[0].pane.pid),
+        (original.id, original.pid)
+    );
+    let saved = fs::read_to_string(daemon.root.join("state/workspace.json")).unwrap();
+    assert!(!saved.contains("status_query") && !saved.contains("processes"));
+}

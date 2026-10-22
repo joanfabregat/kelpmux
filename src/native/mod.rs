@@ -13,6 +13,7 @@ pub mod recovery;
 pub mod reference;
 pub mod render;
 pub mod server;
+pub mod status;
 pub mod stream;
 pub mod templates;
 pub mod tracking;

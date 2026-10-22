@@ -563,6 +563,7 @@ fn draw_dialog(
     );
     fill(frame, Rect { rows: 1, ..bounds }, header_bg);
     let title = match dialog.kind {
+        DialogKind::Status => " System status · live",
         DialogKind::Parked => " ⊟ Parked tabs · select to restore",
         DialogKind::Grid => " ▦ Grid · arrows, Enter or click",
         DialogKind::Overview => " Workspace overview",
@@ -607,7 +608,9 @@ fn draw_dialog(
         Color::Indexed(88),
         true,
     );
-    if dialog.kind == DialogKind::Color {
+    if dialog.kind == DialogKind::Status {
+        draw_status(frame, workspace, bounds);
+    } else if dialog.kind == DialogKind::Color {
         let current = workspace
             .panes
             .iter()
@@ -2435,6 +2438,298 @@ fn draw_dashboard(
         );
     }
     frame.cursor = None;
+}
+fn draw_status(frame: &mut Frame, workspace: &Workspace, bounds: Rect) {
+    use super::status::{self, View};
+    let ui = &workspace.ui;
+    let data = &ui.status;
+    let bg = Color::Indexed(236);
+    let width = bounds.cols.saturating_sub(2);
+    let x = bounds.x + 1;
+    let tabs_y = bounds.y + 1 + status::summary_height(bounds);
+    let main = ui.status_view == View::Main;
+    write_text(
+        frame,
+        x,
+        tabs_y,
+        width,
+        if main {
+            "[ Main ]   I/O"
+        } else {
+            "  Main   [ I/O ]"
+        },
+        Color::Indexed(117),
+        bg,
+        true,
+    );
+    let query = if ui.status_query.is_empty() {
+        "/ search · c CPU · m memory · p PID · r/w I/O".to_string()
+    } else {
+        format!("Search: {}", safe_text(&ui.status_query))
+    };
+    write_text(
+        frame,
+        x,
+        tabs_y + 1,
+        width,
+        &query,
+        Color::Indexed(245),
+        bg,
+        false,
+    );
+    let mut lines = Vec::new();
+    if !data.ready {
+        lines.push(("Collecting system metrics…".into(), 250));
+    }
+    let per_line = (width / 15).max(1) as usize;
+    for (group, cpus) in data.cpus.chunks(per_line).enumerate() {
+        let line = cpus
+            .iter()
+            .enumerate()
+            .map(|(index, percent)| {
+                format!(
+                    "CPU{:<2} {} {:>3}%",
+                    group * per_line + index,
+                    super::vitals::bar_glyph(*percent),
+                    percent
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("  ");
+        lines.push((line, 114));
+        if group == 2 {
+            if data.cpus.len() > (group + 1) * per_line {
+                lines.push((format!("{} CPU cores total", data.cpus.len()), 114));
+            }
+            break;
+        }
+    }
+    if data.ready {
+        lines.push((
+            format!(
+                "Memory {} / {}   Swap {} / {}",
+                status::bytes(data.memory_used),
+                status::bytes(data.memory_total),
+                status::bytes(data.swap_used),
+                status::bytes(data.swap_total)
+            ),
+            141,
+        ));
+        lines.push((
+            format!(
+                "Tasks {} ({} running)   Load {}",
+                data.tasks, data.running, data.load
+            ),
+            250,
+        ));
+        let clock = ui
+            .vitals
+            .iter()
+            .filter(|(s, _)| {
+                s.contains(':') || (s.len() == 10 && s.as_bytes().get(4) == Some(&b'-'))
+            })
+            .map(|(s, _)| s.as_str())
+            .collect::<Vec<_>>()
+            .join(" ");
+        lines.push((
+            format!(
+                "Uptime {}d {:02}:{:02}   {}",
+                data.uptime / 86400,
+                data.uptime / 3600 % 24,
+                data.uptime / 60 % 60,
+                clock
+            ),
+            39,
+        ));
+        lines.push((
+            format!(
+                "Network ↓ {}  ↑ {}",
+                status::rate(data.network.map(|v| v.0)),
+                status::rate(data.network.map(|v| v.1))
+            ),
+            73,
+        ));
+        lines.push((
+            format!(
+                "Disk I/O R {}  W {}",
+                status::rate(data.disk_io.map(|v| v.0)),
+                status::rate(data.disk_io.map(|v| v.1))
+            ),
+            222,
+        ));
+        for disk in &data.disks {
+            lines.push((
+                format!(
+                    "{} {:>3}%  {} / {}  {}",
+                    super::vitals::pie_glyph(disk.percent),
+                    disk.percent,
+                    status::bytes(disk.used),
+                    status::bytes(disk.total),
+                    safe_text(&disk.mount)
+                ),
+                if disk.percent >= 90 { 196 } else { 222 },
+            ));
+        }
+    }
+    if status::summary_height(bounds) == 1 {
+        let preferred = if ui.status_view == View::Io {
+            "Disk I/O"
+        } else if ui.status_sort == status::Sort::Memory {
+            "Memory"
+        } else {
+            "CPU"
+        };
+        if let Some(index) = lines
+            .iter()
+            .position(|(line, _)| line.starts_with(preferred))
+        {
+            lines.swap(0, index);
+        }
+    }
+    for (index, (line, color)) in lines
+        .iter()
+        .take(usize::from(status::summary_height(bounds)))
+        .enumerate()
+    {
+        write_text(
+            frame,
+            x,
+            bounds.y + 1 + index as u16,
+            width,
+            line,
+            Color::Indexed(*color),
+            bg,
+            false,
+        );
+    }
+    let table_y = status::table_y(bounds);
+    fill(
+        frame,
+        Rect {
+            x,
+            y: table_y,
+            cols: width,
+            rows: 1,
+        },
+        Color::Indexed(239),
+    );
+    let columns = status::columns(width, ui.status_view);
+    let mut col_x = x;
+    for (label, size, sort) in &columns {
+        let text = if *sort == Some(ui.status_sort) {
+            format!("{}{}", label, if ui.status_descending { "↓" } else { "↑" })
+        } else {
+            label.to_string()
+        };
+        let available = if *size == 0 {
+            x + width - col_x
+        } else {
+            (*size).min((x + width).saturating_sub(col_x))
+        };
+        write_text(
+            frame,
+            col_x,
+            table_y,
+            available,
+            &text,
+            Color::Indexed(117),
+            Color::Indexed(239),
+            true,
+        );
+        col_x += available;
+    }
+    let rows = status::processes(data, &ui.status_query, ui.status_sort, ui.status_descending);
+    let capacity = usize::from((bounds.y + bounds.rows - 1).saturating_sub(table_y + 1));
+    let offset = ui
+        .status_offset
+        .min(rows.len().saturating_sub(capacity.max(1)));
+    for (index, process) in rows.iter().skip(offset).take(capacity).enumerate() {
+        let y = table_y + 1 + index as u16;
+        let row_bg = if index % 2 == 0 {
+            bg
+        } else {
+            Color::Indexed(235)
+        };
+        fill(
+            frame,
+            Rect {
+                x,
+                y,
+                cols: width,
+                rows: 1,
+            },
+            row_bg,
+        );
+        let mut col_x = x;
+        for (label, size, _) in &columns {
+            let text = match *label {
+                "PID" => process.pid.to_string(),
+                "USER" => process.user.clone(),
+                "CPU%" => status::percent(process.cpu),
+                "MEM%" => status::percent(Some(process.memory)),
+                "RES" => status::bytes(process.resident),
+                "TIME" => format!("{}:{:02}", process.runtime / 60, process.runtime % 60),
+                "S" => process.state.clone(),
+                "READ/s" => status::rate(process.read),
+                "WRITE/s" => status::rate(process.write),
+                _ => safe_text(&process.command),
+            };
+            let available = if *size == 0 {
+                (x + width).saturating_sub(col_x)
+            } else {
+                (*size).min((x + width).saturating_sub(col_x))
+            };
+            let color = match *label {
+                "CPU%" => 114,
+                "MEM%" | "RES" => 141,
+                "READ/s" | "WRITE/s" => 222,
+                _ => 250,
+            };
+            write_text(
+                frame,
+                col_x,
+                y,
+                available,
+                &text,
+                Color::Indexed(color),
+                row_bg,
+                false,
+            );
+            col_x += available;
+        }
+    }
+    if rows.is_empty() && capacity > 0 {
+        write_text(
+            frame,
+            x,
+            table_y + 1,
+            width,
+            if data.ready {
+                "No matching processes"
+            } else {
+                "Waiting for first sample…"
+            },
+            Color::Indexed(245),
+            bg,
+            false,
+        );
+    }
+    let footer = format!(
+        "Esc close · Tab view · {}–{}/{}",
+        if rows.is_empty() { 0 } else { offset + 1 },
+        (offset + capacity).min(rows.len()),
+        rows.len()
+    );
+    write_text(
+        frame,
+        x,
+        bounds.y + bounds.rows - 1,
+        width,
+        &footer,
+        Color::Indexed(245),
+        bg,
+        false,
+    );
 }
 #[cfg(test)]
 mod tests {

@@ -363,6 +363,82 @@ impl Workspace {
                     .saturating_add_signed(amount)
                     .min(super::ui::HELP_ROWS.saturating_sub(visible));
             }
+            Action::StatusOpen(sort) => {
+                self.help = false;
+                self.ui.status_sort = sort;
+                self.ui.status_descending = sort != super::status::Sort::Pid;
+                self.ui.status_view =
+                    if matches!(sort, super::status::Sort::Read | super::status::Sort::Write) {
+                        super::status::View::Io
+                    } else {
+                        super::status::View::Main
+                    };
+                self.ui.status_offset = 0;
+                self.ui.status_query.clear();
+                self.ui.dialog = Some(Dialog {
+                    kind: DialogKind::Status,
+                    selection: 0,
+                    filter: AgentFilter::All,
+                    source: None,
+                });
+            }
+            Action::StatusView(view) => {
+                self.ui.status_view = view;
+                self.ui.status_sort = if view == super::status::View::Io {
+                    super::status::Sort::Read
+                } else {
+                    super::status::Sort::Cpu
+                };
+                self.ui.status_descending = true;
+                self.ui.status_offset = 0;
+            }
+            Action::StatusSort(sort) => {
+                match sort {
+                    super::status::Sort::Read | super::status::Sort::Write => {
+                        self.ui.status_view = super::status::View::Io
+                    }
+                    super::status::Sort::Cpu | super::status::Sort::Memory => {
+                        self.ui.status_view = super::status::View::Main
+                    }
+                    _ => {}
+                }
+                self.ui.status_descending = if sort == self.ui.status_sort {
+                    !self.ui.status_descending
+                } else {
+                    sort != super::status::Sort::Pid
+                };
+                self.ui.status_sort = sort;
+                self.ui.status_offset = 0;
+            }
+            Action::StatusQuery(ref query) => {
+                self.ui.status_query = query
+                    .chars()
+                    .filter(|c| !c.is_control())
+                    .take(128)
+                    .collect();
+                self.ui.status_offset = 0;
+            }
+            Action::StatusScroll(amount) => {
+                let count = super::status::processes(
+                    &self.ui.status,
+                    &self.ui.status_query,
+                    self.ui.status_sort,
+                    self.ui.status_descending,
+                )
+                .len();
+                let bounds = super::status::bounds(self.cols, self.rows);
+                let capacity = usize::from(
+                    (bounds.y + bounds.rows - 1).saturating_sub(super::status::table_y(bounds) + 1),
+                )
+                .max(1);
+                let maximum = count.saturating_sub(capacity);
+                self.ui.status_offset = self
+                    .ui
+                    .status_offset
+                    .min(maximum)
+                    .saturating_add_signed(isize::from(amount))
+                    .min(maximum);
+            }
             Action::Overview | Action::Notifications | Action::Recovery | Action::SearchOpen => {
                 let kind = match action {
                     Action::Overview => DialogKind::Overview,
@@ -901,6 +977,9 @@ pub fn dialog_bounds(cols: u16, rows: u16) -> Rect {
     }
 }
 pub fn dialog_bounds_for(cols: u16, rows: u16, kind: super::ui::DialogKind) -> Rect {
+    if kind == super::ui::DialogKind::Status {
+        return super::status::bounds(cols, rows);
+    }
     if !matches!(
         kind,
         super::ui::DialogKind::CloseConfirm

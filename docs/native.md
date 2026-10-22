@@ -208,3 +208,11 @@ The tab bar derives its surface from each client’s reported terminal backgroun
 In grid view, the first click on an unfocused terminal only focuses it. The associated drag and release are consumed too; another click interacts with the application or starts text selection. This applies in the frontend and to direct composed-UI mouse packets handled by the daemon. Native pane-stream clients retain their independent input protocol.
 
 Canceling restoration returns to the parked list with the same entry selected. The empty list shows a centered explanation rather than empty table headings. Parking controls and the list header share violet; the footer’s entire Parked hit target is filled so it meets Help without a gray gap. Tab-location choices in Settings use one background, radio markers show the saved choice and a yellow label shows keyboard focus.
+
+## System status popup
+
+Click the metrics in the sidebar or horizontal footer to open live system status. CPU opens the Main process view sorted by CPU; memory and swap select memory sorting, and disks open I/O. The popup adapts to the terminal size, showing a compact table on small screens and per-core CPU, memory/swap, task counts, load, uptime/date/time, network rates, filesystem pies and disk throughput above the process table on larger screens.
+
+Tab switches Main/I/O. Click a column heading or use `c` (CPU), `m` (memory), `p` (PID), `r` (reads), or `w` (writes) to sort; repeating a sort reverses its direction. `/` starts a PID, user or executable search; Enter finishes editing, Backspace removes a character, and Escape closes the popup. Arrow keys, Page Up/Down, Home/End and the mouse wheel scroll the table. The close button or a click outside also closes it. Process executable names are displayed without command arguments.
+
+Detailed sampling runs in a background worker about once per second while the popup is open and a client is attached. Closing it stops new collection and discards the snapshot. CPU and throughput rates require two samples; missing or unreadable per-process I/O appears as a dash. Process identity uses PID plus start time, so a reused PID never inherits the old process's usage. Snapshots and search text are not saved to workspace settings.

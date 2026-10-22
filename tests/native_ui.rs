@@ -2441,3 +2441,179 @@ fn empty_parked_list_has_a_centered_explanation_and_matching_header_without_tabl
         );
     }
 }
+
+#[test]
+fn status_popup_metrics_clicks_views_search_and_small_screen_replay() {
+    use kelpmux::native::{
+        status::{self, Process, Snapshot, Sort, View},
+        ui::{DialogKind, TabPosition},
+        workspace::sidebar_status_rows,
+    };
+    for size in [(40, 10), (80, 24), (160, 50)] {
+        for position in [TabPosition::Left, TabPosition::Top, TabPosition::Bottom] {
+            let mut ws = workspace(size, (1, 1));
+            ws.ui.config.tab_position = position;
+            ws.apply(&Action::Select(1)).unwrap();
+            ws.ui.vitals = vec![
+                ("cpu ▂ 51%".into(), 114),
+                ("mem ▄ 70%".into(), 141),
+                ("disk".into(), 222),
+                ("◔ 20%".into(), 222),
+                ("12:34".into(), 250),
+            ];
+            let f = frame(&ws);
+            let point = if f.sidebar_status() {
+                let reserved = sidebar_status_rows(f.rows);
+                Point {
+                    x: 1,
+                    y: f.rows - reserved + u16::from(reserved > 3),
+                }
+            } else {
+                Point {
+                    x: f.footer_cols() + 1,
+                    y: f.rows - 1,
+                }
+            };
+            assert_eq!(
+                actions(Router::default().route(click(point), &f)),
+                vec![Action::StatusOpen(Sort::Cpu)]
+            );
+            ws.apply(&Action::StatusOpen(Sort::Cpu)).unwrap();
+            ws.ui.status = Snapshot {
+                ready: true,
+                cpus: vec![51, 100, 0, 25],
+                memory_total: 1024 * 1024 * 1024,
+                memory_used: 500 * 1024 * 1024,
+                load: "0.1 0.2 0.3".into(),
+                processes: (1..=100)
+                    .map(|pid| Process {
+                        pid,
+                        cpu: Some(pid * 10),
+                        command: format!("/usr/bin/worker{pid}"),
+                        ..Default::default()
+                    })
+                    .collect(),
+                ..Default::default()
+            };
+            for view in [View::Main, View::Io] {
+                ws.apply(&Action::StatusView(view)).unwrap();
+                let f = frame(&ws);
+                let bounds = status::bounds(f.cols, f.rows);
+                assert_eq!(ws.ui.dialog.unwrap().kind, DialogKind::Status);
+                assert_eq!(
+                    f.cells[usize::from(bounds.y * f.cols + bounds.x + 1)].text,
+                    "S"
+                );
+                let mut terminal = Terminal::new(f.cols, f.rows);
+                terminal.feed(&terminal_diff(None, &f));
+                assert_eq!(terminal.snapshot().cells, f.cells);
+                let mut router = Router::default();
+                ws.apply(&Action::StatusScroll(i16::MAX)).unwrap();
+                let last = ws.ui.status_offset;
+                assert!(last > 0);
+                ws.apply(&Action::StatusScroll(-1)).unwrap();
+                assert_eq!(ws.ui.status_offset, last - 1);
+                for key in [b"\x1b[A".as_slice(), b"\x1b[B", b"\x1b[5~", b"\t"] {
+                    assert!(
+                        router
+                            .route(InputEvent::Bytes(key.to_vec()), &f)
+                            .iter()
+                            .all(|message| matches!(message, ClientMessage::Action(_)))
+                    );
+                }
+                let query_actions =
+                    actions(router.route(InputEvent::Bytes(b"/worker99".to_vec()), &f));
+                assert_eq!(query_actions, vec![Action::StatusQuery("worker99".into())]);
+                let mut fragmented = Router::default();
+                fragmented.route(InputEvent::Bytes(b"/".to_vec()), &f);
+                assert!(
+                    fragmented
+                        .route(InputEvent::Bytes(vec![0xc3]), &f)
+                        .is_empty()
+                );
+                assert_eq!(
+                    actions(fragmented.route(InputEvent::Bytes(vec![0xa9]), &f)),
+                    vec![Action::StatusQuery("é".into())]
+                );
+                assert_eq!(
+                    actions(fragmented.route(InputEvent::Bytes(b"x".to_vec()), &f)),
+                    vec![Action::StatusQuery("éx".into())]
+                );
+                assert_eq!(
+                    actions(fragmented.route(InputEvent::Paste(b"yz".to_vec()), &f)),
+                    vec![Action::StatusQuery("éxyz".into())]
+                );
+                for action in query_actions {
+                    ws.apply(&action).unwrap();
+                }
+                assert_eq!(
+                    status::processes(&ws.ui.status, &ws.ui.status_query, Sort::Cpu, true).len(),
+                    1
+                );
+                assert_eq!(
+                    actions(router.route(InputEvent::Bytes(b"\x1b".to_vec()), &f)),
+                    vec![Action::DialogClose]
+                );
+                let mut observer = f.clone();
+                observer.controller = false;
+                assert!(
+                    Router::default()
+                        .route(
+                            click(Point {
+                                x: bounds.x,
+                                y: bounds.y
+                            }),
+                            &observer
+                        )
+                        .is_empty()
+                );
+                ws.ui.status_query.clear();
+            }
+            ws.apply(&Action::DialogClose).unwrap();
+            assert_eq!(ws.reading, ReadingMode::Tabs(1));
+        }
+    }
+}
+
+#[test]
+fn closing_status_consumes_the_mouse_release_before_the_app_can_receive_it() {
+    use kelpmux::native::status::Sort;
+    let mut ws = workspace((120, 40), (1, 1));
+    ws.apply(&Action::Select(1)).unwrap();
+    ws.apply(&Action::StatusOpen(Sort::Cpu)).unwrap();
+    let f = frame(&ws);
+    let mut router = Router::default();
+    let point = Point { x: 0, y: 0 };
+    assert_eq!(
+        actions(router.route(click(point), &f)),
+        vec![Action::DialogClose]
+    );
+    ws.apply(&Action::DialogClose).unwrap();
+    let mut closed = frame(&ws);
+    closed.panes[0].modes.mouse_click = true;
+    assert!(
+        router
+            .route(
+                InputEvent::Mouse(MouseEvent {
+                    position: point,
+                    kind: MouseKind::Release,
+                    button: 0,
+                    shift: false,
+                    alt: false,
+                    ctrl: false
+                }),
+                &closed
+            )
+            .is_empty()
+    );
+    assert_eq!(
+        kelpmux::native::status::metric_target(
+            &closed,
+            Point {
+                x: closed.cols,
+                y: closed.rows - 1
+            }
+        ),
+        None
+    );
+}
