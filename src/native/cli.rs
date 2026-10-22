@@ -1137,7 +1137,7 @@ mod fit_tests {
     fn fitted_narrow_observer_preserves_observer_marker() {
         let mut workspace = super::super::workspace::Workspace::new(120, 40).unwrap();
         workspace.ui.config.tab_position = super::super::ui::TabPosition::Top;
-        workspace.ui.vitals = vec![("clock 12:34".into(), 250)];
+        workspace.ui.vitals = vec![("cpu 51%".into(), 114), ("clock 12:34".into(), 250)];
         let frame = super::super::render::compose(&workspace, &Default::default(), false, None, 0);
         let fit = fitted(&frame, (40, 10), None);
         let footer: String = fit.cells[9 * 40..]
@@ -1227,7 +1227,7 @@ mod fit_tests {
     fn fitted_footer_keeps_controls_left_vitals_right_and_notices_separate() {
         let mut workspace = super::super::workspace::Workspace::new(120, 40).unwrap();
         workspace.ui.config.tab_position = super::super::ui::TabPosition::Top;
-        workspace.ui.vitals = vec![("clock 12:34".into(), 250)];
+        workspace.ui.vitals = vec![("cpu 51%".into(), 114), ("clock 12:34".into(), 250)];
         let frame = super::super::render::compose(&workspace, &Default::default(), true, None, 0);
         for size in [(40, 10), (120, 40), (160, 50)] {
             for notice in [None, Some("connection notice")] {
@@ -1240,7 +1240,8 @@ mod fit_tests {
                 );
                 let text: String = fit.cells[row..].iter().map(|c| c.text.as_str()).collect();
                 assert!(text.starts_with(" ⚙︎ Config"));
-                assert!(text.contains(if notice.is_some() { "conn" } else { "12:34" }));
+                assert!(text.contains(if notice.is_some() { "conn" } else { "51%" }));
+                assert!(!text.contains("12:34"));
                 let mut terminal = super::super::engine::Terminal::new(size.0, size.1);
                 terminal.feed(&super::super::render::terminal_diff(None, &fit));
                 assert_eq!(terminal.snapshot().cells, fit.cells);

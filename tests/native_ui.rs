@@ -803,7 +803,7 @@ fn footer_buttons_and_compact_vitals_have_disjoint_hit_targets() {
         .iter()
         .map(|c| c.text.as_str())
         .collect::<String>();
-    assert!(footer.contains("14:49"));
+    assert!(!footer.contains("14:49"));
     assert!(footer.contains("Parked"));
     assert!(footer.starts_with(" ⚙︎ Config"));
     assert!(footer.starts_with(" ⚙︎ Config  ▦ Tabs "));
@@ -2250,13 +2250,13 @@ fn sidebar_status_controls_and_metrics_leave_the_last_terminal_row_usable() {
                     })
                     .collect();
                 assert!(!utility.contains('^'));
+                assert!(!utility.contains("12:34") && !utility.contains("2026-10-21"));
                 if f.rows >= 24 {
                     for (offset, label, value, color) in [
                         (1, "CPU", "51%", 114),
                         (2, "Memory", "100%", 141),
                         (3, "Swap", "0%", 73),
                         (4, "Disks", "◔ 20% ● 95%", 196),
-                        (5, "Clock", "12:34", 250),
                     ] {
                         let start = usize::from((status_top + offset) * f.cols);
                         let row: String = f.cells[start..start + usize::from(width)]
@@ -2322,11 +2322,6 @@ fn sidebar_status_controls_and_metrics_leave_the_last_terminal_row_usable() {
                 }
                 let minimum = (size.0 / 5).clamp(18, 28);
                 assert!((minimum..=minimum * 6 / 5).contains(&sidebar_width(size.0)));
-                assert!(
-                    f.cells
-                        .iter()
-                        .any(|cell| cell.text == "4" && cell.fg == Color::Indexed(250))
-                );
                 let targets = tab_targets(f.cols, f.rows, &f.ui.config, 9, 8, 0);
                 for (target, rect) in &targets {
                     if matches!(target, TabTarget::Pane(_) | TabTarget::New) {
@@ -2684,7 +2679,7 @@ fn status_summary_is_compact_uses_two_columns_and_draws_horizontal_meters() {
     for size in [(80, 30), (120, 40), (240, 70)] {
         let mut ws = workspace(size, (1, 1));
         ws.apply(&Action::StatusOpen(Sort::Cpu)).unwrap();
-        ws.ui.vitals = vec![("2026-10-22".into(), 39), ("12:34".into(), 250)];
+        ws.ui.vitals = vec![("2026-10-22".into(), 39), ("12:34 PDT".into(), 250)];
         ws.ui.status = Snapshot {
             ready: true,
             cpus: vec![0, 51, 100, 25],
@@ -2697,12 +2692,14 @@ fn status_summary_is_compact_uses_two_columns_and_draws_horizontal_meters() {
                     mount: "/".into(),
                     used: 20,
                     total: 100,
+                    available: 75,
                     percent: 20,
                 },
                 Disk {
                     mount: "/data".into(),
                     used: 90,
                     total: 100,
+                    available: 8,
                     percent: 90,
                 },
             ],
@@ -2711,7 +2708,7 @@ fn status_summary_is_compact_uses_two_columns_and_draws_horizontal_meters() {
         let f = frame(&ws);
         let bounds = status::bounds(f.cols, f.rows);
         let height = status::summary_height(bounds, &ws.ui.status);
-        assert_eq!(height, if size.0 >= 120 { 8 } else { 12 });
+        assert_eq!(height, if size.0 >= 120 { 5 } else { 12 });
         let row_text = |y: u16| {
             f.cells[usize::from(y * f.cols + bounds.x + 1)
                 ..usize::from(y * f.cols + bounds.x + bounds.cols - 1)]
@@ -2726,12 +2723,12 @@ fn status_summary_is_compact_uses_two_columns_and_draws_horizontal_meters() {
             .map(row_text)
             .find(|row| row.contains("2026-10-22"))
             .unwrap();
-        assert!(date_row.contains("2026-10-22 12:34 · Uptime 0d 00:00"));
+        assert!(date_row.contains("2026-10-22 12:34 PDT · Uptime 0d 00:00"));
         let tabs_y = bounds.y + 1 + height;
         assert!(row_text(tabs_y).starts_with("[ Main ]"));
         assert!(row_text(status::table_y(bounds, &ws.ui.status)).contains("CPU%"));
         let meter_width = if status::summary_columns(bounds) == 2 {
-            (bounds.cols - 5) / 2
+            ((bounds.cols - 5) / 2 - 1) / 2
         } else {
             bounds.cols - 2
         };
@@ -2748,7 +2745,7 @@ fn status_summary_is_compact_uses_two_columns_and_draws_horizontal_meters() {
                 (index, 0)
             };
             let start = usize::from(
-                (bounds.y + 1 + row) * f.cols + bounds.x + 1 + column * (meter_width + 3),
+                (bounds.y + 1 + row) * f.cols + bounds.x + 1 + column * (meter_width + 1),
             );
             let cells = &f.cells[start..start + usize::from(meter_width)];
             let text: String = cells.iter().map(|cell| cell.text.as_str()).collect();
@@ -2758,16 +2755,16 @@ fn status_summary_is_compact_uses_two_columns_and_draws_horizontal_meters() {
             assert_eq!(right, cells.len() - 1);
             let reading = format!("{percent:>3}%");
             assert!(text.contains(&reading));
-            let value_width = if index == 4 {
+            let value_width = if meter_width >= 21 && index == 4 {
                 " 50% 50B/100B".len()
-            } else if index == 5 {
+            } else if meter_width >= 21 && index == 5 {
                 " 25% 25B/100B".len()
             } else {
                 reading.len()
             };
             let visible_width = right - left - 1 - value_width;
             let filled = cells.iter().filter(|cell| cell.text == "|").count();
-            assert!(visible_width >= 8);
+            assert!(visible_width >= 1);
             assert_eq!(
                 filled,
                 (((right - left - 1) * usize::from(percent) + 50) / 100).min(visible_width)
@@ -2780,16 +2777,18 @@ fn status_summary_is_compact_uses_two_columns_and_draws_horizontal_meters() {
             );
         }
         if size.0 >= 120 {
-            let right = bounds.x + 1 + meter_width + 3;
-            let start = usize::from((bounds.y + 4) * f.cols + right);
+            let left_width = (bounds.cols - 5) / 2;
+            let right = bounds.x + 1 + left_width + 3;
+            let start = usize::from((bounds.y + 1) * f.cols + right);
             let text = f.cells[start..start + 5]
                 .iter()
                 .map(|cell| cell.text.as_str())
                 .collect::<String>();
             assert_eq!(text, "Tasks");
             let disk_row = row_text(bounds.y + 4);
-            let (left, _) = disk_row.split_at(usize::from(meter_width));
-            assert!(left.contains("20%") && left.contains('/'));
+            let (left, _) = disk_row.split_at(usize::from(left_width));
+            assert!(left.starts_with("/ 20% (75B/100B)"));
+            assert!(row_text(bounds.y + 5).starts_with("/data 90% (8B/100B)"));
             assert!(height < 12);
         }
         let mut terminal = Terminal::new(f.cols, f.rows);

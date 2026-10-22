@@ -1838,15 +1838,13 @@ struct SidebarMetric {
     label: &'static str,
     values: Vec<(String, u8)>,
 }
-fn sidebar_metrics(segments: &[(String, u8)], value_width: u16) -> Vec<SidebarMetric> {
+fn sidebar_metrics(segments: &[(String, u8)]) -> Vec<SidebarMetric> {
     let metric = |label, value, color| SidebarMetric {
         label,
         values: vec![(value, color)],
     };
     let mut metrics = Vec::new();
     let mut disks = Vec::new();
-    let mut date = None;
-    let mut clock = None;
     for (text, color) in segments {
         if let Some(value) = text.strip_prefix("cpu ") {
             metrics.push(metric("CPU", value.to_string(), *color));
@@ -1862,10 +1860,6 @@ fn sidebar_metrics(segments: &[(String, u8)], value_width: u16) -> Vec<SidebarMe
                 text.strip_prefix("disk ").unwrap_or(text).to_string(),
                 *color,
             ));
-        } else if text.contains(':') {
-            clock = Some(text.strip_prefix("clock ").unwrap_or(text));
-        } else if text.len() == 10 && text.as_bytes()[4] == b'-' && text.as_bytes()[7] == b'-' {
-            date = Some(text.as_str());
         }
     }
     if !disks.is_empty() {
@@ -1873,13 +1867,6 @@ fn sidebar_metrics(segments: &[(String, u8)], value_width: u16) -> Vec<SidebarMe
             label: "Disks",
             values: disks,
         });
-    }
-    if let Some(clock) = clock {
-        let value = date
-            .map(|date| format!("{date} {clock}"))
-            .filter(|value| value.chars().map(char_width).sum::<u16>() <= value_width)
-            .unwrap_or_else(|| clock.to_string());
-        metrics.push(metric("Clock", value, 250));
     }
     metrics
 }
@@ -1969,15 +1956,9 @@ fn draw_sidebar_status(frame: &mut Frame, workspace: &Workspace, notice: Option<
         );
     } else {
         let value_width = width.saturating_sub(9);
-        let metrics = sidebar_metrics(&workspace.ui.vitals, value_width);
+        let metrics = sidebar_metrics(&workspace.ui.vitals);
         let capacity = usize::from(metric_end - metric_top);
-        let mut visible: Vec<_> = metrics.iter().take(capacity).collect();
-        if metrics.len() > capacity {
-            if let Some(clock) = metrics.last().filter(|metric| metric.label == "Clock") {
-                visible.truncate(capacity.saturating_sub(1));
-                visible.push(clock);
-            }
-        }
+        let visible: Vec<_> = metrics.iter().take(capacity).collect();
         for (index, metric) in visible.into_iter().enumerate() {
             let y = metric_top + index as u16;
             write_text(frame, 1, y, 6, metric.label, muted, bg, false);
@@ -2134,6 +2115,11 @@ fn draw_sidebar_status(frame: &mut Frame, workspace: &Workspace, notice: Option<
     }
 }
 fn draw_vitals(frame: &mut Frame, segments: &[(String, u8)]) {
+    let segments: Vec<_> = segments
+        .iter()
+        .filter(|(text, _)| !super::vitals::is_clock_segment(text))
+        .cloned()
+        .collect();
     let start = (frame.footer_cols() + if frame.controller { 0 } else { 10 }).min(frame.cols);
     let end = frame.cols;
     let available = end.saturating_sub(start);
@@ -2634,13 +2620,14 @@ fn draw_status_meter(
     color: u8,
 ) {
     let bg = Color::Indexed(236);
-    let value = if detail.is_empty() {
+    let bar_width = rect.cols.saturating_sub(8);
+    let value = if detail.is_empty() || detail.chars().map(char_width).sum::<u16>() + 5 > bar_width
+    {
         format!("{percent:>3}%")
     } else {
         format!("{percent:>3}% {detail}")
     };
     let value_width = value.chars().map(char_width).sum::<u16>();
-    let bar_width = rect.cols.saturating_sub(8);
     write_text(
         frame,
         rect.x,
@@ -2698,7 +2685,13 @@ fn draw_status_summary(frame: &mut Frame, workspace: &Workspace, bounds: Rect, h
     let y = bounds.y + 1;
     let width = bounds.cols.saturating_sub(2);
     let two_columns = status::summary_columns(bounds) == 2;
-    let meter_width = if two_columns { (width - 3) / 2 } else { width };
+    let left_width = if two_columns { (width - 3) / 2 } else { width };
+    let meter_width = if two_columns {
+        (left_width - 1) / 2
+    } else {
+        width
+    };
+    let meter_gap = if two_columns { 1 } else { 0 };
     if !data.ready {
         write_text(
             frame,
@@ -2774,12 +2767,11 @@ fn draw_status_summary(frame: &mut Frame, workspace: &Workspace, bounds: Rect, h
         .map(|disk| {
             (
                 format!(
-                    "{} {:>3}%  {} / {}  {}",
-                    super::vitals::pie_glyph(disk.percent),
+                    "{} {}% ({}/{})",
+                    safe_text(&disk.mount),
                     disk.percent,
-                    status::bytes(disk.used),
+                    status::bytes(disk.available),
                     status::bytes(disk.total),
-                    safe_text(&disk.mount)
                 ),
                 if disk.percent >= 90 { 196 } else { 222 },
             )
@@ -2834,7 +2826,7 @@ fn draw_status_summary(frame: &mut Frame, workspace: &Workspace, bounds: Rect, h
         return;
     }
     let lower_rows = if two_columns {
-        details.len().max(disks.len())
+        disks.len()
     } else {
         details.len()
     }
@@ -2861,7 +2853,7 @@ fn draw_status_summary(frame: &mut Frame, workspace: &Workspace, bounds: Rect, h
         draw_status_meter(
             frame,
             Rect {
-                x: x + (index % cpu_columns) as u16 * (meter_width + 3),
+                x: x + (index % cpu_columns) as u16 * (meter_width + meter_gap),
                 y: y + (index / cpu_columns) as u16,
                 cols: meter_width,
                 rows: 1,
@@ -2882,7 +2874,7 @@ fn draw_status_summary(frame: &mut Frame, workspace: &Workspace, bounds: Rect, h
                 frame,
                 Rect {
                     x: x + if two_columns {
-                        row * (meter_width + 3)
+                        row * (meter_width + meter_gap)
                     } else {
                         0
                     },
@@ -2908,7 +2900,7 @@ fn draw_status_summary(frame: &mut Frame, workspace: &Workspace, bounds: Rect, h
                 frame,
                 x,
                 y + lower_y + index as u16,
-                meter_width,
+                left_width,
                 text,
                 Color::Indexed(*color),
                 Color::Indexed(236),
@@ -2917,12 +2909,7 @@ fn draw_status_summary(frame: &mut Frame, workspace: &Workspace, bounds: Rect, h
         }
     }
     let (detail_x, detail_y, detail_width, capacity) = if two_columns {
-        (
-            x + meter_width + 3,
-            y + lower_y,
-            width - meter_width - 3,
-            height.saturating_sub(lower_y),
-        )
+        (x + left_width + 3, y, width - left_width - 3, height)
     } else {
         (x, y + lower_y, width, height.saturating_sub(lower_y))
     };

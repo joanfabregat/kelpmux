@@ -1260,7 +1260,7 @@ pub fn help_button(rows: u16, count: usize) -> Rect {
 }
 pub fn sidebar_status_rows(rows: u16) -> u16 {
     if rows >= 24 {
-        9
+        8
     } else if rows >= 18 {
         7
     } else {

@@ -44,6 +44,8 @@ pub struct Disk {
     pub mount: String,
     pub used: u64,
     pub total: u64,
+    #[serde(default)]
+    pub available: u64,
     pub percent: u8,
 }
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -290,6 +292,7 @@ fn sample(root: &Path, previous: History, now: Instant) -> (Snapshot, History) {
                     mount: mount.target,
                     used: space.size.saturating_sub(space.free),
                     total: space.size,
+                    available: space.available,
                     percent: disk::df_percent(space).unwrap_or(0),
                 });
             }
@@ -475,7 +478,7 @@ pub fn summary_height(bounds: super::protocol::Rect, data: &Snapshot) -> u16 {
     let desired = if !data.ready {
         1
     } else if summary_columns(bounds) == 2 {
-        data.cpus.len().div_ceil(2) + 1 + data.disks.len().max(5)
+        (data.cpus.len().div_ceil(2) + 1 + data.disks.len()).max(5)
     } else {
         data.cpus.len() + 2 + 4 + data.disks.len()
     };
@@ -537,7 +540,7 @@ pub fn metric_target(
             Some(Sort::Memory)
         } else if text.starts_with("Disks") {
             Some(Sort::Read)
-        } else if text.starts_with("CPU") || text.starts_with("Clock") {
+        } else if text.starts_with("CPU") {
             Some(Sort::Cpu)
         } else {
             None

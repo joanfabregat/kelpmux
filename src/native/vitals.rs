@@ -67,8 +67,10 @@ impl Sampler {
             self.current.memory = memory.map(|usage| usage.memory);
             self.current.swap = memory.map(|usage| usage.swap);
             let clock = clock::now();
-            self.current.date = clock.map(clock::LocalTime::date);
-            self.current.time = clock.map(clock::LocalTime::time);
+            self.current.date = clock.as_ref().map(clock::LocalTime::date);
+            self.current.time = clock
+                .as_ref()
+                .map(|clock| format!("{} {}", clock.time(), clock.zone));
             self.metrics_at = Some(time);
         }
         if self
@@ -95,6 +97,9 @@ pub fn bar_glyph(percent: u8) -> char {
         7 => '▇',
         _ => '█',
     }
+}
+pub fn is_clock_segment(text: &str) -> bool {
+    text.contains(':') || (text.len() == 10 && text.as_bytes().get(4) == Some(&b'-'))
 }
 pub fn pie_glyph(percent: u8) -> char {
     match percent {
