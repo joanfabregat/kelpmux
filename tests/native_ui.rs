@@ -778,7 +778,7 @@ fn footer_buttons_and_compact_vitals_have_disjoint_hit_targets() {
     assert!(footer.contains("14:49"));
     assert!(footer.contains("Parked"));
     assert!(footer.starts_with(" ⚙︎ Config"));
-    assert!(footer.starts_with(" ⚙︎ Config ▦Tabs "));
+    assert!(footer.starts_with(" ⚙︎ Config ▦ Tabs "));
     assert!(footer.find("Parked").unwrap() < footer.find('?').unwrap());
     assert!(!footer.contains('⛶') && !footer.contains('▣'));
     let start = usize::from((f.rows - 1) * f.cols);
@@ -2367,7 +2367,7 @@ fn footer_parked_help_order_has_no_new_tab_button() {
             } else {
                 assert_eq!(label, expected);
             }
-            assert_eq!(parked.x, if f.sidebar_status() { 0 } else { 16 });
+            assert_eq!(parked.x, if f.sidebar_status() { 0 } else { 17 });
             if f.sidebar_status() {
                 assert_eq!(parked.x + parked.cols, help.x);
                 assert_eq!(f.controls()[1].x, help.x);

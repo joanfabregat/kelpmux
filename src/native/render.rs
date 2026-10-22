@@ -189,7 +189,7 @@ pub fn compose(
             Rect {
                 x: 9,
                 y,
-                cols: 7,
+                cols: 8,
                 rows: 1,
             },
             Color::Indexed(67),
@@ -198,13 +198,13 @@ pub fn compose(
             &mut frame,
             9,
             y,
-            7,
+            8,
             if workspace.active == 0 {
                 " + New "
             } else if workspace.reading == ReadingMode::Grid {
-                " ▦Tabs "
+                " ▦ Tabs "
             } else {
-                " ▦Grid "
+                " ▦ Grid "
             },
             Color::Indexed(231),
             Color::Indexed(67),

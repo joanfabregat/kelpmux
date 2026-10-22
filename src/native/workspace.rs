@@ -1163,7 +1163,7 @@ pub fn parked_label(count: usize) -> String {
 }
 pub fn parked_button(rows: u16, count: usize) -> Rect {
     Rect {
-        x: 16,
+        x: 17,
         y: rows - 1,
         cols: parked_label(count).chars().count() as u16,
         rows: 1,
