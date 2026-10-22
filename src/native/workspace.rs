@@ -527,13 +527,8 @@ impl Workspace {
                 self.panes[index].palette = color;
                 self.ui.config.pane_colors.insert(pane, color);
             }
-            Action::WrapToggle => {
-                self.ui.config.wrap_lines = !(self.ui.config.wrap_lines
-                    && !matches!(self.reading, ReadingMode::Fullscreen(_)));
-                if self.reading != ReadingMode::Grid {
-                    self.reading = ReadingMode::Tabs(self.active);
-                }
-            }
+            // Legacy clients may still send these; tab bodies always fill their area.
+            Action::WrapToggle | Action::ReadResize { .. } => {}
             Action::ClosePaneRequest(id) => {
                 self.require_pane(id)?;
                 self.help = false;
@@ -599,8 +594,6 @@ impl Workspace {
                     if dialog.kind == DialogKind::Config {
                         dialog.selection = match (dialog.selection, dx, dy) {
                             (0..=3, _, dy) if dy > 0 => 4,
-                            (4, _, dy) if dy > 0 => 5,
-                            (5, _, dy) if dy < 0 => 4,
                             (4, _, dy) if dy < 0 => match self.ui.config.tab_position {
                                 super::ui::TabPosition::Auto => 0,
                                 super::ui::TabPosition::Top => 1,
@@ -672,15 +665,6 @@ impl Workspace {
                     let id = view.pane.id;
                     self.apply(&Action::Focus(id))?;
                 }
-            }
-            Action::ReadResize { cols, rows } => {
-                if self.reading == ReadingMode::Grid {
-                    return Err("open a reading view before resizing".into());
-                }
-                self.ui.reading_size =
-                    Some((cols.clamp(20, self.cols), rows.clamp(3, self.rows - 1)));
-                self.ui.config.remembered_read_widths[super::ui::geometry_bucket(self.cols)] =
-                    Some(cols.clamp(20, self.cols));
             }
             Action::Focus(id) => {
                 let index = self.require_pane(id)?;
@@ -874,7 +858,7 @@ pub fn dialog_entries(panes: &[PaneInfo], dialog: Option<Dialog>) -> Vec<PaneId>
         Some(Dialog {
             kind: DialogKind::Config,
             ..
-        }) => (0..6).collect(),
+        }) => (0..5).collect(),
         Some(Dialog {
             kind: DialogKind::CloseConfirm | DialogKind::ParkConfirm | DialogKind::RestoreConfirm,
             ..
@@ -927,7 +911,7 @@ pub fn dialog_bounds_for(cols: u16, rows: u16, kind: super::ui::DialogKind) -> R
         return dialog_bounds(cols, rows);
     }
     let (width, height) = if kind == super::ui::DialogKind::Config {
-        (72, 19)
+        (72, 13)
     } else {
         (52, 9)
     };
@@ -941,11 +925,11 @@ pub fn dialog_bounds_for(cols: u16, rows: u16, kind: super::ui::DialogKind) -> R
     }
 }
 pub fn config_geometry(bounds: Rect) -> (u16, u16) {
-    if bounds.rows >= 18 {
+    if bounds.rows >= 12 {
         (6, 3)
-    } else if bounds.rows >= 15 {
-        (5, 2)
-    } else if bounds.rows >= 12 {
+    } else if bounds.rows >= 10 {
+        (4, 2)
+    } else if bounds.rows >= 9 {
         (4, 1)
     } else {
         (2, 1)
@@ -968,20 +952,18 @@ pub fn config_targets(bounds: Rect) -> Vec<(usize, Option<bool>, Rect)> {
             },
         ));
     }
-    for group in 0..2u16 {
-        for value in 0..2u16 {
-            choices.push((
-                usize::from(group) + 4,
-                Some(value == 0),
-                Rect {
-                    x: bounds.x + 2 + inner / 2 + (inner - inner / 2 - 1) * value / 2 + value,
-                    y: bounds.y + 2 + (group + 1) * step,
-                    cols: (inner - inner / 2 - 1) * (value + 1) / 2
-                        - (inner - inner / 2 - 1) * value / 2,
-                    rows: height,
-                },
-            ));
-        }
+    for value in 0..2u16 {
+        choices.push((
+            4,
+            Some(value == 0),
+            Rect {
+                x: bounds.x + 2 + inner / 2 + (inner - inner / 2 - 1) * value / 2 + value,
+                y: bounds.y + 2 + step,
+                cols: (inner - inner / 2 - 1) * (value + 1) / 2
+                    - (inner - inner / 2 - 1) * value / 2,
+                rows: height,
+            },
+        ));
     }
     choices
 }
@@ -1027,7 +1009,7 @@ pub fn tab_body(
     cols: u16,
     rows: u16,
     config: &super::ui::UiConfig,
-    full: bool,
+    _full: bool,
     _size: Option<(u16, u16)>,
 ) -> Rect {
     use super::ui::TabPosition;
@@ -1052,26 +1034,7 @@ pub fn tab_body(
         TabPosition::Bottom => area.rows = area.rows.saturating_sub(3),
         TabPosition::Auto => unreachable!(),
     }
-    let cap = config.remembered_read_widths[super::ui::geometry_bucket(cols)]
-        .unwrap_or(config.read_width);
-    // A narrow leftover strip is not useful on tablets and small terminals.
-    // Count usable terminal columns after the sidebar, before the divider.
-    let effective = area.cols.saturating_sub(cap) >= 20;
-    if effective {
-        area.cols = area.cols.saturating_sub(1);
-    }
-    let width = if full || !config.wrap_lines || !effective {
-        area.cols
-    } else {
-        config.remembered_read_widths[super::ui::geometry_bucket(cols)]
-            .unwrap_or(config.read_width)
-            .clamp(20.min(area.cols), area.cols)
-    };
-    Rect {
-        x: area.x,
-        cols: width,
-        ..area
-    }
+    area
 }
 pub fn scratch_rect(cols: u16, rows: u16) -> Rect {
     let width = cols.saturating_sub(4).min(120);
@@ -1200,7 +1163,7 @@ pub fn parked_label(count: usize) -> String {
 }
 pub fn parked_button(rows: u16, count: usize) -> Rect {
     Rect {
-        x: 14,
+        x: 16,
         y: rows - 1,
         cols: parked_label(count).chars().count() as u16,
         rows: 1,
@@ -1264,12 +1227,6 @@ pub fn sidebar_actions(cols: u16, rows: u16, parked_count: usize) -> [Rect; 2] {
         rows: height,
     };
     [new, sidebar_controls(cols, rows, parked_count)[2]]
-}
-/// The width switch is useful only when the configured cap is narrower than
-/// the available terminal, regardless of the current wrap/full-width mode.
-pub fn reading_limit_effective(cols: u16, rows: u16, config: &super::ui::UiConfig) -> bool {
-    let full = tab_body(cols, rows, config, true, None);
-    full.x + full.cols < cols
 }
 pub fn tab_targets(
     cols: u16,

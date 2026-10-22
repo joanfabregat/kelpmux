@@ -894,13 +894,38 @@ fn configuration_tab_position_persists_for_the_named_workspace() {
         settings.ui.tab_position,
         kelpmux::native::ui::TabPosition::Left
     );
+    command(&mut stream, Action::DialogClose).unwrap();
+    command(&mut stream, Action::Select(1)).unwrap();
+    let before = wait_frame(&mut stream, |frame| frame.reading != ReadingMode::Grid);
+    let identity = (before.panes[0].pane.id, before.panes[0].pane.pid);
+    write_message(
+        &mut stream,
+        &ClientMessage::Resize {
+            cols: 240,
+            rows: 40,
+        },
+    )
+    .unwrap();
+    let wide = wait_frame(&mut stream, |frame| frame.cols == 240);
+    assert_eq!((wide.panes[0].pane.id, wide.panes[0].pane.pid), identity);
+    assert_eq!(wide.panes[0].body.x + wide.panes[0].body.cols, 240);
+    write_message(&mut stream, &ClientMessage::Input(b"stty size\n".to_vec())).unwrap();
+    let output = format!("40 {}", wide.panes[0].body.cols);
+    wait_frame(&mut stream, |frame| {
+        frame
+            .cells
+            .iter()
+            .map(|cell| cell.text.as_str())
+            .collect::<String>()
+            .contains(&output)
+    });
 }
 
 #[test]
 fn new_tabs_create_one_pty_preserve_existing_jobs_and_stop_at_nine() {
     let daemon = Daemon::start();
     let mut admin = daemon.connect();
-    let (initial, _) = command(&mut admin, Action::WrapToggle).unwrap();
+    let (initial, _) = command(&mut admin, Action::Read(1)).unwrap();
     let original = (initial[0].id, initial[0].pid);
     let (colored, _) = command(
         &mut admin,
@@ -915,7 +940,7 @@ fn new_tabs_create_one_pty_preserve_existing_jobs_and_stop_at_nine() {
     let settings: serde_json::Value =
         serde_json::from_slice(&fs::read(daemon.root.join("state/workspace.json")).unwrap())
             .unwrap();
-    assert_eq!(settings["ui"]["wrap_lines"], false);
+    assert!(settings["ui"].get("wrap_lines").is_none());
     assert_eq!(settings["ui"]["pane_colors"][original.0.to_string()], 4);
     command(&mut admin, Action::CloseReading).unwrap();
     for count in 2..=9 {

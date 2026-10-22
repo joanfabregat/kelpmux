@@ -1132,7 +1132,7 @@ mod fit_tests {
             .iter()
             .map(|c| c.text.as_str())
             .collect();
-        assert!(footer.starts_with("⚙︎ Config"));
+        assert!(footer.starts_with(" ⚙︎ Config"));
         assert!(footer.contains("Obs"));
     }
     #[test]
@@ -1151,7 +1151,7 @@ mod fit_tests {
                     &frame.cells[source..source + usize::from(frame.footer_cols())]
                 );
                 let text: String = fit.cells[row..].iter().map(|c| c.text.as_str()).collect();
-                assert!(text.starts_with("⚙︎ Config"));
+                assert!(text.starts_with(" ⚙︎ Config"));
                 assert!(text.contains(if notice.is_some() { "conn" } else { "12:34" }));
                 let mut terminal = super::super::engine::Terminal::new(size.0, size.1);
                 terminal.feed(&super::super::render::terminal_diff(None, &fit));

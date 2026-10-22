@@ -175,13 +175,13 @@ impl Frame {
                 Rect {
                     x: 0,
                     y: self.rows - 1,
-                    cols: 8,
+                    cols: 9,
                     rows: 1,
                 },
                 Rect {
-                    x: 8,
+                    x: 9,
                     y: self.rows - 1,
-                    cols: 6,
+                    cols: 7,
                     rows: 1,
                 },
                 super::workspace::parked_button(self.rows, count),

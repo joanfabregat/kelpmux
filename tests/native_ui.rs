@@ -744,19 +744,19 @@ fn config_position_choices_and_close_confirmation_require_explicit_consent() {
     );
 }
 #[test]
-fn selecting_same_tab_does_not_toggle_back_to_grid_and_width_is_inline() {
+fn selecting_same_tab_keeps_tabs_and_legacy_width_actions_do_not_limit_content() {
     let mut ws = workspace((240, 70), (3, 3));
     ws.apply(&Action::Select(5)).unwrap();
     ws.apply(&Action::Select(5)).unwrap();
     assert_eq!(ws.reading, ReadingMode::Tabs(5));
     ws.apply(&Action::ReadResize { cols: 90, rows: 3 }).unwrap();
     let cap = ws.layout()[4].body;
-    assert_eq!(cap.cols, 90);
+    assert_eq!(cap.cols, 240);
     assert_eq!(cap.rows, 66);
     assert_eq!(cap.y, 3);
     assert_eq!(cap.x, 0);
     ws.apply(&Action::Fullscreen(5)).unwrap();
-    assert_eq!(ws.layout()[4].body.cols, 239);
+    assert_eq!(ws.layout()[4].body.cols, 240);
     ws.apply(&Action::Fullscreen(5)).unwrap();
     assert_eq!(ws.layout()[4].body, cap);
     ws.apply(&Action::Read(5)).unwrap();
@@ -777,8 +777,8 @@ fn footer_buttons_and_compact_vitals_have_disjoint_hit_targets() {
         .collect::<String>();
     assert!(footer.contains("14:49"));
     assert!(footer.contains("Parked"));
-    assert!(footer.starts_with("⚙︎ Config"));
-    assert!(footer.starts_with("⚙︎ Config▦Tabs "));
+    assert!(footer.starts_with(" ⚙︎ Config"));
+    assert!(footer.starts_with(" ⚙︎ Config ▦Tabs "));
     assert!(footer.find("Parked").unwrap() < footer.find('?').unwrap());
     assert!(!footer.contains('⛶') && !footer.contains('▣'));
     let start = usize::from((f.rows - 1) * f.cols);
@@ -876,7 +876,7 @@ fn grid_headers_separate_rows_without_gaps_and_vertical_lines_keep_the_left_pane
 }
 
 #[test]
-fn responsive_new_tabs_wrap_controls_and_graphic_confirmation_have_disjoint_targets() {
+fn responsive_new_tabs_and_graphic_confirmation_have_disjoint_targets() {
     use kelpmux::native::{
         ui::TabPosition,
         workspace::{TabTarget, close_buttons, dialog_bounds_for, tab_targets},
@@ -921,28 +921,8 @@ fn responsive_new_tabs_wrap_controls_and_graphic_confirmation_have_disjoint_targ
                     3
                 );
             }
-            let capped = ws.layout()[0].body;
-            let effective = kelpmux::native::workspace::reading_limit_effective(
-                ws.cols,
-                ws.rows,
-                &ws.ui.config,
-            );
-            if capped.x + capped.cols < ws.cols && effective {
-                assert_eq!(
-                    actions(Router::default().route(
-                        click(Point {
-                            x: capped.x + capped.cols,
-                            y: capped.y
-                        }),
-                        &f
-                    )),
-                    vec![Action::WrapToggle]
-                );
-            }
-            ws.apply(&Action::WrapToggle).unwrap();
-            assert!(!ws.ui.config.wrap_lines);
             let full = ws.layout()[0].body;
-            assert_eq!(full.x + full.cols, ws.cols - u16::from(effective));
+            assert_eq!(full.x + full.cols, ws.cols);
             let full_frame = frame(&ws);
             let edge_actions = actions(Router::default().route(
                 click(Point {
@@ -951,17 +931,11 @@ fn responsive_new_tabs_wrap_controls_and_graphic_confirmation_have_disjoint_targ
                 }),
                 &full_frame,
             ));
-            if effective {
-                assert_eq!(edge_actions, vec![Action::WrapToggle]);
-            } else {
-                assert!(!edge_actions.contains(&Action::WrapToggle));
-            }
+            assert!(!edge_actions.contains(&Action::WrapToggle));
             assert_eq!(
                 full_frame.cells[usize::from(full.y * ws.cols + ws.cols - 1)].text,
-                if effective { "−" } else { " " }
+                " "
             );
-            ws.apply(&Action::WrapToggle).unwrap();
-            assert_eq!(ws.layout()[0].body, capped);
 
             ws.apply(&Action::Config).unwrap();
             let f = frame(&ws);
@@ -979,7 +953,7 @@ fn responsive_new_tabs_wrap_controls_and_graphic_confirmation_have_disjoint_targ
                     }),
                     &f
                 )),
-                vec![Action::WrapToggle]
+                Vec::<Action>::new()
             );
             ws.apply(&Action::ClosePaneRequest(2)).unwrap();
             let f = frame(&ws);
@@ -1173,11 +1147,8 @@ fn terminal_content_has_no_blank_side_margins_in_tabs_or_grid() {
 }
 
 #[test]
-fn width_switch_reserves_only_a_useful_divider_at_the_cap_boundary() {
-    use kelpmux::native::{
-        ui::TabPosition,
-        workspace::{reading_limit_effective, tab_body},
-    };
+fn tab_bodies_fill_available_width_despite_legacy_width_settings() {
+    use kelpmux::native::{ui::TabPosition, workspace::tab_body};
     for position in [TabPosition::Left, TabPosition::Top, TabPosition::Bottom] {
         let mut ws = workspace((120, 40), (1, 1));
         ws.ui.config.tab_position = position;
@@ -1193,16 +1164,21 @@ fn width_switch_reserves_only_a_useful_divider_at_the_cap_boundary() {
             available,
             available + 1,
         ] {
-            ws.ui.config.read_width = cap;
-            let effective = available.saturating_sub(cap) >= 20;
-            assert_eq!(
-                reading_limit_effective(ws.cols, ws.rows, &ws.ui.config),
-                effective
-            );
+            ws.ui.config = serde_json::from_value(serde_json::json!({
+                "tab_position": position,
+                "read_width": cap,
+                "wrap_lines": true,
+                "remembered_read_widths": [80, 85, 90]
+            }))
+            .unwrap();
             let capped = tab_body(ws.cols, ws.rows, &ws.ui.config, false, None);
             let full = tab_body(ws.cols, ws.rows, &ws.ui.config, true, None);
-            assert_eq!(full.cols, available - u16::from(effective));
-            assert_eq!(capped.cols, if effective { cap } else { available });
+            assert_eq!(full.cols, available);
+            assert_eq!(capped.cols, available);
+            let saved = serde_json::to_value(&ws.ui.config).unwrap();
+            for key in ["read_width", "wrap_lines", "remembered_read_widths"] {
+                assert!(saved.get(key).is_none());
+            }
         }
     }
 }
@@ -1609,7 +1585,7 @@ fn tab_overflow_arrows_only_appear_when_needed_and_bracket_the_list() {
 }
 
 #[test]
-fn neutral_focus_connects_sidebar_and_width_dividers_regardless_of_legacy_palette() {
+fn neutral_focus_connects_sidebar_divider_regardless_of_legacy_palette() {
     use kelpmux::native::{
         ui::{PALETTE, TabPosition},
         workspace::{TabTarget, tab_number, tab_targets},
@@ -1623,8 +1599,7 @@ fn neutral_focus_connects_sidebar_and_width_dividers_regardless_of_legacy_palett
             color: color as u8,
         })
         .unwrap();
-        for wrapping in [true, false] {
-            ws.ui.config.wrap_lines = wrapping;
+        {
             let f = frame(&ws);
             let body = f.panes[0].body;
             let tab = tab_targets(f.cols, f.rows, &f.ui.config, 2, 0, 0)
@@ -1643,22 +1618,7 @@ fn neutral_focus_connects_sidebar_and_width_dividers_regardless_of_legacy_palett
                 assert_eq!(cell.fg, Color::Indexed(250));
                 assert_eq!(cell.bg, Color::Default);
             }
-            let right = body.x + body.cols;
-            if !wrapping {
-                assert_eq!(right, f.cols - 1);
-            }
-            for y in body.y..body.y + body.rows {
-                let cell = &f.cells[usize::from(y * f.cols + right)];
-                assert_eq!(
-                    cell.text,
-                    if y == body.y {
-                        if wrapping { "+" } else { "−" }
-                    } else {
-                        "│"
-                    }
-                );
-                assert_eq!(cell.fg, Color::Indexed(250));
-            }
+            assert_eq!(body.x + body.cols, f.cols);
         }
     }
 }
@@ -1775,15 +1735,11 @@ fn settings_zones_radio_values_and_keyboard_focus_remain_usable_on_small_screens
                 Color::Indexed(238)
             );
         }
-        for (index, value, rect) in &targets {
+        for (_, value, rect) in &targets {
             assert!(rect.x >= bounds.x && rect.x + rect.cols <= bounds.x + bounds.cols);
             assert!(rect.y > bounds.y && rect.y + rect.rows <= bounds.y + bounds.rows);
             if let Some(value) = value {
-                let current = if *index == 4 {
-                    ws.ui.config.wrap_lines
-                } else {
-                    ws.ui.config.notification_sound
-                };
+                let current = ws.ui.config.notification_sound;
                 let f = frame(&ws);
                 assert_eq!(
                     f.cells[usize::from((rect.y + rect.rows / 2) * f.cols + rect.x + 1)].text,
@@ -1799,26 +1755,12 @@ fn settings_zones_radio_values_and_keyboard_focus_remain_usable_on_small_screens
                 if current == *value {
                     assert!(messages.is_empty());
                 } else {
-                    assert_eq!(
-                        messages,
-                        vec![if *index == 4 {
-                            Action::WrapToggle
-                        } else {
-                            Action::NotificationSoundToggle
-                        }]
-                    );
+                    assert_eq!(messages, vec![Action::NotificationSoundToggle]);
                     for action in messages {
                         ws.apply(&action).unwrap();
                     }
                 }
-                assert_eq!(
-                    if *index == 4 {
-                        ws.ui.config.wrap_lines
-                    } else {
-                        ws.ui.config.notification_sound
-                    },
-                    *value
-                );
+                assert_eq!(ws.ui.config.notification_sound, *value);
                 let selected = frame(&ws);
                 assert_eq!(
                     selected.cells
@@ -1840,14 +1782,7 @@ fn settings_zones_radio_values_and_keyboard_focus_remain_usable_on_small_screens
             }
         }
         ws.apply(&Action::DialogPick(2)).unwrap();
-        for (dx, dy, expected) in [
-            (1, 0, 3),
-            (-1, 0, 2),
-            (0, 1, 4),
-            (0, 1, 5),
-            (0, -1, 4),
-            (0, -1, 2),
-        ] {
+        for (dx, dy, expected) in [(1, 0, 3), (-1, 0, 2), (0, 1, 4), (0, 1, 4), (0, -1, 2)] {
             ws.apply(&Action::DialogNavigate { dx, dy }).unwrap();
             assert_eq!(ws.ui.dialog.unwrap().selection, expected);
         }
@@ -1878,8 +1813,8 @@ fn settings_zones_radio_values_and_keyboard_focus_remain_usable_on_small_screens
         for action in actions(Router::default().route(click(Point { x: on.x, y: on.y }), &f)) {
             ws.apply(&action).unwrap();
         }
-        assert_eq!(ws.reading, ReadingMode::Tabs(1));
-        assert!(ws.ui.config.wrap_lines);
+        assert_eq!(ws.reading, ReadingMode::Fullscreen(1));
+        assert!(ws.ui.config.notification_sound);
     }
 }
 
@@ -1945,7 +1880,8 @@ fn grid_header_numbers_zoom_park_close_and_footer_have_distinct_targets() {
             );
         }
     }
-    for x in 14..f.footer_cols() - 3 {
+    let parked = f.controls()[2];
+    for x in parked.x..parked.x + parked.cols {
         assert_eq!(
             actions(Router::default().route(click(Point { x, y: f.rows - 1 }), &f)),
             vec![Action::Parked]
@@ -2431,7 +2367,7 @@ fn footer_parked_help_order_has_no_new_tab_button() {
             } else {
                 assert_eq!(label, expected);
             }
-            assert_eq!(parked.x, if f.sidebar_status() { 0 } else { 14 });
+            assert_eq!(parked.x, if f.sidebar_status() { 0 } else { 16 });
             if f.sidebar_status() {
                 assert_eq!(parked.x + parked.cols, help.x);
                 assert_eq!(f.controls()[1].x, help.x);

@@ -235,7 +235,7 @@ fn tabs_resize_only_selected_terminal_and_restore_grid() {
     assert_eq!(views.len(), 4);
     assert_eq!(
         views.iter().find(|v| v.pane.id == 2).unwrap().body.cols,
-        120
+        ws.cols - kelpmux::native::workspace::sidebar_width(ws.cols)
     );
     assert!(views.iter().all(|view| !view.overlay));
     assert_eq!(views.iter().filter(|view| view.body.cols > 0).count(), 1);
@@ -254,7 +254,7 @@ fn tabs_resize_only_selected_terminal_and_restore_grid() {
             .unwrap()
             .body
             .cols,
-        ws.cols - kelpmux::native::workspace::sidebar_width(ws.cols) - 1
+        ws.cols - kelpmux::native::workspace::sidebar_width(ws.cols)
     );
     assert_eq!(
         ws.layout()

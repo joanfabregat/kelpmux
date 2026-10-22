@@ -178,8 +178,8 @@ pub fn compose(
             &mut frame,
             0,
             y,
-            8,
-            "⚙︎ Config",
+            9,
+            " ⚙︎ Config",
             Color::Indexed(231),
             Color::Indexed(24),
             true,
@@ -187,24 +187,24 @@ pub fn compose(
         fill(
             &mut frame,
             Rect {
-                x: 8,
+                x: 9,
                 y,
-                cols: 6,
+                cols: 7,
                 rows: 1,
             },
             Color::Indexed(67),
         );
         write_text(
             &mut frame,
-            8,
+            9,
             y,
-            6,
+            7,
             if workspace.active == 0 {
-                "+ New "
+                " + New "
             } else if workspace.reading == ReadingMode::Grid {
-                "▦Tabs "
+                " ▦Tabs "
             } else {
-                "▦Grid "
+                " ▦Grid "
             },
             Color::Indexed(231),
             Color::Indexed(67),
@@ -273,7 +273,7 @@ fn help_entries(config: &super::ui::UiConfig) -> Vec<(String, &'static str)> {
         ("1–9".into(), "Select tab (also Alt+1–9)"),
         (key("z", "read"), "Tabs / grid (also Alt+Tab)"),
         (key("g/e", "grid"), "Automatic grid view"),
-        (key("f", "fullscreen"), "Toggle reading-width limit"),
+        (key("f", "fullscreen"), "Focus tab / return to grid"),
         ("Enter".into(), "New tab"),
         ("p".into(), "Park tab (confirm)"),
         ("u".into(), "Show parked tabs"),
@@ -290,10 +290,6 @@ fn help_entries(config: &super::ui::UiConfig) -> Vec<(String, &'static str)> {
                 key("l", "focus-right")
             ),
             "Focus left/down/up/right",
-        ),
-        (
-            format!("{} / {}", key("+", "read-wider"), key("-", "read-narrower")),
-            "Text width +10 / −10 cols",
         ),
         (key(",", "config"), "Settings"),
         (key("d", "detach"), "Detach; keep jobs running"),
@@ -736,10 +732,7 @@ fn draw_dialog(
             TabPosition::Bottom,
         ];
         let (step, height) = super::workspace::config_geometry(bounds);
-        for (group, label) in ["Tab placement", "Reading width", "Notifications"]
-            .iter()
-            .enumerate()
-        {
+        for (group, label) in ["Tab placement", "Notifications"].iter().enumerate() {
             fill(
                 frame,
                 Rect {
@@ -761,8 +754,6 @@ fn draw_dialog(
                 true,
             );
         }
-        let wrap = workspace.ui.config.wrap_lines
-            && !matches!(workspace.reading, ReadingMode::Fullscreen(_));
         for (index, value, rect) in super::workspace::config_targets(bounds) {
             let (checked, label) = match index {
                 0..=3 => (
@@ -772,10 +763,6 @@ fn draw_dialog(
                     } else {
                         format!("{:?}", positions[index])
                     },
-                ),
-                4 => (
-                    value == Some(wrap),
-                    if value == Some(true) { "On" } else { "Off" }.to_owned(),
                 ),
                 _ => (
                     value == Some(workspace.ui.config.notification_sound),
@@ -811,20 +798,6 @@ fn draw_dialog(
             frame,
             bounds.x + 2,
             bounds.y + 2 + step + height / 2,
-            inner / 2 - 1,
-            &format!(
-                "Limit: {} cols",
-                workspace.ui.config.remembered_read_widths[super::ui::geometry_bucket(frame.cols)]
-                    .unwrap_or(workspace.ui.config.read_width)
-            ),
-            Color::Indexed(250),
-            Color::Indexed(235),
-            false,
-        );
-        write_text(
-            frame,
-            bounds.x + 2,
-            bounds.y + 2 + 2 * step + height / 2,
             inner / 2 - 1,
             "Sound",
             Color::Indexed(250),
@@ -1498,29 +1471,6 @@ fn draw_tabs(frame: &mut Frame, workspace: &Workspace, spinner: usize) {
         let x = body.x - 1;
         for y in 0..frame.rows {
             write_text(frame, x, y, 1, "▎", accent, Color::Default, false);
-        }
-    }
-    let wrapping =
-        workspace.ui.config.wrap_lines && !matches!(workspace.reading, ReadingMode::Fullscreen(_));
-    let x = body.x + body.cols;
-    if x < frame.cols
-        && super::workspace::reading_limit_effective(frame.cols, frame.rows, &workspace.ui.config)
-    {
-        for y in body.y..body.y + body.rows {
-            write_text(
-                frame,
-                x,
-                y,
-                1,
-                if y == body.y {
-                    if wrapping { "+" } else { "−" }
-                } else {
-                    "│"
-                },
-                accent,
-                Color::Default,
-                y == body.y,
-            );
         }
     }
 }

@@ -396,10 +396,6 @@ impl Router {
                         b"l" => Some(Action::FocusDirection { dx: 1, dy: 0 }),
                         b"j" => Some(Action::FocusDirection { dx: 0, dy: 1 }),
                         b"k" => Some(Action::FocusDirection { dx: 0, dy: -1 }),
-                        b"+" => self.resize_action(frame, 10, 0),
-                        b"-" => self.resize_action(frame, -10, 0),
-                        b">" => self.resize_action(frame, 0, 2),
-                        b"<" => self.resize_action(frame, 0, -2),
                         b"[" => {
                             self.scrolling = true;
                             None
@@ -724,11 +720,7 @@ impl Router {
                 {
                     if event.kind == MouseKind::Press {
                         let current = match index {
-                            4 => Some(
-                                frame.ui.config.wrap_lines
-                                    && !matches!(frame.reading, ReadingMode::Fullscreen(_)),
-                            ),
-                            5 => Some(frame.ui.config.notification_sound),
+                            4 => Some(frame.ui.config.notification_sound),
                             _ => None,
                         };
                         if value.is_none() || value != current {
@@ -885,23 +877,6 @@ impl Router {
             }
         }
         if (frame.reading != ReadingMode::Grid || frame.active == 0) && !frame.ui.scratch_visible {
-            if event.kind == MouseKind::Press
-                && super::workspace::reading_limit_effective(
-                    frame.cols,
-                    frame.rows,
-                    &frame.ui.config,
-                )
-                && frame.panes.iter().any(|view| {
-                    view.pane.id == frame.active
-                        && view.body.cols > 0
-                        && view.body.x + view.body.cols < frame.cols
-                        && event.position.x == view.body.x + view.body.cols
-                        && event.position.y == view.body.y
-                })
-            {
-                emit(&mut output, Action::WrapToggle, true);
-                return output;
-            }
             let tabviews: Vec<_> = frame
                 .panes
                 .iter()
@@ -1066,24 +1041,6 @@ impl Router {
     fn toggle_help(&mut self, frame: &Frame) {
         self.help_override = Some(!self.help_override.unwrap_or(frame.help));
     }
-    fn resize_action(&self, frame: &Frame, dx: i16, dy: i16) -> Option<Action> {
-        if frame.reading == ReadingMode::Grid {
-            return None;
-        }
-        let view = frame.panes.iter().find(|v| v.pane.id == frame.active)?;
-        Some(Action::ReadResize {
-            cols: view
-                .rect
-                .cols
-                .saturating_add_signed(dx)
-                .clamp(20, frame.cols),
-            rows: view
-                .rect
-                .rows
-                .saturating_add_signed(dy)
-                .clamp(3, frame.rows - 1),
-        })
-    }
     fn binding(&mut self, name: &str, frame: &Frame) -> Option<Action> {
         Some(match name {
             "help" => Action::Help,
@@ -1122,10 +1079,8 @@ impl Router {
                 self.scrolling = true;
                 return None;
             }
-            "read-wider" => return self.resize_action(frame, 10, 0),
-            "read-narrower" => return self.resize_action(frame, -10, 0),
-            "read-taller" => return self.resize_action(frame, 0, 2),
-            "read-shorter" => return self.resize_action(frame, 0, -2),
+            "read-wider" | "read-narrower" => return None,
+            "read-taller" | "read-shorter" => return None,
             _ => return None,
         })
     }
@@ -1198,9 +1153,6 @@ impl Router {
         }
         if dialog.kind == DialogKind::Config {
             if index == 4 {
-                return vec![ClientMessage::Action(Action::WrapToggle)];
-            }
-            if index == 5 {
                 return vec![ClientMessage::Action(Action::NotificationSoundToggle)];
             }
             let positions = [
