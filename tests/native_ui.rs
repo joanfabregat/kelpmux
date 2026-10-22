@@ -1396,14 +1396,7 @@ fn horizontal_tabs_have_two_rows_an_attached_add_button_and_footer_parked() {
                 for y in new.y..new.y + new.rows {
                     for x in new.x..new.x + new.cols {
                         let actual = actions(Router::default().route(click(Point { x, y }), &f));
-                        assert_eq!(
-                            actual,
-                            if count < 9 {
-                                vec![Action::NewTab]
-                            } else {
-                                vec![]
-                            }
-                        );
+                        assert_eq!(actual, vec![Action::NewTab]);
                     }
                     assert_eq!(
                         actions(Router::default().route(
@@ -1863,7 +1856,7 @@ fn grid_dimming_is_presentation_only_and_focus_restores_original_application_col
 }
 
 #[test]
-fn grid_header_numbers_zoom_park_close_and_footer_have_distinct_targets() {
+fn grid_header_numbers_park_close_and_footer_have_distinct_targets_without_zoom() {
     use kelpmux::native::workspace::{grid_controls, tab_number};
     let ws = workspace((180, 50), (2, 1));
     let f = frame(&ws);
@@ -1879,7 +1872,8 @@ fn grid_header_numbers_zoom_park_close_and_footer_have_distinct_targets() {
             number_cell.fg,
             Color::Indexed(if id == ws.active { 226 } else { 231 })
         );
-        let [zoom, park, close] = grid_controls(header);
+        let [park, close] = grid_controls(header);
+        assert!(!f.cells.iter().any(|cell| cell.text == "⛶"));
         for (control, symbol, color) in [(park, "⊟", 141), (close, "×", 203)] {
             let cell = &f.cells[usize::from(control.y * f.cols + control.x + 1)];
             assert_eq!(cell.text, symbol);
@@ -1893,7 +1887,6 @@ fn grid_header_numbers_zoom_park_close_and_footer_have_distinct_targets() {
         }
         for (control, expected) in [
             (number, Action::Focus(id)),
-            (zoom, Action::Fullscreen(id)),
             (park, Action::ParkRequest(id)),
             (close, Action::ClosePaneRequest(id)),
         ] {
@@ -2674,8 +2667,43 @@ fn closing_status_consumes_the_mouse_release_before_the_app_can_receive_it() {
 }
 
 #[test]
-fn status_summary_is_compact_uses_two_columns_and_draws_horizontal_meters() {
-    use kelpmux::native::status::{self, Disk, Snapshot, Sort};
+fn large_workspaces_cycle_tabs_and_grid_pages_without_application_input() {
+    let mut ws = workspace((40, 10), (4, 3));
+    ws.active = 1;
+    ws.reflow();
+    for (key, expected) in [
+        (b"\x02\x1b[6~".as_slice(), 10),
+        (b"\x02\t".as_slice(), 11),
+        (b"\x02\x1b[Z".as_slice(), 10),
+        (b"\x02\x1b[5~".as_slice(), 1),
+    ] {
+        let f = frame(&ws);
+        let events = actions(Router::default().route(InputEvent::Bytes(key.to_vec()), &f));
+        assert_eq!(events, vec![Action::Focus(expected)]);
+        ws.apply(&events[0]).unwrap();
+        assert_eq!(ws.reading, ReadingMode::Grid);
+        let f = frame(&ws);
+        assert!(
+            f.panes
+                .iter()
+                .any(|view| view.pane.id == expected && view.body.cols > 0)
+        );
+        let mut terminal = Terminal::new(f.cols, f.rows);
+        terminal.feed(&terminal_diff(None, &f));
+        assert_eq!(terminal.snapshot().cells, f.cells);
+    }
+    let mut observer = frame(&ws);
+    observer.controller = false;
+    assert!(
+        Router::default()
+            .route(InputEvent::Bytes(b"\x02\t".to_vec()), &observer)
+            .is_empty()
+    );
+}
+
+#[test]
+fn status_summary_uses_equal_columns_paired_disks_and_complete_pids() {
+    use kelpmux::native::status::{self, Disk, Process, Snapshot, Sort};
     for size in [(80, 30), (120, 40), (240, 70)] {
         let mut ws = workspace(size, (1, 1));
         ws.apply(&Action::StatusOpen(Sort::Cpu)).unwrap();
@@ -2687,6 +2715,12 @@ fn status_summary_is_compact_uses_two_columns_and_draws_horizontal_meters() {
             memory_total: 100,
             swap_used: 25,
             swap_total: 100,
+            processes: vec![Process {
+                pid: u32::MAX,
+                user: "tester".into(),
+                command: "worker".into(),
+                ..Default::default()
+            }],
             disks: vec![
                 Disk {
                     mount: "/".into(),
@@ -2708,7 +2742,14 @@ fn status_summary_is_compact_uses_two_columns_and_draws_horizontal_meters() {
         let f = frame(&ws);
         let bounds = status::bounds(f.cols, f.rows);
         let height = status::summary_height(bounds, &ws.ui.status);
-        assert_eq!(height, if size.0 >= 120 { 5 } else { 12 });
+        assert_eq!(
+            height,
+            if size.0 >= 120 {
+                status::summary_detail_rows(bounds) as u16
+            } else {
+                12
+            }
+        );
         let row_text = |y: u16| {
             f.cells[usize::from(y * f.cols + bounds.x + 1)
                 ..usize::from(y * f.cols + bounds.x + bounds.cols - 1)]
@@ -2723,15 +2764,20 @@ fn status_summary_is_compact_uses_two_columns_and_draws_horizontal_meters() {
             .map(row_text)
             .find(|row| row.contains("2026-10-22"))
             .unwrap();
-        assert!(date_row.contains("2026-10-22 12:34 PDT · Uptime 0d 00:00"));
+        assert!(date_row.contains("2026-10-22 12:34 PDT"));
+        assert!(
+            (bounds.y + 1..bounds.y + 1 + height).any(|y| row_text(y).contains("Uptime 0d 00:00"))
+        );
         let tabs_y = bounds.y + 1 + height;
         assert!(row_text(tabs_y).starts_with("[ Main ]"));
         assert!(row_text(status::table_y(bounds, &ws.ui.status)).contains("CPU%"));
-        let meter_width = if status::summary_columns(bounds) == 2 {
-            ((bounds.cols - 5) / 2 - 1) / 2
-        } else {
-            bounds.cols - 2
-        };
+        if size.0 >= 120 {
+            assert!(
+                row_text(status::table_y(bounds, &ws.ui.status) + 1)
+                    .starts_with("4294967295 tester")
+            );
+        }
+        let meter_width = status::summary_column_width(bounds);
         for (index, color, percent) in [
             (0, 114, 0u16),
             (1, 114, 51),
@@ -2739,13 +2785,13 @@ fn status_summary_is_compact_uses_two_columns_and_draws_horizontal_meters() {
             (4, 141, 50),
             (5, 73, 25),
         ] {
-            let (row, column) = if status::summary_columns(bounds) == 2 {
+            let (row, column) = if status::summary_columns(bounds) == 3 {
                 (index / 2, index % 2)
             } else {
                 (index, 0)
             };
             let start = usize::from(
-                (bounds.y + 1 + row) * f.cols + bounds.x + 1 + column * (meter_width + 1),
+                (bounds.y + 1 + row) * f.cols + bounds.x + 1 + column * (meter_width + 2),
             );
             let cells = &f.cells[start..start + usize::from(meter_width)];
             let text: String = cells.iter().map(|cell| cell.text.as_str()).collect();
@@ -2777,8 +2823,7 @@ fn status_summary_is_compact_uses_two_columns_and_draws_horizontal_meters() {
             );
         }
         if size.0 >= 120 {
-            let left_width = (bounds.cols - 5) / 2;
-            let right = bounds.x + 1 + left_width + 3;
+            let right = bounds.x + 1 + 2 * (meter_width + 2);
             let start = usize::from((bounds.y + 1) * f.cols + right);
             let text = f.cells[start..start + 5]
                 .iter()
@@ -2786,9 +2831,13 @@ fn status_summary_is_compact_uses_two_columns_and_draws_horizontal_meters() {
                 .collect::<String>();
             assert_eq!(text, "Tasks");
             let disk_row = row_text(bounds.y + 4);
-            let (left, _) = disk_row.split_at(usize::from(left_width));
-            assert!(left.starts_with("/ 20% (75B/100B)"));
-            assert!(row_text(bounds.y + 5).starts_with("/data 90% (8B/100B)"));
+            assert!(disk_row.starts_with("/ ◔ 20% (75B/100B)"));
+            let start = usize::from((bounds.y + 4) * f.cols + bounds.x + 1 + meter_width + 2);
+            let disk: String = f.cells[start..start + usize::from(meter_width)]
+                .iter()
+                .map(|cell| cell.text.as_str())
+                .collect();
+            assert!(disk.starts_with("/data ● 90% (8B/100B)"));
             assert!(height < 12);
         }
         let mut terminal = Terminal::new(f.cols, f.rows);

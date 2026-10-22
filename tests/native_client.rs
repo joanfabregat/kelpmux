@@ -800,13 +800,18 @@ fn live_server_attach_layout_read_fullscreen_detach_reconnect_preserves_shell() 
     wait_state(&server, &mut tty, |_, reading, _| {
         reading == ReadingMode::Grid
     });
-    let read = header_button(&server, original.id, ReadingMode::Grid, 0);
+    let read = grid_number(&server, original.id);
     wait_header(
         &mut tty,
         usize::from(read.y) * 80 + usize::from(read.x),
-        "⛶",
+        "1",
     );
     tty.input(format!("\x1b[<0;{};{}M", read.x + 1, read.y + 1).as_bytes());
+    tty.input(b"\x021");
+    wait_state(&server, &mut tty, |_, reading, _| {
+        reading == ReadingMode::Tabs(original.id)
+    });
+    tty.input(b"\x02f");
     wait_state(&server, &mut tty, |_, reading, _| {
         reading == ReadingMode::Fullscreen(original.id)
     });
@@ -950,33 +955,26 @@ fn wait_text(tty: &mut Pty, expected: &str) {
         thread::sleep(Duration::from_millis(10));
     }
 }
-fn header_button(server: &LiveServer, id: PaneId, reading: ReadingMode, slot: u16) -> Point {
+fn grid_number(server: &LiveServer, id: PaneId) -> Point {
     let (panes, _, _) = server.state();
     let mut workspace = kelpmux::native::workspace::Workspace::new(80, 24).unwrap();
     workspace.panes = panes;
     workspace.active = id;
     workspace.grid_cols = 2;
-    workspace.reading = reading;
+    workspace.reading = ReadingMode::Grid;
     let views = workspace.layout();
     let view = views
         .iter()
         .rev()
         .find(|view| view.pane.id == id && view.rect.cols > 0)
         .unwrap();
-    if reading == ReadingMode::Grid {
-        let control = kelpmux::native::workspace::grid_controls(Rect {
-            rows: 1,
-            ..view.rect
-        })[usize::from(slot)];
-        return Point {
-            x: control.x + 1,
-            y: control.y,
-        };
-    }
-    let buttons = 2;
+    let control = kelpmux::native::workspace::tab_number(Rect {
+        rows: 1,
+        ..view.rect
+    });
     Point {
-        x: view.rect.x + view.rect.cols - buttons * 3 + slot * 3 + 1,
-        y: view.rect.y,
+        x: control.x + 1,
+        y: control.y,
     }
 }
 

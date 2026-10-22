@@ -34,7 +34,7 @@ pub struct ServerConfig {
     pub rows: u16,
     pub ui: super::ui::UiConfig,
     pub initial_grid: (u8, u8),
-    pub initial_tabs: Option<u8>,
+    pub initial_tabs: Option<usize>,
 }
 const MAX_CLIENTS: usize = 16;
 const MAX_QUEUED: usize = MAX_MESSAGE + 4;
@@ -925,7 +925,7 @@ impl Server {
                 .iter()
                 .filter(|p| Some(p.id) != self.workspace.ui.scratch)
                 .count()
-                .max(1) as u8,
+                .max(1),
         );
         journal::atomic(&path, &settings)
     }
@@ -968,15 +968,6 @@ impl Server {
                 return Err("grid layout is automatic; use New Tab, Park or Close".into());
             }
             Action::NewTab => {
-                let count = self
-                    .workspace
-                    .panes
-                    .iter()
-                    .filter(|pane| Some(pane.id) != self.workspace.ui.scratch)
-                    .count();
-                if count >= 9 {
-                    return Err("nine tabs are already open".into());
-                }
                 // Spawn first; failure must leave every existing pane and view intact.
                 self.spawn_pane(None)?;
                 let id = self.workspace.panes.last().unwrap().id;
@@ -2248,7 +2239,7 @@ pub fn serve(config: ServerConfig) -> Result<()> {
         notice: None,
         shutdown: false,
     };
-    let count = server.config.initial_tabs.map(usize::from).unwrap_or(
+    let count = server.config.initial_tabs.unwrap_or(
         usize::from(server.config.initial_grid.0) * usize::from(server.config.initial_grid.1),
     );
     for _ in 0..count {

@@ -129,18 +129,15 @@ impl Workspace {
                 matches!(self.reading, ReadingMode::Fullscreen(_)),
                 self.ui.reading_size,
             );
+            let mut number = 0;
             return self
                 .panes
                 .iter()
-                .enumerate()
-                .map(|(index, pane)| {
-                    let number = self
-                        .panes
-                        .iter()
-                        .take(index)
-                        .filter(|p| !p.parked && Some(p.id) != self.ui.scratch)
-                        .count();
+                .map(|pane| {
                     let mut view = Self::view(pane, number, Rect::default(), false);
+                    if !pane.parked && Some(pane.id) != self.ui.scratch {
+                        number += 1;
+                    }
                     if pane.id == self.active {
                         view.rect = body;
                         view.body = body;
@@ -159,11 +156,7 @@ impl Workspace {
         let usable_rows = self.rows.saturating_sub(1);
         let mut views = Vec::new();
         let y_boundaries = weighted_boundaries(usable_rows, grid_rows, &[]);
-        let count = self
-            .panes
-            .iter()
-            .filter(|p| !p.parked && Some(p.id) != self.ui.scratch)
-            .count();
+        let (page_start, count) = self.grid_page();
         let mut visible = 0;
         for (index, pane) in self
             .panes
@@ -177,8 +170,15 @@ impl Workspace {
                 views.push(view);
                 continue;
             }
-            let index = visible;
+            let ordinal = visible;
             visible += 1;
+            if ordinal < page_start || ordinal >= page_start + count {
+                let mut view = Self::view(pane, ordinal, Rect::default(), false);
+                view.body = Rect::default();
+                views.push(view);
+                continue;
+            }
+            let index = ordinal - page_start;
             let mut row = 0usize;
             let mut offset = 0usize;
             let row_count = loop {
@@ -202,25 +202,54 @@ impl Workspace {
                 cols: x_boundaries[usize::from(col + 1)] - left,
                 rows: y_boundaries[usize::from(row + 1)] - top,
             };
-            views.push(Self::view(pane, index, rect, false));
+            views.push(Self::view(pane, ordinal, rect, false));
         }
         views
     }
     pub fn automatic_shape(&self) -> (u8, u8) {
-        let count = self
+        let (_, count) = self.grid_page();
+        let count = count.max(1);
+        let (max_cols, max_rows) = self.grid_capacity();
+        let mut best = (1, 1);
+        let mut best_score = f64::INFINITY;
+        for rows in 1..=usize::from(max_rows).min(count) {
+            let cols = count.div_ceil(rows);
+            if cols > usize::from(max_cols) {
+                continue;
+            }
+            // A character is roughly twice as tall as it is wide. Favor
+            // terminal panes near a 2:1 character aspect, then avoid spare slots.
+            let aspect =
+                (f64::from(self.cols) / cols as f64) / (f64::from(self.rows - 1) / rows as f64);
+            let score =
+                (aspect / 2.0).ln().powi(2) + (cols * rows - count) as f64 / count as f64 * 0.4;
+            if score < best_score {
+                best = (cols as u8, rows as u8);
+                best_score = score;
+            }
+        }
+        best
+    }
+    fn grid_capacity(&self) -> (u8, u8) {
+        (
+            ((self.cols + 1) / 13).max(1) as u8,
+            ((self.rows - 1) / 3).max(1) as u8,
+        )
+    }
+    pub fn grid_page(&self) -> (usize, usize) {
+        let (cols, rows) = self.grid_capacity();
+        let capacity = usize::from(cols) * usize::from(rows);
+        let panes: Vec<_> = self
             .panes
             .iter()
-            .filter(|p| !p.parked && Some(p.id) != self.ui.scratch)
-            .count();
-        match count {
-            0 | 1 => (1, 1),
-            2 if self.cols < 70 => (1, 2),
-            2 => (2, 1),
-            3 | 4 => (2, 2),
-            5 | 6 if self.cols < 100 => (2, 3),
-            5 | 6 => (3, 2),
-            _ => (3, 3),
-        }
+            .filter(|pane| !pane.parked && Some(pane.id) != self.ui.scratch)
+            .collect();
+        let active = panes
+            .iter()
+            .position(|pane| pane.id == self.active)
+            .unwrap_or(0);
+        let start = active / capacity * capacity;
+        (start, panes.len().saturating_sub(start).min(capacity))
     }
     pub fn reflow(&mut self) {
         (self.grid_cols, self.grid_rows) = self.automatic_shape();
@@ -725,7 +754,7 @@ impl Workspace {
                 let (x, y) = center(origin);
                 if let Some(view) = views
                     .iter()
-                    .filter(|v| !v.pane.parked && v.pane.id != normal)
+                    .filter(|v| !v.pane.parked && v.pane.id != normal && v.rect.cols > 0)
                     .filter(|v| {
                         let (nx, ny) = center(v.rect);
                         if dx != 0 {
@@ -899,8 +928,8 @@ impl Workspace {
         Ok(())
     }
     pub fn grid_count(cols: u8, rows: u8) -> Result<usize> {
-        if !GRIDS.contains(&(cols, rows)) && (cols, rows) != (1, 2) {
-            return Err("supported grids are 1x1, 2x1, 2x2, 3x2, 2x3 and 3x3".into());
+        if cols == 0 || rows == 0 {
+            return Err("grid dimensions must be positive".into());
         }
         Ok(cols as usize * rows as usize)
     }
@@ -1184,6 +1213,14 @@ pub fn tab_number(rect: Rect) -> Rect {
         rows: 1,
     }
 }
+pub fn tab_number_for(rect: Rect, number: usize) -> Rect {
+    Rect {
+        cols: (number.to_string().len() as u16 + 2)
+            .max(3)
+            .min(rect.cols.saturating_sub(7).max(1)),
+        ..tab_number(rect)
+    }
+}
 pub fn tab_close(rect: Rect) -> Rect {
     Rect {
         x: rect.x + rect.cols.saturating_sub(3),
@@ -1223,17 +1260,8 @@ pub fn tab_park(rect: Rect) -> Rect {
         ..close
     }
 }
-pub fn grid_controls(rect: Rect) -> [Rect; 3] {
-    let close = tab_close(rect);
-    let park = tab_park(rect);
-    [
-        Rect {
-            x: park.x.saturating_sub(3),
-            ..park
-        },
-        park,
-        close,
-    ]
+pub fn grid_controls(rect: Rect) -> [Rect; 2] {
+    [tab_park(rect), tab_close(rect)]
 }
 pub fn parked_label(count: usize) -> String {
     match count {

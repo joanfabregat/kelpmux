@@ -472,13 +472,28 @@ pub fn bounds(cols: u16, rows: u16) -> super::protocol::Rect {
     }
 }
 pub fn summary_columns(bounds: super::protocol::Rect) -> u16 {
-    if bounds.cols >= 86 { 2 } else { 1 }
+    if bounds.cols >= 86 { 3 } else { 1 }
+}
+pub fn summary_column_width(bounds: super::protocol::Rect) -> u16 {
+    if summary_columns(bounds) == 3 {
+        (bounds.cols - 6) / 3
+    } else {
+        bounds.cols.saturating_sub(2)
+    }
+}
+pub fn summary_detail_rows(bounds: super::protocol::Rect) -> usize {
+    if summary_columns(bounds) == 3 && summary_column_width(bounds) < 38 {
+        6
+    } else {
+        5
+    }
 }
 pub fn summary_height(bounds: super::protocol::Rect, data: &Snapshot) -> u16 {
     let desired = if !data.ready {
         1
-    } else if summary_columns(bounds) == 2 {
-        (data.cpus.len().div_ceil(2) + 1 + data.disks.len()).max(5)
+    } else if summary_columns(bounds) == 3 {
+        (data.cpus.len().div_ceil(2) + 1 + data.disks.len().div_ceil(2))
+            .max(summary_detail_rows(bounds))
     } else {
         data.cpus.len() + 2 + 4 + data.disks.len()
     };
@@ -489,8 +504,16 @@ pub fn summary_height(bounds: super::protocol::Rect, data: &Snapshot) -> u16 {
 pub fn table_y(bounds: super::protocol::Rect, data: &Snapshot) -> u16 {
     bounds.y + 3 + summary_height(bounds, data)
 }
-pub fn columns(width: u16, view: View) -> Vec<(&'static str, u16, Option<Sort>)> {
-    let mut cols = vec![("PID", 7, Some(Sort::Pid))];
+pub fn columns(width: u16, view: View, data: &Snapshot) -> Vec<(&'static str, u16, Option<Sort>)> {
+    let pid_width = data
+        .processes
+        .iter()
+        .map(|process| process.pid.to_string().len())
+        .max()
+        .unwrap_or(0)
+        .max(7) as u16
+        + 1;
+    let mut cols = vec![("PID", pid_width, Some(Sort::Pid))];
     if width >= 65 {
         cols.push(("USER", 10, None));
     }

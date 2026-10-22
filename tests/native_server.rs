@@ -945,7 +945,7 @@ fn configuration_tab_position_persists_for_the_named_workspace() {
 }
 
 #[test]
-fn new_tabs_create_one_pty_preserve_existing_jobs_and_stop_at_nine() {
+fn new_tabs_create_more_than_nine_ptys_and_preserve_existing_jobs() {
     let daemon = Daemon::start();
     let mut admin = daemon.connect();
     let (initial, _) = command(&mut admin, Action::Read(1)).unwrap();
@@ -966,7 +966,7 @@ fn new_tabs_create_one_pty_preserve_existing_jobs_and_stop_at_nine() {
     assert!(settings["ui"].get("wrap_lines").is_none());
     assert_eq!(settings["ui"]["pane_colors"][original.0.to_string()], 4);
     command(&mut admin, Action::CloseReading).unwrap();
-    for count in 2..=9 {
+    for count in 2..=12 {
         let (panes, _) = command(&mut admin, Action::NewTab).unwrap();
         assert_eq!(panes.len(), count);
         let saved: serde_json::Value =
@@ -980,14 +980,35 @@ fn new_tabs_create_one_pty_preserve_existing_jobs_and_stop_at_nine() {
             assert!(std::path::Path::new(&format!("/proc/{}", pane.pid)).exists());
         }
     }
-    assert!(
-        command(&mut admin, Action::NewTab)
-            .unwrap_err()
-            .contains("nine")
-    );
+    command(&mut admin, Action::Park(original.0)).unwrap();
+    let (panes, _) = command(&mut admin, Action::NewTab).unwrap();
+    assert_eq!(panes.len(), 13);
     let (panes, _) = command(&mut admin, Action::Config).unwrap();
-    assert_eq!(panes.len(), 9);
+    assert_eq!(panes.len(), 13);
     assert_eq!((panes[0].id, panes[0].pid), original);
+    command(&mut admin, Action::DialogClose).unwrap();
+    let identities: Vec<_> = panes.iter().map(|pane| (pane.id, pane.pid)).collect();
+    let (mut controller, _, _) = daemon.attach();
+    command(&mut controller, Action::CloseReading).unwrap();
+    for (cols, rows, shape) in [(240, 70, (4, 3)), (120, 80, (3, 4))] {
+        write_message(&mut controller, &ClientMessage::Resize { cols, rows }).unwrap();
+        let frame = wait_frame(&mut controller, |frame| {
+            frame.cols == cols && frame.rows == rows && frame.ui.grid_shape == shape
+        });
+        assert_eq!(frame.reading, ReadingMode::Grid);
+        assert_eq!(
+            frame
+                .panes
+                .iter()
+                .map(|view| (view.pane.id, view.pane.pid))
+                .collect::<Vec<_>>(),
+            identities
+        );
+        assert_eq!(
+            frame.panes.iter().filter(|view| view.body.cols > 0).count(),
+            12
+        );
+    }
     command(&mut admin, Action::ClosePaneRequest(original.0)).unwrap();
     command(&mut admin, Action::ClosePaneConfirm(original.0)).unwrap();
     let settings: serde_json::Value =

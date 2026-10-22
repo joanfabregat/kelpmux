@@ -233,7 +233,7 @@ fn named_workspaces_reject_path_traversal_and_preserve_effective_restart_setting
     fixture.stop();
 }
 #[test]
-fn configured_nine_pane_startup_and_invalid_config_are_checked() {
+fn configured_large_startup_and_invalid_config_are_checked() {
     let fixture = Fixture::new();
     let config = fixture.root.join("config.json");
     fs::write(&config,r#"{"grid":[3,3],"ui":{"prefix":1,"read_width":100,"read_height_percent":80,"bindings":{"r":"read"}}}"#).unwrap();
@@ -248,7 +248,20 @@ fn configured_nine_pane_startup_and_invalid_config_are_checked() {
         9
     );
     fixture.stop();
-    fs::write(&config, r#"{"grid":[3,4]}"#).unwrap();
+    fs::write(&config, r#"{"tab_count":12}"#).unwrap();
+    assert_eq!(
+        fixture.start(&["--config", config.to_str().unwrap()]).len(),
+        12
+    );
+    fixture.stop();
+    fs::write(&config, r#"{"tab_count":1000}"#).unwrap();
+    assert_eq!(
+        kelpmux::native::lifecycle::Settings::load(&config)
+            .unwrap()
+            .tab_count,
+        Some(1000)
+    );
+    fs::write(&config, r#"{"grid":[0,4]}"#).unwrap();
     assert!(
         !fixture
             .cmd("start", &["--config", config.to_str().unwrap()])

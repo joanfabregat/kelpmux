@@ -202,7 +202,8 @@ fn options(args: &[String]) -> Result<Options> {
     if let Some(path) = template_path {
         let template = super::templates::Template::load(&absolute(&path)?)?;
         result.settings.grid = template.grid;
-        result.settings.tab_count = Some(template.grid.0 * template.grid.1);
+        result.settings.tab_count =
+            Some(usize::from(template.grid.0) * usize::from(template.grid.1));
         result.settings.grid_weights = [Vec::new(), Vec::new()];
         result.settings.template = Some(template);
     }

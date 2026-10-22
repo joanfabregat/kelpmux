@@ -10,7 +10,7 @@ pub const ALERT_ICON: &str = "⚠︎";
 pub const CONFIG_BUTTON_LABEL: &str = " ⚙︎ Config ";
 pub const FOOTER_CONFIG_COLS: u16 = 10;
 pub const FOOTER_MODE_COLS: u16 = 8;
-pub const HELP_ROWS: u16 = 28;
+pub const HELP_ROWS: u16 = 30;
 pub const PALETTE: [(u8, u8); 9] = [
     (39, 24),
     (42, 29),

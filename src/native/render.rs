@@ -267,6 +267,8 @@ fn help_entries(config: &super::ui::UiConfig) -> Vec<(String, &'static str)> {
         (key("g/e", "grid"), "Automatic grid view"),
         (key("f", "fullscreen"), "Focus tab / return to grid"),
         ("Enter".into(), "New tab"),
+        ("Tab / Shift+Tab".into(), "Next / previous tab"),
+        ("PgUp / PgDn".into(), "Previous / next grid page"),
         ("p".into(), "Park tab (confirm)"),
         ("u".into(), "Show parked tabs"),
         (key("s", "move"), "Move pane to a destination"),
@@ -1352,12 +1354,6 @@ fn draw_tabs(frame: &mut Frame, workspace: &Workspace, spinner: usize) {
                 } else {
                     "  +  "
                 };
-                let enabled = workspace
-                    .panes
-                    .iter()
-                    .filter(|p| Some(p.id) != workspace.ui.scratch)
-                    .count()
-                    < 9;
                 let sidebar = position == TabPosition::Left;
                 let bg = if sidebar {
                     tab_surface(workspace)
@@ -1390,16 +1386,14 @@ fn draw_tabs(frame: &mut Frame, workspace: &Workspace, spinner: usize) {
                     rect.y + rect.rows / 2,
                     rect.cols - inset,
                     label,
-                    if enabled && sidebar {
+                    if sidebar {
                         Color::Indexed(if tab_text(workspace, false) == Color::Indexed(232) {
                             24
                         } else {
                             75
                         })
-                    } else if enabled {
-                        Color::Indexed(250)
                     } else {
-                        tab_accent(workspace, false)
+                        Color::Indexed(250)
                     },
                     bg,
                     !sidebar,
@@ -1536,7 +1530,7 @@ fn draw_tab(
             false,
         );
     }
-    let number = super::workspace::tab_number(rect);
+    let number = super::workspace::tab_number_for(rect, pane.number);
     write_text(
         frame,
         number.x,
@@ -1560,7 +1554,6 @@ fn draw_tab(
         .any(|item| item.pane == pane.id && !item.read);
     let close = super::workspace::tab_close(rect);
     let park = super::workspace::tab_park(rect);
-    let zoom = super::workspace::grid_controls(rect)[0];
     let count_width = count.len() as u16;
     let (title_x, title_y, title_width) = if rect.rows >= 2 {
         (
@@ -1573,9 +1566,7 @@ fn draw_tab(
         (
             x,
             number.y,
-            (if grid { zoom.x } else { park.x })
-                .saturating_sub(count_width)
-                .saturating_sub(x),
+            park.x.saturating_sub(count_width).saturating_sub(x),
         )
     };
     let track = if rect.rows >= 2 {
@@ -1751,18 +1742,6 @@ fn draw_tab(
         bg,
         true,
     );
-    if grid {
-        write_text(
-            frame,
-            zoom.x,
-            zoom.y,
-            zoom.cols,
-            " ⛶ ",
-            Color::Indexed(231),
-            Color::Indexed(24),
-            true,
-        );
-    }
     for y in rect.y..rect.y + rect.rows {
         write_text(
             frame,
@@ -2493,7 +2472,7 @@ fn draw_status(frame: &mut Frame, workspace: &Workspace, bounds: Rect) {
         },
         Color::Indexed(239),
     );
-    let columns = status::columns(width, ui.status_view);
+    let columns = status::columns(width, ui.status_view, data);
     let mut col_x = x;
     for (label, size, sort) in &columns {
         let text = if *sort == Some(ui.status_sort) {
@@ -2684,14 +2663,9 @@ fn draw_status_summary(frame: &mut Frame, workspace: &Workspace, bounds: Rect, h
     let x = bounds.x + 1;
     let y = bounds.y + 1;
     let width = bounds.cols.saturating_sub(2);
-    let two_columns = status::summary_columns(bounds) == 2;
-    let left_width = if two_columns { (width - 3) / 2 } else { width };
-    let meter_width = if two_columns {
-        (left_width - 1) / 2
-    } else {
-        width
-    };
-    let meter_gap = if two_columns { 1 } else { 0 };
+    let two_columns = status::summary_columns(bounds) == 3;
+    let meter_width = status::summary_column_width(bounds);
+    let meter_gap = if two_columns { 2 } else { 0 };
     if !data.ready {
         write_text(
             frame,
@@ -2720,7 +2694,7 @@ fn draw_status_summary(frame: &mut Frame, workspace: &Workspace, bounds: Rect, h
         data.uptime / 60 % 60
     );
     let clock_uptime = if clock.is_empty() {
-        uptime
+        uptime.clone()
     } else {
         format!("{clock} · {uptime}")
     };
@@ -2731,7 +2705,6 @@ fn draw_status_summary(frame: &mut Frame, workspace: &Workspace, bounds: Rect, h
                 250,
             ),
             (format!("Load {}", data.load), 250),
-            (clock_uptime, 39),
         ]
     } else {
         vec![
@@ -2742,9 +2715,17 @@ fn draw_status_summary(frame: &mut Frame, workspace: &Workspace, bounds: Rect, h
                 ),
                 250,
             ),
-            (clock_uptime, 39),
+            (clock_uptime.clone(), 39),
         ]
     };
+    if two_columns {
+        if status::summary_detail_rows(bounds) == 6 {
+            details.push((clock, 39));
+            details.push((uptime, 39));
+        } else {
+            details.push((clock_uptime, 39));
+        }
+    }
     details.push((
         format!(
             "Network ↓ {}  ↑ {}",
@@ -2767,8 +2748,9 @@ fn draw_status_summary(frame: &mut Frame, workspace: &Workspace, bounds: Rect, h
         .map(|disk| {
             (
                 format!(
-                    "{} {}% ({}/{})",
+                    "{} {} {}% ({}/{})",
                     safe_text(&disk.mount),
+                    super::vitals::pie_glyph(disk.percent),
                     disk.percent,
                     status::bytes(disk.available),
                     status::bytes(disk.total),
@@ -2826,7 +2808,7 @@ fn draw_status_summary(frame: &mut Frame, workspace: &Workspace, bounds: Rect, h
         return;
     }
     let lower_rows = if two_columns {
-        disks.len()
+        disks.len().div_ceil(2)
     } else {
         details.len()
     }
@@ -2893,14 +2875,14 @@ fn draw_status_summary(frame: &mut Frame, workspace: &Workspace, bounds: Rect, h
     if two_columns {
         for (index, (text, color)) in disks
             .iter()
-            .take(usize::from(height.saturating_sub(lower_y)))
+            .take(usize::from(height.saturating_sub(lower_y)) * 2)
             .enumerate()
         {
             write_text(
                 frame,
-                x,
-                y + lower_y + index as u16,
-                left_width,
+                x + (index % 2) as u16 * (meter_width + meter_gap),
+                y + lower_y + (index / 2) as u16,
+                meter_width,
                 text,
                 Color::Indexed(*color),
                 Color::Indexed(236),
@@ -2909,7 +2891,7 @@ fn draw_status_summary(frame: &mut Frame, workspace: &Workspace, bounds: Rect, h
         }
     }
     let (detail_x, detail_y, detail_width, capacity) = if two_columns {
-        (x + left_width + 3, y, width - left_width - 3, height)
+        (x + 2 * (meter_width + meter_gap), y, meter_width, height)
     } else {
         (x, y + lower_y, width, height.saturating_sub(lower_y))
     };
@@ -2985,7 +2967,7 @@ mod tests {
                 assert!(!text.contains('\x1b'));
                 if reading == ReadingMode::Grid && !overlay {
                     assert!(!text.contains('↗') && !text.contains('▶'));
-                    assert!(text.contains('⛶'));
+                    assert!(!text.contains('⛶'));
                 }
                 let mut display = Terminal::new(cols, 10);
                 display.feed(&terminal_diff(None, &frame));

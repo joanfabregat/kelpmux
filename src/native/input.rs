@@ -383,6 +383,10 @@ impl Router {
                         b"p" => Some(Action::ParkRequest(frame.active)),
                         b"u" => Some(Action::Parked),
                         b"\r" | b"\n" => Some(Action::NewTab),
+                        b"\t" => tab_navigation(frame, 1, false),
+                        b"\x1b[Z" => tab_navigation(frame, -1, false),
+                        b"\x1b[5~" => tab_navigation(frame, -1, true),
+                        b"\x1b[6~" => tab_navigation(frame, 1, true),
                         b"v" => Some(Action::TabPosition),
                         b"," => Some(Action::Config),
                         b"o" => Some(Action::Overview),
@@ -847,15 +851,7 @@ impl Router {
         }
         if event.kind == MouseKind::Press && mode.contains(event.position) {
             if frame.active == 0 {
-                if frame
-                    .panes
-                    .iter()
-                    .filter(|v| Some(v.pane.id) != frame.ui.scratch)
-                    .count()
-                    < 9
-                {
-                    emit(&mut output, Action::NewTab, true);
-                }
+                emit(&mut output, Action::NewTab, true);
                 return output;
             }
             emit(&mut output, Action::Read(frame.active), true);
@@ -921,9 +917,7 @@ impl Router {
                     return output;
                 }
                 if event.kind == MouseKind::Press && target == super::workspace::TabTarget::New {
-                    if tabviews.len() < 9 {
-                        emit(&mut output, Action::NewTab, true);
-                    }
+                    emit(&mut output, Action::NewTab, true);
                     return output;
                 }
                 if matches!(
@@ -990,7 +984,7 @@ impl Router {
             if event.kind != MouseKind::Press {
                 return output;
             }
-            let [zoom, park, close] = super::workspace::grid_controls(Rect {
+            let [park, close] = super::workspace::grid_controls(Rect {
                 rows: 1,
                 ..view.rect
             });
@@ -1000,9 +994,9 @@ impl Router {
             } else if park.contains(event.position) {
                 self.pending_modal = true;
                 Action::ParkRequest(id)
-            } else if zoom.contains(event.position) {
-                Action::Fullscreen(id)
-            } else if super::workspace::tab_number(view.rect).contains(event.position) {
+            } else if super::workspace::tab_number_for(view.rect, view.pane.number)
+                .contains(event.position)
+            {
                 Action::Focus(id)
             } else {
                 self.header_drag = Some(id);
@@ -1311,6 +1305,30 @@ fn local_point(point: Point, body: Rect) -> Point {
             .min(body.rows.saturating_sub(1)),
     }
 }
+fn tab_navigation(frame: &Frame, direction: isize, page: bool) -> Option<Action> {
+    let panes: Vec<_> = frame
+        .panes
+        .iter()
+        .filter(|view| !view.pane.parked && Some(view.pane.id) != frame.ui.scratch)
+        .collect();
+    if panes.is_empty() {
+        return None;
+    }
+    let active = panes
+        .iter()
+        .position(|view| view.pane.id == frame.active)
+        .unwrap_or(0);
+    let index = if page && frame.reading == ReadingMode::Grid {
+        let capacity =
+            ((frame.cols + 1) / 13).max(1) as usize * ((frame.rows - 1) / 3).max(1) as usize;
+        let page = (active as isize / capacity as isize + direction)
+            .rem_euclid(panes.len().div_ceil(capacity) as isize) as usize;
+        (page * capacity + active % capacity).min(panes.len() - 1)
+    } else {
+        (active as isize + direction).rem_euclid(panes.len() as isize) as usize
+    };
+    Some(Action::Focus(panes[index].pane.id))
+}
 fn emit(output: &mut Vec<ClientMessage>, action: Action, controller: bool) {
     if controller || matches!(action, Action::Detach | Action::Takeover) {
         output.push(ClientMessage::Action(action));
@@ -1556,7 +1574,9 @@ impl Router {
                     } else if mouse.position.y == status::table_y(bounds, &ui.status) {
                         let mut x = bounds.x + 1;
                         let mut selected = None;
-                        for (_, width, sort) in status::columns(bounds.cols - 2, ui.status_view) {
+                        for (_, width, sort) in
+                            status::columns(bounds.cols - 2, ui.status_view, &ui.status)
+                        {
                             if width > 0 && mouse.position.x >= x && mouse.position.x < x + width {
                                 selected = sort.map(Action::StatusSort);
                                 break;

@@ -7,6 +7,56 @@ use kelpmux::{
     },
 };
 
+#[test]
+fn adaptive_grid_supports_large_workspaces_and_pages_follow_selection() {
+    let mut ws = Workspace::new(240, 70).unwrap();
+    ws.panes = (1..=12).map(pane).collect();
+    ws.active = 1;
+    ws.reflow();
+    assert_eq!(ws.automatic_shape(), (4, 3));
+    ws.resize(120, 80).unwrap();
+    assert_eq!(ws.automatic_shape(), (3, 4));
+    for count in [12, 100, 1000] {
+        ws.panes = (1..=count).map(pane).collect();
+        for size in [(40, 10), (120, 80), (240, 70), (400, 160)] {
+            ws.resize(size.0, size.1).unwrap();
+            for active in [1, count / 2, count] {
+                ws.active = active;
+                ws.reflow();
+                let views = ws.grid_layout();
+                assert_eq!(views.len(), count as usize);
+                let visible: Vec<_> = views.iter().filter(|view| view.rect.cols > 0).collect();
+                assert!(visible.iter().any(|view| view.pane.id == active));
+                let mut occupied = std::collections::BTreeSet::new();
+                for view in visible {
+                    assert!(view.body.rows >= 2 && view.rect.cols >= 12);
+                    assert!(view.rect.x + view.rect.cols <= ws.cols);
+                    assert!(view.rect.y + view.rect.rows < ws.rows);
+                    for y in view.rect.y..view.rect.y + view.rect.rows {
+                        for x in view.rect.x..view.rect.x + view.rect.cols {
+                            assert!(occupied.insert((x, y)), "overlapping grid panes");
+                        }
+                    }
+                }
+            }
+        }
+    }
+    ws.resize(240, 70).unwrap();
+    ws.panes
+        .iter_mut()
+        .for_each(|pane| pane.parked = pane.id > 12);
+    ws.active = 1;
+    ws.reflow();
+    assert_eq!(ws.automatic_shape(), (4, 3));
+    assert_eq!(
+        ws.grid_layout()
+            .iter()
+            .filter(|view| view.rect.cols > 0)
+            .count(),
+        12
+    );
+}
+
 fn pane(id: u64) -> PaneInfo {
     PaneInfo {
         id,
