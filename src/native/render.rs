@@ -1384,11 +1384,18 @@ fn draw_tabs(frame: &mut Frame, workspace: &Workspace, spinner: usize) {
                     < 9;
                 let bg = theme_surface(workspace, if enabled { 24 } else { 14 });
                 fill(frame, rect, bg);
+                let inset = if position == TabPosition::Left {
+                    rect.cols
+                        .saturating_sub(label.chars().map(char_width).sum())
+                        / 2
+                } else {
+                    0
+                };
                 write_text(
                     frame,
-                    rect.x,
+                    rect.x + inset,
                     rect.y + rect.rows / 2,
-                    rect.cols,
+                    rect.cols - inset,
                     label,
                     if enabled {
                         tab_text(workspace, false)
@@ -1838,6 +1845,49 @@ fn marquee_title(title: &str, width: u16, ticks: u16) -> String {
         })
         .collect()
 }
+fn sidebar_metrics(
+    segments: &[(String, u8)],
+    value_width: u16,
+) -> Vec<(&'static str, String, bool)> {
+    let mut metrics = Vec::new();
+    let mut disks = Vec::new();
+    let mut disk_alert = false;
+    let mut date = None;
+    let mut clock = None;
+    for (text, color) in segments {
+        if let Some(value) = text.strip_prefix("cpu ") {
+            metrics.push(("CPU", value.to_string(), false));
+        } else if let Some(value) = text.strip_prefix("mem ") {
+            metrics.push(("Memory", value.to_string(), false));
+        } else if let Some(value) = text.strip_prefix("swap ") {
+            metrics.push(("Swap", value.to_string(), false));
+        } else if text == "disk" {
+            continue;
+        } else if text.starts_with(['●', '◕', '◑', '◔', '○']) || text.starts_with("disk ")
+        {
+            if let Some(value) = text.split_whitespace().last() {
+                disks.push(value);
+                disk_alert |= *color == 196;
+            }
+        } else if text.contains(':') {
+            clock = Some(text.strip_prefix("clock ").unwrap_or(text));
+        } else if text.len() == 10 && text.as_bytes()[4] == b'-' && text.as_bytes()[7] == b'-' {
+            date = Some(text.as_str());
+        }
+    }
+    if !disks.is_empty() {
+        metrics.push(("Disks", disks.join(" "), disk_alert));
+    }
+    if let Some(clock) = clock {
+        let value = date
+            .map(|date| format!("{date} {clock}"))
+            .filter(|value| value.chars().map(char_width).sum::<u16>() <= value_width)
+            .unwrap_or_else(|| clock.to_string());
+        metrics.push(("Clock", value, false));
+    }
+    metrics
+}
+
 fn draw_sidebar_status(frame: &mut Frame, workspace: &Workspace, notice: Option<&str>) {
     let rows = super::workspace::sidebar_status_rows(frame.rows);
     let width = super::workspace::sidebar_width(frame.cols) - 1;
@@ -1853,110 +1903,155 @@ fn draw_sidebar_status(frame: &mut Frame, workspace: &Workspace, notice: Option<
         },
         bg,
     );
-    let hint = notice.map(safe_text).unwrap_or_else(|| {
-        if frame.controller {
-            format!(
-                "^{} · Enter new",
-                char::from(b'A' + workspace.ui.config.prefix - 1)
-            )
-        } else {
-            format!(
-                "Obs · ^{} {} control",
-                char::from(b'A' + workspace.ui.config.prefix - 1),
-                binding_label(&workspace.ui.config, "tT", "takeover")
-            )
-        }
+    let foreground = tab_text(workspace, false);
+    let muted = Color::Indexed(if foreground == Color::Indexed(232) {
+        243
+    } else {
+        245
     });
+    let value_color = if foreground == Color::Indexed(232) {
+        foreground
+    } else {
+        Color::Indexed(250)
+    };
     let metric_top = if rows > 3 { top + 1 } else { top };
-    if rows > 3 || notice.is_some() || !frame.controller {
-        write_text(
-            frame,
-            1,
-            top,
-            width - 2,
-            &hint,
-            tab_text(workspace, false),
-            bg,
-            false,
-        );
-    }
-    if notice.is_none() && (rows > 3 || frame.controller) {
-        let mut x = 1;
-        let mut y = metric_top;
-        let end = frame.rows - 2;
-        for (index, (text, color)) in workspace.ui.vitals.iter().enumerate() {
-            let size: u16 = text.chars().map(char_width).sum();
-            if x > 1 && x + size >= width {
-                x = 1;
-                y += 1;
-            }
-            if y >= end {
-                // Always retain the clock when a compact sidebar fills up.
-                if index + 1 == workspace.ui.vitals.len() {
-                    let x = width.saturating_sub(size + 1);
-                    fill(
-                        frame,
-                        Rect {
-                            x,
-                            y: end - 1,
-                            cols: width - x,
-                            rows: 1,
-                        },
-                        bg,
-                    );
-                    write_text(
-                        frame,
-                        x,
-                        end - 1,
-                        width - x,
-                        text,
-                        Color::Indexed(*color),
-                        bg,
-                        false,
-                    );
-                }
-                continue;
-            }
+    let metric_end = if rows > 3 {
+        frame.rows - 3
+    } else {
+        frame.rows - 2
+    };
+    if rows > 3 {
+        for y in [top, frame.rows - 3] {
             write_text(
                 frame,
-                x,
+                1,
                 y,
-                width.saturating_sub(x + 1),
-                text,
-                Color::Indexed(*color),
+                width - 2,
+                &"─".repeat(usize::from(width - 2)),
+                tab_accent(workspace, false),
                 bg,
                 false,
             );
-            x = x.saturating_add(size + 1);
+        }
+    }
+    if !frame.controller && rows > 3 {
+        write_text(frame, 2, top, width - 4, " Observer ", muted, bg, false);
+    }
+    if let Some(notice) = notice {
+        let mut y = metric_top;
+        let mut line = String::new();
+        for word in safe_text(notice).split_whitespace() {
+            let size = line.chars().map(char_width).sum::<u16>()
+                + 1
+                + word.chars().map(char_width).sum::<u16>();
+            if !line.is_empty() && size > width - 2 {
+                write_text(frame, 1, y, width - 2, &line, value_color, bg, false);
+                y += 1;
+                line.clear();
+                if y >= metric_end {
+                    break;
+                }
+            }
+            if !line.is_empty() {
+                line.push(' ');
+            }
+            line.push_str(word);
+        }
+        if y < metric_end {
+            write_text(frame, 1, y, width - 2, &line, value_color, bg, false);
+        }
+    } else if !frame.controller && rows == 3 {
+        write_text(
+            frame,
+            1,
+            metric_top,
+            width - 2,
+            "Observer",
+            muted,
+            bg,
+            false,
+        );
+    } else {
+        let value_width = width.saturating_sub(9);
+        let metrics = sidebar_metrics(&workspace.ui.vitals, value_width);
+        let capacity = usize::from(metric_end - metric_top);
+        let mut visible: Vec<_> = metrics.iter().take(capacity).collect();
+        if metrics.len() > capacity {
+            if let Some(clock) = metrics.last().filter(|(label, _, _)| *label == "Clock") {
+                visible.truncate(capacity.saturating_sub(1));
+                visible.push(clock);
+            }
+        }
+        for (index, (label, value, alert)) in visible.into_iter().enumerate() {
+            let y = metric_top + index as u16;
+            let value = safe_text(value);
+            let mut display = String::new();
+            let mut size = 0;
+            for c in value.chars() {
+                let next = char_width(c);
+                if size + next > value_width {
+                    while size >= value_width {
+                        if let Some(last) = display.pop() {
+                            size -= char_width(last);
+                        } else {
+                            break;
+                        }
+                    }
+                    display.push('…');
+                    size += 1;
+                    break;
+                }
+                display.push(c);
+                size += next;
+            }
+            write_text(frame, 1, y, 6, label, muted, bg, false);
+            write_text(
+                frame,
+                width - 1 - size,
+                y,
+                size,
+                &display,
+                if *alert {
+                    Color::Indexed(196)
+                } else {
+                    value_color
+                },
+                bg,
+                false,
+            );
         }
     }
     let [config, mode, parked, help] = frame.controls();
     let unread = workspace.ui.notifications.iter().any(|item| !item.read);
     let parked_count = workspace.panes.iter().filter(|pane| pane.parked).count();
-    for (rect, label, color) in [
-        (config, " Config ".into(), 24),
+    for (rect, label, alert) in [
+        (config, " Config ".into(), false),
         (
             mode,
             if workspace.active == 0 {
-                " New "
-            } else {
+                if mode.cols >= 6 { " New " } else { "New" }
+            } else if mode.cols >= 6 {
                 " Grid "
+            } else {
+                "Grid"
             }
             .into(),
-            67,
+            false,
         ),
-        (
-            parked,
-            super::workspace::parked_label(parked_count),
-            super::ui::PARKED_BG,
-        ),
+        (parked, super::workspace::parked_label(parked_count), false),
         (
             help,
-            if unread { "🚨 " } else { " ? " }.into(),
-            if unread { 160 } else { 94 },
+            if unread {
+                "🚨 "
+            } else if help.cols >= 6 {
+                " Help "
+            } else {
+                "Help"
+            }
+            .into(),
+            unread,
         ),
     ] {
-        let bg = Color::Indexed(color);
         fill(frame, rect, bg);
         write_text(
             frame,
@@ -1964,9 +2059,13 @@ fn draw_sidebar_status(frame: &mut Frame, workspace: &Workspace, notice: Option<
             rect.y,
             rect.cols,
             &label,
-            Color::Indexed(231),
+            if alert {
+                Color::Indexed(196)
+            } else {
+                foreground
+            },
             bg,
-            true,
+            false,
         );
     }
 }

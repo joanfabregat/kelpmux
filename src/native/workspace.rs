@@ -1230,15 +1230,12 @@ pub fn sidebar_controls(cols: u16, rows: u16, count: usize) -> [Rect; 4] {
         rows: 1,
     };
     let parked = parked_button(rows, count);
+    let right = width.saturating_sub(6).max(parked.cols);
     [
         rect(0, rows - 2, 8),
-        rect(8, rows - 2, 6),
+        rect(right, rows - 2, width - right),
         rect(0, rows - 1, parked.cols),
-        rect(
-            parked.cols,
-            rows - 1,
-            3.min(width.saturating_sub(parked.cols)),
-        ),
+        rect(right, rows - 1, width - right),
     ]
 }
 pub fn color_cards(bounds: Rect) -> Vec<Rect> {
