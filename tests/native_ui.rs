@@ -2617,3 +2617,103 @@ fn closing_status_consumes_the_mouse_release_before_the_app_can_receive_it() {
         None
     );
 }
+
+#[test]
+fn status_summary_is_compact_uses_two_columns_and_draws_horizontal_meters() {
+    use kelpmux::native::status::{self, Disk, Snapshot, Sort};
+    for size in [(80, 30), (120, 40), (240, 70)] {
+        let mut ws = workspace(size, (1, 1));
+        ws.apply(&Action::StatusOpen(Sort::Cpu)).unwrap();
+        ws.ui.vitals = vec![("12:34".into(), 250)];
+        ws.ui.status = Snapshot {
+            ready: true,
+            cpus: vec![0, 51, 100, 25],
+            memory_used: 50,
+            memory_total: 100,
+            swap_used: 25,
+            swap_total: 100,
+            disks: vec![
+                Disk {
+                    mount: "/".into(),
+                    used: 20,
+                    total: 100,
+                    percent: 20,
+                },
+                Disk {
+                    mount: "/data".into(),
+                    used: 90,
+                    total: 100,
+                    percent: 90,
+                },
+            ],
+            ..Default::default()
+        };
+        let f = frame(&ws);
+        let bounds = status::bounds(f.cols, f.rows);
+        let height = status::summary_height(bounds, &ws.ui.status);
+        assert_eq!(height, if size.0 >= 120 { 8 } else { 12 });
+        let row_text = |y: u16| {
+            f.cells[usize::from(y * f.cols + bounds.x + 1)
+                ..usize::from(y * f.cols + bounds.x + bounds.cols - 1)]
+                .iter()
+                .map(|cell| cell.text.as_str())
+                .collect::<String>()
+        };
+        for y in bounds.y + 1..bounds.y + 1 + height {
+            assert!(!row_text(y).trim().is_empty(), "empty metric row {y}");
+        }
+        let tabs_y = bounds.y + 1 + height;
+        assert!(row_text(tabs_y).starts_with("[ Main ]"));
+        assert!(row_text(status::table_y(bounds, &ws.ui.status)).contains("CPU%"));
+        let meter_width = if status::summary_columns(bounds) == 2 {
+            (bounds.cols - 5) / 2
+        } else {
+            bounds.cols - 2
+        };
+        for (index, color, percent) in [
+            (0, 114, 0u16),
+            (1, 114, 51),
+            (2, 114, 100),
+            (4, 141, 50),
+            (5, 73, 25),
+        ] {
+            let start = usize::from((bounds.y + 1 + index) * f.cols + bounds.x + 1);
+            let cells = &f.cells[start..start + usize::from(meter_width)];
+            let filled = cells.iter().filter(|cell| cell.text == "█").count();
+            let empty = cells.iter().filter(|cell| cell.text == "░").count();
+            assert!(filled + empty >= 8);
+            assert_eq!(filled, ((filled + empty) * usize::from(percent) + 50) / 100);
+            assert!(
+                cells
+                    .iter()
+                    .filter(|cell| cell.text == "█")
+                    .all(|cell| cell.fg == Color::Indexed(color))
+            );
+        }
+        if size.0 >= 120 {
+            let right = bounds.x + 1 + meter_width + 3;
+            let start = usize::from((bounds.y + 1) * f.cols + right);
+            let text = f.cells[start..start + 5]
+                .iter()
+                .map(|cell| cell.text.as_str())
+                .collect::<String>();
+            assert_eq!(text, "Tasks");
+            assert!(height < 12);
+        }
+        let mut terminal = Terminal::new(f.cols, f.rows);
+        terminal.feed(&terminal_diff(None, &f));
+        assert_eq!(terminal.snapshot().cells, f.cells);
+        let mut router = Router::default();
+        assert_eq!(
+            actions(router.route(
+                click(Point {
+                    x: bounds.x + 2,
+                    y: status::table_y(bounds, &ws.ui.status)
+                }),
+                &f
+            ))
+            .len(),
+            1
+        );
+    }
+}

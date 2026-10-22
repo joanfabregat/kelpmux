@@ -468,11 +468,27 @@ pub fn bounds(cols: u16, rows: u16) -> super::protocol::Rect {
         rows: height,
     }
 }
-pub fn summary_height(bounds: super::protocol::Rect) -> u16 {
-    bounds.rows.saturating_sub(7).min(12)
+pub fn summary_columns(bounds: super::protocol::Rect) -> u16 {
+    if bounds.cols >= 86 { 2 } else { 1 }
 }
-pub fn table_y(bounds: super::protocol::Rect) -> u16 {
-    bounds.y + 3 + summary_height(bounds)
+pub fn summary_height(bounds: super::protocol::Rect, data: &Snapshot) -> u16 {
+    let desired = if !data.ready {
+        1
+    } else {
+        let meters = data.cpus.len() + 2;
+        let details = if summary_columns(bounds) == 2 { 6 } else { 4 } + data.disks.len();
+        if summary_columns(bounds) == 2 {
+            meters.max(details)
+        } else {
+            meters + details
+        }
+    };
+    (desired.min(usize::from(u16::MAX)) as u16)
+        .min(bounds.rows.saturating_sub(7))
+        .min((bounds.rows / 2).max(1))
+}
+pub fn table_y(bounds: super::protocol::Rect, data: &Snapshot) -> u16 {
+    bounds.y + 3 + summary_height(bounds, data)
 }
 pub fn columns(width: u16, view: View) -> Vec<(&'static str, u16, Option<Sort>)> {
     let mut cols = vec![("PID", 7, Some(Sort::Pid))];

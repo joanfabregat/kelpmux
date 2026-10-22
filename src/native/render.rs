@@ -2446,7 +2446,8 @@ fn draw_status(frame: &mut Frame, workspace: &Workspace, bounds: Rect) {
     let bg = Color::Indexed(236);
     let width = bounds.cols.saturating_sub(2);
     let x = bounds.x + 1;
-    let tabs_y = bounds.y + 1 + status::summary_height(bounds);
+    let summary_height = status::summary_height(bounds, data);
+    let tabs_y = bounds.y + 1 + summary_height;
     let main = ui.status_view == View::Main;
     write_text(
         frame,
@@ -2477,132 +2478,8 @@ fn draw_status(frame: &mut Frame, workspace: &Workspace, bounds: Rect) {
         bg,
         false,
     );
-    let mut lines = Vec::new();
-    if !data.ready {
-        lines.push(("Collecting system metrics…".into(), 250));
-    }
-    let per_line = (width / 15).max(1) as usize;
-    for (group, cpus) in data.cpus.chunks(per_line).enumerate() {
-        let line = cpus
-            .iter()
-            .enumerate()
-            .map(|(index, percent)| {
-                format!(
-                    "CPU{:<2} {} {:>3}%",
-                    group * per_line + index,
-                    super::vitals::bar_glyph(*percent),
-                    percent
-                )
-            })
-            .collect::<Vec<_>>()
-            .join("  ");
-        lines.push((line, 114));
-        if group == 2 {
-            if data.cpus.len() > (group + 1) * per_line {
-                lines.push((format!("{} CPU cores total", data.cpus.len()), 114));
-            }
-            break;
-        }
-    }
-    if data.ready {
-        lines.push((
-            format!(
-                "Memory {} / {}   Swap {} / {}",
-                status::bytes(data.memory_used),
-                status::bytes(data.memory_total),
-                status::bytes(data.swap_used),
-                status::bytes(data.swap_total)
-            ),
-            141,
-        ));
-        lines.push((
-            format!(
-                "Tasks {} ({} running)   Load {}",
-                data.tasks, data.running, data.load
-            ),
-            250,
-        ));
-        let clock = ui
-            .vitals
-            .iter()
-            .filter(|(s, _)| {
-                s.contains(':') || (s.len() == 10 && s.as_bytes().get(4) == Some(&b'-'))
-            })
-            .map(|(s, _)| s.as_str())
-            .collect::<Vec<_>>()
-            .join(" ");
-        lines.push((
-            format!(
-                "Uptime {}d {:02}:{:02}   {}",
-                data.uptime / 86400,
-                data.uptime / 3600 % 24,
-                data.uptime / 60 % 60,
-                clock
-            ),
-            39,
-        ));
-        lines.push((
-            format!(
-                "Network ↓ {}  ↑ {}",
-                status::rate(data.network.map(|v| v.0)),
-                status::rate(data.network.map(|v| v.1))
-            ),
-            73,
-        ));
-        lines.push((
-            format!(
-                "Disk I/O R {}  W {}",
-                status::rate(data.disk_io.map(|v| v.0)),
-                status::rate(data.disk_io.map(|v| v.1))
-            ),
-            222,
-        ));
-        for disk in &data.disks {
-            lines.push((
-                format!(
-                    "{} {:>3}%  {} / {}  {}",
-                    super::vitals::pie_glyph(disk.percent),
-                    disk.percent,
-                    status::bytes(disk.used),
-                    status::bytes(disk.total),
-                    safe_text(&disk.mount)
-                ),
-                if disk.percent >= 90 { 196 } else { 222 },
-            ));
-        }
-    }
-    if status::summary_height(bounds) == 1 {
-        let preferred = if ui.status_view == View::Io {
-            "Disk I/O"
-        } else if ui.status_sort == status::Sort::Memory {
-            "Memory"
-        } else {
-            "CPU"
-        };
-        if let Some(index) = lines
-            .iter()
-            .position(|(line, _)| line.starts_with(preferred))
-        {
-            lines.swap(0, index);
-        }
-    }
-    for (index, (line, color)) in lines
-        .iter()
-        .take(usize::from(status::summary_height(bounds)))
-        .enumerate()
-    {
-        write_text(
-            frame,
-            x,
-            bounds.y + 1 + index as u16,
-            width,
-            line,
-            Color::Indexed(*color),
-            bg,
-            false,
-        );
-    }
-    let table_y = status::table_y(bounds);
+    draw_status_summary(frame, workspace, bounds, summary_height);
+    let table_y = status::table_y(bounds, data);
     fill(
         frame,
         Rect {
@@ -2731,6 +2608,286 @@ fn draw_status(frame: &mut Frame, workspace: &Workspace, bounds: Rect) {
         false,
     );
 }
+fn draw_status_meter(
+    frame: &mut Frame,
+    rect: Rect,
+    label: &str,
+    percent: u8,
+    detail: &str,
+    color: u8,
+) {
+    let bg = Color::Indexed(236);
+    let value = if detail.is_empty() {
+        format!("{percent:>3}%")
+    } else {
+        format!("{percent:>3}% {detail}")
+    };
+    let value_width = value.chars().map(char_width).sum::<u16>();
+    let bar_width = rect.cols.saturating_sub(6 + value_width + 3);
+    write_text(
+        frame,
+        rect.x,
+        rect.y,
+        6,
+        label,
+        Color::Indexed(color),
+        bg,
+        false,
+    );
+    if bar_width > 0 {
+        let start = rect.x + 6;
+        write_text(frame, start, rect.y, 1, "[", Color::Indexed(245), bg, false);
+        let filled = (u32::from(bar_width) * u32::from(percent.min(100)) + 50) / 100;
+        for index in 0..bar_width {
+            let active = u32::from(index) < filled;
+            write_text(
+                frame,
+                start + 1 + index,
+                rect.y,
+                1,
+                if active { "█" } else { "░" },
+                Color::Indexed(if active { color } else { 240 }),
+                bg,
+                false,
+            );
+        }
+        write_text(
+            frame,
+            start + 1 + bar_width,
+            rect.y,
+            1,
+            "]",
+            Color::Indexed(245),
+            bg,
+            false,
+        );
+    }
+    write_text(
+        frame,
+        rect.x + rect.cols.saturating_sub(value_width),
+        rect.y,
+        rect.cols.min(value_width),
+        &value,
+        Color::Indexed(color),
+        bg,
+        false,
+    );
+}
+
+fn draw_status_summary(frame: &mut Frame, workspace: &Workspace, bounds: Rect, height: u16) {
+    use super::status::{self, View};
+    let data = &workspace.ui.status;
+    let x = bounds.x + 1;
+    let y = bounds.y + 1;
+    let width = bounds.cols.saturating_sub(2);
+    let two_columns = status::summary_columns(bounds) == 2;
+    let meter_width = if two_columns { (width - 3) / 2 } else { width };
+    if !data.ready {
+        write_text(
+            frame,
+            x,
+            y,
+            width,
+            "Collecting system metrics…",
+            Color::Indexed(250),
+            Color::Indexed(236),
+            false,
+        );
+        return;
+    }
+    let clock = workspace
+        .ui
+        .vitals
+        .iter()
+        .filter(|(s, _)| s.contains(':') || (s.len() == 10 && s.as_bytes().get(4) == Some(&b'-')))
+        .map(|(s, _)| s.as_str())
+        .collect::<Vec<_>>()
+        .join(" ");
+    let uptime = format!(
+        "Uptime {}d {:02}:{:02}",
+        data.uptime / 86400,
+        data.uptime / 3600 % 24,
+        data.uptime / 60 % 60
+    );
+    let mut details = if two_columns {
+        vec![
+            (
+                format!("Tasks {} ({} running)", data.tasks, data.running),
+                250,
+            ),
+            (format!("Load {}", data.load), 250),
+            (uptime, 39),
+            (clock, 39),
+        ]
+    } else {
+        vec![
+            (
+                format!(
+                    "Tasks {} ({} running) · Load {}",
+                    data.tasks, data.running, data.load
+                ),
+                250,
+            ),
+            (format!("{uptime} · {clock}"), 39),
+        ]
+    };
+    details.push((
+        format!(
+            "Network ↓ {}  ↑ {}",
+            status::rate(data.network.map(|v| v.0)),
+            status::rate(data.network.map(|v| v.1))
+        ),
+        73,
+    ));
+    details.push((
+        format!(
+            "Disk I/O R {}  W {}",
+            status::rate(data.disk_io.map(|v| v.0)),
+            status::rate(data.disk_io.map(|v| v.1))
+        ),
+        222,
+    ));
+    for disk in &data.disks {
+        details.push((
+            format!(
+                "{} {:>3}%  {} / {}  {}",
+                super::vitals::pie_glyph(disk.percent),
+                disk.percent,
+                status::bytes(disk.used),
+                status::bytes(disk.total),
+                safe_text(&disk.mount)
+            ),
+            if disk.percent >= 90 { 196 } else { 222 },
+        ));
+    }
+    let percent =
+        |used: u64, total: u64| (u128::from(used) * 100 / u128::from(total.max(1))).min(100) as u8;
+    let ram = percent(data.memory_used, data.memory_total);
+    let swap = percent(data.swap_used, data.swap_total);
+    let ram_detail = format!(
+        "{}/{}",
+        status::bytes(data.memory_used),
+        status::bytes(data.memory_total)
+    );
+    let swap_detail = format!(
+        "{}/{}",
+        status::bytes(data.swap_used),
+        status::bytes(data.swap_total)
+    );
+    if height == 1 {
+        let rect = Rect {
+            x,
+            y,
+            cols: width,
+            rows: 1,
+        };
+        if workspace.ui.status_view == View::Io {
+            let (text, color) = details
+                .iter()
+                .find(|(text, _)| text.starts_with("Disk I/O"))
+                .unwrap();
+            write_text(
+                frame,
+                x,
+                y,
+                width,
+                text,
+                Color::Indexed(*color),
+                Color::Indexed(236),
+                false,
+            );
+        } else if workspace.ui.status_sort == status::Sort::Memory {
+            draw_status_meter(frame, rect, "RAM", ram, &ram_detail, 141);
+        } else {
+            let cpu = data.cpus.iter().map(|p| u64::from(*p)).sum::<u64>()
+                / data.cpus.len().max(1) as u64;
+            draw_status_meter(frame, rect, "CPU", cpu as u8, "", 114);
+        }
+        return;
+    }
+    let cpu_slots = usize::from(
+        height
+            .saturating_sub(
+                2 + if two_columns {
+                    0
+                } else {
+                    details.len().min(usize::from(u16::MAX)) as u16
+                },
+            )
+            .max(1),
+    )
+    .min(data.cpus.len());
+    for index in 0..cpu_slots {
+        let grouped = index + 1 == cpu_slots && data.cpus.len() > cpu_slots;
+        let (label, cpu, detail) = if grouped {
+            let remaining = &data.cpus[index..];
+            (
+                "CPU…".into(),
+                (remaining.iter().map(|p| u64::from(*p)).sum::<u64>() / remaining.len() as u64)
+                    as u8,
+                format!("{} cores", remaining.len()),
+            )
+        } else {
+            (format!("CPU{index}"), data.cpus[index], String::new())
+        };
+        draw_status_meter(
+            frame,
+            Rect {
+                x,
+                y: y + index as u16,
+                cols: meter_width,
+                rows: 1,
+            },
+            &label,
+            cpu,
+            &detail,
+            114,
+        );
+    }
+    for (row, label, value, detail, color) in [
+        (cpu_slots, "RAM", ram, ram_detail.as_str(), 141),
+        (cpu_slots + 1, "Swap", swap, swap_detail.as_str(), 73),
+    ] {
+        if row < usize::from(height) {
+            draw_status_meter(
+                frame,
+                Rect {
+                    x,
+                    y: y + row as u16,
+                    cols: meter_width,
+                    rows: 1,
+                },
+                label,
+                value,
+                detail,
+                color,
+            );
+        }
+    }
+    let (detail_x, detail_y, detail_width, capacity) = if two_columns {
+        (x + meter_width + 3, y, width - meter_width - 3, height)
+    } else {
+        (
+            x,
+            y + cpu_slots as u16 + 2,
+            width,
+            height.saturating_sub(cpu_slots as u16 + 2),
+        )
+    };
+    for (index, (text, color)) in details.iter().take(usize::from(capacity)).enumerate() {
+        write_text(
+            frame,
+            detail_x,
+            detail_y + index as u16,
+            detail_width,
+            text,
+            Color::Indexed(*color),
+            Color::Indexed(236),
+            false,
+        );
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

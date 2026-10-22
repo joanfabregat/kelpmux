@@ -428,7 +428,8 @@ impl Workspace {
                 .len();
                 let bounds = super::status::bounds(self.cols, self.rows);
                 let capacity = usize::from(
-                    (bounds.y + bounds.rows - 1).saturating_sub(super::status::table_y(bounds) + 1),
+                    (bounds.y + bounds.rows - 1)
+                        .saturating_sub(super::status::table_y(bounds, &self.ui.status) + 1),
                 )
                 .max(1);
                 let maximum = count.saturating_sub(capacity);

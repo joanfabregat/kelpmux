@@ -1545,13 +1545,15 @@ impl Router {
                             && mouse.position.x >= bounds.x + bounds.cols - 3)
                     {
                         Some(Action::DialogClose)
-                    } else if mouse.position.y == bounds.y + 1 + status::summary_height(bounds) {
+                    } else if mouse.position.y
+                        == bounds.y + 1 + status::summary_height(bounds, &ui.status)
+                    {
                         Some(Action::StatusView(if mouse.position.x < bounds.x + 10 {
                             View::Main
                         } else {
                             View::Io
                         }))
-                    } else if mouse.position.y == status::table_y(bounds) {
+                    } else if mouse.position.y == status::table_y(bounds, &ui.status) {
                         let mut x = bounds.x + 1;
                         let mut selected = None;
                         for (_, width, sort) in status::columns(bounds.cols - 2, ui.status_view) {
