@@ -179,7 +179,7 @@ pub fn compose(
             0,
             y,
             8,
-            " Config ",
+            "⚙︎ Config",
             Color::Indexed(231),
             Color::Indexed(24),
             true,
@@ -200,11 +200,11 @@ pub fn compose(
             y,
             6,
             if workspace.active == 0 {
-                " New "
+                "+ New "
             } else if workspace.reading == ReadingMode::Grid {
-                " Tabs "
+                "▦Tabs "
             } else {
-                " Grid "
+                "▦Grid "
             },
             Color::Indexed(231),
             Color::Indexed(67),
@@ -216,7 +216,7 @@ pub fn compose(
             help.y,
             help.cols,
             if workspace.ui.notifications.iter().any(|item| !item.read) {
-                "🚨 "
+                " ⚠︎ "
             } else {
                 " ? "
             },
@@ -324,7 +324,7 @@ fn draw_help(frame: &mut Frame, workspace: &Workspace) {
     let rect = super::input::help_bounds(frame.cols, frame.rows);
     fill(frame, rect, Color::Indexed(236));
     let title = format!(
-        " Help · Ctrl-{}, then key",
+        " ? Help · Ctrl-{}, then key",
         char::from(b'A' + workspace.ui.config.prefix - 1)
     );
     let header_bg = Color::Indexed(if workspace.ui.notifications.iter().any(|n| !n.read) {
@@ -567,10 +567,10 @@ fn draw_dialog(
     );
     fill(frame, Rect { rows: 1, ..bounds }, header_bg);
     let title = match dialog.kind {
-        DialogKind::Parked => " Parked tabs · select to restore",
-        DialogKind::Grid => " Grid · arrows, Enter or click",
+        DialogKind::Parked => " ⊟ Parked tabs · select to restore",
+        DialogKind::Grid => " ▦ Grid · arrows, Enter or click",
         DialogKind::Overview => " Workspace overview",
-        DialogKind::Notifications => " Notifications",
+        DialogKind::Notifications => " ⚠︎ Notifications",
         DialogKind::Recovery => {
             if workspace.ui.recovery_loading {
                 " Recovery · loading…"
@@ -580,7 +580,7 @@ fn draw_dialog(
         }
         DialogKind::Search => " Search history",
         DialogKind::Move => " Move active pane · choose destination",
-        DialogKind::Config => " Settings",
+        DialogKind::Config => " ⚙︎ Settings",
         DialogKind::CloseConfirm => " Close this tab?",
         DialogKind::ParkConfirm => " ⊟ Park this tab?",
         DialogKind::RestoreConfirm => " ↥ Restore this tab?",
@@ -1382,8 +1382,21 @@ fn draw_tabs(frame: &mut Frame, workspace: &Workspace, spinner: usize) {
                     .filter(|p| Some(p.id) != workspace.ui.scratch)
                     .count()
                     < 9;
-                let bg = theme_surface(workspace, if enabled { 24 } else { 14 });
+                let sidebar = position == TabPosition::Left;
+                let bg = theme_surface(workspace, if enabled && !sidebar { 24 } else { 14 });
                 fill(frame, rect, bg);
+                if sidebar {
+                    write_text(
+                        frame,
+                        rect.x + 1,
+                        rect.y + rect.rows / 2,
+                        rect.cols - 2,
+                        &"─".repeat(usize::from(rect.cols - 2)),
+                        tab_accent(workspace, false),
+                        bg,
+                        false,
+                    );
+                }
                 let inset = if position == TabPosition::Left {
                     rect.cols
                         .saturating_sub(label.chars().map(char_width).sum())
@@ -1397,13 +1410,19 @@ fn draw_tabs(frame: &mut Frame, workspace: &Workspace, spinner: usize) {
                     rect.y + rect.rows / 2,
                     rect.cols - inset,
                     label,
-                    if enabled {
+                    if enabled && sidebar {
+                        Color::Indexed(if tab_text(workspace, false) == Color::Indexed(232) {
+                            24
+                        } else {
+                            75
+                        })
+                    } else if enabled {
                         tab_text(workspace, false)
                     } else {
                         tab_accent(workspace, false)
                     },
                     bg,
-                    true,
+                    !sidebar,
                 );
             }
             TabTarget::Previous | TabTarget::Next => {
@@ -1628,7 +1647,7 @@ fn draw_tab(
     } else {
         (title_x, title_width)
     };
-    let bell_width = if unread { 3.min(title_width) } else { 0 };
+    let bell_width = if unread { 2.min(title_width) } else { 0 };
     if grid && title_width > 0 {
         write_text(
             frame,
@@ -1647,7 +1666,7 @@ fn draw_tab(
             title_x,
             title_y,
             bell_width,
-            "🚨 ",
+            &format!("{} ", super::ui::ALERT_ICON),
             Color::Indexed(226),
             bg,
             true,
@@ -1845,30 +1864,34 @@ fn marquee_title(title: &str, width: u16, ticks: u16) -> String {
         })
         .collect()
 }
-fn sidebar_metrics(
-    segments: &[(String, u8)],
-    value_width: u16,
-) -> Vec<(&'static str, String, bool)> {
+struct SidebarMetric {
+    label: &'static str,
+    values: Vec<(String, u8)>,
+}
+fn sidebar_metrics(segments: &[(String, u8)], value_width: u16) -> Vec<SidebarMetric> {
+    let metric = |label, value, color| SidebarMetric {
+        label,
+        values: vec![(value, color)],
+    };
     let mut metrics = Vec::new();
     let mut disks = Vec::new();
-    let mut disk_alert = false;
     let mut date = None;
     let mut clock = None;
     for (text, color) in segments {
         if let Some(value) = text.strip_prefix("cpu ") {
-            metrics.push(("CPU", value.to_string(), false));
+            metrics.push(metric("CPU", value.to_string(), *color));
         } else if let Some(value) = text.strip_prefix("mem ") {
-            metrics.push(("Memory", value.to_string(), false));
+            metrics.push(metric("Memory", value.to_string(), *color));
         } else if let Some(value) = text.strip_prefix("swap ") {
-            metrics.push(("Swap", value.to_string(), false));
+            metrics.push(metric("Swap", value.to_string(), *color));
         } else if text == "disk" {
             continue;
         } else if text.starts_with(['●', '◕', '◑', '◔', '○']) || text.starts_with("disk ")
         {
-            if let Some(value) = text.split_whitespace().last() {
-                disks.push(value);
-                disk_alert |= *color == 196;
-            }
+            disks.push((
+                text.strip_prefix("disk ").unwrap_or(text).to_string(),
+                *color,
+            ));
         } else if text.contains(':') {
             clock = Some(text.strip_prefix("clock ").unwrap_or(text));
         } else if text.len() == 10 && text.as_bytes()[4] == b'-' && text.as_bytes()[7] == b'-' {
@@ -1876,14 +1899,17 @@ fn sidebar_metrics(
         }
     }
     if !disks.is_empty() {
-        metrics.push(("Disks", disks.join(" "), disk_alert));
+        metrics.push(SidebarMetric {
+            label: "Disks",
+            values: disks,
+        });
     }
     if let Some(clock) = clock {
         let value = date
             .map(|date| format!("{date} {clock}"))
             .filter(|value| value.chars().map(char_width).sum::<u16>() <= value_width)
             .unwrap_or_else(|| clock.to_string());
-        metrics.push(("Clock", value, false));
+        metrics.push(metric("Clock", value, 250));
     }
     metrics
 }
@@ -1977,13 +2003,58 @@ fn draw_sidebar_status(frame: &mut Frame, workspace: &Workspace, notice: Option<
         let capacity = usize::from(metric_end - metric_top);
         let mut visible: Vec<_> = metrics.iter().take(capacity).collect();
         if metrics.len() > capacity {
-            if let Some(clock) = metrics.last().filter(|(label, _, _)| *label == "Clock") {
+            if let Some(clock) = metrics.last().filter(|metric| metric.label == "Clock") {
                 visible.truncate(capacity.saturating_sub(1));
                 visible.push(clock);
             }
         }
-        for (index, (label, value, alert)) in visible.into_iter().enumerate() {
+        for (index, metric) in visible.into_iter().enumerate() {
             let y = metric_top + index as u16;
+            write_text(frame, 1, y, 6, metric.label, muted, bg, false);
+            if metric.label == "Disks" {
+                let mut x = 8;
+                for (value, color) in &metric.values {
+                    let size = value.chars().map(char_width).sum::<u16>();
+                    if x + size > width - 1 {
+                        write_text(
+                            frame,
+                            x,
+                            y,
+                            width.saturating_sub(x + 1),
+                            "…",
+                            muted,
+                            bg,
+                            false,
+                        );
+                        break;
+                    }
+                    write_text(frame, x, y, size, value, Color::Indexed(*color), bg, false);
+                    x += size + 1;
+                }
+                continue;
+            }
+            let (value, color) = &metric.values[0];
+            if matches!(metric.label, "CPU" | "Memory" | "Swap") {
+                if let Some((bar, percent)) = value.split_once(' ') {
+                    write_text(frame, 8, y, 1, bar, Color::Indexed(*color), bg, false);
+                    let size = percent
+                        .chars()
+                        .map(char_width)
+                        .sum::<u16>()
+                        .min(value_width - 2);
+                    write_text(
+                        frame,
+                        width - 1 - size,
+                        y,
+                        size,
+                        percent,
+                        Color::Indexed(*color),
+                        bg,
+                        false,
+                    );
+                    continue;
+                }
+            }
             let value = safe_text(value);
             let mut display = String::new();
             let mut size = 0;
@@ -2004,18 +2075,13 @@ fn draw_sidebar_status(frame: &mut Frame, workspace: &Workspace, notice: Option<
                 display.push(c);
                 size += next;
             }
-            write_text(frame, 1, y, 6, label, muted, bg, false);
             write_text(
                 frame,
                 width - 1 - size,
                 y,
                 size,
                 &display,
-                if *alert {
-                    Color::Indexed(196)
-                } else {
-                    value_color
-                },
+                Color::Indexed(*color),
                 bg,
                 false,
             );
@@ -2024,47 +2090,60 @@ fn draw_sidebar_status(frame: &mut Frame, workspace: &Workspace, notice: Option<
     let [config, mode, parked, help] = frame.controls();
     let unread = workspace.ui.notifications.iter().any(|item| !item.read);
     let parked_count = workspace.panes.iter().filter(|pane| pane.parked).count();
-    for (rect, label, alert) in [
-        (config, " Config ".into(), false),
+    for (rect, label, color) in [
+        (config, " ⚙︎ Config ".into(), 24),
         (
             mode,
             if workspace.active == 0 {
-                if mode.cols >= 6 { " New " } else { "New" }
-            } else if mode.cols >= 6 {
-                " Grid "
+                if mode.cols >= 8 { " + New " } else { " + " }
+            } else if mode.cols >= 8 {
+                " ▦ Grid "
             } else {
-                "Grid"
+                " ▦ "
             }
             .into(),
-            false,
+            67,
         ),
-        (parked, super::workspace::parked_label(parked_count), false),
+        (
+            parked,
+            super::workspace::parked_label(parked_count),
+            super::ui::PARKED_BG,
+        ),
         (
             help,
             if unread {
-                "🚨 "
-            } else if help.cols >= 6 {
-                " Help "
+                if help.cols >= 8 {
+                    "⚠︎ Alerts"
+                } else {
+                    " ⚠︎ "
+                }
+            } else if help.cols >= 8 {
+                " ? Help "
             } else {
-                "Help"
+                " ? "
             }
             .into(),
-            unread,
+            if unread { 160 } else { 94 },
         ),
     ] {
-        fill(frame, rect, bg);
+        let label_width = label.chars().map(char_width).sum::<u16>().min(rect.cols);
+        let button_bg = Color::Indexed(color);
+        fill(
+            frame,
+            Rect {
+                cols: label_width,
+                ..rect
+            },
+            button_bg,
+        );
         write_text(
             frame,
             rect.x,
             rect.y,
             rect.cols,
             &label,
-            if alert {
-                Color::Indexed(196)
-            } else {
-                foreground
-            },
-            bg,
+            Color::Indexed(231),
+            button_bg,
             false,
         );
     }

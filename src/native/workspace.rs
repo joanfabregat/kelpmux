@@ -1017,7 +1017,10 @@ pub fn move_cards(bounds: Rect, columns: u8, rows: u8) -> Vec<Rect> {
 /// Grow with the screen while staying within the original width and +20%.
 pub fn sidebar_width(cols: u16) -> u16 {
     let minimum = (cols / 5).clamp(18, 28);
-    (cols / 4).clamp(minimum, minimum * 6 / 5)
+    (cols / 4)
+        .clamp(minimum, minimum * 6 / 5)
+        .saturating_sub(2)
+        .max(minimum)
 }
 /// Terminal content occupies every column except visible UI dividers.
 pub fn tab_body(
@@ -1230,12 +1233,17 @@ pub fn sidebar_controls(cols: u16, rows: u16, count: usize) -> [Rect; 4] {
         rows: 1,
     };
     let parked = parked_button(rows, count);
-    let right = width.saturating_sub(6).max(parked.cols);
+    let right = width
+        .saturating_sub(8)
+        .max(11)
+        .max(parked.cols + 1)
+        .min(width - 3);
+    let action_width = if width - right >= 8 { 8 } else { 3 };
     [
-        rect(0, rows - 2, 8),
-        rect(right, rows - 2, width - right),
+        rect(0, rows - 2, 10),
+        rect(right, rows - 2, action_width),
         rect(0, rows - 1, parked.cols),
-        rect(right, rows - 1, width - right),
+        rect(right, rows - 1, action_width),
     ]
 }
 pub fn color_cards(bounds: Rect) -> Vec<Rect> {

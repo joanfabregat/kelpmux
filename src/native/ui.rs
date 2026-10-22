@@ -6,6 +6,7 @@ pub const FOOTER_BG: u8 = 239;
 pub const TAB_BG: u8 = 236;
 pub const PARKED_BG: u8 = 60;
 pub const RESTORE_BG: u8 = 29;
+pub const ALERT_ICON: &str = "⚠︎";
 pub const HELP_ROWS: u16 = 29;
 pub const PALETTE: [(u8, u8); 9] = [
     (39, 24),

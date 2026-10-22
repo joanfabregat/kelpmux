@@ -159,6 +159,28 @@ fn sidebar_new_follows_tabs_and_parked_stays_at_bottom_with_contextual_headers()
         Color::Indexed(94)
     );
     ws.help = false;
+    for (action, kind, icon) in [
+        (Action::Config, DialogKind::Config, "⚙︎"),
+        (Action::GridPicker, DialogKind::Grid, "▦"),
+        (Action::Parked, DialogKind::Parked, "⊟"),
+        (
+            Action::Notifications,
+            DialogKind::Notifications,
+            kelpmux::native::ui::ALERT_ICON,
+        ),
+    ] {
+        ws.apply(&action).unwrap();
+        let popup = frame(&ws);
+        let bounds = dialog_bounds_for(f.cols, f.rows, kind);
+        assert_eq!(
+            popup.cells[usize::from(bounds.y * f.cols + bounds.x + 1)].text,
+            icon
+        );
+        let mut display = Terminal::new(popup.cols, popup.rows);
+        display.feed(&terminal_diff(None, &popup));
+        assert_eq!(display.snapshot().cells, popup.cells);
+        ws.apply(&Action::DialogClose).unwrap();
+    }
     for action in [Action::ClosePaneRequest(2), Action::ParkRequest(2)] {
         ws.apply(&action).unwrap();
         let kind = ws.ui.dialog.unwrap().kind;
@@ -755,8 +777,8 @@ fn footer_buttons_and_compact_vitals_have_disjoint_hit_targets() {
         .collect::<String>();
     assert!(footer.contains("14:49"));
     assert!(footer.contains("Parked"));
-    assert!(footer.starts_with(" Config "));
-    assert!(footer.starts_with(" Config  Tabs "));
+    assert!(footer.starts_with("⚙︎ Config"));
+    assert!(footer.starts_with("⚙︎ Config▦Tabs "));
     assert!(footer.find("Parked").unwrap() < footer.find('?').unwrap());
     assert!(!footer.contains('⛶') && !footer.contains('▣'));
     let start = usize::from((f.rows - 1) * f.cols);
@@ -1250,8 +1272,9 @@ fn working_tabs_animate_only_one_character_and_keep_bells_beside_titles() {
                 }
             }
             let bell = usize::from((tab.y + 1) * ws.cols + tab.x + 2);
-            assert_eq!(b.cells[bell].text, "🚨");
-            assert_eq!(b.cells[bell].width, 2);
+            assert_eq!(b.cells[bell].text, kelpmux::native::ui::ALERT_ICON);
+            assert_eq!(b.cells[bell].width, 1);
+            assert_eq!(b.cells[bell + 1].text, " ");
             let mut display = Terminal::new(ws.cols, ws.rows);
             display.feed(&terminal_diff(None, &a));
             assert_eq!(display.snapshot().cells, a.cells);
@@ -1261,7 +1284,12 @@ fn working_tabs_animate_only_one_character_and_keep_bells_beside_titles() {
             ws.panes[0].status = Status::Unknown;
             let stopped = compose(&ws, &screens, true, None, 16);
             assert_eq!(stopped.cells, compose(&ws, &screens, true, None, 32).cells);
-            assert!(!stopped.cells.iter().any(|cell| cell.text == "🚨"));
+            assert!(
+                !stopped
+                    .cells
+                    .iter()
+                    .any(|cell| cell.text == kelpmux::native::ui::ALERT_ICON)
+            );
         }
     }
 }
@@ -1692,9 +1720,9 @@ fn automatic_grid_parking_controls_alert_colors_and_three_row_tabs() {
             vec![Action::ParkRequest(1)]
         );
         let help = f.controls()[3];
-        let at = usize::from(help.y * f.cols + help.x + u16::from(help.cols >= 6));
-        let neutral = f.cells[at].bg;
-        assert_eq!(f.cells[at].text, "H");
+        let at = usize::from(help.y * f.cols + help.x + 1);
+        assert_eq!(f.cells[at].text, "?");
+        assert_eq!(f.cells[at].bg, Color::Indexed(94));
         ws.ui.notifications.push(Notification {
             id: 1,
             pane: 1,
@@ -1704,11 +1732,15 @@ fn automatic_grid_parking_controls_alert_colors_and_three_row_tabs() {
             read: false,
             workspace: "test".into(),
         });
-        assert_eq!(frame(&ws).cells[at].fg, Color::Indexed(196));
-        assert_eq!(frame(&ws).cells[at].bg, neutral);
+        let alert = usize::from(help.y * f.cols + help.x + u16::from(help.cols < 8));
+        assert_eq!(
+            frame(&ws).cells[alert].text,
+            kelpmux::native::ui::ALERT_ICON
+        );
+        assert_eq!(frame(&ws).cells[alert].bg, Color::Indexed(160));
         ws.apply(&Action::Acknowledge(1)).unwrap();
-        assert_eq!(frame(&ws).cells[at].text, "H");
-        assert_eq!(frame(&ws).cells[at].bg, neutral);
+        assert_eq!(frame(&ws).cells[at].text, "?");
+        assert_eq!(frame(&ws).cells[at].bg, Color::Indexed(94));
     }
 }
 
@@ -2054,11 +2086,16 @@ fn tab_surfaces_follow_dark_and_light_backgrounds_without_repainting_terminal_de
                 .find(|(target, _)| *target == TabTarget::New)
                 .unwrap()
                 .1;
+            let offset = if position == TabPosition::Left {
+                14
+            } else {
+                24
+            };
             let [r, g, b] = background.map(|value| {
                 if light {
-                    value.saturating_sub(24)
+                    value.saturating_sub(offset)
                 } else {
-                    value.saturating_add(24)
+                    value.saturating_add(offset)
                 }
             });
             assert_eq!(
@@ -2208,12 +2245,12 @@ fn sidebar_status_controls_and_metrics_leave_the_last_terminal_row_usable() {
                     .collect();
                 assert!(!utility.contains('^'));
                 if f.rows >= 24 {
-                    for (offset, label, value) in [
-                        (1, "CPU", "▂ 12%"),
-                        (2, "Memory", "▄ 45%"),
-                        (3, "Swap", "▁ 0%"),
-                        (4, "Disks", "20% 95%"),
-                        (5, "Clock", "12:34"),
+                    for (offset, label, value, color) in [
+                        (1, "CPU", "12%", 114),
+                        (2, "Memory", "45%", 141),
+                        (3, "Swap", "0%", 73),
+                        (4, "Disks", "◔ 20% ● 95%", 196),
+                        (5, "Clock", "12:34", 250),
                     ] {
                         let start = usize::from((status_top + offset) * f.cols);
                         let row: String = f.cells[start..start + usize::from(width)]
@@ -2222,13 +2259,31 @@ fn sidebar_status_controls_and_metrics_leave_the_last_terminal_row_usable() {
                             .collect();
                         assert!(row.trim_start().starts_with(label), "{row:?}");
                         assert!(row.trim_end().ends_with(value), "{row:?}");
+                        assert_eq!(
+                            f.cells[start
+                                + usize::from(if label == "Disks" { 18 } else { width - 2 })]
+                            .fg,
+                            Color::Indexed(color)
+                        );
                     }
-                    let disk_end = usize::from((status_top + 4) * f.cols + width - 2);
-                    assert_eq!(f.cells[disk_end].fg, Color::Indexed(196));
-                    for control in f.controls() {
+                    for (offset, bar) in [(1, "▂"), (2, "▄"), (3, "▁"), (4, "◔")] {
+                        assert_eq!(
+                            f.cells[usize::from((status_top + offset) * f.cols + 8)].text,
+                            bar
+                        );
+                    }
+                    assert_eq!(
+                        f.cells[usize::from((status_top + 4) * f.cols + 8)].fg,
+                        Color::Indexed(222)
+                    );
+                    assert_eq!(
+                        f.cells[usize::from((status_top + 4) * f.cols + 14)].fg,
+                        Color::Indexed(196)
+                    );
+                    for (control, color) in f.controls().into_iter().zip([24, 67, 60, 94]) {
                         assert_eq!(
                             f.cells[usize::from(control.y * f.cols + control.x)].bg,
-                            f.cells[usize::from(status_top * f.cols)].bg
+                            Color::Indexed(color)
                         );
                     }
                     let notice = compose(
@@ -2284,6 +2339,17 @@ fn sidebar_status_controls_and_metrics_leave_the_last_terminal_row_usable() {
                         .text,
                     "+"
                 );
+                assert_eq!(
+                    f.cells[usize::from((new.y + 1) * f.cols + new.x + 1)].text,
+                    "─"
+                );
+                for y in new.y..new.y + new.rows {
+                    for x in new.x..new.x + new.cols {
+                        let cell = &f.cells[usize::from(y * f.cols + x)];
+                        assert_eq!(cell.bg, f.cells[usize::from(status_top * f.cols)].bg);
+                        assert!(!cell.bold);
+                    }
+                }
                 let tab = targets
                     .iter()
                     .find(|(target, _)| *target == TabTarget::Pane(8))
@@ -2328,7 +2394,7 @@ fn footer_parked_help_order_has_no_new_tab_button() {
                 .iter()
                 .map(|cell| cell.text.as_str())
                 .collect();
-            assert!(!footer.contains('+'));
+            assert_eq!(footer.contains('+'), ws.active == 0 && !f.sidebar_status());
             assert!(footer.contains("Parked") && !footer.contains("(0)"));
             let label: String = f.cells[usize::from(parked.y * f.cols + parked.x)
                 ..usize::from(parked.y * f.cols + parked.x + parked.cols)]
@@ -2353,11 +2419,7 @@ fn footer_parked_help_order_has_no_new_tab_button() {
             for x in parked.x..parked.x + parked.cols {
                 assert_eq!(
                     f.cells[usize::from(parked.y * f.cols + x)].bg,
-                    Color::Indexed(if f.sidebar_status() {
-                        kelpmux::native::ui::TAB_BG
-                    } else {
-                        kelpmux::native::ui::PARKED_BG
-                    })
+                    Color::Indexed(kelpmux::native::ui::PARKED_BG)
                 );
                 assert_eq!(
                     actions(Router::default().route(click(Point { x, y: parked.y }), &f)),
