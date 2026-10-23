@@ -34,7 +34,7 @@ pub struct ServerConfig {
     pub rows: u16,
     pub ui: super::ui::UiConfig,
     pub initial_grid: (u8, u8),
-    pub initial_tabs: Option<u8>,
+    pub initial_tabs: Option<usize>,
 }
 const MAX_CLIENTS: usize = 16;
 const MAX_QUEUED: usize = MAX_MESSAGE + 4;
@@ -549,6 +549,7 @@ struct Server {
     started: Instant,
     pty_bytes: u64,
     vitals: super::vitals::Sampler,
+    status: super::status::Monitor,
     config: ServerConfig,
     workspace: Workspace,
     panes: BTreeMap<PaneId, NativePane>,
@@ -924,7 +925,7 @@ impl Server {
                 .iter()
                 .filter(|p| Some(p.id) != self.workspace.ui.scratch)
                 .count()
-                .max(1) as u8,
+                .max(1),
         );
         journal::atomic(&path, &settings)
     }
@@ -954,19 +955,19 @@ impl Server {
     }
     fn feature_action(&mut self, client: u64, action: &Action) -> Result<bool> {
         match action {
+            Action::StatusOpen(_)
+            | Action::StatusView(_)
+            | Action::StatusSort(_)
+            | Action::StatusQuery(_)
+            | Action::StatusScroll(_) => {
+                self.workspace.apply(action)?;
+                self.dirty = true;
+                return Ok(true);
+            }
             Action::Grid { .. } | Action::GridPicker | Action::ResizeGrid { .. } => {
                 return Err("grid layout is automatic; use New Tab, Park or Close".into());
             }
             Action::NewTab => {
-                let count = self
-                    .workspace
-                    .panes
-                    .iter()
-                    .filter(|pane| Some(pane.id) != self.workspace.ui.scratch)
-                    .count();
-                if count >= 9 {
-                    return Err("nine tabs are already open".into());
-                }
                 // Spawn first; failure must leave every existing pane and view intact.
                 self.spawn_pane(None)?;
                 let id = self.workspace.panes.last().unwrap().id;
@@ -1284,7 +1285,7 @@ impl Server {
         let title = specification
             .as_ref()
             .map(|specification| specification.name.clone())
-            .unwrap_or_else(|| "Shell".into());
+            .unwrap_or_else(|| "shell".into());
         if specification.is_some() {
             self.aliases.insert(id, title.clone());
         }
@@ -2058,6 +2059,18 @@ impl Server {
         }
         self.workspace.ui.notifications = self.activity.all().to_vec();
         let vitals = self.vitals.sample();
+        let status_open = self
+            .workspace
+            .ui
+            .dialog
+            .is_some_and(|dialog| dialog.kind == super::ui::DialogKind::Status)
+            && self.clients.values().any(|client| client.attached);
+        self.workspace.ui.status = if status_open {
+            self.status.poll(true).clone()
+        } else {
+            self.status.poll(false);
+            super::status::Snapshot::default()
+        };
         self.stream_frames(vitals.clone());
         self.workspace.ui.vitals = if self.workspace.cols <= 60 {
             let mut compact = Vec::new();
@@ -2214,6 +2227,7 @@ pub fn serve(config: ServerConfig) -> Result<()> {
         started: Instant::now(),
         pty_bytes: 0,
         vitals: super::vitals::Sampler::default(),
+        status: super::status::Monitor::default(),
         config,
         workspace,
         panes: BTreeMap::new(),
@@ -2225,7 +2239,7 @@ pub fn serve(config: ServerConfig) -> Result<()> {
         notice: None,
         shutdown: false,
     };
-    let count = server.config.initial_tabs.map(usize::from).unwrap_or(
+    let count = server.config.initial_tabs.unwrap_or(
         usize::from(server.config.initial_grid.0) * usize::from(server.config.initial_grid.1),
     );
     for _ in 0..count {

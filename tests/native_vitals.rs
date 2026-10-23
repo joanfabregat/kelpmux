@@ -156,7 +156,9 @@ fn unavailable_metrics_disappear_instead_of_reporting_invented_zero() {
     assert_eq!(snapshot.swap, None);
     assert!(snapshot.disks.is_empty());
     assert_eq!(snapshot.date.as_ref().unwrap().len(), 10);
-    assert_eq!(snapshot.time.as_ref().unwrap().len(), 5);
+    let time = snapshot.time.as_ref().unwrap();
+    assert_eq!(time.as_bytes()[2], b':');
+    assert!(!time.split_once(' ').unwrap().1.is_empty());
     assert!(render_segments(&Vitals::default()).is_empty());
 }
 #[test]
@@ -210,7 +212,8 @@ fn mount_selection_unescapes_paths_and_skips_duplicate_or_virtual_devices() {
             month: 1,
             day: 2,
             hour: 3,
-            minute: 4
+            minute: 4,
+            zone: "UTC".into(),
         }
         .time(),
         "03:04"
@@ -221,7 +224,8 @@ fn mount_selection_unescapes_paths_and_skips_duplicate_or_virtual_devices() {
             month: 1,
             day: 2,
             hour: 3,
-            minute: 4
+            minute: 4,
+            zone: "UTC".into(),
         }
         .date(),
         "2026-01-02"

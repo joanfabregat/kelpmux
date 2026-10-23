@@ -17,7 +17,7 @@ pub fn shell_tab_name(terminal: Option<&str>, alias: Option<&str>, idle: bool) -
                 !idle && !title.trim().is_empty() && !title.eq_ignore_ascii_case("shell")
             })
         })
-        .unwrap_or("Shell")
+        .unwrap_or("shell")
         .chars()
         .take(1024)
         .collect()

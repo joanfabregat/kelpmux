@@ -3,7 +3,7 @@ use crate::{Result, model::Status};
 use serde::{Deserialize, Serialize};
 use std::io::{Read, Write};
 
-pub const VERSION: u16 = 22;
+pub const VERSION: u16 = 29;
 pub const MAX_MESSAGE: usize = 16 * 1024 * 1024;
 pub const MAX_INPUT: usize = 64 * 1024;
 pub type PaneId = u64;
@@ -160,6 +160,40 @@ pub struct Frame {
     #[serde(default)]
     pub ui: super::ui::UiState,
 }
+impl Frame {
+    pub fn sidebar_status(&self) -> bool {
+        (self.reading != ReadingMode::Grid || self.active == 0)
+            && self.ui.config.tab_position.resolve(self.cols, self.rows)
+                == super::ui::TabPosition::Left
+    }
+    pub fn controls(&self) -> [Rect; 4] {
+        let count = self.panes.iter().filter(|view| view.pane.parked).count();
+        if self.sidebar_status() {
+            super::workspace::sidebar_controls(self.cols, self.rows, count)
+        } else {
+            [
+                Rect {
+                    x: 0,
+                    y: self.rows - 1,
+                    cols: super::ui::FOOTER_CONFIG_COLS,
+                    rows: 1,
+                },
+                Rect {
+                    x: super::ui::FOOTER_CONFIG_COLS,
+                    y: self.rows - 1,
+                    cols: super::ui::FOOTER_MODE_COLS,
+                    rows: 1,
+                },
+                super::workspace::parked_button(self.rows, count),
+                super::workspace::help_button(self.rows, count),
+            ]
+        }
+    }
+    pub fn footer_cols(&self) -> u16 {
+        let help = self.controls()[3];
+        help.x + help.cols
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum MouseKind {
@@ -187,6 +221,11 @@ pub enum InputEvent {
 }
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Action {
+    StatusOpen(super::status::Sort),
+    StatusView(super::status::View),
+    StatusSort(super::status::Sort),
+    StatusQuery(String),
+    StatusScroll(i16),
     /// Explicitly take this pane back from an independent native client.
     ClaimPane(PaneId),
     HelpScroll(i16),
