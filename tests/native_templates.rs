@@ -44,7 +44,7 @@ fn template_loading_validates_capacity_names_paths_and_schema() {
     for variant in 0..6 {
         let mut changed = template.clone();
         match variant {
-            0 => changed.grid = (4, 4),
+            0 => changed.grid = (0, 4),
             1 => {
                 changed.grid = (1, 1);
                 changed.panes.push(changed.panes[0].clone());

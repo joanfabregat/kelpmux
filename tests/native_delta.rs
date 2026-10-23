@@ -15,6 +15,25 @@ fn frame(cols: u16, rows: u16) -> Frame {
     }
 }
 #[test]
+fn metadata_and_patches_accept_large_workspaces() {
+    let mut ws = kelpmux::native::workspace::Workspace::new(80, 24).unwrap();
+    ws.panes = (1..=1000)
+        .map(|id| PaneInfo {
+            id,
+            ..Default::default()
+        })
+        .collect();
+    ws.active = 1000;
+    ws.ui.config.pane_colors = (1..=1000).map(|id| (id, 0)).collect();
+    ws.ui.config.validate().unwrap();
+    let old = kelpmux::native::render::compose(&ws, &Default::default(), true, None, 0);
+    let mut new = old.clone();
+    new.cells[100].text = "x".into();
+    let patch = delta::diff(&old, &new, 1).unwrap();
+    assert_eq!(delta::apply(&old, 1, &patch).unwrap(), new);
+}
+
+#[test]
 fn single_cell_large_screen_patch_replays_with_a_strong_wire_size_reduction() {
     let old = frame(400, 160);
     let mut new = old.clone();

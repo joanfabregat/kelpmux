@@ -8,7 +8,6 @@ use std::{
     path::{Path, PathBuf},
 };
 const MAX_TEMPLATE: u64 = 64 * 1024;
-const PRESETS: [(u8, u8); 6] = [(1, 1), (2, 1), (2, 2), (3, 2), (2, 3), (3, 3)];
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Template {
@@ -42,7 +41,8 @@ impl Template {
     /// Validate saved settings without requiring a live terminal's directory to
     /// still exist. Filesystem checks belong to startup, not attach or stop.
     pub fn validate_schema(&self) -> Result<()> {
-        if !PRESETS.contains(&self.grid)
+        if self.grid.0 == 0
+            || self.grid.1 == 0
             || self.panes.len() > usize::from(self.grid.0) * usize::from(self.grid.1)
         {
             return Err(

@@ -129,18 +129,15 @@ impl Workspace {
                 matches!(self.reading, ReadingMode::Fullscreen(_)),
                 self.ui.reading_size,
             );
+            let mut number = 0;
             return self
                 .panes
                 .iter()
-                .enumerate()
-                .map(|(index, pane)| {
-                    let number = self
-                        .panes
-                        .iter()
-                        .take(index)
-                        .filter(|p| !p.parked && Some(p.id) != self.ui.scratch)
-                        .count();
+                .map(|pane| {
                     let mut view = Self::view(pane, number, Rect::default(), false);
+                    if !pane.parked && Some(pane.id) != self.ui.scratch {
+                        number += 1;
+                    }
                     if pane.id == self.active {
                         view.rect = body;
                         view.body = body;
@@ -159,11 +156,7 @@ impl Workspace {
         let usable_rows = self.rows.saturating_sub(1);
         let mut views = Vec::new();
         let y_boundaries = weighted_boundaries(usable_rows, grid_rows, &[]);
-        let count = self
-            .panes
-            .iter()
-            .filter(|p| !p.parked && Some(p.id) != self.ui.scratch)
-            .count();
+        let (page_start, count) = self.grid_page();
         let mut visible = 0;
         for (index, pane) in self
             .panes
@@ -177,8 +170,15 @@ impl Workspace {
                 views.push(view);
                 continue;
             }
-            let index = visible;
+            let ordinal = visible;
             visible += 1;
+            if ordinal < page_start || ordinal >= page_start + count {
+                let mut view = Self::view(pane, ordinal, Rect::default(), false);
+                view.body = Rect::default();
+                views.push(view);
+                continue;
+            }
+            let index = ordinal - page_start;
             let mut row = 0usize;
             let mut offset = 0usize;
             let row_count = loop {
@@ -202,25 +202,63 @@ impl Workspace {
                 cols: x_boundaries[usize::from(col + 1)] - left,
                 rows: y_boundaries[usize::from(row + 1)] - top,
             };
-            views.push(Self::view(pane, index, rect, false));
+            views.push(Self::view(pane, ordinal, rect, false));
         }
         views
     }
     pub fn automatic_shape(&self) -> (u8, u8) {
-        let count = self
+        let (_, count) = self.grid_page();
+        let count = count.max(1);
+        let (max_cols, max_rows) = self.grid_capacity();
+        let mut best = (1, 1);
+        let mut best_score = f64::INFINITY;
+        for rows in 1..=usize::from(max_rows).min(count) {
+            let cols = count.div_ceil(rows);
+            if cols > usize::from(max_cols) {
+                continue;
+            }
+            // Prefer complete rectangles over a marginal gain in pane aspect.
+            // Long single-row/column strips are reserved for extreme windows.
+            let aspect =
+                (f64::from(self.cols) / cols as f64) / (f64::from(self.rows - 1) / rows as f64);
+            let uneven = if count % rows == 0 {
+                0.0
+            } else {
+                2.0 + (cols * rows - count) as f64 / count as f64
+            };
+            let strip = if count >= 4 && (cols == 1 || rows == 1) {
+                2.0
+            } else {
+                0.0
+            };
+            let score = (aspect / 2.0).ln().powi(2) + uneven + strip;
+            if score < best_score {
+                best = (cols as u8, rows as u8);
+                best_score = score;
+            }
+        }
+        best
+    }
+    fn grid_capacity(&self) -> (u8, u8) {
+        (
+            ((self.cols + 1) / 13).max(1) as u8,
+            ((self.rows - 1) / 3).max(1) as u8,
+        )
+    }
+    pub fn grid_page(&self) -> (usize, usize) {
+        let (cols, rows) = self.grid_capacity();
+        let capacity = usize::from(cols) * usize::from(rows);
+        let panes: Vec<_> = self
             .panes
             .iter()
-            .filter(|p| !p.parked && Some(p.id) != self.ui.scratch)
-            .count();
-        match count {
-            0 | 1 => (1, 1),
-            2 if self.cols < 70 => (1, 2),
-            2 => (2, 1),
-            3 | 4 => (2, 2),
-            5 | 6 if self.cols < 100 => (2, 3),
-            5 | 6 => (3, 2),
-            _ => (3, 3),
-        }
+            .filter(|pane| !pane.parked && Some(pane.id) != self.ui.scratch)
+            .collect();
+        let active = panes
+            .iter()
+            .position(|pane| pane.id == self.active)
+            .unwrap_or(0);
+        let start = active / capacity * capacity;
+        (start, panes.len().saturating_sub(start).min(capacity))
     }
     pub fn reflow(&mut self) {
         (self.grid_cols, self.grid_rows) = self.automatic_shape();
@@ -362,6 +400,83 @@ impl Workspace {
                     .help_offset
                     .saturating_add_signed(amount)
                     .min(super::ui::HELP_ROWS.saturating_sub(visible));
+            }
+            Action::StatusOpen(sort) => {
+                self.help = false;
+                self.ui.status_sort = sort;
+                self.ui.status_descending = sort != super::status::Sort::Pid;
+                self.ui.status_view =
+                    if matches!(sort, super::status::Sort::Read | super::status::Sort::Write) {
+                        super::status::View::Io
+                    } else {
+                        super::status::View::Main
+                    };
+                self.ui.status_offset = 0;
+                self.ui.status_query.clear();
+                self.ui.dialog = Some(Dialog {
+                    kind: DialogKind::Status,
+                    selection: 0,
+                    filter: AgentFilter::All,
+                    source: None,
+                });
+            }
+            Action::StatusView(view) => {
+                self.ui.status_view = view;
+                self.ui.status_sort = if view == super::status::View::Io {
+                    super::status::Sort::Read
+                } else {
+                    super::status::Sort::Cpu
+                };
+                self.ui.status_descending = true;
+                self.ui.status_offset = 0;
+            }
+            Action::StatusSort(sort) => {
+                match sort {
+                    super::status::Sort::Read | super::status::Sort::Write => {
+                        self.ui.status_view = super::status::View::Io
+                    }
+                    super::status::Sort::Cpu | super::status::Sort::Memory => {
+                        self.ui.status_view = super::status::View::Main
+                    }
+                    _ => {}
+                }
+                self.ui.status_descending = if sort == self.ui.status_sort {
+                    !self.ui.status_descending
+                } else {
+                    sort != super::status::Sort::Pid
+                };
+                self.ui.status_sort = sort;
+                self.ui.status_offset = 0;
+            }
+            Action::StatusQuery(ref query) => {
+                self.ui.status_query = query
+                    .chars()
+                    .filter(|c| !c.is_control())
+                    .take(128)
+                    .collect();
+                self.ui.status_offset = 0;
+            }
+            Action::StatusScroll(amount) => {
+                let count = super::status::processes(
+                    &self.ui.status,
+                    &self.ui.status_query,
+                    self.ui.status_sort,
+                    self.ui.status_descending,
+                )
+                .len();
+                let bounds = super::status::bounds(self.cols, self.rows);
+                let capacity = usize::from(
+                    (bounds.y + bounds.rows - 1)
+                        .saturating_sub(super::status::table_y(bounds, &self.ui.status) + 1),
+                )
+                .max(1);
+                let maximum = count.saturating_sub(capacity);
+                self.ui.status_offset = self
+                    .ui
+                    .status_offset
+                    .min(maximum)
+                    .saturating_add_signed(isize::from(amount))
+                    .min(maximum);
             }
             Action::Overview | Action::Notifications | Action::Recovery | Action::SearchOpen => {
                 let kind = match action {
@@ -527,13 +642,8 @@ impl Workspace {
                 self.panes[index].palette = color;
                 self.ui.config.pane_colors.insert(pane, color);
             }
-            Action::WrapToggle => {
-                self.ui.config.wrap_lines = !(self.ui.config.wrap_lines
-                    && !matches!(self.reading, ReadingMode::Fullscreen(_)));
-                if self.reading != ReadingMode::Grid {
-                    self.reading = ReadingMode::Tabs(self.active);
-                }
-            }
+            // Legacy clients may still send these; tab bodies always fill their area.
+            Action::WrapToggle | Action::ReadResize { .. } => {}
             Action::ClosePaneRequest(id) => {
                 self.require_pane(id)?;
                 self.help = false;
@@ -599,8 +709,6 @@ impl Workspace {
                     if dialog.kind == DialogKind::Config {
                         dialog.selection = match (dialog.selection, dx, dy) {
                             (0..=3, _, dy) if dy > 0 => 4,
-                            (4, _, dy) if dy > 0 => 5,
-                            (5, _, dy) if dy < 0 => 4,
                             (4, _, dy) if dy < 0 => match self.ui.config.tab_position {
                                 super::ui::TabPosition::Auto => 0,
                                 super::ui::TabPosition::Top => 1,
@@ -655,7 +763,7 @@ impl Workspace {
                 let (x, y) = center(origin);
                 if let Some(view) = views
                     .iter()
-                    .filter(|v| !v.pane.parked && v.pane.id != normal)
+                    .filter(|v| !v.pane.parked && v.pane.id != normal && v.rect.cols > 0)
                     .filter(|v| {
                         let (nx, ny) = center(v.rect);
                         if dx != 0 {
@@ -672,15 +780,6 @@ impl Workspace {
                     let id = view.pane.id;
                     self.apply(&Action::Focus(id))?;
                 }
-            }
-            Action::ReadResize { cols, rows } => {
-                if self.reading == ReadingMode::Grid {
-                    return Err("open a reading view before resizing".into());
-                }
-                self.ui.reading_size =
-                    Some((cols.clamp(20, self.cols), rows.clamp(3, self.rows - 1)));
-                self.ui.config.remembered_read_widths[super::ui::geometry_bucket(self.cols)] =
-                    Some(cols.clamp(20, self.cols));
             }
             Action::Focus(id) => {
                 let index = self.require_pane(id)?;
@@ -838,8 +937,8 @@ impl Workspace {
         Ok(())
     }
     pub fn grid_count(cols: u8, rows: u8) -> Result<usize> {
-        if !GRIDS.contains(&(cols, rows)) && (cols, rows) != (1, 2) {
-            return Err("supported grids are 1x1, 2x1, 2x2, 3x2, 2x3 and 3x3".into());
+        if cols == 0 || rows == 0 {
+            return Err("grid dimensions must be positive".into());
         }
         Ok(cols as usize * rows as usize)
     }
@@ -874,7 +973,7 @@ pub fn dialog_entries(panes: &[PaneInfo], dialog: Option<Dialog>) -> Vec<PaneId>
         Some(Dialog {
             kind: DialogKind::Config,
             ..
-        }) => (0..6).collect(),
+        }) => (0..5).collect(),
         Some(Dialog {
             kind: DialogKind::CloseConfirm | DialogKind::ParkConfirm | DialogKind::RestoreConfirm,
             ..
@@ -917,6 +1016,9 @@ pub fn dialog_bounds(cols: u16, rows: u16) -> Rect {
     }
 }
 pub fn dialog_bounds_for(cols: u16, rows: u16, kind: super::ui::DialogKind) -> Rect {
+    if kind == super::ui::DialogKind::Status {
+        return super::status::bounds(cols, rows);
+    }
     if !matches!(
         kind,
         super::ui::DialogKind::CloseConfirm
@@ -927,7 +1029,7 @@ pub fn dialog_bounds_for(cols: u16, rows: u16, kind: super::ui::DialogKind) -> R
         return dialog_bounds(cols, rows);
     }
     let (width, height) = if kind == super::ui::DialogKind::Config {
-        (72, 19)
+        (72, 13)
     } else {
         (52, 9)
     };
@@ -941,11 +1043,11 @@ pub fn dialog_bounds_for(cols: u16, rows: u16, kind: super::ui::DialogKind) -> R
     }
 }
 pub fn config_geometry(bounds: Rect) -> (u16, u16) {
-    if bounds.rows >= 18 {
+    if bounds.rows >= 12 {
         (6, 3)
-    } else if bounds.rows >= 15 {
-        (5, 2)
-    } else if bounds.rows >= 12 {
+    } else if bounds.rows >= 10 {
+        (4, 2)
+    } else if bounds.rows >= 9 {
         (4, 1)
     } else {
         (2, 1)
@@ -968,20 +1070,18 @@ pub fn config_targets(bounds: Rect) -> Vec<(usize, Option<bool>, Rect)> {
             },
         ));
     }
-    for group in 0..2u16 {
-        for value in 0..2u16 {
-            choices.push((
-                usize::from(group) + 4,
-                Some(value == 0),
-                Rect {
-                    x: bounds.x + 2 + inner / 2 + (inner - inner / 2 - 1) * value / 2 + value,
-                    y: bounds.y + 2 + (group + 1) * step,
-                    cols: (inner - inner / 2 - 1) * (value + 1) / 2
-                        - (inner - inner / 2 - 1) * value / 2,
-                    rows: height,
-                },
-            ));
-        }
+    for value in 0..2u16 {
+        choices.push((
+            4,
+            Some(value == 0),
+            Rect {
+                x: bounds.x + 2 + inner / 2 + (inner - inner / 2 - 1) * value / 2 + value,
+                y: bounds.y + 2 + step,
+                cols: (inner - inner / 2 - 1) * (value + 1) / 2
+                    - (inner - inner / 2 - 1) * value / 2,
+                rows: height,
+            },
+        ));
     }
     choices
 }
@@ -1014,12 +1114,20 @@ pub fn move_cards(bounds: Rect, columns: u8, rows: u8) -> Vec<Rect> {
         })
         .collect()
 }
+/// Grow with the screen while staying within the original width and +20%.
+pub fn sidebar_width(cols: u16) -> u16 {
+    let minimum = (cols / 5).clamp(18, 28);
+    (cols / 4)
+        .clamp(minimum, minimum * 6 / 5)
+        .saturating_sub(2)
+        .max(minimum)
+}
 /// Terminal content occupies every column except visible UI dividers.
 pub fn tab_body(
     cols: u16,
     rows: u16,
     config: &super::ui::UiConfig,
-    full: bool,
+    _full: bool,
     _size: Option<(u16, u16)>,
 ) -> Rect {
     use super::ui::TabPosition;
@@ -1032,37 +1140,19 @@ pub fn tab_body(
     };
     match position {
         TabPosition::Top => {
-            area.y = 3;
-            area.rows = area.rows.saturating_sub(3);
+            area.y = 2;
+            area.rows = area.rows.saturating_sub(2);
         }
         TabPosition::Left => {
-            let sidebar = (cols / 5).clamp(18, 28);
+            let sidebar = sidebar_width(cols);
             area.x = sidebar;
             area.cols = cols - sidebar;
+            area.rows = rows;
         }
-        TabPosition::Bottom => area.rows = area.rows.saturating_sub(3),
+        TabPosition::Bottom => area.rows = area.rows.saturating_sub(2),
         TabPosition::Auto => unreachable!(),
     }
-    let cap = config.remembered_read_widths[super::ui::geometry_bucket(cols)]
-        .unwrap_or(config.read_width);
-    // A narrow leftover strip is not useful on tablets and small terminals.
-    // Count usable terminal columns after the sidebar, before the divider.
-    let effective = area.cols.saturating_sub(cap) >= 20;
-    if effective {
-        area.cols = area.cols.saturating_sub(1);
-    }
-    let width = if full || !config.wrap_lines || !effective {
-        area.cols
-    } else {
-        config.remembered_read_widths[super::ui::geometry_bucket(cols)]
-            .unwrap_or(config.read_width)
-            .clamp(20.min(area.cols), area.cols)
-    };
-    Rect {
-        x: area.x,
-        cols: width,
-        ..area
-    }
+    area
 }
 pub fn scratch_rect(cols: u16, rows: u16) -> Rect {
     let width = cols.saturating_sub(4).min(120);
@@ -1132,6 +1222,14 @@ pub fn tab_number(rect: Rect) -> Rect {
         rows: 1,
     }
 }
+pub fn tab_number_for(rect: Rect, number: usize) -> Rect {
+    Rect {
+        cols: (number.to_string().len() as u16 + 2)
+            .max(3)
+            .min(rect.cols.saturating_sub(7).max(1)),
+        ..tab_number(rect)
+    }
+}
 pub fn tab_close(rect: Rect) -> Rect {
     Rect {
         x: rect.x + rect.cols.saturating_sub(3),
@@ -1171,33 +1269,56 @@ pub fn tab_park(rect: Rect) -> Rect {
         ..close
     }
 }
-pub fn grid_controls(rect: Rect) -> [Rect; 3] {
-    let close = tab_close(rect);
-    let park = tab_park(rect);
-    [
-        Rect {
-            x: park.x.saturating_sub(3),
-            ..park
-        },
-        park,
-        close,
-    ]
+pub fn grid_controls(rect: Rect) -> [Rect; 2] {
+    [tab_park(rect), tab_close(rect)]
 }
-pub fn parked_button(rows: u16) -> Rect {
+pub fn parked_label(count: usize) -> String {
+    match count {
+        0 => " ⊟ Parked ".into(),
+        count => format!(" ⊟ Parked ({count}) "),
+    }
+}
+pub fn parked_button(rows: u16, count: usize) -> Rect {
     Rect {
-        x: 14,
+        x: super::ui::FOOTER_CONFIG_COLS + super::ui::FOOTER_MODE_COLS,
         y: rows - 1,
-        cols: 14,
+        cols: parked_label(count).chars().count() as u16,
         rows: 1,
     }
 }
-pub fn help_button(rows: u16) -> Rect {
+pub fn help_button(rows: u16, count: usize) -> Rect {
+    let parked = parked_button(rows, count);
     Rect {
-        x: 28,
+        x: parked.x + parked.cols,
         y: rows - 1,
         cols: 3,
         rows: 1,
     }
+}
+pub fn sidebar_status_rows(rows: u16) -> u16 {
+    if rows >= 24 {
+        8
+    } else if rows >= 18 {
+        7
+    } else {
+        3
+    }
+}
+pub fn sidebar_controls(cols: u16, rows: u16, _count: usize) -> [Rect; 4] {
+    let width = sidebar_width(cols) - 1;
+    let rect = |x, y, cols| Rect {
+        x,
+        y,
+        cols,
+        rows: 1,
+    };
+    let right = width.div_ceil(2);
+    [
+        rect(0, rows - 2, right),
+        rect(right, rows - 2, width - right),
+        rect(0, rows - 1, right),
+        rect(right, rows - 1, width - right),
+    ]
 }
 pub fn color_cards(bounds: Rect) -> Vec<Rect> {
     let height = bounds.rows.saturating_sub(2) / 3;
@@ -1214,21 +1335,15 @@ pub fn color_cards(bounds: Rect) -> Vec<Rect> {
         })
         .collect()
 }
-pub fn sidebar_actions(cols: u16, rows: u16) -> [Rect; 2] {
-    let height = if rows >= 14 { 3 } else { 1 };
+pub fn sidebar_actions(cols: u16, rows: u16, parked_count: usize) -> [Rect; 2] {
+    let height = 3;
     let new = Rect {
         x: 0,
-        y: rows - 1 - height,
-        cols: (cols / 5).clamp(18, 28) - 1,
+        y: rows - sidebar_status_rows(rows) - height,
+        cols: sidebar_width(cols) - 1,
         rows: height,
     };
-    [new, parked_button(rows)]
-}
-/// The width switch is useful only when the configured cap is narrower than
-/// the available terminal, regardless of the current wrap/full-width mode.
-pub fn reading_limit_effective(cols: u16, rows: u16, config: &super::ui::UiConfig) -> bool {
-    let full = tab_body(cols, rows, config, true, None);
-    full.x + full.cols < cols
+    [new, sidebar_controls(cols, rows, parked_count)[2]]
 }
 pub fn tab_targets(
     cols: u16,
@@ -1236,12 +1351,13 @@ pub fn tab_targets(
     config: &super::ui::UiConfig,
     count: usize,
     active: usize,
+    parked_count: usize,
 ) -> Vec<(TabTarget, Rect)> {
     use super::ui::TabPosition;
     let position = config.tab_position.resolve(cols, rows);
     if count == 0 {
         if position == TabPosition::Left {
-            let [mut new, parked] = sidebar_actions(cols, rows);
+            let [mut new, parked] = sidebar_actions(cols, rows, parked_count);
             new.y = 1;
             return vec![(TabTarget::New, new), (TabTarget::Parked, parked)];
         }
@@ -1260,7 +1376,7 @@ pub fn tab_targets(
                     rows: 2,
                 },
             ),
-            (TabTarget::Parked, parked_button(rows)),
+            (TabTarget::Parked, parked_button(rows, parked_count)),
         ];
     }
     match position {
@@ -1305,7 +1421,7 @@ pub fn tab_targets(
                     rows: 2,
                 },
             ));
-            tabs.push((TabTarget::Parked, parked_button(rows)));
+            tabs.push((TabTarget::Parked, parked_button(rows, parked_count)));
             if overflow {
                 tabs.push((
                     TabTarget::Previous,
@@ -1329,12 +1445,17 @@ pub fn tab_targets(
             tabs
         }
         TabPosition::Left => {
-            let width = (cols / 5).clamp(18, 28) - 1;
-            let [mut new, parked] = sidebar_actions(cols, rows);
+            let width = sidebar_width(cols) - 1;
+            let [mut new, parked] = sidebar_actions(cols, rows, parked_count);
             let area = new.y;
             let height = new.rows;
             let overflow = count > usize::from(area / height);
-            let available = area.saturating_sub(if overflow { 2 } else { 0 });
+            let compact = area < height + 2;
+            let available = area.saturating_sub(if overflow {
+                if compact { 1 } else { 2 }
+            } else {
+                0
+            });
             let capacity = usize::from(available / height).max(1);
             let start = if overflow {
                 active.saturating_sub(capacity - 1)
@@ -1357,23 +1478,23 @@ pub fn tab_targets(
                 })
                 .collect();
             let end = top + tabs.len() as u16 * height;
-            new.y = end + u16::from(overflow);
+            new.y = end + u16::from(overflow && !compact);
             if overflow {
                 tabs.push((
                     TabTarget::Previous,
                     Rect {
                         x: 0,
                         y: 0,
-                        cols: width,
+                        cols: if compact { width / 2 } else { width },
                         rows: 1,
                     },
                 ));
                 tabs.push((
                     TabTarget::Next,
                     Rect {
-                        x: 0,
-                        y: end,
-                        cols: width,
+                        x: if compact { width / 2 } else { 0 },
+                        y: if compact { 0 } else { end },
+                        cols: if compact { width - width / 2 } else { width },
                         rows: 1,
                     },
                 ));

@@ -2,11 +2,15 @@
 use crate::Result;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
-pub const FOOTER_COLS: u16 = 31;
 pub const FOOTER_BG: u8 = 239;
 pub const TAB_BG: u8 = 236;
 pub const PARKED_BG: u8 = 60;
-pub const HELP_ROWS: u16 = 29;
+pub const RESTORE_BG: u8 = 29;
+pub const ALERT_ICON: &str = "⚠︎";
+pub const CONFIG_BUTTON_LABEL: &str = " ⚙︎ Config ";
+pub const FOOTER_CONFIG_COLS: u16 = 10;
+pub const FOOTER_MODE_COLS: u16 = 8;
+pub const HELP_ROWS: u16 = 30;
 pub const PALETTE: [(u8, u8); 9] = [
     (39, 24),
     (42, 29),
@@ -51,6 +55,7 @@ pub enum AgentFilter {
 }
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum DialogKind {
+    Status,
     Parked,
     Overview,
     Notifications,
@@ -78,13 +83,17 @@ pub struct UiConfig {
     pub view_modes: [Option<bool>; 3],
     pub notification_sound: bool,
     pub prefix: u8,
-    pub read_width: u16,
-    pub wrap_lines: bool,
+    // Accept obsolete width preferences from existing workspaces, but never save them.
+    #[serde(rename = "read_width", skip_serializing)]
+    pub legacy_read_width: Option<u16>,
+    #[serde(rename = "wrap_lines", skip_serializing)]
+    pub legacy_wrap_lines: Option<bool>,
     pub pane_colors: BTreeMap<u64, u8>,
     pub read_height_percent: u8,
     pub bindings: BTreeMap<String, String>,
     pub tab_position: TabPosition,
-    pub remembered_read_widths: [Option<u16>; 3],
+    #[serde(rename = "remembered_read_widths", skip_serializing)]
+    pub legacy_read_widths: Option<[Option<u16>; 3]>,
 }
 impl Default for UiConfig {
     fn default() -> Self {
@@ -92,31 +101,24 @@ impl Default for UiConfig {
             view_modes: [None; 3],
             notification_sound: false,
             prefix: 2,
-            read_width: 120,
-            wrap_lines: true,
+            legacy_read_width: None,
+            legacy_wrap_lines: None,
             pane_colors: BTreeMap::new(),
             read_height_percent: 95,
             bindings: BTreeMap::new(),
             tab_position: TabPosition::Auto,
-            remembered_read_widths: [None; 3],
+            legacy_read_widths: None,
         }
     }
 }
 impl UiConfig {
     pub fn validate(&self) -> Result<()> {
         if !(1..=26).contains(&self.prefix)
-            || self.pane_colors.len() > 10
             || self
                 .pane_colors
                 .iter()
                 .any(|(&pane, &color)| pane == 0 || usize::from(color) >= PALETTE.len())
-            || !(20..=400).contains(&self.read_width)
             || !(20..=100).contains(&self.read_height_percent)
-            || self
-                .remembered_read_widths
-                .iter()
-                .flatten()
-                .any(|width| !(20..=400).contains(width))
         {
             return Err("invalid prefix or reading dimensions".into());
         }
@@ -167,6 +169,18 @@ impl UiConfig {
 }
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct UiState {
+    #[serde(default)]
+    pub status: super::status::Snapshot,
+    #[serde(default)]
+    pub status_view: super::status::View,
+    #[serde(default)]
+    pub status_sort: super::status::Sort,
+    #[serde(default = "status_descending")]
+    pub status_descending: bool,
+    #[serde(default)]
+    pub status_query: String,
+    #[serde(default)]
+    pub status_offset: usize,
     /// Presentation colors reported by this client, never persisted as settings.
     #[serde(default)]
     pub terminal_theme: [Option<[u8; 3]>; 2],
@@ -191,6 +205,9 @@ pub struct UiState {
     pub reading_size: Option<(u16, u16)>,
     pub grid_shape: (u8, u8),
     pub vitals: Vec<(String, u8)>,
+}
+fn status_descending() -> bool {
+    true
 }
 pub fn geometry_bucket(cols: u16) -> usize {
     if cols <= 60 {

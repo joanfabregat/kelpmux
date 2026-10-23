@@ -4,19 +4,20 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LocalTime {
     pub year: i32,
     pub month: u8,
     pub day: u8,
     pub hour: u8,
     pub minute: u8,
+    pub zone: String,
 }
 impl LocalTime {
-    pub fn date(self) -> String {
+    pub fn date(&self) -> String {
         format!("{:04}-{:02}-{:02}", self.year, self.month, self.day)
     }
-    pub fn time(self) -> String {
+    pub fn time(&self) -> String {
         format!("{:02}:{:02}", self.hour, self.minute)
     }
 }
@@ -35,6 +36,19 @@ pub fn at(seconds: libc::time_t) -> Option<LocalTime> {
         day: u8::try_from(tm.tm_mday).ok()?,
         hour: u8::try_from(tm.tm_hour).ok()?,
         minute: u8::try_from(tm.tm_min).ok()?,
+        zone: if tm.tm_zone.is_null() {
+            format!(
+                "UTC{}{:02}:{:02}",
+                if tm.tm_gmtoff < 0 { '-' } else { '+' },
+                tm.tm_gmtoff.unsigned_abs() / 3600,
+                tm.tm_gmtoff.unsigned_abs() / 60 % 60
+            )
+        } else {
+            // SAFETY: localtime_r supplies a NUL-terminated timezone name.
+            unsafe { std::ffi::CStr::from_ptr(tm.tm_zone) }
+                .to_string_lossy()
+                .into_owned()
+        },
     })
 }
 pub fn now() -> Option<LocalTime> {

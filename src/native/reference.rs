@@ -59,7 +59,6 @@ impl State {
                 if wanted.len() != update.subscribed.len()
                     || wanted.len() > stream::MAX_SUBSCRIPTIONS
                     || panes.len() != update.panes.len()
-                    || panes.len() > 10
                     || panes.contains(&0)
                     || !wanted.is_subset(&panes)
                     || update.snapshots.len() > 10

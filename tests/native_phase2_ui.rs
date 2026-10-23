@@ -178,7 +178,7 @@ fn notification_history_acknowledges_and_jumps_and_next_agent_navigation_wraps()
         actions(Router::default().route(
             mouse(
                 Point {
-                    x: 29,
+                    x: f.footer_cols() - 2,
                     y: f.rows - 1
                 },
                 MouseKind::Press
@@ -216,13 +216,18 @@ fn viewport_reading_preferences_and_automatic_grid_preserve_all_ids() {
     assert_eq!(ws.layout()[0].body.cols, 40);
     ws.apply(&Action::ReadResize { cols: 30, rows: 3 }).unwrap();
     ws.resize(120, 40).unwrap();
-    // Ignore narrow leftover strips without forgetting the saved preference.
-    assert_eq!(ws.layout()[0].body.cols, 96);
-    assert_eq!(ws.ui.config.remembered_read_widths[1], Some(85));
+    // Legacy resize requests cannot limit tabs after a viewport change.
+    assert_eq!(
+        ws.layout()[0].body.cols,
+        ws.cols - kelpmux::native::workspace::sidebar_width(ws.cols)
+    );
     ws.resize(140, 40).unwrap();
-    assert_eq!(ws.layout()[0].body.cols, 85);
+    assert_eq!(
+        ws.layout()[0].body.cols,
+        140 - kelpmux::native::workspace::sidebar_width(140)
+    );
     ws.resize(240, 70).unwrap();
-    assert_eq!(ws.layout()[0].body.cols, 140);
+    assert_eq!(ws.layout()[0].body.cols, 240);
     ws.apply(&Action::CloseReading).unwrap();
     let ids = ws.panes.iter().map(|p| p.id).collect::<Vec<_>>();
     ws.apply(&Action::ResizeGrid {
@@ -338,7 +343,7 @@ fn recovery_and_sound_settings_are_actionable_and_small_screen_help_scrolls() {
     let bounds = dialog_bounds_for(f.cols, f.rows, DialogKind::Config);
     let choice = config_targets(bounds)
         .into_iter()
-        .find(|(index, value, _)| *index == 5 && *value == Some(true))
+        .find(|(index, value, _)| *index == 4 && *value == Some(true))
         .unwrap()
         .2;
     assert_eq!(
