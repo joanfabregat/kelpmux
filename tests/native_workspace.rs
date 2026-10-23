@@ -8,6 +8,40 @@ use kelpmux::{
 };
 
 #[test]
+fn complete_grids_take_priority_over_ragged_rows_on_normal_windows() {
+    for size in [
+        (80, 24),
+        (120, 40),
+        (160, 50),
+        (240, 70),
+        (400, 70),
+        (120, 80),
+    ] {
+        let mut ws = Workspace::new(size.0, size.1).unwrap();
+        for count in [4, 6, 8, 9, 12, 16] {
+            ws.panes = (1..=count).map(pane).collect();
+            ws.active = 1;
+            ws.reflow();
+            let shape = ws.automatic_shape();
+            assert_eq!(
+                usize::from(shape.0) * usize::from(shape.1),
+                count as usize,
+                "ragged grid for {count} tabs at {size:?}: {shape:?}"
+            );
+            if count == 9 {
+                assert_eq!(shape, (3, 3));
+            }
+        }
+    }
+    for (size, expected) in [((400, 10), (9, 1)), ((40, 160), (1, 9))] {
+        let mut ws = Workspace::new(size.0, size.1).unwrap();
+        ws.panes = (1..=9).map(pane).collect();
+        ws.active = 1;
+        assert_eq!(ws.automatic_shape(), expected);
+    }
+}
+
+#[test]
 fn adaptive_grid_supports_large_workspaces_and_pages_follow_selection() {
     let mut ws = Workspace::new(240, 70).unwrap();
     ws.panes = (1..=12).map(pane).collect();

@@ -2667,6 +2667,60 @@ fn closing_status_consumes_the_mouse_release_before_the_app_can_receive_it() {
 }
 
 #[test]
+fn tab_separators_preserve_folder_labels_geometry_and_click_targets() {
+    use kelpmux::native::{
+        ui::TabPosition,
+        workspace::{TabTarget, tab_targets},
+    };
+    for position in [TabPosition::Left, TabPosition::Top, TabPosition::Bottom] {
+        let mut ws = workspace((160, 50), (2, 2));
+        ws.ui.config.tab_position = position;
+        ws.panes
+            .iter_mut()
+            .for_each(|pane| pane.cwd = "/work/project".into());
+        ws.apply(&Action::Read(1)).unwrap();
+        let f = frame(&ws);
+        let tabs: Vec<_> = tab_targets(f.cols, f.rows, &f.ui.config, 4, 0, 0)
+            .into_iter()
+            .filter_map(|(target, rect)| matches!(target, TabTarget::Pane(_)).then_some(rect))
+            .collect();
+        assert_eq!(tabs.len(), 4);
+        for (index, rect) in tabs.iter().enumerate() {
+            if position == TabPosition::Left {
+                let start = usize::from((rect.y + rect.rows - 1) * f.cols + rect.x + 1);
+                let cells = &f.cells[start..start + usize::from(rect.cols - 2)];
+                let text: String = cells.iter().map(|cell| cell.text.as_str()).collect();
+                assert!(text.contains("project"));
+                assert!(
+                    cells
+                        .iter()
+                        .all(|cell| cell.underline == (index + 1 < tabs.len()))
+                );
+            } else if index > 0 {
+                for y in rect.y..rect.y + rect.rows {
+                    let cell = &f.cells[usize::from(y * f.cols + rect.x)];
+                    assert_eq!(cell.text, "│");
+                    assert_eq!(cell.fg, Color::Indexed(243));
+                }
+            }
+            assert_eq!(
+                actions(Router::default().route(
+                    click(Point {
+                        x: rect.x,
+                        y: rect.y
+                    }),
+                    &f
+                )),
+                vec![Action::Focus(index as u64 + 1)]
+            );
+        }
+        let mut terminal = Terminal::new(f.cols, f.rows);
+        terminal.feed(&terminal_diff(None, &f));
+        assert_eq!(terminal.snapshot().cells, f.cells);
+    }
+}
+
+#[test]
 fn large_workspaces_cycle_tabs_and_grid_pages_without_application_input() {
     let mut ws = workspace((40, 10), (4, 3));
     ws.active = 1;

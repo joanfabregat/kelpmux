@@ -217,12 +217,21 @@ impl Workspace {
             if cols > usize::from(max_cols) {
                 continue;
             }
-            // A character is roughly twice as tall as it is wide. Favor
-            // terminal panes near a 2:1 character aspect, then avoid spare slots.
+            // Prefer complete rectangles over a marginal gain in pane aspect.
+            // Long single-row/column strips are reserved for extreme windows.
             let aspect =
                 (f64::from(self.cols) / cols as f64) / (f64::from(self.rows - 1) / rows as f64);
-            let score =
-                (aspect / 2.0).ln().powi(2) + (cols * rows - count) as f64 / count as f64 * 0.4;
+            let uneven = if count % rows == 0 {
+                0.0
+            } else {
+                2.0 + (cols * rows - count) as f64 / count as f64
+            };
+            let strip = if count >= 4 && (cols == 1 || rows == 1) {
+                2.0
+            } else {
+                0.0
+            };
+            let score = (aspect / 2.0).ln().powi(2) + uneven + strip;
             if score < best_score {
                 best = (cols as u8, rows as u8);
                 best_score = score;

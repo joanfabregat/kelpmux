@@ -1009,6 +1009,27 @@ fn new_tabs_create_more_than_nine_ptys_and_preserve_existing_jobs() {
             12
         );
     }
+    for pane in panes.iter().rev().take(3) {
+        command(&mut controller, Action::Park(pane.id)).unwrap();
+    }
+    for (cols, rows) in [(80, 24), (240, 70), (120, 80), (400, 70)] {
+        write_message(&mut controller, &ClientMessage::Resize { cols, rows }).unwrap();
+        let frame = wait_frame(&mut controller, |frame| {
+            frame.cols == cols && frame.rows == rows && frame.ui.grid_shape == (3, 3)
+        });
+        assert_eq!(
+            frame
+                .panes
+                .iter()
+                .map(|view| (view.pane.id, view.pane.pid))
+                .collect::<Vec<_>>(),
+            identities
+        );
+        assert_eq!(
+            frame.panes.iter().filter(|view| view.body.cols > 0).count(),
+            9
+        );
+    }
     command(&mut admin, Action::ClosePaneRequest(original.0)).unwrap();
     command(&mut admin, Action::ClosePaneConfirm(original.0)).unwrap();
     let settings: serde_json::Value =
