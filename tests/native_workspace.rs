@@ -7,6 +7,90 @@ use kelpmux::{
     },
 };
 
+#[test]
+fn complete_grids_take_priority_over_ragged_rows_on_normal_windows() {
+    for size in [
+        (80, 24),
+        (120, 40),
+        (160, 50),
+        (240, 70),
+        (400, 70),
+        (120, 80),
+    ] {
+        let mut ws = Workspace::new(size.0, size.1).unwrap();
+        for count in [4, 6, 8, 9, 12, 16] {
+            ws.panes = (1..=count).map(pane).collect();
+            ws.active = 1;
+            ws.reflow();
+            let shape = ws.automatic_shape();
+            assert_eq!(
+                usize::from(shape.0) * usize::from(shape.1),
+                count as usize,
+                "ragged grid for {count} tabs at {size:?}: {shape:?}"
+            );
+            if count == 9 {
+                assert_eq!(shape, (3, 3));
+            }
+        }
+    }
+    for (size, expected) in [((400, 10), (9, 1)), ((40, 160), (1, 9))] {
+        let mut ws = Workspace::new(size.0, size.1).unwrap();
+        ws.panes = (1..=9).map(pane).collect();
+        ws.active = 1;
+        assert_eq!(ws.automatic_shape(), expected);
+    }
+}
+
+#[test]
+fn adaptive_grid_supports_large_workspaces_and_pages_follow_selection() {
+    let mut ws = Workspace::new(240, 70).unwrap();
+    ws.panes = (1..=12).map(pane).collect();
+    ws.active = 1;
+    ws.reflow();
+    assert_eq!(ws.automatic_shape(), (4, 3));
+    ws.resize(120, 80).unwrap();
+    assert_eq!(ws.automatic_shape(), (3, 4));
+    for count in [12, 100, 1000] {
+        ws.panes = (1..=count).map(pane).collect();
+        for size in [(40, 10), (120, 80), (240, 70), (400, 160)] {
+            ws.resize(size.0, size.1).unwrap();
+            for active in [1, count / 2, count] {
+                ws.active = active;
+                ws.reflow();
+                let views = ws.grid_layout();
+                assert_eq!(views.len(), count as usize);
+                let visible: Vec<_> = views.iter().filter(|view| view.rect.cols > 0).collect();
+                assert!(visible.iter().any(|view| view.pane.id == active));
+                let mut occupied = std::collections::BTreeSet::new();
+                for view in visible {
+                    assert!(view.body.rows >= 2 && view.rect.cols >= 12);
+                    assert!(view.rect.x + view.rect.cols <= ws.cols);
+                    assert!(view.rect.y + view.rect.rows < ws.rows);
+                    for y in view.rect.y..view.rect.y + view.rect.rows {
+                        for x in view.rect.x..view.rect.x + view.rect.cols {
+                            assert!(occupied.insert((x, y)), "overlapping grid panes");
+                        }
+                    }
+                }
+            }
+        }
+    }
+    ws.resize(240, 70).unwrap();
+    ws.panes
+        .iter_mut()
+        .for_each(|pane| pane.parked = pane.id > 12);
+    ws.active = 1;
+    ws.reflow();
+    assert_eq!(ws.automatic_shape(), (4, 3));
+    assert_eq!(
+        ws.grid_layout()
+            .iter()
+            .filter(|view| view.rect.cols > 0)
+            .count(),
+        12
+    );
+}
+
 fn pane(id: u64) -> PaneInfo {
     PaneInfo {
         id,
@@ -235,7 +319,7 @@ fn tabs_resize_only_selected_terminal_and_restore_grid() {
     assert_eq!(views.len(), 4);
     assert_eq!(
         views.iter().find(|v| v.pane.id == 2).unwrap().body.cols,
-        120
+        ws.cols - kelpmux::native::workspace::sidebar_width(ws.cols)
     );
     assert!(views.iter().all(|view| !view.overlay));
     assert_eq!(views.iter().filter(|view| view.body.cols > 0).count(), 1);
@@ -254,7 +338,7 @@ fn tabs_resize_only_selected_terminal_and_restore_grid() {
             .unwrap()
             .body
             .cols,
-        171
+        ws.cols - kelpmux::native::workspace::sidebar_width(ws.cols)
     );
     assert_eq!(
         ws.layout()
@@ -263,7 +347,7 @@ fn tabs_resize_only_selected_terminal_and_restore_grid() {
             .unwrap()
             .body
             .rows,
-        79
+        ws.rows
     );
     ws.apply(&Action::Fullscreen(2)).unwrap();
     assert_eq!(ws.terminal_sizes(), capped);
@@ -320,7 +404,7 @@ fn tabs_toggle_exits_fullscreen_and_navigation_never_sends_application_clicks() 
     ws.apply(&Action::Read(1)).unwrap();
     let f = frame(&ws);
     let (_, rect) =
-        kelpmux::native::workspace::tab_targets(f.cols, f.rows, &f.ui.config, f.panes.len(), 0)
+        kelpmux::native::workspace::tab_targets(f.cols, f.rows, &f.ui.config, f.panes.len(), 0, 0)
             .into_iter()
             .find(|(target, _)| *target == kelpmux::native::workspace::TabTarget::Pane(1))
             .unwrap();
@@ -347,7 +431,10 @@ fn help_close_button_and_footer_toggle_close_without_application_input() {
             x: bounds.x + bounds.cols - 2,
             y: bounds.y,
         },
-        Point { x: 29, y: 29 },
+        Point {
+            x: f.footer_cols() - 2,
+            y: f.rows - 1,
+        },
     ] {
         let messages = router.route(mouse(point, MouseKind::Press), &f);
         assert_eq!(action(&messages), vec![Action::Help]);
@@ -505,7 +592,7 @@ fn grid_headers_and_tab_footer_have_distinct_hit_targets() {
         action(&router.route(
             mouse(
                 Point {
-                    x: 29,
+                    x: f.footer_cols() - 2,
                     y: f.rows - 1
                 },
                 MouseKind::Press

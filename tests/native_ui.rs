@@ -98,7 +98,7 @@ fn sidebar_new_follows_tabs_and_parked_stays_at_bottom_with_contextual_headers()
     ws.ui.config.tab_position = TabPosition::Left;
     ws.apply(&Action::Select(1)).unwrap();
     let f = frame(&ws);
-    let targets = tab_targets(f.cols, f.rows, &f.ui.config, 2, 0);
+    let targets = tab_targets(f.cols, f.rows, &f.ui.config, 2, 0, 0);
     let new = targets
         .iter()
         .find(|(t, _)| *t == TabTarget::New)
@@ -143,13 +143,12 @@ fn sidebar_new_follows_tabs_and_parked_stays_at_bottom_with_contextual_headers()
             vec![Action::Parked]
         );
     }
-    let config_bg = f.cells[usize::from((f.rows - 1) * f.cols + 1)].bg;
     ws.apply(&Action::Config).unwrap();
     let config = frame(&ws);
     let bounds = dialog_bounds_for(f.cols, f.rows, DialogKind::Config);
     assert_eq!(
         config.cells[usize::from(bounds.y * f.cols + bounds.x)].bg,
-        config_bg
+        Color::Indexed(24)
     );
     ws.ui.dialog = None;
     ws.help = true;
@@ -157,9 +156,31 @@ fn sidebar_new_follows_tabs_and_parked_stays_at_bottom_with_contextual_headers()
     let bounds = help_bounds(f.cols, f.rows);
     assert_eq!(
         help.cells[usize::from(bounds.y * f.cols + bounds.x)].bg,
-        f.cells[usize::from((f.rows - 1) * f.cols + 29)].bg
+        Color::Indexed(94)
     );
     ws.help = false;
+    for (action, kind, icon) in [
+        (Action::Config, DialogKind::Config, "⚙︎"),
+        (Action::GridPicker, DialogKind::Grid, "▦"),
+        (Action::Parked, DialogKind::Parked, "⊟"),
+        (
+            Action::Notifications,
+            DialogKind::Notifications,
+            kelpmux::native::ui::ALERT_ICON,
+        ),
+    ] {
+        ws.apply(&action).unwrap();
+        let popup = frame(&ws);
+        let bounds = dialog_bounds_for(f.cols, f.rows, kind);
+        assert_eq!(
+            popup.cells[usize::from(bounds.y * f.cols + bounds.x + 1)].text,
+            icon
+        );
+        let mut display = Terminal::new(popup.cols, popup.rows);
+        display.feed(&terminal_diff(None, &popup));
+        assert_eq!(display.snapshot().cells, popup.cells);
+        ws.apply(&Action::DialogClose).unwrap();
+    }
     for action in [Action::ClosePaneRequest(2), Action::ParkRequest(2)] {
         ws.apply(&action).unwrap();
         let kind = ws.ui.dialog.unwrap().kind;
@@ -276,6 +297,17 @@ fn parking_and_restore_confirm_before_mutation_and_escape_cancels() {
         ws.apply(&action).unwrap();
         assert!(ws.panes[0].parked);
         assert_eq!(ws.ui.dialog.unwrap().kind, DialogKind::RestoreConfirm);
+        let popup = frame(&ws);
+        let bounds = kelpmux::native::workspace::dialog_bounds_for(
+            popup.cols,
+            popup.rows,
+            DialogKind::RestoreConfirm,
+        );
+        let button = kelpmux::native::workspace::close_buttons(bounds)[1];
+        assert_eq!(
+            popup.cells[usize::from(button.y * popup.cols + button.x)].bg,
+            Color::Indexed(kelpmux::native::ui::RESTORE_BG)
+        );
         ws.apply(&Action::DialogClose).unwrap();
     }
     ws.apply(&Action::Parked).unwrap();
@@ -319,7 +351,7 @@ fn parked_tab_control_fits_all_positions_and_remains_reachable_when_all_parked()
                     ws.apply(&Action::Read(1)).unwrap();
                 }
                 let f = frame(&ws);
-                let targets = tab_targets(f.cols, f.rows, &f.ui.config, count as usize, 0);
+                let targets = tab_targets(f.cols, f.rows, &f.ui.config, count as usize, 0, 0);
                 for (i, (_, rect)) in targets.iter().enumerate() {
                     assert!(rect.x + rect.cols <= f.cols && rect.y + rect.rows <= f.rows);
                     for (_, other) in targets.iter().skip(i + 1) {
@@ -336,6 +368,34 @@ fn parked_tab_control_fits_all_positions_and_remains_reachable_when_all_parked()
                     .find(|(t, _)| *t == TabTarget::Parked)
                     .unwrap()
                     .1;
+                for (target, rect) in &targets {
+                    if let TabTarget::Pane(index) = target {
+                        if position.resolve(f.cols, f.rows) == TabPosition::Left {
+                            continue;
+                        }
+                        let bg = Color::Indexed(if *index == 0 { 250 } else { 234 });
+                        assert_eq!(f.cells[usize::from(rect.y * f.cols + rect.x)].bg, bg);
+                        for (control, symbol, color) in [
+                            (
+                                kelpmux::native::workspace::tab_park(*rect),
+                                "⊟",
+                                if *index == 0 { 91 } else { 141 },
+                            ),
+                            (
+                                kelpmux::native::workspace::tab_close(*rect),
+                                "×",
+                                if *index == 0 { 160 } else { 203 },
+                            ),
+                        ] {
+                            let cell = &f.cells[usize::from(control.y * f.cols + control.x + 1)];
+                            assert_eq!(cell.text, symbol);
+                            assert_eq!(cell.fg, Color::Indexed(color));
+                            for x in control.x..control.x + control.cols {
+                                assert_eq!(f.cells[usize::from(control.y * f.cols + x)].bg, bg);
+                            }
+                        }
+                    }
+                }
                 assert_eq!(
                     actions(Router::default().route(
                         click(Point {
@@ -628,10 +688,14 @@ fn responsive_tabs_keep_all_panes_without_overlays_and_mouse_selects_tabs() {
             assert_eq!(views.iter().filter(|v| v.body.cols > 0).count(), 1);
             let body = views[8].body;
             assert!(body.cols >= 12 && body.rows > 0);
-            assert!(body.x + body.cols <= size.0 && body.y + body.rows < size.1);
+            assert!(body.x + body.cols <= size.0 && body.y + body.rows <= size.1);
+            assert_eq!(
+                body.y + body.rows == size.1,
+                position.resolve(size.0, size.1) == TabPosition::Left
+            );
             assert_eq!(ws.terminal_sizes().len(), 9);
             let f = frame(&ws);
-            let targets = tab_targets(f.cols, f.rows, &f.ui.config, 9, 8);
+            let targets = tab_targets(f.cols, f.rows, &f.ui.config, 9, 8, 0);
             let (_, rect) = targets
                 .iter()
                 .find(|(target, _)| *target == TabTarget::Pane(8))
@@ -708,19 +772,19 @@ fn config_position_choices_and_close_confirmation_require_explicit_consent() {
     );
 }
 #[test]
-fn selecting_same_tab_does_not_toggle_back_to_grid_and_width_is_inline() {
+fn selecting_same_tab_keeps_tabs_and_legacy_width_actions_do_not_limit_content() {
     let mut ws = workspace((240, 70), (3, 3));
     ws.apply(&Action::Select(5)).unwrap();
     ws.apply(&Action::Select(5)).unwrap();
     assert_eq!(ws.reading, ReadingMode::Tabs(5));
     ws.apply(&Action::ReadResize { cols: 90, rows: 3 }).unwrap();
     let cap = ws.layout()[4].body;
-    assert_eq!(cap.cols, 90);
-    assert_eq!(cap.rows, 66);
-    assert_eq!(cap.y, 3);
+    assert_eq!(cap.cols, 240);
+    assert_eq!(cap.rows, 67);
+    assert_eq!(cap.y, 2);
     assert_eq!(cap.x, 0);
     ws.apply(&Action::Fullscreen(5)).unwrap();
-    assert_eq!(ws.layout()[4].body.cols, 239);
+    assert_eq!(ws.layout()[4].body.cols, 240);
     ws.apply(&Action::Fullscreen(5)).unwrap();
     assert_eq!(ws.layout()[4].body, cap);
     ws.apply(&Action::Read(5)).unwrap();
@@ -739,15 +803,19 @@ fn footer_buttons_and_compact_vitals_have_disjoint_hit_targets() {
         .iter()
         .map(|c| c.text.as_str())
         .collect::<String>();
-    assert!(footer.contains("14:49"));
+    assert!(!footer.contains("14:49"));
     assert!(footer.contains("Parked"));
-    assert!(footer.starts_with(" Config "));
-    assert!(footer.starts_with(" Config  Tabs "));
+    assert!(footer.starts_with(" ⚙︎ Config"));
+    assert!(footer.starts_with(" ⚙︎ Config  ▦ Tabs "));
     assert!(footer.find("Parked").unwrap() < footer.find('?').unwrap());
     assert!(!footer.contains('⛶') && !footer.contains('▣'));
     let start = usize::from((f.rows - 1) * f.cols);
+    let config = f.controls()[0];
+    let trailing = &f.cells[start + usize::from(config.cols - 1)];
+    assert_eq!(trailing.text, " ");
+    assert_eq!(trailing.bg, Color::Indexed(24));
     assert!(
-        f.cells[start + usize::from(kelpmux::native::ui::FOOTER_COLS)..]
+        f.cells[start + usize::from(f.footer_cols())..]
             .iter()
             .all(|c| c.bg == Color::Indexed(kelpmux::native::ui::FOOTER_BG))
     );
@@ -768,7 +836,7 @@ fn footer_buttons_and_compact_vitals_have_disjoint_hit_targets() {
     assert_eq!(
         actions(Router::default().route(
             click(Point {
-                x: 9,
+                x: f.controls()[1].x,
                 y: f.rows - 1
             }),
             &f
@@ -788,7 +856,7 @@ fn footer_buttons_and_compact_vitals_have_disjoint_hit_targets() {
     assert_eq!(
         actions(Router::default().route(
             click(Point {
-                x: 29,
+                x: f.footer_cols() - 2,
                 y: f.rows - 1
             }),
             &f
@@ -806,7 +874,7 @@ fn grid_headers_separate_rows_without_gaps_and_vertical_lines_keep_the_left_pane
         for view in &views {
             if view.rect.x > 0 {
                 let x = view.rect.x - 1;
-                assert_eq!(f.cells[usize::from(view.body.y * f.cols + x)].text, "┃");
+                assert_eq!(f.cells[usize::from(view.body.y * f.cols + x)].text, "│");
                 let left = views
                     .iter()
                     .find(|left| left.rect.y == view.rect.y && left.rect.x + left.rect.cols == x)
@@ -829,6 +897,9 @@ fn grid_headers_separate_rows_without_gaps_and_vertical_lines_keep_the_left_pane
                 );
                 assert_eq!(view.body.y, view.rect.y + 1);
             }
+            let line = &f.cells[usize::from(view.rect.y * f.cols + view.rect.x)];
+            assert_eq!(line.text, "─");
+            assert_eq!(line.bg, Color::Default);
         }
         let mut display = Terminal::new(f.cols, f.rows);
         display.feed(&terminal_diff(None, &f));
@@ -837,7 +908,7 @@ fn grid_headers_separate_rows_without_gaps_and_vertical_lines_keep_the_left_pane
 }
 
 #[test]
-fn responsive_new_tabs_wrap_controls_and_graphic_confirmation_have_disjoint_targets() {
+fn responsive_new_tabs_and_graphic_confirmation_have_disjoint_targets() {
     use kelpmux::native::{
         ui::TabPosition,
         workspace::{TabTarget, close_buttons, dialog_bounds_for, tab_targets},
@@ -848,7 +919,7 @@ fn responsive_new_tabs_wrap_controls_and_graphic_confirmation_have_disjoint_targ
             ws.ui.config.tab_position = position;
             ws.apply(&Action::Select(1)).unwrap();
             let f = frame(&ws);
-            let targets = tab_targets(f.cols, f.rows, &f.ui.config, 2, 0);
+            let targets = tab_targets(f.cols, f.rows, &f.ui.config, 2, 0, 0);
             for (index, (_, rect)) in targets.iter().enumerate() {
                 assert!(rect.x + rect.cols <= f.cols && rect.y + rect.rows <= f.rows);
                 for (_, other) in targets.iter().skip(index + 1) {
@@ -882,28 +953,8 @@ fn responsive_new_tabs_wrap_controls_and_graphic_confirmation_have_disjoint_targ
                     3
                 );
             }
-            let capped = ws.layout()[0].body;
-            let effective = kelpmux::native::workspace::reading_limit_effective(
-                ws.cols,
-                ws.rows,
-                &ws.ui.config,
-            );
-            if capped.x + capped.cols < ws.cols && effective {
-                assert_eq!(
-                    actions(Router::default().route(
-                        click(Point {
-                            x: capped.x + capped.cols,
-                            y: capped.y
-                        }),
-                        &f
-                    )),
-                    vec![Action::WrapToggle]
-                );
-            }
-            ws.apply(&Action::WrapToggle).unwrap();
-            assert!(!ws.ui.config.wrap_lines);
             let full = ws.layout()[0].body;
-            assert_eq!(full.x + full.cols, ws.cols - u16::from(effective));
+            assert_eq!(full.x + full.cols, ws.cols);
             let full_frame = frame(&ws);
             let edge_actions = actions(Router::default().route(
                 click(Point {
@@ -912,17 +963,11 @@ fn responsive_new_tabs_wrap_controls_and_graphic_confirmation_have_disjoint_targ
                 }),
                 &full_frame,
             ));
-            if effective {
-                assert_eq!(edge_actions, vec![Action::WrapToggle]);
-            } else {
-                assert!(!edge_actions.contains(&Action::WrapToggle));
-            }
+            assert!(!edge_actions.contains(&Action::WrapToggle));
             assert_eq!(
                 full_frame.cells[usize::from(full.y * ws.cols + ws.cols - 1)].text,
-                if effective { "−" } else { " " }
+                " "
             );
-            ws.apply(&Action::WrapToggle).unwrap();
-            assert_eq!(ws.layout()[0].body, capped);
 
             ws.apply(&Action::Config).unwrap();
             let f = frame(&ws);
@@ -940,7 +985,7 @@ fn responsive_new_tabs_wrap_controls_and_graphic_confirmation_have_disjoint_targ
                     }),
                     &f
                 )),
-                vec![Action::WrapToggle]
+                Vec::<Action>::new()
             );
             ws.apply(&Action::ClosePaneRequest(2)).unwrap();
             let f = frame(&ws);
@@ -999,13 +1044,15 @@ fn neutral_tabs_ignore_legacy_palette_settings_and_numbers_focus() {
         ws.ui.config.tab_position = TabPosition::Left;
         ws.apply(&Action::Select(1)).unwrap();
         let f = frame(&ws);
-        let targets = tab_targets(f.cols, f.rows, &f.ui.config, 2, 0);
+        let targets = tab_targets(f.cols, f.rows, &f.ui.config, 2, 0, 0);
         for index in 0..2 {
-            let rect = targets
+            let Some((_, rect)) = targets
                 .iter()
                 .find(|(target, _)| *target == TabTarget::Pane(index))
-                .unwrap()
-                .1;
+            else {
+                continue;
+            };
+            let rect = *rect;
             let number = tab_number(rect);
             let number_cell = &f.cells[usize::from(number.y * f.cols + number.x + 1)];
             assert_eq!(
@@ -1017,7 +1064,7 @@ fn neutral_tabs_ignore_legacy_palette_settings_and_numbers_focus() {
                 assert_eq!(
                     f.cells[usize::from(number.y * f.cols + x)].bg,
                     Color::Indexed(if index == 0 {
-                        240
+                        250
                     } else {
                         kelpmux::native::ui::TAB_BG
                     })
@@ -1030,11 +1077,11 @@ fn neutral_tabs_ignore_legacy_palette_settings_and_numbers_focus() {
             if rect.rows >= 3 {
                 let title = &f.cells[usize::from((rect.y + 1) * f.cols + rect.x + 2)];
                 assert_eq!(title.text, "a");
-                assert_eq!(title.fg, Color::Indexed(231));
+                assert_eq!(title.fg, Color::Indexed(if index == 0 { 232 } else { 231 }));
                 assert_eq!(
                     title.bg,
                     Color::Indexed(if index == 0 {
-                        240
+                        250
                     } else {
                         kelpmux::native::ui::TAB_BG
                     })
@@ -1105,7 +1152,14 @@ fn terminal_content_has_no_blank_side_margins_in_tabs_or_grid() {
         let mut f = frame(&ws);
         let body = f.panes[0].body;
         assert_eq!(body.x + body.cols, f.cols);
-        assert_eq!(body.x, if position == TabPosition::Left { 24 } else { 0 });
+        assert_eq!(
+            body.x,
+            if position == TabPosition::Left {
+                kelpmux::native::workspace::sidebar_width(f.cols)
+            } else {
+                0
+            }
+        );
         f.panes[0].modes.mouse_click = true;
         for x in [body.x, body.x + body.cols - 1] {
             let point = Point { x, y: body.y + 2 };
@@ -1125,16 +1179,13 @@ fn terminal_content_has_no_blank_side_margins_in_tabs_or_grid() {
 }
 
 #[test]
-fn width_switch_reserves_only_a_useful_divider_at_the_cap_boundary() {
-    use kelpmux::native::{
-        ui::TabPosition,
-        workspace::{reading_limit_effective, tab_body},
-    };
+fn tab_bodies_fill_available_width_despite_legacy_width_settings() {
+    use kelpmux::native::{ui::TabPosition, workspace::tab_body};
     for position in [TabPosition::Left, TabPosition::Top, TabPosition::Bottom] {
         let mut ws = workspace((120, 40), (1, 1));
         ws.ui.config.tab_position = position;
         let available = if position == TabPosition::Left {
-            96
+            ws.cols - kelpmux::native::workspace::sidebar_width(ws.cols)
         } else {
             120
         };
@@ -1145,16 +1196,21 @@ fn width_switch_reserves_only_a_useful_divider_at_the_cap_boundary() {
             available,
             available + 1,
         ] {
-            ws.ui.config.read_width = cap;
-            let effective = available.saturating_sub(cap) >= 20;
-            assert_eq!(
-                reading_limit_effective(ws.cols, ws.rows, &ws.ui.config),
-                effective
-            );
+            ws.ui.config = serde_json::from_value(serde_json::json!({
+                "tab_position": position,
+                "read_width": cap,
+                "wrap_lines": true,
+                "remembered_read_widths": [80, 85, 90]
+            }))
+            .unwrap();
             let capped = tab_body(ws.cols, ws.rows, &ws.ui.config, false, None);
             let full = tab_body(ws.cols, ws.rows, &ws.ui.config, true, None);
-            assert_eq!(full.cols, available - u16::from(effective));
-            assert_eq!(capped.cols, if effective { cap } else { available });
+            assert_eq!(full.cols, available);
+            assert_eq!(capped.cols, available);
+            let saved = serde_json::to_value(&ws.ui.config).unwrap();
+            for key in ["read_width", "wrap_lines", "remembered_read_widths"] {
+                assert!(saved.get(key).is_none());
+            }
         }
     }
 }
@@ -1190,7 +1246,7 @@ fn working_tabs_animate_only_one_character_and_keep_bells_beside_titles() {
                 read: false,
                 workspace: "test".into(),
             });
-            let tab = tab_targets(ws.cols, ws.rows, &ws.ui.config, 2, active - 1)
+            let tab = tab_targets(ws.cols, ws.rows, &ws.ui.config, 2, active - 1, 0)
                 .into_iter()
                 .find(|(target, _)| *target == TabTarget::Pane(0))
                 .unwrap()
@@ -1224,8 +1280,9 @@ fn working_tabs_animate_only_one_character_and_keep_bells_beside_titles() {
                 }
             }
             let bell = usize::from((tab.y + 1) * ws.cols + tab.x + 2);
-            assert_eq!(b.cells[bell].text, "🔔");
-            assert_eq!(b.cells[bell].width, 2);
+            assert_eq!(b.cells[bell].text, kelpmux::native::ui::ALERT_ICON);
+            assert_eq!(b.cells[bell].width, 1);
+            assert_eq!(b.cells[bell + 1].text, " ");
             let mut display = Terminal::new(ws.cols, ws.rows);
             display.feed(&terminal_diff(None, &a));
             assert_eq!(display.snapshot().cells, a.cells);
@@ -1235,13 +1292,18 @@ fn working_tabs_animate_only_one_character_and_keep_bells_beside_titles() {
             ws.panes[0].status = Status::Unknown;
             let stopped = compose(&ws, &screens, true, None, 16);
             assert_eq!(stopped.cells, compose(&ws, &screens, true, None, 32).cells);
-            assert!(!stopped.cells.iter().any(|cell| cell.text == "🔔"));
+            assert!(
+                !stopped
+                    .cells
+                    .iter()
+                    .any(|cell| cell.text == kelpmux::native::ui::ALERT_ICON)
+            );
         }
     }
 }
 
 #[test]
-fn tab_folder_subtitles_and_horizontal_rules_stay_outside_terminal_hit_targets() {
+fn tab_folder_subtitles_and_horizontal_bars_touch_terminal_content() {
     use kelpmux::native::{
         ui::TabPosition,
         workspace::{TabTarget, tab_targets},
@@ -1253,7 +1315,7 @@ fn tab_folder_subtitles_and_horizontal_rules_stay_outside_terminal_hit_targets()
         ws.panes[0].cwd = "/home/joan/repos/project".into();
         ws.apply(&Action::Select(1)).unwrap();
         let f = frame(&ws);
-        let tab = tab_targets(f.cols, f.rows, &f.ui.config, 2, 0)
+        let tab = tab_targets(f.cols, f.rows, &f.ui.config, 2, 0, 0)
             .into_iter()
             .find(|(target, _)| *target == TabTarget::Pane(0))
             .unwrap()
@@ -1273,26 +1335,12 @@ fn tab_folder_subtitles_and_horizontal_rules_stay_outside_terminal_hit_targets()
         );
         assert_ne!(f.cells[folder].fg, f.cells[name].fg);
         if position != TabPosition::Left {
-            let y = if position == TabPosition::Top {
-                2
+            let body = f.panes[0].body;
+            assert_eq!(body.rows, f.rows - 3);
+            if position == TabPosition::Top {
+                assert_eq!(body.y, tab.y + tab.rows);
             } else {
-                f.rows - 4
-            };
-            for x in 0..f.cols {
-                assert_eq!(
-                    f.cells[usize::from(y * f.cols + x)].text,
-                    if position == TabPosition::Top {
-                        "▔"
-                    } else {
-                        "▁"
-                    }
-                );
-                assert!(
-                    Router::default()
-                        .route(click(Point { x, y }), &f)
-                        .is_empty()
-                );
-                assert!(!f.panes[0].body.contains(Point { x, y }));
+                assert_eq!(body.y + body.rows, tab.y);
             }
         }
     }
@@ -1322,7 +1370,7 @@ fn horizontal_tabs_have_two_rows_an_attached_add_button_and_footer_parked() {
                     ws.apply(&Action::Select(1)).unwrap();
                 }
                 let f = frame(&ws);
-                let targets = tab_targets(ws.cols, ws.rows, &ws.ui.config, count as usize, 0);
+                let targets = tab_targets(ws.cols, ws.rows, &ws.ui.config, count as usize, 0, 0);
                 assert!(
                     targets
                         .iter()
@@ -1348,14 +1396,7 @@ fn horizontal_tabs_have_two_rows_an_attached_add_button_and_footer_parked() {
                 for y in new.y..new.y + new.rows {
                     for x in new.x..new.x + new.cols {
                         let actual = actions(Router::default().route(click(Point { x, y }), &f));
-                        assert_eq!(
-                            actual,
-                            if count < 9 {
-                                vec![Action::NewTab]
-                            } else {
-                                vec![]
-                            }
-                        );
+                        assert_eq!(actual, vec![Action::NewTab]);
                     }
                     assert_eq!(
                         actions(Router::default().route(
@@ -1478,7 +1519,7 @@ fn tab_overflow_arrows_only_appear_when_needed_and_bracket_the_list() {
                     ws.ui.config.tab_position = position;
                     ws.apply(&Action::Select(active + 1)).unwrap();
                     let f = frame(&ws);
-                    let targets = tab_targets(f.cols, f.rows, &f.ui.config, count, active);
+                    let targets = tab_targets(f.cols, f.rows, &f.ui.config, count, active, 0);
                     let tabs: Vec<_> = targets
                         .iter()
                         .filter(|(t, _)| matches!(t, TabTarget::Pane(_)))
@@ -1501,7 +1542,7 @@ fn tab_overflow_arrows_only_appear_when_needed_and_bracket_the_list() {
                         assert_eq!(arrow.is_some(), overflow);
                         if let Some((_, rect)) = arrow {
                             if position == TabPosition::Left {
-                                if direction == TabTarget::Previous {
+                                if direction == TabTarget::Previous || rect.y == 0 {
                                     assert!(rect.y < tabs[0].1.y);
                                 } else {
                                     assert!(
@@ -1555,7 +1596,7 @@ fn tab_overflow_arrows_only_appear_when_needed_and_bracket_the_list() {
 }
 
 #[test]
-fn neutral_focus_connects_sidebar_and_width_dividers_regardless_of_legacy_palette() {
+fn neutral_focus_connects_sidebar_divider_regardless_of_legacy_palette() {
     use kelpmux::native::{
         ui::{PALETTE, TabPosition},
         workspace::{TabTarget, tab_number, tab_targets},
@@ -1569,11 +1610,10 @@ fn neutral_focus_connects_sidebar_and_width_dividers_regardless_of_legacy_palett
             color: color as u8,
         })
         .unwrap();
-        for wrapping in [true, false] {
-            ws.ui.config.wrap_lines = wrapping;
+        {
             let f = frame(&ws);
             let body = f.panes[0].body;
-            let tab = tab_targets(f.cols, f.rows, &f.ui.config, 2, 0)
+            let tab = tab_targets(f.cols, f.rows, &f.ui.config, 2, 0, 0)
                 .into_iter()
                 .find(|(t, _)| *t == TabTarget::Pane(0))
                 .unwrap()
@@ -1581,7 +1621,7 @@ fn neutral_focus_connects_sidebar_and_width_dividers_regardless_of_legacy_palett
             let number = tab_number(tab);
             assert_eq!(
                 f.cells[usize::from(number.y * f.cols + number.x + 4)].bg,
-                Color::Indexed(240)
+                Color::Indexed(250)
             );
             for y in 0..f.rows - 1 {
                 let cell = &f.cells[usize::from(y * f.cols + body.x - 1)];
@@ -1589,22 +1629,7 @@ fn neutral_focus_connects_sidebar_and_width_dividers_regardless_of_legacy_palett
                 assert_eq!(cell.fg, Color::Indexed(250));
                 assert_eq!(cell.bg, Color::Default);
             }
-            let right = body.x + body.cols;
-            if !wrapping {
-                assert_eq!(right, f.cols - 1);
-            }
-            for y in body.y..body.y + body.rows {
-                let cell = &f.cells[usize::from(y * f.cols + right)];
-                assert_eq!(
-                    cell.text,
-                    if y == body.y {
-                        if wrapping { "+" } else { "−" }
-                    } else {
-                        "│"
-                    }
-                );
-                assert_eq!(cell.fg, Color::Indexed(250));
-            }
+            assert_eq!(body.x + body.cols, f.cols);
         }
     }
 }
@@ -1648,12 +1673,12 @@ fn automatic_grid_parking_controls_alert_colors_and_three_row_tabs() {
         assert_eq!(ws.reading, ReadingMode::Grid);
         ws.apply(&Action::Read(1)).unwrap();
         let f = frame(&ws);
-        let tab = tab_targets(f.cols, f.rows, &f.ui.config, 1, 0)
+        let tab = tab_targets(f.cols, f.rows, &f.ui.config, 1, 0, 0)
             .into_iter()
             .find(|(t, _)| *t == TabTarget::Pane(0))
             .unwrap()
             .1;
-        assert_eq!(tab.rows, if size.1 >= 14 { 3 } else { 1 });
+        assert_eq!(tab.rows, 3);
         let park = tab_park(tab);
         assert_eq!(
             actions(Router::default().route(
@@ -1665,7 +1690,14 @@ fn automatic_grid_parking_controls_alert_colors_and_three_row_tabs() {
             )),
             vec![Action::ParkRequest(1)]
         );
-        let at = usize::from((f.rows - 1) * f.cols + 29);
+        let help = f.controls()[3];
+        let start = usize::from(help.y * f.cols + help.x);
+        let at = start
+            + f.cells[start..start + usize::from(help.cols)]
+                .iter()
+                .position(|cell| cell.text == "?")
+                .unwrap();
+        assert_eq!(f.cells[at].text, "?");
         assert_eq!(f.cells[at].bg, Color::Indexed(94));
         ws.ui.notifications.push(Notification {
             id: 1,
@@ -1676,8 +1708,19 @@ fn automatic_grid_parking_controls_alert_colors_and_three_row_tabs() {
             read: false,
             workspace: "test".into(),
         });
-        assert_eq!(frame(&ws).cells[at].bg, Color::Indexed(160));
+        let unread = frame(&ws);
+        let alert = start
+            + unread.cells[start..start + usize::from(help.cols)]
+                .iter()
+                .position(|cell| cell.text == kelpmux::native::ui::ALERT_ICON)
+                .unwrap();
+        assert_eq!(
+            frame(&ws).cells[alert].text,
+            kelpmux::native::ui::ALERT_ICON
+        );
+        assert_eq!(frame(&ws).cells[alert].bg, Color::Indexed(160));
         ws.apply(&Action::Acknowledge(1)).unwrap();
+        assert_eq!(frame(&ws).cells[at].text, "?");
         assert_eq!(frame(&ws).cells[at].bg, Color::Indexed(94));
     }
 }
@@ -1703,15 +1746,11 @@ fn settings_zones_radio_values_and_keyboard_focus_remain_usable_on_small_screens
                 Color::Indexed(238)
             );
         }
-        for (index, value, rect) in &targets {
+        for (_, value, rect) in &targets {
             assert!(rect.x >= bounds.x && rect.x + rect.cols <= bounds.x + bounds.cols);
             assert!(rect.y > bounds.y && rect.y + rect.rows <= bounds.y + bounds.rows);
             if let Some(value) = value {
-                let current = if *index == 4 {
-                    ws.ui.config.wrap_lines
-                } else {
-                    ws.ui.config.notification_sound
-                };
+                let current = ws.ui.config.notification_sound;
                 let f = frame(&ws);
                 assert_eq!(
                     f.cells[usize::from((rect.y + rect.rows / 2) * f.cols + rect.x + 1)].text,
@@ -1727,26 +1766,12 @@ fn settings_zones_radio_values_and_keyboard_focus_remain_usable_on_small_screens
                 if current == *value {
                     assert!(messages.is_empty());
                 } else {
-                    assert_eq!(
-                        messages,
-                        vec![if *index == 4 {
-                            Action::WrapToggle
-                        } else {
-                            Action::NotificationSoundToggle
-                        }]
-                    );
+                    assert_eq!(messages, vec![Action::NotificationSoundToggle]);
                     for action in messages {
                         ws.apply(&action).unwrap();
                     }
                 }
-                assert_eq!(
-                    if *index == 4 {
-                        ws.ui.config.wrap_lines
-                    } else {
-                        ws.ui.config.notification_sound
-                    },
-                    *value
-                );
+                assert_eq!(ws.ui.config.notification_sound, *value);
                 let selected = frame(&ws);
                 assert_eq!(
                     selected.cells
@@ -1768,14 +1793,7 @@ fn settings_zones_radio_values_and_keyboard_focus_remain_usable_on_small_screens
             }
         }
         ws.apply(&Action::DialogPick(2)).unwrap();
-        for (dx, dy, expected) in [
-            (1, 0, 3),
-            (-1, 0, 2),
-            (0, 1, 4),
-            (0, 1, 5),
-            (0, -1, 4),
-            (0, -1, 2),
-        ] {
+        for (dx, dy, expected) in [(1, 0, 3), (-1, 0, 2), (0, 1, 4), (0, 1, 4), (0, -1, 2)] {
             ws.apply(&Action::DialogNavigate { dx, dy }).unwrap();
             assert_eq!(ws.ui.dialog.unwrap().selection, expected);
         }
@@ -1806,8 +1824,8 @@ fn settings_zones_radio_values_and_keyboard_focus_remain_usable_on_small_screens
         for action in actions(Router::default().route(click(Point { x: on.x, y: on.y }), &f)) {
             ws.apply(&action).unwrap();
         }
-        assert_eq!(ws.reading, ReadingMode::Tabs(1));
-        assert!(ws.ui.config.wrap_lines);
+        assert_eq!(ws.reading, ReadingMode::Fullscreen(1));
+        assert!(ws.ui.config.notification_sound);
     }
 }
 
@@ -1838,7 +1856,7 @@ fn grid_dimming_is_presentation_only_and_focus_restores_original_application_col
 }
 
 #[test]
-fn grid_header_numbers_zoom_park_close_and_footer_have_distinct_targets() {
+fn grid_header_numbers_park_close_and_footer_have_distinct_targets_without_zoom() {
     use kelpmux::native::workspace::{grid_controls, tab_number};
     let ws = workspace((180, 50), (2, 1));
     let f = frame(&ws);
@@ -1854,10 +1872,21 @@ fn grid_header_numbers_zoom_park_close_and_footer_have_distinct_targets() {
             number_cell.fg,
             Color::Indexed(if id == ws.active { 226 } else { 231 })
         );
-        let [zoom, park, close] = grid_controls(header);
+        let [park, close] = grid_controls(header);
+        assert!(!f.cells.iter().any(|cell| cell.text == "⛶"));
+        for (control, symbol, color) in [(park, "⊟", 141), (close, "×", 203)] {
+            let cell = &f.cells[usize::from(control.y * f.cols + control.x + 1)];
+            assert_eq!(cell.text, symbol);
+            assert_eq!(cell.fg, Color::Indexed(color));
+            for x in control.x..control.x + control.cols {
+                assert_eq!(
+                    f.cells[usize::from(control.y * f.cols + x)].bg,
+                    Color::Default
+                );
+            }
+        }
         for (control, expected) in [
             (number, Action::Focus(id)),
-            (zoom, Action::Fullscreen(id)),
             (park, Action::ParkRequest(id)),
             (close, Action::ClosePaneRequest(id)),
         ] {
@@ -1873,7 +1902,8 @@ fn grid_header_numbers_zoom_park_close_and_footer_have_distinct_targets() {
             );
         }
     }
-    for x in 14..28 {
+    let parked = f.controls()[2];
+    for x in parked.x..parked.x + parked.cols {
         assert_eq!(
             actions(Router::default().route(click(Point { x, y: f.rows - 1 }), &f)),
             vec![Action::Parked]
@@ -1938,7 +1968,7 @@ fn tabs_keep_name_separate_from_metadata_and_controls_centered() {
         ws.panes[0].cwd = "/repos/project".into();
         ws.apply(&Action::Read(1)).unwrap();
         let f = frame(&ws);
-        let targets = tab_targets(f.cols, f.rows, &f.ui.config, 2, 0);
+        let targets = tab_targets(f.cols, f.rows, &f.ui.config, 2, 0, 0);
         let tab = targets
             .iter()
             .find(|(target, _)| *target == TabTarget::Pane(0))
@@ -1997,13 +2027,14 @@ fn tab_surfaces_follow_dark_and_light_backgrounds_without_repainting_terminal_de
             let mut ws = workspace((240, 60), (2, 1));
             ws.ui.config.tab_position = position;
             ws.ui.terminal_theme[1] = Some(background);
+            ws.panes[0].title = "shell".into();
             ws.panes[1].status = Status::Working;
             ws.apply(&Action::Read(1)).unwrap();
             let f = frame(&ws);
             let point = match position {
                 TabPosition::Left => Point {
                     x: 0,
-                    y: f.rows - 2,
+                    y: f.rows / 2,
                 },
                 TabPosition::Bottom => Point {
                     x: f.cols - 1,
@@ -2016,36 +2047,103 @@ fn tab_surfaces_follow_dark_and_light_backgrounds_without_repainting_terminal_de
             };
             assert_eq!(
                 f.cells[usize::from(point.y * f.cols + point.x)].bg,
-                expected
+                if position == TabPosition::Left {
+                    expected
+                } else {
+                    Color::Indexed(234)
+                }
             );
-            let new = tab_targets(f.cols, f.rows, &f.ui.config, 2, 0)
+            let new = tab_targets(f.cols, f.rows, &f.ui.config, 2, 0, 0)
                 .into_iter()
                 .find(|(target, _)| *target == TabTarget::New)
                 .unwrap()
                 .1;
+            let offset = if position == TabPosition::Left {
+                14
+            } else {
+                24
+            };
             let [r, g, b] = background.map(|value| {
                 if light {
-                    value.saturating_sub(24)
+                    value.saturating_sub(offset)
                 } else {
-                    value.saturating_add(24)
+                    value.saturating_add(offset)
                 }
             });
             assert_eq!(
                 f.cells[usize::from(new.y * f.cols + new.x)].bg,
-                Color::Rgb(r, g, b)
+                if position == TabPosition::Left {
+                    Color::Rgb(r, g, b)
+                } else {
+                    Color::Indexed(234)
+                }
             );
-            let inactive = tab_targets(f.cols, f.rows, &f.ui.config, 2, 0)
+            let inactive = tab_targets(f.cols, f.rows, &f.ui.config, 2, 0, 0)
                 .into_iter()
                 .find(|(target, _)| *target == TabTarget::Pane(1))
                 .unwrap()
                 .1;
+            let selected = tab_targets(f.cols, f.rows, &f.ui.config, 2, 0, 0)
+                .into_iter()
+                .find(|(target, _)| *target == TabTarget::Pane(0))
+                .unwrap()
+                .1;
+            let title_start = usize::from((selected.y + 1) * f.cols + selected.x + 2);
+            let title = &f.cells[title_start..title_start + 5];
+            assert_eq!(
+                title
+                    .iter()
+                    .map(|cell| cell.text.as_str())
+                    .collect::<String>(),
+                "shell"
+            );
+            assert!(title.iter().all(|cell| cell.italic));
+            let divider = match position {
+                TabPosition::Left => Point {
+                    x: f.panes[0].body.x - 1,
+                    y: 0,
+                },
+                TabPosition::Top => Point { x: 0, y: 2 },
+                TabPosition::Bottom => Point {
+                    x: 0,
+                    y: f.rows - 4,
+                },
+                TabPosition::Auto => unreachable!(),
+            };
+            if position == TabPosition::Left {
+                assert_eq!(
+                    title[0].bg,
+                    f.cells[usize::from(divider.y * f.cols + divider.x)].fg
+                );
+            } else {
+                assert_eq!(title[0].bg, Color::Indexed(250));
+                assert_eq!(
+                    f.cells[usize::from(inactive.y * f.cols + inactive.x)].bg,
+                    Color::Indexed(234)
+                );
+            }
             let number = tab_number(inactive);
             assert_eq!(
                 f.cells[usize::from(number.y * f.cols + number.x + 1)].fg,
-                Color::Indexed(if light { 232 } else { 231 })
+                Color::Indexed(if position != TabPosition::Left {
+                    250
+                } else if light {
+                    232
+                } else {
+                    231
+                })
             );
             let ball = f.cells.iter().find(|cell| cell.text == "⣤").unwrap();
-            assert_eq!(ball.fg, Color::Indexed(if light { 232 } else { 231 }));
+            assert_eq!(
+                ball.fg,
+                Color::Indexed(if position != TabPosition::Left {
+                    250
+                } else if light {
+                    232
+                } else {
+                    231
+                })
+            );
             let body = f.panes.iter().find(|view| view.pane.id == 1).unwrap().body;
             assert_eq!(
                 f.cells[usize::from(body.y * f.cols + body.x)].bg,
@@ -2072,28 +2170,266 @@ fn tab_surfaces_follow_dark_and_light_backgrounds_without_repainting_terminal_de
 }
 
 #[test]
-fn footer_parked_help_order_has_no_new_tab_button() {
-    use kelpmux::native::workspace::{help_button, parked_button};
-    for size in [(40, 10), (120, 40)] {
-        for count in [1, 9] {
+fn sidebar_status_controls_and_metrics_leave_the_last_terminal_row_usable() {
+    use kelpmux::native::{
+        ui::TabPosition,
+        workspace::{TabTarget, sidebar_width, tab_targets},
+    };
+    for size in [(40, 10), (120, 40), (240, 60)] {
+        for position in [TabPosition::Left, TabPosition::Top, TabPosition::Bottom] {
             let mut ws = workspace(size, (3, 3));
-            ws.panes.truncate(count);
+            ws.ui.config.tab_position = position;
+            ws.ui.vitals = vec![
+                ("cpu ▂ 51%".into(), 114),
+                ("mem ▄ 100%".into(), 141),
+                ("swap ▁ 0%".into(), 73),
+                ("disk".into(), 222),
+                ("◔ 20%".into(), 222),
+                ("● 95%".into(), 196),
+                ("2026-10-21".into(), 39),
+                ("12:34".into(), 250),
+            ];
+            ws.panes[8].title = "Shell".into();
+            ws.apply(&Action::Read(9)).unwrap();
+            let body = ws
+                .layout()
+                .into_iter()
+                .find(|view| view.pane.id == 9)
+                .unwrap()
+                .body;
+            let mut terminal = Terminal::new(body.cols, body.rows);
+            terminal.feed(format!("\x1b[{};1Hlast row", body.rows).as_bytes());
+            let f = compose(
+                &ws,
+                &BTreeMap::from([(9, terminal.snapshot())]),
+                true,
+                None,
+                0,
+            );
+            assert_eq!(body.y + body.rows == f.rows, position == TabPosition::Left);
+            assert_eq!(
+                f.cells[usize::from((body.y + body.rows - 1) * f.cols + body.x)].text,
+                "l"
+            );
+            for (rect, expected) in f.controls().into_iter().zip([
+                Action::Config,
+                Action::Read(9),
+                Action::Parked,
+                Action::Help,
+            ]) {
+                assert!(!body.contains(Point {
+                    x: rect.x,
+                    y: rect.y
+                }));
+                assert_eq!(
+                    actions(Router::default().route(
+                        click(Point {
+                            x: rect.x,
+                            y: rect.y
+                        }),
+                        &f
+                    )),
+                    vec![expected]
+                );
+            }
+            if position == TabPosition::Left {
+                let status_top = f.rows - kelpmux::native::workspace::sidebar_status_rows(f.rows);
+                let width = sidebar_width(f.cols) - 1;
+                let utility: String = (status_top..f.rows)
+                    .flat_map(|y| {
+                        f.cells[usize::from(y * f.cols)..usize::from(y * f.cols + width)]
+                            .iter()
+                            .map(|cell| cell.text.as_str())
+                    })
+                    .collect();
+                assert!(!utility.contains('^'));
+                assert!(!utility.contains("12:34") && !utility.contains("2026-10-21"));
+                if f.rows >= 24 {
+                    for (offset, label, value, color) in [
+                        (1, "CPU", "51%", 114),
+                        (2, "Memory", "100%", 141),
+                        (3, "Swap", "0%", 73),
+                        (4, "Disks", "◔ 20% ● 95%", 196),
+                    ] {
+                        let start = usize::from((status_top + offset) * f.cols);
+                        let row: String = f.cells[start..start + usize::from(width)]
+                            .iter()
+                            .map(|cell| cell.text.as_str())
+                            .collect();
+                        assert!(row.trim_start().starts_with(label), "{row:?}");
+                        assert!(row.trim_end().ends_with(value), "{row:?}");
+                        assert_eq!(
+                            f.cells[start + usize::from(width - 2)].fg,
+                            Color::Indexed(color)
+                        );
+                    }
+                    for (offset, value) in [(1, "▂  51%"), (2, "▄ 100%"), (3, "▁   0%")] {
+                        let start = usize::from((status_top + offset) * f.cols + width - 7);
+                        assert_eq!(
+                            f.cells[start..start + 6]
+                                .iter()
+                                .map(|cell| cell.text.as_str())
+                                .collect::<String>(),
+                            value
+                        );
+                    }
+                    assert_eq!(
+                        f.cells[usize::from((status_top + 4) * f.cols + width - 12)].fg,
+                        Color::Indexed(222)
+                    );
+                    assert_eq!(
+                        f.cells[usize::from((status_top + 4) * f.cols + width - 6)].fg,
+                        Color::Indexed(196)
+                    );
+                    for (control, color) in f.controls().into_iter().zip([24, 67, 60, 94]) {
+                        for x in control.x..control.x + control.cols {
+                            assert_eq!(
+                                f.cells[usize::from(control.y * f.cols + x)].bg,
+                                Color::Indexed(color)
+                            );
+                        }
+                    }
+                    let notice = compose(
+                        &ws,
+                        &BTreeMap::new(),
+                        true,
+                        Some("Waiting for the workspace to reconnect safely"),
+                        0,
+                    );
+                    for control in f.controls() {
+                        let start = usize::from(control.y * f.cols + control.x);
+                        assert_eq!(
+                            &notice.cells[start..start + usize::from(control.cols)],
+                            &f.cells[start..start + usize::from(control.cols)]
+                        );
+                    }
+                    let mut display = Terminal::new(notice.cols, notice.rows);
+                    display.feed(&terminal_diff(None, &notice));
+                    assert_eq!(display.snapshot().cells, notice.cells);
+                }
+                let [config, mode, parked, help] = f.controls();
+                for (left, right) in [(config, mode), (parked, help)] {
+                    assert_eq!(left.x, 0);
+                    assert_eq!(left.x + left.cols, right.x);
+                    assert_eq!(right.x + right.cols, width);
+                }
+                let minimum = (size.0 / 5).clamp(18, 28);
+                assert!((minimum..=minimum * 6 / 5).contains(&sidebar_width(size.0)));
+                let targets = tab_targets(f.cols, f.rows, &f.ui.config, 9, 8, 0);
+                for (target, rect) in &targets {
+                    if matches!(target, TabTarget::Pane(_) | TabTarget::New) {
+                        assert_eq!(rect.rows, 3);
+                    }
+                    for control in f.controls() {
+                        if *target == TabTarget::Parked {
+                            continue;
+                        }
+                        assert!(
+                            !(rect.x < control.x + control.cols
+                                && control.x < rect.x + rect.cols
+                                && rect.y < control.y + control.rows
+                                && control.y < rect.y + rect.rows),
+                            "{target:?} overlaps a control"
+                        );
+                    }
+                }
+                let new = targets
+                    .iter()
+                    .find(|(target, _)| *target == TabTarget::New)
+                    .unwrap()
+                    .1;
+                assert_eq!(
+                    f.cells[usize::from((new.y + 1) * f.cols + new.x + (new.cols - 11) / 2 + 1)]
+                        .text,
+                    "+"
+                );
+                assert_eq!(
+                    f.cells[usize::from((new.y + 1) * f.cols + new.x + 1)].text,
+                    "─"
+                );
+                for y in new.y..new.y + new.rows {
+                    for x in new.x..new.x + new.cols {
+                        let cell = &f.cells[usize::from(y * f.cols + x)];
+                        assert_eq!(cell.bg, f.cells[usize::from(status_top * f.cols)].bg);
+                        assert!(!cell.bold);
+                    }
+                }
+                let tab = targets
+                    .iter()
+                    .find(|(target, _)| *target == TabTarget::Pane(8))
+                    .unwrap()
+                    .1;
+                let title_start = usize::from((tab.y + 1) * f.cols + tab.x + 2);
+                let title = &f.cells[title_start..title_start + 5];
+                assert_eq!(
+                    title
+                        .iter()
+                        .map(|cell| cell.text.as_str())
+                        .collect::<String>(),
+                    "shell"
+                );
+                assert!(
+                    title
+                        .iter()
+                        .all(|cell| cell.italic && matches!(cell.fg, Color::Indexed(240 | 245)))
+                );
+            }
+            let mut display = Terminal::new(f.cols, f.rows);
+            display.feed(&terminal_diff(None, &f));
+            assert_eq!(display.snapshot().cells, f.cells);
+        }
+    }
+}
+
+#[test]
+fn footer_parked_help_order_has_no_new_tab_button() {
+    for size in [(40, 10), (120, 40)] {
+        for count in [0, 1, 9] {
+            let mut ws = workspace(size, (3, 3));
+            for pane in ws.panes.iter_mut().take(count) {
+                pane.parked = true;
+            }
+            ws.active = if count == 9 { 0 } else { count as u64 + 1 };
             ws.reflow();
             let f = frame(&ws);
-            let parked = parked_button(f.rows);
-            let help = help_button(f.rows);
+            let parked = f.controls()[2];
+            let help = f.controls()[3];
             let footer: String = f.cells[usize::from((f.rows - 1) * f.cols)..]
                 .iter()
                 .map(|cell| cell.text.as_str())
                 .collect();
-            assert!(!footer.contains('+'));
+            assert_eq!(footer.contains('+'), ws.active == 0 && !f.sidebar_status());
             assert!(footer.contains("Parked") && !footer.contains("(0)"));
-            assert_eq!(parked.x, 14);
-            assert_eq!(parked.x + parked.cols, help.x);
-            for x in parked.x..help.x {
+            let label: String = f.cells[usize::from(parked.y * f.cols + parked.x)
+                ..usize::from(parked.y * f.cols + parked.x + parked.cols)]
+                .iter()
+                .map(|cell| cell.text.as_str())
+                .collect();
+            let expected = if count == 0 {
+                " ⊟ Parked ".into()
+            } else {
+                format!(" ⊟ Parked ({count}) ")
+            };
+            if f.sidebar_status() {
+                assert_eq!(label.trim(), expected.trim());
+            } else {
+                assert_eq!(label, expected);
+            }
+            assert_eq!(parked.x, if f.sidebar_status() { 0 } else { 18 });
+            if f.sidebar_status() {
+                assert_eq!(parked.x + parked.cols, help.x);
+                assert_eq!(f.controls()[1].x, help.x);
+            } else {
+                assert_eq!(parked.x + parked.cols, help.x);
+            }
+            for x in parked.x..parked.x + parked.cols {
                 assert_eq!(
                     f.cells[usize::from(parked.y * f.cols + x)].bg,
                     Color::Indexed(kelpmux::native::ui::PARKED_BG)
+                );
+                assert_eq!(
+                    actions(Router::default().route(click(Point { x, y: parked.y }), &f)),
+                    vec![Action::Parked]
                 );
             }
             assert_eq!(
@@ -2132,7 +2468,7 @@ fn empty_parked_list_has_a_centered_explanation_and_matching_header_without_tabl
         ws.apply(&Action::Parked).unwrap();
         let f = frame(&ws);
         let bounds = dialog_bounds_for(f.cols, f.rows, DialogKind::Parked);
-        let footer = parked_button(f.rows);
+        let footer = parked_button(f.rows, 0);
         assert_eq!(
             f.cells[usize::from(bounds.y * f.cols + bounds.x)].bg,
             Color::Indexed(PARKED_BG)
@@ -2150,6 +2486,428 @@ fn empty_parked_list_has_a_centered_explanation_and_matching_header_without_tabl
         assert_eq!(
             actions(Router::default().route(InputEvent::Bytes(vec![27]), &f)),
             vec![Action::DialogClose]
+        );
+    }
+}
+
+#[test]
+fn status_popup_metrics_clicks_views_search_and_small_screen_replay() {
+    use kelpmux::native::{
+        status::{self, Process, Snapshot, Sort, View},
+        ui::{DialogKind, TabPosition},
+        workspace::sidebar_status_rows,
+    };
+    for size in [(40, 10), (80, 24), (160, 50)] {
+        for position in [TabPosition::Left, TabPosition::Top, TabPosition::Bottom] {
+            let mut ws = workspace(size, (1, 1));
+            ws.ui.config.tab_position = position;
+            ws.apply(&Action::Select(1)).unwrap();
+            ws.ui.vitals = vec![
+                ("cpu ▂ 51%".into(), 114),
+                ("mem ▄ 70%".into(), 141),
+                ("disk".into(), 222),
+                ("◔ 20%".into(), 222),
+                ("12:34".into(), 250),
+            ];
+            let f = frame(&ws);
+            let point = if f.sidebar_status() {
+                let reserved = sidebar_status_rows(f.rows);
+                Point {
+                    x: 1,
+                    y: f.rows - reserved + u16::from(reserved > 3),
+                }
+            } else {
+                Point {
+                    x: f.footer_cols() + 1,
+                    y: f.rows - 1,
+                }
+            };
+            assert_eq!(
+                actions(Router::default().route(click(point), &f)),
+                vec![Action::StatusOpen(Sort::Cpu)]
+            );
+            ws.apply(&Action::StatusOpen(Sort::Cpu)).unwrap();
+            ws.ui.status = Snapshot {
+                ready: true,
+                cpus: vec![51, 100, 0, 25],
+                memory_total: 1024 * 1024 * 1024,
+                memory_used: 500 * 1024 * 1024,
+                load: "0.1 0.2 0.3".into(),
+                processes: (1..=100)
+                    .map(|pid| Process {
+                        pid,
+                        cpu: Some(pid * 10),
+                        command: format!("/usr/bin/worker{pid}"),
+                        ..Default::default()
+                    })
+                    .collect(),
+                ..Default::default()
+            };
+            for view in [View::Main, View::Io] {
+                ws.apply(&Action::StatusView(view)).unwrap();
+                let f = frame(&ws);
+                let bounds = status::bounds(f.cols, f.rows);
+                assert_eq!(ws.ui.dialog.unwrap().kind, DialogKind::Status);
+                assert_eq!(
+                    f.cells[usize::from(bounds.y * f.cols + bounds.x + 1)].text,
+                    "S"
+                );
+                let mut terminal = Terminal::new(f.cols, f.rows);
+                terminal.feed(&terminal_diff(None, &f));
+                assert_eq!(terminal.snapshot().cells, f.cells);
+                let mut router = Router::default();
+                ws.apply(&Action::StatusScroll(i16::MAX)).unwrap();
+                let last = ws.ui.status_offset;
+                assert!(last > 0);
+                ws.apply(&Action::StatusScroll(-1)).unwrap();
+                assert_eq!(ws.ui.status_offset, last - 1);
+                for key in [b"\x1b[A".as_slice(), b"\x1b[B", b"\x1b[5~", b"\t"] {
+                    assert!(
+                        router
+                            .route(InputEvent::Bytes(key.to_vec()), &f)
+                            .iter()
+                            .all(|message| matches!(message, ClientMessage::Action(_)))
+                    );
+                }
+                let query_actions =
+                    actions(router.route(InputEvent::Bytes(b"/worker99".to_vec()), &f));
+                assert_eq!(query_actions, vec![Action::StatusQuery("worker99".into())]);
+                let mut fragmented = Router::default();
+                fragmented.route(InputEvent::Bytes(b"/".to_vec()), &f);
+                assert!(
+                    fragmented
+                        .route(InputEvent::Bytes(vec![0xc3]), &f)
+                        .is_empty()
+                );
+                assert_eq!(
+                    actions(fragmented.route(InputEvent::Bytes(vec![0xa9]), &f)),
+                    vec![Action::StatusQuery("é".into())]
+                );
+                assert_eq!(
+                    actions(fragmented.route(InputEvent::Bytes(b"x".to_vec()), &f)),
+                    vec![Action::StatusQuery("éx".into())]
+                );
+                assert_eq!(
+                    actions(fragmented.route(InputEvent::Paste(b"yz".to_vec()), &f)),
+                    vec![Action::StatusQuery("éxyz".into())]
+                );
+                for action in query_actions {
+                    ws.apply(&action).unwrap();
+                }
+                assert_eq!(
+                    status::processes(&ws.ui.status, &ws.ui.status_query, Sort::Cpu, true).len(),
+                    1
+                );
+                assert_eq!(
+                    actions(router.route(InputEvent::Bytes(b"\x1b".to_vec()), &f)),
+                    vec![Action::DialogClose]
+                );
+                let mut observer = f.clone();
+                observer.controller = false;
+                assert!(
+                    Router::default()
+                        .route(
+                            click(Point {
+                                x: bounds.x,
+                                y: bounds.y
+                            }),
+                            &observer
+                        )
+                        .is_empty()
+                );
+                ws.ui.status_query.clear();
+            }
+            ws.apply(&Action::DialogClose).unwrap();
+            assert_eq!(ws.reading, ReadingMode::Tabs(1));
+        }
+    }
+}
+
+#[test]
+fn closing_status_consumes_the_mouse_release_before_the_app_can_receive_it() {
+    use kelpmux::native::status::Sort;
+    let mut ws = workspace((120, 40), (1, 1));
+    ws.apply(&Action::Select(1)).unwrap();
+    ws.apply(&Action::StatusOpen(Sort::Cpu)).unwrap();
+    let f = frame(&ws);
+    let mut router = Router::default();
+    let point = Point { x: 0, y: 0 };
+    assert_eq!(
+        actions(router.route(click(point), &f)),
+        vec![Action::DialogClose]
+    );
+    ws.apply(&Action::DialogClose).unwrap();
+    let mut closed = frame(&ws);
+    closed.panes[0].modes.mouse_click = true;
+    assert!(
+        router
+            .route(
+                InputEvent::Mouse(MouseEvent {
+                    position: point,
+                    kind: MouseKind::Release,
+                    button: 0,
+                    shift: false,
+                    alt: false,
+                    ctrl: false
+                }),
+                &closed
+            )
+            .is_empty()
+    );
+    assert_eq!(
+        kelpmux::native::status::metric_target(
+            &closed,
+            Point {
+                x: closed.cols,
+                y: closed.rows - 1
+            }
+        ),
+        None
+    );
+}
+
+#[test]
+fn tab_separators_preserve_folder_labels_geometry_and_click_targets() {
+    use kelpmux::native::{
+        ui::TabPosition,
+        workspace::{TabTarget, tab_targets},
+    };
+    for position in [TabPosition::Left, TabPosition::Top, TabPosition::Bottom] {
+        let mut ws = workspace((160, 50), (2, 2));
+        ws.ui.config.tab_position = position;
+        ws.panes
+            .iter_mut()
+            .for_each(|pane| pane.cwd = "/work/project".into());
+        ws.apply(&Action::Read(1)).unwrap();
+        let f = frame(&ws);
+        let tabs: Vec<_> = tab_targets(f.cols, f.rows, &f.ui.config, 4, 0, 0)
+            .into_iter()
+            .filter_map(|(target, rect)| matches!(target, TabTarget::Pane(_)).then_some(rect))
+            .collect();
+        assert_eq!(tabs.len(), 4);
+        for (index, rect) in tabs.iter().enumerate() {
+            if position == TabPosition::Left {
+                let start = usize::from((rect.y + rect.rows - 1) * f.cols + rect.x + 1);
+                let cells = &f.cells[start..start + usize::from(rect.cols - 2)];
+                let text: String = cells.iter().map(|cell| cell.text.as_str()).collect();
+                assert!(text.contains("project"));
+                assert!(
+                    cells
+                        .iter()
+                        .all(|cell| cell.underline == (index + 1 < tabs.len()))
+                );
+            } else if index > 0 {
+                for y in rect.y..rect.y + rect.rows {
+                    let cell = &f.cells[usize::from(y * f.cols + rect.x)];
+                    assert_eq!(cell.text, "│");
+                    assert_eq!(cell.fg, Color::Indexed(243));
+                }
+            }
+            assert_eq!(
+                actions(Router::default().route(
+                    click(Point {
+                        x: rect.x,
+                        y: rect.y
+                    }),
+                    &f
+                )),
+                vec![Action::Focus(index as u64 + 1)]
+            );
+        }
+        let mut terminal = Terminal::new(f.cols, f.rows);
+        terminal.feed(&terminal_diff(None, &f));
+        assert_eq!(terminal.snapshot().cells, f.cells);
+    }
+}
+
+#[test]
+fn large_workspaces_cycle_tabs_and_grid_pages_without_application_input() {
+    let mut ws = workspace((40, 10), (4, 3));
+    ws.active = 1;
+    ws.reflow();
+    for (key, expected) in [
+        (b"\x02\x1b[6~".as_slice(), 10),
+        (b"\x02\t".as_slice(), 11),
+        (b"\x02\x1b[Z".as_slice(), 10),
+        (b"\x02\x1b[5~".as_slice(), 1),
+    ] {
+        let f = frame(&ws);
+        let events = actions(Router::default().route(InputEvent::Bytes(key.to_vec()), &f));
+        assert_eq!(events, vec![Action::Focus(expected)]);
+        ws.apply(&events[0]).unwrap();
+        assert_eq!(ws.reading, ReadingMode::Grid);
+        let f = frame(&ws);
+        assert!(
+            f.panes
+                .iter()
+                .any(|view| view.pane.id == expected && view.body.cols > 0)
+        );
+        let mut terminal = Terminal::new(f.cols, f.rows);
+        terminal.feed(&terminal_diff(None, &f));
+        assert_eq!(terminal.snapshot().cells, f.cells);
+    }
+    let mut observer = frame(&ws);
+    observer.controller = false;
+    assert!(
+        Router::default()
+            .route(InputEvent::Bytes(b"\x02\t".to_vec()), &observer)
+            .is_empty()
+    );
+}
+
+#[test]
+fn status_summary_uses_equal_columns_paired_disks_and_complete_pids() {
+    use kelpmux::native::status::{self, Disk, Process, Snapshot, Sort};
+    for size in [(80, 30), (120, 40), (240, 70)] {
+        let mut ws = workspace(size, (1, 1));
+        ws.apply(&Action::StatusOpen(Sort::Cpu)).unwrap();
+        ws.ui.vitals = vec![("2026-10-22".into(), 39), ("12:34 PDT".into(), 250)];
+        ws.ui.status = Snapshot {
+            ready: true,
+            cpus: vec![0, 51, 100, 25],
+            memory_used: 50,
+            memory_total: 100,
+            swap_used: 25,
+            swap_total: 100,
+            processes: vec![Process {
+                pid: u32::MAX,
+                user: "tester".into(),
+                command: "worker".into(),
+                ..Default::default()
+            }],
+            disks: vec![
+                Disk {
+                    mount: "/".into(),
+                    used: 20,
+                    total: 100,
+                    available: 75,
+                    percent: 20,
+                },
+                Disk {
+                    mount: "/data".into(),
+                    used: 90,
+                    total: 100,
+                    available: 8,
+                    percent: 90,
+                },
+            ],
+            ..Default::default()
+        };
+        let f = frame(&ws);
+        let bounds = status::bounds(f.cols, f.rows);
+        let height = status::summary_height(bounds, &ws.ui.status);
+        assert_eq!(
+            height,
+            if size.0 >= 120 {
+                status::summary_detail_rows(bounds) as u16
+            } else {
+                12
+            }
+        );
+        let row_text = |y: u16| {
+            f.cells[usize::from(y * f.cols + bounds.x + 1)
+                ..usize::from(y * f.cols + bounds.x + bounds.cols - 1)]
+                .iter()
+                .map(|cell| cell.text.as_str())
+                .collect::<String>()
+        };
+        for y in bounds.y + 1..bounds.y + 1 + height {
+            assert!(!row_text(y).trim().is_empty(), "empty metric row {y}");
+        }
+        let date_row = (bounds.y + 1..bounds.y + 1 + height)
+            .map(row_text)
+            .find(|row| row.contains("2026-10-22"))
+            .unwrap();
+        assert!(date_row.contains("2026-10-22 12:34 PDT"));
+        assert!(
+            (bounds.y + 1..bounds.y + 1 + height).any(|y| row_text(y).contains("Uptime 0d 00:00"))
+        );
+        let tabs_y = bounds.y + 1 + height;
+        assert!(row_text(tabs_y).starts_with("[ Main ]"));
+        assert!(row_text(status::table_y(bounds, &ws.ui.status)).contains("CPU%"));
+        if size.0 >= 120 {
+            assert!(
+                row_text(status::table_y(bounds, &ws.ui.status) + 1)
+                    .starts_with("4294967295 tester")
+            );
+        }
+        let meter_width = status::summary_column_width(bounds);
+        for (index, color, percent) in [
+            (0, 114, 0u16),
+            (1, 114, 51),
+            (2, 114, 100),
+            (4, 141, 50),
+            (5, 73, 25),
+        ] {
+            let (row, column) = if status::summary_columns(bounds) == 3 {
+                (index / 2, index % 2)
+            } else {
+                (index, 0)
+            };
+            let start = usize::from(
+                (bounds.y + 1 + row) * f.cols + bounds.x + 1 + column * (meter_width + 2),
+            );
+            let cells = &f.cells[start..start + usize::from(meter_width)];
+            let text: String = cells.iter().map(|cell| cell.text.as_str()).collect();
+            assert!(!text.contains(['█', '░']));
+            let left = cells.iter().position(|cell| cell.text == "[").unwrap();
+            let right = cells.iter().position(|cell| cell.text == "]").unwrap();
+            assert_eq!(right, cells.len() - 1);
+            let reading = format!("{percent:>3}%");
+            assert!(text.contains(&reading));
+            let value_width = if meter_width >= 21 && index == 4 {
+                " 50% 50B/100B".len()
+            } else if meter_width >= 21 && index == 5 {
+                " 25% 25B/100B".len()
+            } else {
+                reading.len()
+            };
+            let visible_width = right - left - 1 - value_width;
+            let filled = cells.iter().filter(|cell| cell.text == "|").count();
+            assert!(visible_width >= 1);
+            assert_eq!(
+                filled,
+                (((right - left - 1) * usize::from(percent) + 50) / 100).min(visible_width)
+            );
+            assert!(
+                cells
+                    .iter()
+                    .filter(|cell| cell.text == "|")
+                    .all(|cell| cell.fg == Color::Indexed(color))
+            );
+        }
+        if size.0 >= 120 {
+            let right = bounds.x + 1 + 2 * (meter_width + 2);
+            let start = usize::from((bounds.y + 1) * f.cols + right);
+            let text = f.cells[start..start + 5]
+                .iter()
+                .map(|cell| cell.text.as_str())
+                .collect::<String>();
+            assert_eq!(text, "Tasks");
+            let disk_row = row_text(bounds.y + 4);
+            assert!(disk_row.starts_with("/ ◔ 20% (75B/100B)"));
+            let start = usize::from((bounds.y + 4) * f.cols + bounds.x + 1 + meter_width + 2);
+            let disk: String = f.cells[start..start + usize::from(meter_width)]
+                .iter()
+                .map(|cell| cell.text.as_str())
+                .collect();
+            assert!(disk.starts_with("/data ● 90% (8B/100B)"));
+            assert!(height < 12);
+        }
+        let mut terminal = Terminal::new(f.cols, f.rows);
+        terminal.feed(&terminal_diff(None, &f));
+        assert_eq!(terminal.snapshot().cells, f.cells);
+        let mut router = Router::default();
+        assert_eq!(
+            actions(router.route(
+                click(Point {
+                    x: bounds.x + 2,
+                    y: status::table_y(bounds, &ws.ui.status)
+                }),
+                &f
+            ))
+            .len(),
+            1
         );
     }
 }

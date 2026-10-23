@@ -696,7 +696,7 @@ fn idle_shell_label_survives_prompt_titles_and_returns_after_application_exit() 
         let output: String = frame.cells.iter().map(|cell| cell.text.as_str()).collect();
         output.contains("PROMPT_ready")
             && frame.panes.iter().any(|view| {
-                view.pane.status == kelpmux::model::Status::Idle && view.pane.title == "Shell"
+                view.pane.status == kelpmux::model::Status::Idle && view.pane.title == "shell"
             })
     });
     write_message(
@@ -713,7 +713,7 @@ fn idle_shell_label_survives_prompt_titles_and_returns_after_application_exit() 
     write_message(&mut stream, &ClientMessage::Input(vec![3])).unwrap();
     wait_frame(&mut stream, |frame| {
         frame.panes.iter().any(|view| {
-            view.pane.status == kelpmux::model::Status::Idle && view.pane.title == "Shell"
+            view.pane.status == kelpmux::model::Status::Idle && view.pane.title == "shell"
         })
     });
 }
@@ -894,13 +894,61 @@ fn configuration_tab_position_persists_for_the_named_workspace() {
         settings.ui.tab_position,
         kelpmux::native::ui::TabPosition::Left
     );
+    command(&mut stream, Action::DialogClose).unwrap();
+    command(&mut stream, Action::Select(1)).unwrap();
+    let before = wait_frame(&mut stream, |frame| frame.reading != ReadingMode::Grid);
+    let identity = (before.panes[0].pane.id, before.panes[0].pane.pid);
+    write_message(
+        &mut stream,
+        &ClientMessage::Resize {
+            cols: 240,
+            rows: 40,
+        },
+    )
+    .unwrap();
+    let wide = wait_frame(&mut stream, |frame| frame.cols == 240);
+    assert_eq!((wide.panes[0].pane.id, wide.panes[0].pane.pid), identity);
+    assert_eq!(wide.panes[0].body.x + wide.panes[0].body.cols, 240);
+    write_message(&mut stream, &ClientMessage::Input(b"stty size\n".to_vec())).unwrap();
+    let output = format!("40 {}", wide.panes[0].body.cols);
+    wait_frame(&mut stream, |frame| {
+        frame
+            .cells
+            .iter()
+            .map(|cell| cell.text.as_str())
+            .collect::<String>()
+            .contains(&output)
+    });
+    for position in [
+        kelpmux::native::ui::TabPosition::Top,
+        kelpmux::native::ui::TabPosition::Bottom,
+    ] {
+        command(&mut stream, Action::TabPositionSet(position)).unwrap();
+        let horizontal = wait_frame(&mut stream, |frame| {
+            frame.ui.config.tab_position == position && frame.panes[0].body.rows == 37
+        });
+        assert_eq!(
+            (horizontal.panes[0].pane.id, horizontal.panes[0].pane.pid),
+            identity
+        );
+        assert_eq!(horizontal.panes[0].body.cols, 240);
+        write_message(&mut stream, &ClientMessage::Input(b"stty size\n".to_vec())).unwrap();
+        wait_frame(&mut stream, |frame| {
+            frame
+                .cells
+                .iter()
+                .map(|cell| cell.text.as_str())
+                .collect::<String>()
+                .contains("37 240")
+        });
+    }
 }
 
 #[test]
-fn new_tabs_create_one_pty_preserve_existing_jobs_and_stop_at_nine() {
+fn new_tabs_create_more_than_nine_ptys_and_preserve_existing_jobs() {
     let daemon = Daemon::start();
     let mut admin = daemon.connect();
-    let (initial, _) = command(&mut admin, Action::WrapToggle).unwrap();
+    let (initial, _) = command(&mut admin, Action::Read(1)).unwrap();
     let original = (initial[0].id, initial[0].pid);
     let (colored, _) = command(
         &mut admin,
@@ -915,10 +963,10 @@ fn new_tabs_create_one_pty_preserve_existing_jobs_and_stop_at_nine() {
     let settings: serde_json::Value =
         serde_json::from_slice(&fs::read(daemon.root.join("state/workspace.json")).unwrap())
             .unwrap();
-    assert_eq!(settings["ui"]["wrap_lines"], false);
+    assert!(settings["ui"].get("wrap_lines").is_none());
     assert_eq!(settings["ui"]["pane_colors"][original.0.to_string()], 4);
     command(&mut admin, Action::CloseReading).unwrap();
-    for count in 2..=9 {
+    for count in 2..=12 {
         let (panes, _) = command(&mut admin, Action::NewTab).unwrap();
         assert_eq!(panes.len(), count);
         let saved: serde_json::Value =
@@ -932,14 +980,56 @@ fn new_tabs_create_one_pty_preserve_existing_jobs_and_stop_at_nine() {
             assert!(std::path::Path::new(&format!("/proc/{}", pane.pid)).exists());
         }
     }
-    assert!(
-        command(&mut admin, Action::NewTab)
-            .unwrap_err()
-            .contains("nine")
-    );
+    command(&mut admin, Action::Park(original.0)).unwrap();
+    let (panes, _) = command(&mut admin, Action::NewTab).unwrap();
+    assert_eq!(panes.len(), 13);
     let (panes, _) = command(&mut admin, Action::Config).unwrap();
-    assert_eq!(panes.len(), 9);
+    assert_eq!(panes.len(), 13);
     assert_eq!((panes[0].id, panes[0].pid), original);
+    command(&mut admin, Action::DialogClose).unwrap();
+    let identities: Vec<_> = panes.iter().map(|pane| (pane.id, pane.pid)).collect();
+    let (mut controller, _, _) = daemon.attach();
+    command(&mut controller, Action::CloseReading).unwrap();
+    for (cols, rows, shape) in [(240, 70, (4, 3)), (120, 80, (3, 4))] {
+        write_message(&mut controller, &ClientMessage::Resize { cols, rows }).unwrap();
+        let frame = wait_frame(&mut controller, |frame| {
+            frame.cols == cols && frame.rows == rows && frame.ui.grid_shape == shape
+        });
+        assert_eq!(frame.reading, ReadingMode::Grid);
+        assert_eq!(
+            frame
+                .panes
+                .iter()
+                .map(|view| (view.pane.id, view.pane.pid))
+                .collect::<Vec<_>>(),
+            identities
+        );
+        assert_eq!(
+            frame.panes.iter().filter(|view| view.body.cols > 0).count(),
+            12
+        );
+    }
+    for pane in panes.iter().rev().take(3) {
+        command(&mut controller, Action::Park(pane.id)).unwrap();
+    }
+    for (cols, rows) in [(80, 24), (240, 70), (120, 80), (400, 70)] {
+        write_message(&mut controller, &ClientMessage::Resize { cols, rows }).unwrap();
+        let frame = wait_frame(&mut controller, |frame| {
+            frame.cols == cols && frame.rows == rows && frame.ui.grid_shape == (3, 3)
+        });
+        assert_eq!(
+            frame
+                .panes
+                .iter()
+                .map(|view| (view.pane.id, view.pane.pid))
+                .collect::<Vec<_>>(),
+            identities
+        );
+        assert_eq!(
+            frame.panes.iter().filter(|view| view.body.cols > 0).count(),
+            9
+        );
+    }
     command(&mut admin, Action::ClosePaneRequest(original.0)).unwrap();
     command(&mut admin, Action::ClosePaneConfirm(original.0)).unwrap();
     let settings: serde_json::Value =
@@ -953,9 +1043,14 @@ fn new_tabs_create_one_pty_preserve_existing_jobs_and_stop_at_nine() {
 }
 
 #[test]
-fn controller_and_observer_surfaces_use_their_own_reported_themes() {
+fn controller_and_observer_sidebar_surfaces_use_their_own_reported_themes() {
     let daemon = Daemon::start();
     let (mut controller, _, _) = daemon.attach();
+    command(
+        &mut controller,
+        Action::TabPositionSet(kelpmux::native::ui::TabPosition::Left),
+    )
+    .unwrap();
     write_message(&mut controller, &ClientMessage::Action(Action::Read(1))).unwrap();
     wait_frame(&mut controller, |frame| {
         frame.reading == ReadingMode::Tabs(1)
@@ -976,13 +1071,60 @@ fn controller_and_observer_surfaces_use_their_own_reported_themes() {
         let frame = wait_frame(client, |frame| {
             frame.ui.terminal_theme[1] == Some(background)
         });
-        assert_eq!(frame.cells[usize::from(frame.cols - 1)].bg, expected);
+        assert_eq!(
+            frame.cells[usize::from(frame.rows / 2 * frame.cols)].bg,
+            expected
+        );
     }
     write_message(&mut controller, &ClientMessage::Action(Action::NewTab)).unwrap();
     let frame = wait_frame(&mut controller, |frame| frame.panes.len() == 2);
     assert_eq!(frame.ui.terminal_theme[1], Some([12, 18, 24]));
     assert_eq!(
-        frame.cells[usize::from(frame.cols - 1)].bg,
+        frame.cells[usize::from(frame.rows / 2 * frame.cols)].bg,
         Color::Rgb(26, 32, 38)
     );
+}
+
+#[test]
+fn status_popup_samples_live_processes_and_closes_without_changing_the_shell() {
+    use kelpmux::native::{
+        status::{Sort, View},
+        ui::DialogKind,
+    };
+    let daemon = Daemon::start();
+    let (mut stream, _, _) = daemon.attach();
+    let original = state(&mut stream).0[0].clone();
+    command(&mut stream, Action::StatusOpen(Sort::Cpu)).unwrap();
+    let opened = wait_frame(&mut stream, |frame| {
+        frame
+            .ui
+            .dialog
+            .is_some_and(|dialog| dialog.kind == DialogKind::Status)
+            && frame.ui.status.ready
+            && frame
+                .ui
+                .status
+                .processes
+                .iter()
+                .any(|process| process.pid == original.pid)
+    });
+    assert_eq!(
+        (opened.panes[0].pane.id, opened.panes[0].pane.pid),
+        (original.id, original.pid)
+    );
+    assert!(!opened.ui.status.cpus.is_empty());
+    assert!(opened.ui.status.memory_total > 0);
+    command(&mut stream, Action::StatusView(View::Io)).unwrap();
+    wait_frame(&mut stream, |frame| frame.ui.status_view == View::Io);
+    command(&mut stream, Action::StatusQuery(original.pid.to_string())).unwrap();
+    command(&mut stream, Action::DialogClose).unwrap();
+    let closed = wait_frame(&mut stream, |frame| {
+        frame.ui.dialog.is_none() && !frame.ui.status.ready
+    });
+    assert_eq!(
+        (closed.panes[0].pane.id, closed.panes[0].pane.pid),
+        (original.id, original.pid)
+    );
+    let saved = fs::read_to_string(daemon.root.join("state/workspace.json")).unwrap();
+    assert!(!saved.contains("status_query") && !saved.contains("processes"));
 }
