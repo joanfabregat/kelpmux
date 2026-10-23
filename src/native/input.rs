@@ -900,12 +900,32 @@ impl Router {
                 .iter()
                 .position(|view| view.pane.id == frame.active)
                 .unwrap_or(0);
+            if matches!(event.kind, MouseKind::WheelUp | MouseKind::WheelDown)
+                && super::workspace::tab_bar_area(frame.cols, frame.rows, &frame.ui.config)
+                    .contains(event.position)
+            {
+                emit(
+                    &mut output,
+                    Action::ScrollTabs(if event.kind == MouseKind::WheelUp {
+                        -1
+                    } else {
+                        1
+                    }),
+                    true,
+                );
+                return output;
+            }
+            let anchor = frame
+                .ui
+                .tab_scroll_anchor
+                .unwrap_or(active)
+                .min(tabviews.len().saturating_sub(1));
             if let Some((target, _)) = super::workspace::tab_targets(
                 frame.cols,
                 frame.rows,
                 &frame.ui.config,
                 tabviews.len(),
-                active,
+                anchor,
                 frame.panes.iter().filter(|view| view.pane.parked).count(),
             )
             .into_iter()
@@ -920,16 +940,26 @@ impl Router {
                     emit(&mut output, Action::NewTab, true);
                     return output;
                 }
-                if matches!(
-                    event.kind,
-                    MouseKind::Press | MouseKind::WheelUp | MouseKind::WheelDown
-                ) {
+                if event.kind == MouseKind::Press
+                    && matches!(
+                        target,
+                        super::workspace::TabTarget::Previous | super::workspace::TabTarget::Next
+                    )
+                {
+                    emit(
+                        &mut output,
+                        Action::ScrollTabs(if target == super::workspace::TabTarget::Previous {
+                            -1
+                        } else {
+                            1
+                        }),
+                        true,
+                    );
+                    return output;
+                }
+                if event.kind == MouseKind::Press {
                     use super::workspace::TabTarget;
                     let index = match target {
-                        _ if event.kind == MouseKind::WheelUp => active.saturating_sub(1),
-                        _ if event.kind == MouseKind::WheelDown => {
-                            (active + 1).min(tabviews.len().saturating_sub(1))
-                        }
                         TabTarget::Pane(index) if event.kind == MouseKind::Press => index,
                         TabTarget::Previous => active.saturating_sub(1),
                         TabTarget::Next => (active + 1).min(tabviews.len().saturating_sub(1)),
@@ -941,7 +971,7 @@ impl Router {
                             frame.rows,
                             &frame.ui.config,
                             tabviews.len(),
-                            active,
+                            anchor,
                             frame.panes.iter().filter(|view| view.pane.parked).count(),
                         )
                         .into_iter()

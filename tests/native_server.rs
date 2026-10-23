@@ -442,6 +442,7 @@ fn create_tabs(stream: &mut UnixStream, cols: u8, rows: u8) -> Vec<PaneInfo> {
     }
     panes
 }
+#[track_caller]
 fn wait_frame(stream: &mut UnixStream, predicate: impl Fn(&Frame) -> bool) -> Frame {
     let deadline = Instant::now() + Duration::from_secs(5);
     loop {
@@ -1040,6 +1041,88 @@ fn new_tabs_create_more_than_nine_ptys_and_preserve_existing_jobs() {
             .get(original.0.to_string())
             .is_none()
     );
+}
+
+#[test]
+fn scrolling_tab_bars_preserves_active_shell_and_real_pty_size() {
+    use kelpmux::native::{ui::TabPosition, workspace::tab_bar_area};
+    let daemon = Daemon::start();
+    let (mut controller, _, _) = daemon.attach();
+    let panes = create_tabs(&mut controller, 4, 3);
+    let identities: Vec<_> = panes.iter().map(|pane| (pane.id, pane.pid)).collect();
+    for position in [TabPosition::Top, TabPosition::Bottom, TabPosition::Left] {
+        command(&mut controller, Action::TabPositionSet(position)).unwrap();
+        command(&mut controller, Action::Select(1)).unwrap();
+        let before = wait_frame(&mut controller, |frame| {
+            frame.active == panes[0].id
+                && frame.ui.config.tab_position == position
+                && frame.ui.tab_scroll_anchor.is_none()
+        });
+        let body = before
+            .panes
+            .iter()
+            .find(|view| view.pane.id == before.active)
+            .unwrap()
+            .body;
+        let bar = tab_bar_area(before.cols, before.rows, &before.ui.config);
+        let messages = kelpmux::native::input::Router::default().route(
+            InputEvent::Mouse(MouseEvent {
+                position: Point {
+                    x: bar.x + 1,
+                    y: bar.y,
+                },
+                kind: MouseKind::WheelDown,
+                button: 0,
+                shift: false,
+                alt: false,
+                ctrl: false,
+            }),
+            &before,
+        );
+        assert!(matches!(
+            messages.as_slice(),
+            [ClientMessage::Action(Action::ScrollTabs(1))]
+        ));
+        for message in messages {
+            write_message(&mut controller, &message).unwrap();
+        }
+        let after = wait_frame(&mut controller, |frame| {
+            frame.ui.tab_scroll_anchor.is_some()
+        });
+        assert_eq!(after.active, before.active);
+        assert_eq!(after.reading, before.reading);
+        assert_eq!(
+            after
+                .panes
+                .iter()
+                .map(|view| (view.pane.id, view.pane.pid))
+                .collect::<Vec<_>>(),
+            identities
+        );
+        assert_eq!(
+            after
+                .panes
+                .iter()
+                .find(|view| view.pane.id == after.active)
+                .unwrap()
+                .body,
+            body
+        );
+        write_message(
+            &mut controller,
+            &ClientMessage::Input(b"printf 'SCROLLED_'; stty size\n".to_vec()),
+        )
+        .unwrap();
+        let expected = format!("SCROLLED_{} {}", body.rows, body.cols);
+        wait_frame(&mut controller, |frame| {
+            frame
+                .cells
+                .iter()
+                .map(|cell| cell.text.as_str())
+                .collect::<String>()
+                .contains(&expected)
+        });
+    }
 }
 
 #[test]

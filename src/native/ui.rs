@@ -170,6 +170,8 @@ impl UiConfig {
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct UiState {
     #[serde(default)]
+    pub tab_scroll_anchor: Option<usize>,
+    #[serde(default)]
     pub status: super::status::Snapshot,
     #[serde(default)]
     pub status_view: super::status::View,
