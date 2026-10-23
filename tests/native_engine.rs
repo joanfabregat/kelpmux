@@ -196,8 +196,16 @@ fn callbacks_query_osc_colors_title_clipboard_bell() {
 #[test]
 fn diff_replays_styles_wide_shrink_resize_and_unchanged() {
     let mut source = Terminal::new(20, 4);
-    source.feed("\x1b[1;3;4;38;2;40;50;60;48;5;17m界e\u{301} hello\x1b[2;1Hsecond".as_bytes());
+    source.feed(
+        "\x1b[1;3;4;58;5;238;38;2;40;50;60;48;5;17m界e\u{301} hello\x1b[2;1Hsecond".as_bytes(),
+    );
+    source.feed(b"\x1b[2;1H\x1b[58;2;70;80;90msecond");
     let first = frame(source.snapshot());
+    assert_eq!(first.cells[0].underline_color, Some(Color::Indexed(238)));
+    assert_eq!(
+        first.cells[20].underline_color,
+        Some(Color::Rgb(70, 80, 90))
+    );
     let mut display = Terminal::new(20, 4);
     display.feed(&terminal_diff(None, &first));
     assert_eq!(display.snapshot().cells, first.cells);

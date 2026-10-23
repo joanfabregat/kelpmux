@@ -373,19 +373,11 @@ fn parked_tab_control_fits_all_positions_and_remains_reachable_when_all_parked()
                         if position.resolve(f.cols, f.rows) == TabPosition::Left {
                             continue;
                         }
-                        let bg = Color::Indexed(if *index == 0 { 250 } else { 234 });
+                        let bg = Color::Indexed(if *index == 0 { 240 } else { 236 });
                         assert_eq!(f.cells[usize::from(rect.y * f.cols + rect.x)].bg, bg);
                         for (control, symbol, color) in [
-                            (
-                                kelpmux::native::workspace::tab_park(*rect),
-                                "⊟",
-                                if *index == 0 { 91 } else { 141 },
-                            ),
-                            (
-                                kelpmux::native::workspace::tab_close(*rect),
-                                "×",
-                                if *index == 0 { 160 } else { 203 },
-                            ),
+                            (kelpmux::native::workspace::tab_park(*rect), "⊟", 141),
+                            (kelpmux::native::workspace::tab_close(*rect), "×", 203),
                         ] {
                             let cell = &f.cells[usize::from(control.y * f.cols + control.x + 1)];
                             assert_eq!(cell.text, symbol);
@@ -452,7 +444,7 @@ fn parked_table_animates_status_and_modals_dim_without_altering_terminal_content
     assert_ne!(a.cells, b.cells);
     for (before, after) in a.cells.iter().zip(&b.cells) {
         assert_eq!(before.bg, after.bg);
-        if !matches!(before.text.as_str(), "⣤" | "⠶" | "⠛") {
+        if !matches!(before.text.as_str(), "|" | "/" | "-" | "\\") {
             assert_eq!(before.text, after.text);
             assert_eq!(before.fg, after.fg);
         }
@@ -1064,7 +1056,7 @@ fn neutral_tabs_ignore_legacy_palette_settings_and_numbers_focus() {
                 assert_eq!(
                     f.cells[usize::from(number.y * f.cols + x)].bg,
                     Color::Indexed(if index == 0 {
-                        250
+                        240
                     } else {
                         kelpmux::native::ui::TAB_BG
                     })
@@ -1077,11 +1069,11 @@ fn neutral_tabs_ignore_legacy_palette_settings_and_numbers_focus() {
             if rect.rows >= 3 {
                 let title = &f.cells[usize::from((rect.y + 1) * f.cols + rect.x + 2)];
                 assert_eq!(title.text, "a");
-                assert_eq!(title.fg, Color::Indexed(if index == 0 { 232 } else { 231 }));
+                assert_eq!(title.fg, Color::Indexed(231));
                 assert_eq!(
                     title.bg,
                     Color::Indexed(if index == 0 {
-                        250
+                        240
                     } else {
                         kelpmux::native::ui::TAB_BG
                     })
@@ -1559,11 +1551,6 @@ fn tab_overflow_arrows_only_appear_when_needed_and_bracket_the_list() {
                                         >= tabs.last().unwrap().1.x + tabs.last().unwrap().1.cols
                                 );
                             }
-                            let selected = if direction == TabTarget::Previous {
-                                active.saturating_sub(1)
-                            } else {
-                                (active + 1).min(count - 1)
-                            };
                             assert_eq!(
                                 actions(Router::default().route(
                                     click(Point {
@@ -1572,7 +1559,11 @@ fn tab_overflow_arrows_only_appear_when_needed_and_bracket_the_list() {
                                     }),
                                     &f
                                 )),
-                                vec![Action::Focus(selected as u64 + 1)]
+                                vec![Action::ScrollTabs(if direction == TabTarget::Previous {
+                                    -1
+                                } else {
+                                    1
+                                })]
                             );
                         }
                     }
@@ -1621,12 +1612,12 @@ fn neutral_focus_connects_sidebar_divider_regardless_of_legacy_palette() {
             let number = tab_number(tab);
             assert_eq!(
                 f.cells[usize::from(number.y * f.cols + number.x + 4)].bg,
-                Color::Indexed(250)
+                Color::Indexed(240)
             );
             for y in 0..f.rows - 1 {
                 let cell = &f.cells[usize::from(y * f.cols + body.x - 1)];
                 assert_eq!(cell.text, "▎");
-                assert_eq!(cell.fg, Color::Indexed(250));
+                assert_eq!(cell.fg, Color::Indexed(238));
                 assert_eq!(cell.bg, Color::Default);
             }
             assert_eq!(body.x + body.cols, f.cols);
@@ -1912,7 +1903,7 @@ fn grid_header_numbers_park_close_and_footer_have_distinct_targets_without_zoom(
 }
 
 #[test]
-fn working_ball_bounces_in_tabs_grid_and_parked_cards_without_animating_idle_panes() {
+fn working_spinner_rotates_in_place_in_tabs_grid_and_parked_cards() {
     for mode in 0..3 {
         let mut ws = workspace((180, 50), (2, 1));
         ws.panes[0].status = Status::Working;
@@ -1924,34 +1915,34 @@ fn working_ball_bounces_in_tabs_grid_and_parked_cards_without_animating_idle_pan
             ws.apply(&Action::Park(1)).unwrap();
             ws.apply(&Action::Parked).unwrap();
         }
-        let positions: Vec<_> = [0, 2, 4, 6, 8]
+        let frames: Vec<_> = [0, 2, 4, 6, 8]
             .into_iter()
-            .map(|tick| {
-                let f = compose(&ws, &BTreeMap::new(), true, None, tick);
-                let balls: Vec<_> = f
-                    .cells
-                    .iter()
-                    .enumerate()
-                    .filter(|(_, cell)| matches!(cell.text.as_str(), "⣤" | "⠶" | "⠛"))
-                    .map(|(index, cell)| (index, cell.text.clone()))
-                    .collect();
-                assert_eq!(balls.len(), 1);
-                balls[0].clone()
-            })
+            .map(|tick| compose(&ws, &BTreeMap::new(), true, None, tick))
             .collect();
-        assert!(
-            positions
-                .iter()
-                .all(|position| position.0 == positions[0].0)
-        );
+        let changed: Vec<_> = frames[0]
+            .cells
+            .iter()
+            .zip(&frames[1].cells)
+            .enumerate()
+            .filter_map(|(index, (a, b))| (a != b).then_some(index))
+            .collect();
+        assert_eq!(changed.len(), 1);
+        let index = changed[0];
+        for f in &frames {
+            for (at, (a, b)) in frames[0].cells.iter().zip(&f.cells).enumerate() {
+                if at != index {
+                    assert_eq!(a, b);
+                }
+            }
+        }
         assert_eq!(
-            positions
+            frames
                 .iter()
-                .map(|position| position.1.as_str())
+                .map(|frame| frame.cells[index].text.as_str())
                 .collect::<Vec<_>>(),
-            vec!["⣤", "⠶", "⠛", "⠶", "⣤"]
+            vec!["|", "/", "-", "\\", "|"]
         );
-        assert_eq!(positions[0], positions[4]);
+        assert_eq!(frames[0].cells[index], frames[4].cells[index]);
     }
 }
 
@@ -2047,22 +2038,14 @@ fn tab_surfaces_follow_dark_and_light_backgrounds_without_repainting_terminal_de
             };
             assert_eq!(
                 f.cells[usize::from(point.y * f.cols + point.x)].bg,
-                if position == TabPosition::Left {
-                    expected
-                } else {
-                    Color::Indexed(234)
-                }
+                expected
             );
             let new = tab_targets(f.cols, f.rows, &f.ui.config, 2, 0, 0)
                 .into_iter()
                 .find(|(target, _)| *target == TabTarget::New)
                 .unwrap()
                 .1;
-            let offset = if position == TabPosition::Left {
-                14
-            } else {
-                24
-            };
+            let offset = 14;
             let [r, g, b] = background.map(|value| {
                 if light {
                     value.saturating_sub(offset)
@@ -2072,11 +2055,7 @@ fn tab_surfaces_follow_dark_and_light_backgrounds_without_repainting_terminal_de
             });
             assert_eq!(
                 f.cells[usize::from(new.y * f.cols + new.x)].bg,
-                if position == TabPosition::Left {
-                    Color::Rgb(r, g, b)
-                } else {
-                    Color::Indexed(234)
-                }
+                Color::Rgb(r, g, b)
             );
             let inactive = tab_targets(f.cols, f.rows, &f.ui.config, 2, 0, 0)
                 .into_iter()
@@ -2110,40 +2089,34 @@ fn tab_surfaces_follow_dark_and_light_backgrounds_without_repainting_terminal_de
                 },
                 TabPosition::Auto => unreachable!(),
             };
+            let selected_bg = Color::Rgb(
+                background[0].saturating_add_signed(if light { -32 } else { 32 }),
+                background[1].saturating_add_signed(if light { -32 } else { 32 }),
+                background[2].saturating_add_signed(if light { -32 } else { 32 }),
+            );
+            assert_eq!(title[0].bg, selected_bg);
             if position == TabPosition::Left {
                 assert_eq!(
-                    title[0].bg,
-                    f.cells[usize::from(divider.y * f.cols + divider.x)].fg
+                    f.cells[usize::from(divider.y * f.cols + divider.x)].fg,
+                    Color::Rgb(
+                        background[0].saturating_add_signed(if light { -24 } else { 24 }),
+                        background[1].saturating_add_signed(if light { -24 } else { 24 }),
+                        background[2].saturating_add_signed(if light { -24 } else { 24 })
+                    )
                 );
             } else {
-                assert_eq!(title[0].bg, Color::Indexed(250));
                 assert_eq!(
                     f.cells[usize::from(inactive.y * f.cols + inactive.x)].bg,
-                    Color::Indexed(234)
+                    expected
                 );
             }
             let number = tab_number(inactive);
             assert_eq!(
                 f.cells[usize::from(number.y * f.cols + number.x + 1)].fg,
-                Color::Indexed(if position != TabPosition::Left {
-                    250
-                } else if light {
-                    232
-                } else {
-                    231
-                })
+                Color::Indexed(if light { 232 } else { 231 })
             );
-            let ball = f.cells.iter().find(|cell| cell.text == "⣤").unwrap();
-            assert_eq!(
-                ball.fg,
-                Color::Indexed(if position != TabPosition::Left {
-                    250
-                } else if light {
-                    232
-                } else {
-                    231
-                })
-            );
+            let ball = f.cells.iter().find(|cell| cell.text == "|").unwrap();
+            assert_eq!(ball.fg, Color::Indexed(if light { 232 } else { 231 }));
             let body = f.panes.iter().find(|view| view.pane.id == 1).unwrap().body;
             assert_eq!(
                 f.cells[usize::from(body.y * f.cols + body.x)].bg,
@@ -2667,6 +2640,82 @@ fn closing_status_consumes_the_mouse_release_before_the_app_can_receive_it() {
 }
 
 #[test]
+fn wheel_scrolls_tab_lists_without_switching_the_active_shell() {
+    use kelpmux::native::{
+        ui::TabPosition,
+        workspace::{TabTarget, tab_bar_area, tab_targets},
+    };
+    for position in [TabPosition::Top, TabPosition::Bottom, TabPosition::Left] {
+        let mut ws = workspace((80, 24), (5, 4));
+        ws.ui.config.tab_position = position;
+        ws.apply(&Action::Read(1)).unwrap();
+        let original_sizes = ws.terminal_sizes();
+        let visible = |ws: &Workspace| {
+            tab_targets(
+                ws.cols,
+                ws.rows,
+                &ws.ui.config,
+                20,
+                ws.ui.tab_scroll_anchor.unwrap_or(0),
+                0,
+            )
+            .into_iter()
+            .filter_map(|(target, rect)| {
+                if let TabTarget::Pane(index) = target {
+                    Some((index, rect))
+                } else {
+                    None
+                }
+            })
+            .collect::<Vec<_>>()
+        };
+        assert_eq!(visible(&ws)[0].0, 0);
+        for step in 0..30 {
+            let f = frame(&ws);
+            let area = tab_bar_area(f.cols, f.rows, &f.ui.config);
+            let events = actions(Router::default().route(
+                InputEvent::Mouse(MouseEvent {
+                    position: Point {
+                        x: area.x + 1,
+                        y: area.y,
+                    },
+                    kind: MouseKind::WheelDown,
+                    button: 0,
+                    shift: false,
+                    alt: false,
+                    ctrl: false,
+                }),
+                &f,
+            ));
+            assert_eq!(events, vec![Action::ScrollTabs(1)]);
+            ws.apply(&events[0]).unwrap();
+            assert_eq!(ws.active, 1);
+            assert_eq!(ws.reading, ReadingMode::Tabs(1));
+            assert_eq!(ws.terminal_sizes(), original_sizes);
+            assert_eq!(visible(&ws)[0].0, (step + 1).min(20 - visible(&ws).len()));
+        }
+        let (index, rect) = visible(&ws)[0];
+        let events = actions(Router::default().route(
+            click(Point {
+                x: rect.x + 2,
+                y: rect.y + 1,
+            }),
+            &frame(&ws),
+        ));
+        assert_eq!(events, vec![Action::Focus(index as u64 + 1)]);
+        ws.apply(&events[0]).unwrap();
+        assert_eq!(ws.active, index as u64 + 1);
+        assert!(ws.ui.tab_scroll_anchor.is_none());
+        let mut one = workspace((80, 24), (1, 1));
+        one.ui.config.tab_position = position;
+        one.apply(&Action::Read(1)).unwrap();
+        one.apply(&Action::ScrollTabs(1)).unwrap();
+        assert_eq!(one.active, 1);
+        assert!(one.ui.tab_scroll_anchor.is_none());
+    }
+}
+
+#[test]
 fn tab_separators_preserve_folder_labels_geometry_and_click_targets() {
     use kelpmux::native::{
         ui::TabPosition,
@@ -2696,11 +2745,18 @@ fn tab_separators_preserve_folder_labels_geometry_and_click_targets() {
                         .iter()
                         .all(|cell| cell.underline == (index + 1 < tabs.len()))
                 );
+                if index + 1 < tabs.len() {
+                    assert!(
+                        cells
+                            .iter()
+                            .all(|cell| cell.underline_color == Some(Color::Indexed(238)))
+                    );
+                }
             } else if index > 0 {
                 for y in rect.y..rect.y + rect.rows {
                     let cell = &f.cells[usize::from(y * f.cols + rect.x)];
-                    assert_eq!(cell.text, "│");
-                    assert_eq!(cell.fg, Color::Indexed(243));
+                    assert_eq!(cell.text, "▎");
+                    assert_eq!(cell.fg, Color::Indexed(238));
                 }
             }
             assert_eq!(

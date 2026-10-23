@@ -233,6 +233,19 @@ fn named_workspaces_reject_path_traversal_and_preserve_effective_restart_setting
     fixture.stop();
 }
 #[test]
+fn dev_example_starts_exactly_one_shell() {
+    let config = Path::new(env!("CARGO_MANIFEST_DIR")).join("examples/native-tabs.json");
+    let settings = kelpmux::native::lifecycle::Settings::load(&config).unwrap();
+    assert_eq!(settings.tab_count, Some(1));
+    let fixture = Fixture::new();
+    assert_eq!(
+        fixture.start(&["--config", config.to_str().unwrap()]).len(),
+        1
+    );
+    fixture.stop();
+}
+
+#[test]
 fn configured_large_startup_and_invalid_config_are_checked() {
     let fixture = Fixture::new();
     let config = fixture.root.join("config.json");
