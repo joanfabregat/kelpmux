@@ -3,7 +3,7 @@ use crate::{Result, model::Status};
 use serde::{Deserialize, Serialize};
 use std::io::{Read, Write};
 
-pub const VERSION: u16 = 29;
+pub const VERSION: u16 = 30;
 pub const MAX_MESSAGE: usize = 16 * 1024 * 1024;
 pub const MAX_INPUT: usize = 64 * 1024;
 pub type PaneId = u64;
@@ -26,6 +26,8 @@ pub struct Cell {
     pub italic: bool,
     pub underline: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub underline_color: Option<Color>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub hyperlink: Option<String>,
 }
 impl Default for Cell {
@@ -38,6 +40,7 @@ impl Default for Cell {
             bold: false,
             italic: false,
             underline: false,
+            underline_color: None,
             hyperlink: None,
         }
     }
@@ -258,6 +261,7 @@ pub enum Action {
     Config,
     WrapToggle,
     NewTab,
+    ScrollTabs(i16),
     ParkRequest(PaneId),
     RestoreRequest(PaneId),
     Park(PaneId),

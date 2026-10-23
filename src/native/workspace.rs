@@ -35,6 +35,7 @@ impl Workspace {
     }
     pub fn resize(&mut self, cols: u16, rows: u16) -> Result<()> {
         validate_size(cols, rows)?;
+        self.ui.tab_scroll_anchor = None;
         let old_bucket = super::ui::geometry_bucket(self.cols);
         let prior = self
             .ui
@@ -326,7 +327,61 @@ impl Workspace {
             .ok_or_else(|| "unknown pane".into())
     }
     pub fn apply(&mut self, action: &Action) -> Result<()> {
+        if matches!(
+            action,
+            Action::Focus(_)
+                | Action::Select(_)
+                | Action::Read(_)
+                | Action::Fullscreen(_)
+                | Action::CloseReading
+                | Action::TabPosition
+                | Action::TabPositionSet(_)
+        ) {
+            self.ui.tab_scroll_anchor = None;
+        }
         match *action {
+            Action::ScrollTabs(amount) => {
+                let panes: Vec<_> = self
+                    .panes
+                    .iter()
+                    .filter(|pane| !pane.parked && Some(pane.id) != self.ui.scratch)
+                    .collect();
+                let active = panes
+                    .iter()
+                    .position(|pane| pane.id == self.active)
+                    .unwrap_or(0);
+                let anchor = self
+                    .ui
+                    .tab_scroll_anchor
+                    .unwrap_or(active)
+                    .min(panes.len().saturating_sub(1));
+                let visible: Vec<_> = tab_targets(
+                    self.cols,
+                    self.rows,
+                    &self.ui.config,
+                    panes.len(),
+                    anchor,
+                    self.panes.iter().filter(|pane| pane.parked).count(),
+                )
+                .into_iter()
+                .filter_map(|(target, _)| {
+                    if let TabTarget::Pane(index) = target {
+                        Some(index)
+                    } else {
+                        None
+                    }
+                })
+                .collect();
+                let capacity = visible.len();
+                if capacity >= panes.len() || capacity == 0 {
+                    self.ui.tab_scroll_anchor = None;
+                } else {
+                    let start = visible[0]
+                        .saturating_add_signed(isize::from(amount))
+                        .min(panes.len() - capacity);
+                    self.ui.tab_scroll_anchor = Some(start + capacity - 1);
+                }
+            }
             Action::Parked => {
                 self.help = false;
                 self.ui.dialog = Some(Dialog {
@@ -1209,6 +1264,28 @@ pub enum TabTarget {
     Previous,
     Next,
     New,
+}
+pub fn tab_bar_area(cols: u16, rows: u16, config: &super::ui::UiConfig) -> Rect {
+    match config.tab_position.resolve(cols, rows) {
+        super::ui::TabPosition::Left => Rect {
+            x: 0,
+            y: 0,
+            cols: sidebar_width(cols) - 1,
+            rows: rows - sidebar_status_rows(rows),
+        },
+        super::ui::TabPosition::Bottom => Rect {
+            x: 0,
+            y: rows - 3,
+            cols,
+            rows: 2,
+        },
+        _ => Rect {
+            x: 0,
+            y: 0,
+            cols,
+            rows: 2,
+        },
+    }
 }
 pub fn tab_number(rect: Rect) -> Rect {
     Rect {

@@ -305,6 +305,9 @@ impl Terminal {
                 bold: flags.contains(Flags::BOLD),
                 italic: flags.contains(Flags::ITALIC),
                 underline: flags.intersects(Flags::ALL_UNDERLINES),
+                underline_color: source
+                    .underline_color()
+                    .map(|value| color(value, content.colors)),
                 hyperlink: source
                     .hyperlink()
                     .map(|link| link.uri().to_owned())
