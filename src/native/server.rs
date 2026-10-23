@@ -959,7 +959,8 @@ impl Server {
             | Action::StatusView(_)
             | Action::StatusSort(_)
             | Action::StatusQuery(_)
-            | Action::StatusScroll(_) => {
+            | Action::StatusScroll(_)
+            | Action::ScrollTabs(_) => {
                 self.workspace.apply(action)?;
                 self.dirty = true;
                 return Ok(true);
@@ -970,6 +971,7 @@ impl Server {
             Action::NewTab => {
                 // Spawn first; failure must leave every existing pane and view intact.
                 self.spawn_pane(None)?;
+                self.workspace.ui.tab_scroll_anchor = None;
                 let id = self.workspace.panes.last().unwrap().id;
                 if self.workspace.ui.scratch_visible {
                     self.workspace.apply(&Action::ScratchClose)?;
