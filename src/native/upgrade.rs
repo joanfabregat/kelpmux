@@ -194,11 +194,17 @@ pub fn attach_matching(socket: &Path, state: &Path, takeover: bool) -> Result<Un
     let identity = identify(&stream, state)?;
     let current = std::env::current_exe()?;
     let home = PathBuf::from(std::env::var_os("HOME").ok_or("HOME is not set")?);
-    let versions = std::env::var_os("XDG_DATA_HOME")
+    let installation = std::env::var_os("XDG_DATA_HOME")
         .map(PathBuf::from)
         .filter(|path| path.is_absolute())
         .unwrap_or_else(|| home.join(".local/share"))
-        .join("kelpmux/versions");
+        .join("kelpmux");
+    let builds = installation.join("builds");
+    let versions = if identity.executable.starts_with(&builds) {
+        builds
+    } else {
+        installation.join("versions")
+    };
     if let Some(binary) = matching_binary(&identity, &current, &versions)? {
         let latest = process(identity.pid)?;
         if latest.birth != identity.birth
