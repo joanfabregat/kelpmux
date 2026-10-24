@@ -2060,6 +2060,15 @@ impl Server {
             self.notice = Some(format!("Notification history: {error}"));
         }
         self.workspace.ui.notifications = self.activity.all().to_vec();
+        let attached = self.clients.values().any(|client| client.attached);
+        let streaming = self.clients.values().any(|client| client.stream.is_some());
+        // Detached shells still drain PTYs and record notifications, but have
+        // no display or metrics consumer. Do not snapshot their screens.
+        if !attached && !streaming {
+            self.status.poll(false);
+            self.dirty = false;
+            return;
+        }
         let vitals = self.vitals.sample();
         let status_open = self
             .workspace
@@ -2074,6 +2083,10 @@ impl Server {
             super::status::Snapshot::default()
         };
         self.stream_frames(vitals.clone());
+        if !attached {
+            self.dirty = false;
+            return;
+        }
         self.workspace.ui.vitals = if self.workspace.cols <= 60 {
             let mut compact = Vec::new();
             if let Some(cpu) = vitals.cpu {
@@ -2258,6 +2271,7 @@ pub fn serve(config: ServerConfig) -> Result<()> {
     let mut animation = Instant::now();
     let mut spinner = 0;
     let mut idle_poll = Instant::now() - Duration::from_millis(100);
+    let mut unused_poll = Instant::now() - Duration::from_secs(1);
     while !server.shutdown {
         for _ in 0..MAX_CLIENTS {
             match listener.accept() {
@@ -2299,12 +2313,27 @@ pub fn serve(config: ServerConfig) -> Result<()> {
         }
         server.poll_ptys();
         server.poll_recovery();
-        if idle_poll.elapsed() >= Duration::from_millis(100) {
+        let attached = server.clients.values().any(|client| client.attached);
+        let streaming = server
+            .clients
+            .values()
+            .any(|client| client.stream.is_some());
+        let idle_interval = if attached {
+            Duration::from_millis(100)
+        } else {
+            Duration::from_secs(1)
+        };
+        if idle_poll.elapsed() >= idle_interval {
             for pane in server.panes.values_mut() {
                 if !pane.dead {
                     pane.observe_idle();
                 }
             }
+            idle_poll = Instant::now();
+        }
+        // This process-table scan only supplies the attached UI's unused-shell
+        // hints. Never scan the whole host ten times a second per workspace.
+        if attached && unused_poll.elapsed() >= Duration::from_millis(500) {
             if let Ok(tree) = process::snapshot(Path::new("/proc")) {
                 let unused: Vec<_> = server
                     .workspace
@@ -2324,7 +2353,7 @@ pub fn serve(config: ServerConfig) -> Result<()> {
                     server.dirty = true;
                 }
             }
-            idle_poll = Instant::now();
+            unused_poll = Instant::now();
         }
         if discovery.elapsed() >= Duration::from_secs(2) {
             let _ = requests.try_send(server.discovery_snapshot());
@@ -2333,7 +2362,7 @@ pub fn serve(config: ServerConfig) -> Result<()> {
         if let Ok(result) = results.try_recv() {
             server.discovery_result(result);
         }
-        if animation.elapsed() >= Duration::from_millis(125) {
+        if attached && animation.elapsed() >= Duration::from_millis(125) {
             spinner += 1;
             animation = Instant::now();
             server
@@ -2365,7 +2394,7 @@ pub fn serve(config: ServerConfig) -> Result<()> {
                 .iter()
                 .any(|p| p.status == Status::Working);
         }
-        if metrics_time.elapsed() >= Duration::from_secs(1) {
+        if (attached || streaming) && metrics_time.elapsed() >= Duration::from_secs(1) {
             server.dirty = true;
             metrics_time = Instant::now();
         }
@@ -2407,7 +2436,11 @@ pub fn serve(config: ServerConfig) -> Result<()> {
             });
         }
         unsafe {
-            libc::poll(fds.as_mut_ptr(), fds.len() as libc::nfds_t, 10);
+            libc::poll(
+                fds.as_mut_ptr(),
+                fds.len() as libc::nfds_t,
+                if attached || streaming { 10 } else { 100 },
+            );
         }
     }
     drop(requests);
