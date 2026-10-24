@@ -127,9 +127,17 @@ impl Drop for Server {
 }
 #[test]
 fn new_client_uses_running_installed_client_without_restarting_workspace() {
+    for installation in ["versions/v-retained", "builds/aaaaaaa"] {
+        retained_client_survives_selection_change(installation);
+    }
+}
+fn retained_client_survives_selection_change(installation: &str) {
     let fixture = Fixture::new();
     let home = fixture.root.join("home");
-    let installed = home.join(".local/share/kelpmux/versions/v-retained/kelpmux");
+    let installed = home
+        .join(".local/share/kelpmux")
+        .join(installation)
+        .join("kelpmux");
     fs::create_dir_all(installed.parent().unwrap()).unwrap();
     fs::copy(env!("CARGO_BIN_EXE_kelpmux"), &installed).unwrap();
     fs::set_permissions(&installed, fs::Permissions::from_mode(0o700)).unwrap();

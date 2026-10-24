@@ -222,3 +222,31 @@ Tab switches Main/I/O. Click a column heading or use `c` (CPU), `m` (memory), `p
 Detailed sampling runs in a background worker about once per second while the popup is open and a client is attached. Closing it stops new collection and discards the snapshot. CPU and throughput rates require two samples; missing or unreadable per-process I/O appears as a dash. Process identity uses PID plus start time, so a reused PID never inherits the old process's usage. Snapshots and search text are not saved to workspace settings.
 
 Detached native workspaces continue draining PTYs and discovering agents, so applications and notification history survive disconnects. With no attached display or pane-stream client, the server skips metrics sampling and screen composition, pauses title/spinner animation, and polls idle-shell state once per second. Whole-process-table scans for unused-shell UI hints run only with an attached display, at most twice per second. PTY and client socket readiness still wakes the server immediately; reconnecting paints the current terminal contents. Detached workspaces are never automatically terminated just because they contain no jobs.
+
+## Daily-use and development channels
+
+Keep ordinary SSH/tmux as the default. Explicit `kelpmux-preprod` and `kelpmux-dev` entry commands call the installed channel manager with `launch preprod` and `launch dev`. They use the stable workspace names `preprod` and `dev`, each with its own socket, settings, logs, history and PTYs under the ordinary named-workspace state directory. Disconnecting preserves that channel's shells. New workspaces use the selected build's one-shell defaults; reconnecting preserves saved settings.
+
+The channel manager is installed at `$XDG_DATA_HOME/kelpmux/channel-manager` (default `~/.local/share/kelpmux/channel-manager`), pointing to an immutable copy of `scripts/channels.sh`. Registered artifacts live in `kelpmux/builds/COMMIT/` with the executable, launch defaults, manager and SHA-256 manifest. Runtime selection is independent of the source checkout and `target/` cleanup. The three small entry commands are maintained in Joan's dotfiles repository.
+
+```sh
+kelpmux-dev
+kelpmux-preprod
+kelpmux-channels status
+kelpmux-channels promote preprod
+kelpmux-channels rollback preprod
+```
+
+Status reports each channel's selected build, previous build, and running build/PID/protocol when a live server identity matches. Promotion selects exactly dev's registered artifact for preprod, recording the previous selection atomically. Rollback swaps the selected and previous builds. Neither operation starts, stops or restarts a workspace. Reconnecting to an existing server uses its retained matching client, even after promotion. Applying a different server build requires explicitly running `kelpmux-channels stop preprod` or `kelpmux-channels stop dev`, which ends that channel's shells and jobs; launch the channel again when ready. No automatic restart or hot migration is implied. A crash or reboot still requires ordinary agent session recovery.
+
+For a new candidate, run the required local checks, build the release executable and wait for CI on that exact commit to pass. Only then register it and select it for dev. Keep old registered artifacts while any server uses them or a rollback points to them. Registration refuses to replace an existing build ID with different binary, defaults or manager contents. These commands perform no downloads, credential lookup or automatic update:
+
+```sh
+bash scripts/channels.sh register COMMIT target/release/kelpmux examples/native-tabs.json
+bash scripts/channels.sh install-manager COMMIT
+kelpmux-channels select dev COMMIT
+# Test dev interactively before explicitly promoting it.
+kelpmux-channels promote preprod
+```
+
+Use the full Git commit hash for registration. `launch CHANNEL --print-command` previews the exact SSH entry command without creating a workspace. For an SSH client profile that accepts a remote command, use `~/bin/kelpmux-preprod` or `~/bin/kelpmux-dev`; ordinary SSH logins continue to use the current tmux setup. The old demo entry remains available for its existing workspace and is not migrated or restarted by installing channels.
