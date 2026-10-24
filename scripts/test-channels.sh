@@ -49,6 +49,9 @@ grep -F 'preprod: selected=aaaaaaa' "$fixture/status"
 bash "$manager" launch preprod --print-command > "$fixture/command"
 test ! -e "$XDG_STATE_HOME/arguments"
 grep -F -- '--workspace preprod' "$fixture/command"
+bash "$manager" stop dev
+printf 'stop\n--workspace\ndev\n' > "$fixture/expected"
+cmp "$fixture/expected" "$XDG_STATE_HOME/arguments"
 # Re-registering altered artifacts and selecting unregistered/unsafe paths fail.
 printf '# changed\n' >> "$fixture/kelpmux"
 if bash "$manager" register aaaaaaa "$fixture/kelpmux" "$repo/examples/native-tabs.json" 2>/dev/null; then exit 1; fi

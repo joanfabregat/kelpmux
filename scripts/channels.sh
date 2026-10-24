@@ -7,6 +7,7 @@ usage() {
   cat <<'HELP'
 Usage: kelpmux-channels launch dev|preprod [--takeover] [--print-command]
        kelpmux-channels status
+       kelpmux-channels stop dev|preprod  (ends that workspace's jobs)
        kelpmux-channels register BUILD_ID BINARY DEFAULT_CONFIG
        kelpmux-channels select dev BUILD_ID
        kelpmux-channels promote preprod
@@ -104,6 +105,12 @@ case "$command" in
     mv -T -- "$stage" "$target"
     trap - EXIT
     printf 'Registered immutable build %s\n' "$build"
+    ;;
+  stop)
+    [[ $# == 1 ]] || fail 'stop requires a channel and ends its shells and jobs.'
+    channel_ok "$1"
+    path=$(build_path "$(selected "$1")")
+    exec "$path/kelpmux" stop --workspace "$1"
     ;;
   select)
     [[ $# == 2 && $1 == dev ]] || fail 'Use select dev BUILD_ID; preprod accepts promotion from dev only.'
