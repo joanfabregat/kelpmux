@@ -182,6 +182,40 @@ fn reconnect_keeps_shell_pid_and_pane_identity() {
     assert!(!after[0].dead);
 }
 #[test]
+fn detached_server_drains_more_than_a_pty_buffer_and_repaints_on_reattach() {
+    let daemon = Daemon::start();
+    let (mut first, _, _) = daemon.attach();
+    let original = state(&mut first).0[0].clone();
+    write_message(
+        &mut first,
+        &ClientMessage::Input(b"while [ ! -f resume ]; do sleep 0.05; done; i=0; while [ \"$i\" -lt 5000 ]; do printf 'detached output %s abcdefghijklmnopqrstuvwxyz\\n' \"$i\"; i=$((i+1)); done; printf 'DETACHED_DRAINED\\n'; : > drained\n".to_vec()),
+    )
+    .unwrap();
+    drop(first);
+    let mut inspector = daemon.connect();
+    wait_controller(&mut inspector, None);
+    fs::write(daemon.root.join("resume"), b"").unwrap();
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while !daemon.root.join("drained").exists() {
+        assert!(Instant::now() < deadline, "detached PTY output stalled");
+        thread::sleep(Duration::from_millis(20));
+    }
+    let (mut reattached, _, controller) = daemon.attach();
+    assert!(controller);
+    let frame = wait_frame(&mut reattached, |frame| {
+        frame
+            .cells
+            .iter()
+            .map(|cell| cell.text.as_str())
+            .collect::<String>()
+            .contains("DETACHED_DRAINED")
+    });
+    assert_eq!(frame.active, original.id);
+    assert_eq!(frame.panes[0].pane.pid, original.pid);
+    assert!(!frame.panes[0].pane.dead);
+}
+
+#[test]
 fn observers_need_explicit_takeover_and_inspect_never_owns_control() {
     let daemon = Daemon::start();
     let mut inspector = daemon.connect();
