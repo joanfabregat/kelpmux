@@ -13,7 +13,8 @@ Usage: kelpmux-channels launch dev|preprod [--takeover] [--print-command]
        kelpmux-channels promote preprod
        kelpmux-channels rollback dev|preprod
        kelpmux-channels install-manager BUILD_ID
-Promotion selects the next server build. Running workspaces are never restarted.
+Dev connections replace outdated dev servers, ending their shells/jobs.
+Preprod keeps its running server until you explicitly stop it.
 HELP
 }
 xdg_data=${XDG_DATA_HOME:-}
@@ -70,6 +71,9 @@ case "$command" in
         *) fail "Unsupported launch option: $arg" ;;
       esac
     done
+    # Serialize selection and preparation with publishing, but release this
+    # lock before entering the long-lived interactive client.
+    if [[ $channel == dev ]] && ! $inspect; then lock; fi
     build=$(selected "$channel")
     path=$(build_path "$build")
     launch=("$path/kelpmux" ssh-entry --workspace "$channel")
@@ -85,11 +89,30 @@ case "$command" in
       export KELPMUX_DEV_BADGE=${KELPMUX_DEV_BADGE:-0}
     fi
     [[ $KELPMUX_DEV_BADGE == 0 || $KELPMUX_DEV_BADGE == 1 ]] || fail 'KELPMUX_DEV_BADGE must be 0 or 1.'
+    if [[ $channel == dev ]]; then
+      # Use the installed manager's helper, even when the selected build is a
+      # rollback to an older binary that predates automatic dev replacement.
+      helper="$(dirname -- "$(readlink -f -- "${BASH_SOURCE[0]}")")/kelpmux"
+      [[ -x $helper ]] || fail 'Install the channel manager before launching dev.'
+      startup=("$helper" start --workspace dev --replace-running --server-binary "$path/kelpmux")
+      if [[ ! -f $xdg_state/kelpmux/workspaces/dev/workspace.json ]]; then
+        startup+=(--config "$path/defaults.json")
+      fi
+    fi
     if $inspect; then
+      if [[ $channel == dev ]]; then
+        printf 'KELPMUX_DEV_BADGE=%q ' "$KELPMUX_DEV_BADGE"
+        printf '%q ' "${startup[@]}"; printf '&& '
+      fi
       printf 'KELPMUX_DEV_BADGE=%q ' "$KELPMUX_DEV_BADGE"
       printf '%q ' "${launch[@]}"; printf '\n'; exit
     fi
-    printf 'KelpMux %s · selected build %s · reconnect preserves the running server\n' "$channel" "$build" >&2
+    if [[ $channel == dev ]]; then
+      "${startup[@]}" >/dev/null
+      flock -u 9
+      exec 9>&-
+    fi
+    printf 'KelpMux %s · selected build %s\n' "$channel" "$build" >&2
     exec "${launch[@]}"
     ;;
   register)
