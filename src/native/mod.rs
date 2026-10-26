@@ -6,6 +6,7 @@ pub mod delta;
 pub mod diagnostics;
 pub mod engine;
 pub mod hooks;
+pub mod hover;
 pub mod input;
 pub mod lifecycle;
 pub mod protocol;

@@ -2997,9 +2997,9 @@ fn dev_badge_is_visible_in_grid_horizontal_tabs_and_compact_sidebars() {
                         .expect("centered sidebar watermark missing");
                     assert!(y < f.rows - kelpmux::native::workspace::sidebar_status_rows(f.rows));
                     let cell = &f.cells[usize::from(y * f.cols + x)];
-                    assert_eq!(cell.bg, Color::Indexed(236));
-                    assert_eq!(cell.fg, Color::Indexed(240));
-                    assert!(!cell.bold);
+                    assert_eq!(cell.bg, Color::Indexed(88));
+                    assert_eq!(cell.fg, Color::Indexed(231));
+                    assert!(cell.bold);
                     assert_eq!(plain.controls(), f.controls());
                     assert_eq!(plain.panes, f.panes);
                     continue;
@@ -3008,7 +3008,7 @@ fn dev_badge_is_visible_in_grid_horizontal_tabs_and_compact_sidebars() {
                     .cells
                     .iter()
                     .enumerate()
-                    .filter(|(_, cell)| cell.bg == Color::Indexed(214))
+                    .filter(|(_, cell)| cell.bg == Color::Indexed(88))
                     .collect();
                 assert_eq!(cells.len(), 5);
                 assert_eq!(
@@ -3021,7 +3021,7 @@ fn dev_badge_is_visible_in_grid_horizontal_tabs_and_compact_sidebars() {
                 assert!(
                     cells
                         .iter()
-                        .all(|(_, cell)| cell.bold && cell.fg == Color::Indexed(232))
+                        .all(|(_, cell)| cell.bold && cell.fg == Color::Indexed(231))
                 );
                 let sidebar = f.sidebar_status();
                 assert!(cells.iter().all(|(i, _)| {
@@ -3122,4 +3122,141 @@ fn crowded_compact_sidebar_keeps_dev_watermark_between_metric_labels_and_values(
     assert!(text.contains("51%"));
     assert_eq!(row[usize::from(width - 7)].text, "▄");
     assert_eq!(row[usize::from(width - 7)].bg, Color::Indexed(244));
+}
+
+#[test]
+fn hover_targets_follow_click_geometry_and_never_route_passive_motion_to_controls() {
+    use kelpmux::native::{
+        hover,
+        ui::TabPosition,
+        workspace::{TabTarget, tab_close, tab_targets},
+    };
+    for position in [TabPosition::Left, TabPosition::Top, TabPosition::Bottom] {
+        let mut ws = workspace((120, 40), (2, 2));
+        ws.ui.config.tab_position = position;
+        ws.apply(&Action::Select(1)).unwrap();
+        let f = frame(&ws);
+        let mut regions = f.controls().to_vec();
+        for (kind, rect) in tab_targets(f.cols, f.rows, &f.ui.config, 4, 0, 0) {
+            if matches!(kind, TabTarget::Pane(_)) {
+                regions.push(tab_close(rect));
+            } else if kind == TabTarget::New {
+                regions.push(rect);
+            }
+        }
+        for rect in regions {
+            let point = Point {
+                x: rect.x + rect.cols / 2,
+                y: rect.y + rect.rows / 2,
+            };
+            let target = hover::target(&f, point).expect("clickable control has no hover target");
+            assert!(target.contains(point));
+            let mut router = Router::default();
+            let idle = InputEvent::Mouse(MouseEvent {
+                position: point,
+                kind: MouseKind::Move,
+                button: 3,
+                shift: false,
+                alt: false,
+                ctrl: false,
+            });
+            assert!(router.route(idle, &f).is_empty());
+            assert!(!router.route(click(point), &f).is_empty());
+        }
+        let body = f
+            .panes
+            .iter()
+            .find(|view| view.pane.id == f.active)
+            .unwrap()
+            .body;
+        assert!(
+            hover::target(
+                &f,
+                Point {
+                    x: body.x + 1,
+                    y: body.y + 1
+                }
+            )
+            .is_none()
+        );
+        let mut observer = f.clone();
+        observer.controller = false;
+        assert!(
+            hover::target(
+                &observer,
+                Point {
+                    x: f.controls()[0].x,
+                    y: f.controls()[0].y
+                }
+            )
+            .is_none()
+        );
+    }
+}
+
+#[test]
+fn passive_motion_preserves_dialog_selection_and_requires_application_all_motion_mode() {
+    use kelpmux::native::{hover, ui::DialogKind};
+    let mut ws = workspace((120, 40), (1, 1));
+    ws.apply(&Action::Config).unwrap();
+    let f = frame(&ws);
+    let bounds = kelpmux::native::workspace::dialog_bounds_for(f.cols, f.rows, DialogKind::Config);
+    let control = kelpmux::native::workspace::config_targets(bounds)[1].2;
+    let point = Point {
+        x: control.x,
+        y: control.y,
+    };
+    assert!(hover::target(&f, point).is_some());
+    let motion = |point| {
+        InputEvent::Mouse(MouseEvent {
+            position: point,
+            kind: MouseKind::Move,
+            button: 3,
+            shift: false,
+            alt: false,
+            ctrl: false,
+        })
+    };
+    assert!(Router::default().route(motion(point), &f).is_empty());
+    ws.apply(&Action::DialogClose).unwrap();
+    let mut f = frame(&ws);
+    let point = Point {
+        x: f.panes[0].body.x + 2,
+        y: f.panes[0].body.y + 2,
+    };
+    f.panes[0].modes.mouse_click = true;
+    assert!(Router::default().route(motion(point), &f).is_empty());
+    f.panes[0].modes.mouse_motion = true;
+    assert!(matches!(
+        Router::default().route(motion(point), &f).as_slice(),
+        [ClientMessage::Mouse(_)]
+    ));
+}
+
+#[test]
+fn modal_hover_only_highlights_visible_dialog_buttons() {
+    use kelpmux::native::{hover, ui::DialogKind};
+    let mut ws = workspace((120, 40), (1, 1));
+    ws.apply(&Action::ClosePaneRequest(1)).unwrap();
+    let f = frame(&ws);
+    let bounds =
+        kelpmux::native::workspace::dialog_bounds_for(f.cols, f.rows, DialogKind::CloseConfirm);
+    for button in kelpmux::native::workspace::close_buttons(bounds) {
+        let point = Point {
+            x: button.x + 1,
+            y: button.y + 1,
+        };
+        assert_eq!(hover::target(&f, point), Some(button));
+    }
+    let config = f.controls()[0];
+    assert!(
+        hover::target(
+            &f,
+            Point {
+                x: config.x + 1,
+                y: config.y
+            }
+        )
+        .is_none()
+    );
 }
