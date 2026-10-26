@@ -419,6 +419,7 @@ impl Router {
                         b"\x1b[6~" => tab_navigation(frame, 1, true),
                         b"," => Some(Action::Config),
                         b"o" => Some(Action::Overview),
+                        b"i" => Some(Action::AgentLinkPicker(frame.active)),
                         b"b" => Some(Action::Notifications),
                         b"r" => Some(Action::Recovery),
                         b"/" => Some(Action::SearchOpen),
@@ -466,6 +467,7 @@ impl Router {
                                 | Action::ParkRequest(_)
                                 | Action::Parked
                                 | Action::Overview
+                                | Action::AgentLinkPicker(_)
                                 | Action::Notifications
                                 | Action::Recovery
                                 | Action::SearchOpen
@@ -512,6 +514,12 @@ impl Router {
                 continue;
             }
             if let Some(dialog) = frame.ui.dialog {
+                if key == b"l" && dialog.kind == super::ui::DialogKind::Overview {
+                    if let Some(&pane) = frame_entries(frame).get(dialog.selection) {
+                        emit(&mut output, Action::AgentLinkPicker(pane), true);
+                    }
+                    continue;
+                }
                 if key == b"y" && dialog.kind == super::ui::DialogKind::Recovery {
                     if frame
                         .ui
@@ -1121,6 +1129,7 @@ impl Router {
             "tab-position" => Action::TabPosition,
             "config" => Action::Config,
             "overview" => Action::Overview,
+            "agent-link" => Action::AgentLinkPicker(frame.active),
             "notifications" => Action::Notifications,
             "recovery" => Action::Recovery,
             "next-attention" => Action::NextAttention,
@@ -1156,6 +1165,17 @@ impl Router {
         })
     }
     fn pick_dialog(&self, frame: &Frame, index: usize) -> Vec<ClientMessage> {
+        if frame
+            .ui
+            .dialog
+            .is_some_and(|dialog| dialog.kind == super::ui::DialogKind::AgentLink)
+        {
+            return if !frame.ui.agent_link_loading && index <= frame.ui.agent_sessions.len() {
+                vec![ClientMessage::Action(Action::AgentLinkChoose(index))]
+            } else {
+                vec![]
+            };
+        }
         use super::ui::DialogKind;
         let Some(dialog) = frame.ui.dialog else {
             return vec![];
@@ -1193,7 +1213,11 @@ impl Router {
                 return vec![];
             };
             let mut actions = vec![ClientMessage::Action(Action::Acknowledge(item.id))];
-            if frame.panes.iter().any(|view| view.pane.id == item.pane) {
+            if frame
+                .panes
+                .iter()
+                .any(|view| super::activity::matches(item, &view.pane, &frame.ui.notification_run))
+            {
                 actions.extend(dialog_focus(frame, item.pane));
             } else {
                 actions.push(ClientMessage::Action(Action::DialogClose));
@@ -1407,6 +1431,7 @@ pub fn help_bounds(cols: u16, rows: u16) -> Rect {
 fn frame_entries(frame: &Frame) -> Vec<u64> {
     use super::ui::DialogKind;
     match frame.ui.dialog.map(|dialog| dialog.kind) {
+        Some(DialogKind::AgentLink) => (0..=frame.ui.agent_sessions.len() as u64).collect(),
         Some(DialogKind::Notifications) => frame.ui.notifications.iter().map(|n| n.id).collect(),
         Some(DialogKind::Recovery) => (0..frame.ui.recovery.len() as u64).collect(),
         Some(DialogKind::Search) => (0..frame.ui.search_hits.len() as u64).collect(),

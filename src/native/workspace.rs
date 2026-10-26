@@ -340,6 +340,22 @@ impl Workspace {
             self.ui.tab_scroll_anchor = None;
         }
         match *action {
+            Action::AgentLinkPicker(pane) => {
+                self.require_pane(pane)?;
+                self.help = false;
+                self.ui.agent_sessions.clear();
+                self.ui.agent_link_loading = true;
+                self.ui.agent_link_error = None;
+                self.ui.dialog = Some(Dialog {
+                    kind: DialogKind::AgentLink,
+                    selection: 0,
+                    source: Some(pane),
+                    filter: AgentFilter::All,
+                });
+            }
+            Action::AgentLinkChoose(_) => {
+                return Err("conversation linking requires a live server".into());
+            }
             Action::ScrollTabs(amount) => {
                 let panes: Vec<_> = self
                     .panes
@@ -953,7 +969,14 @@ impl Workspace {
             Action::Focus(_) | Action::Select(_) | Action::Read(_) | Action::Fullscreen(_)
         ) {
             for notification in &mut self.ui.notifications {
-                if notification.pane == self.active {
+                if self
+                    .panes
+                    .iter()
+                    .find(|pane| pane.id == self.active)
+                    .is_some_and(|pane| {
+                        super::activity::matches(notification, pane, &self.ui.notification_run)
+                    })
+                {
                     notification.read = true;
                 }
             }
@@ -982,6 +1005,9 @@ impl Workspace {
     }
     pub fn dialog_entries(&self) -> Vec<PaneId> {
         match self.ui.dialog.map(|dialog| dialog.kind) {
+            Some(DialogKind::AgentLink) => {
+                return (0..=self.ui.agent_sessions.len() as u64).collect();
+            }
             Some(DialogKind::Notifications) => {
                 return self.ui.notifications.iter().map(|item| item.id).collect();
             }

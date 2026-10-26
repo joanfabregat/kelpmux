@@ -3,7 +3,7 @@ use crate::{Result, model::Status};
 use serde::{Deserialize, Serialize};
 use std::io::{Read, Write};
 
-pub const VERSION: u16 = 32;
+pub const VERSION: u16 = 33;
 pub const MAX_MESSAGE: usize = 16 * 1024 * 1024;
 pub const MAX_INPUT: usize = 64 * 1024;
 pub type PaneId = u64;
@@ -259,6 +259,8 @@ pub enum Action {
         dy: i16,
     },
     Config,
+    AgentLinkPicker(PaneId),
+    AgentLinkChoose(usize),
     WrapToggle,
     NewTab,
     ScrollTabs(i16),
@@ -389,6 +391,8 @@ pub enum ServerMessage {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Notification {
+    #[serde(default)]
+    pub origin: Option<NotificationOrigin>,
     pub id: u64,
     pub pane: PaneId,
     pub title: String,
@@ -396,6 +400,11 @@ pub struct Notification {
     pub at: u64,
     pub read: bool,
     pub workspace: String,
+}
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct NotificationOrigin {
+    pub run: String,
+    pub pid: u32,
 }
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RecoveryItem {

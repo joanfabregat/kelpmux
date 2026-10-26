@@ -546,6 +546,10 @@ struct Server {
     initializing: bool,
     recovery_job: Option<RecoveryJob>,
     recovery_pending: bool,
+    agent_links: Vec<crate::discovery::polling::Link>,
+    discovered_agents: Vec<crate::model::Agent>,
+    poll_revision: u64,
+    agent_link_target: Option<(PaneId, u32, u64)>,
     aliases: BTreeMap<PaneId, String>,
     activity: super::activity::Activity,
     started: Instant,
@@ -957,6 +961,76 @@ impl Server {
     }
     fn feature_action(&mut self, client: u64, action: &Action) -> Result<bool> {
         match action {
+            Action::AgentLinkPicker(pane) => {
+                let agent = self
+                    .discovered_agents
+                    .iter()
+                    .find(|agent| agent.pane == format!("%{pane}") && agent.ended_at.is_none())
+                    .ok_or("no detected agent in this tab yet")?;
+                if agent.kind != crate::model::Kind::Codex {
+                    return Err("this agent adapter does not provide a conversation picker".into());
+                }
+                self.agent_link_target = Some((*pane, agent.pid, agent.process_start));
+                self.workspace.apply(action)?;
+                self.poll_revision = self.poll_revision.wrapping_add(1);
+                self.dirty = true;
+                return Ok(true);
+            }
+            Action::AgentLinkChoose(index) => {
+                let dialog = self
+                    .workspace
+                    .ui
+                    .dialog
+                    .filter(|dialog| dialog.kind == super::ui::DialogKind::AgentLink)
+                    .ok_or("conversation picker is not open")?;
+                if self.workspace.ui.agent_link_loading {
+                    return Err("conversation list is still loading".into());
+                }
+                let pane = dialog.source.ok_or("conversation picker has no tab")?;
+                let agent = self
+                    .discovered_agents
+                    .iter()
+                    .find(|agent| agent.pane == format!("%{pane}") && agent.ended_at.is_none())
+                    .ok_or("agent has exited")?;
+                let tree = process::snapshot(Path::new("/proc"))?;
+                if self.agent_link_target != Some((pane, agent.pid, agent.process_start)) {
+                    return Err("agent process changed; reopen the picker".into());
+                }
+                let native = self.panes.get(&pane).ok_or("tab has closed")?;
+                if !tree
+                    .get(&agent.pid)
+                    .is_some_and(|process| process.start == agent.process_start)
+                    || !process::descendants(&tree, native.child.id()).contains(&agent.pid)
+                {
+                    return Err("agent process changed; reopen the picker".into());
+                }
+                let session = if *index == 0 {
+                    None
+                } else {
+                    Some(
+                        self.workspace
+                            .ui
+                            .agent_sessions
+                            .get(index - 1)
+                            .filter(|session| session.kind == agent.kind)
+                            .ok_or("conversation is no longer listed")?,
+                    )
+                };
+                self.agent_links.retain(|link| link.pane != agent.pane);
+                if let Some(session) = session {
+                    self.agent_links.push(crate::discovery::polling::Link {
+                        pane: agent.pane.clone(),
+                        pid: agent.pid,
+                        birth: agent.process_start,
+                        kind: agent.kind,
+                        session_id: session.id.clone(),
+                    });
+                }
+                self.poll_revision = self.poll_revision.wrapping_add(1);
+                self.workspace.apply(&Action::DialogClose)?;
+                self.dirty = true;
+                return Ok(true);
+            }
             Action::StatusOpen(_)
             | Action::StatusView(_)
             | Action::StatusSort(_)
@@ -1974,6 +2048,17 @@ impl Server {
             .collect();
         DiscoveryRequest {
             bridge,
+            revision: self.poll_revision,
+            links: self.agent_links.clone(),
+            list_for: self
+                .workspace
+                .ui
+                .dialog
+                .filter(|dialog| {
+                    dialog.kind == super::ui::DialogKind::AgentLink
+                        && self.workspace.ui.agent_link_loading
+                })
+                .and_then(|dialog| dialog.source),
             identities: self
                 .panes
                 .iter()
@@ -1986,7 +2071,43 @@ impl Server {
             identities,
             agents: reconciled,
             tree,
+            revision,
+            sessions,
         } = result;
+        if revision != self.poll_revision {
+            return;
+        }
+        self.agent_links.retain(|link| {
+            reconciled.iter().any(|agent| {
+                agent.pane == link.pane
+                    && agent.pid == link.pid
+                    && agent.process_start == link.birth
+                    && agent.kind == link.kind
+            })
+        });
+        self.discovered_agents = reconciled.clone();
+        if let Some(sessions) = sessions {
+            if self
+                .workspace
+                .ui
+                .dialog
+                .is_some_and(|dialog| dialog.kind == super::ui::DialogKind::AgentLink)
+            {
+                self.workspace.ui.agent_link_loading = false;
+                match sessions {
+                    Ok(sessions) => {
+                        self.workspace.ui.agent_sessions = sessions;
+                        self.workspace.ui.agent_link_error = None;
+                    }
+                    Err(_) => {
+                        self.workspace.ui.agent_sessions.clear();
+                        self.workspace.ui.agent_link_error =
+                            Some("Codex metadata unavailable; close and reopen to retry".into());
+                    }
+                }
+                self.dirty = true;
+            }
+        }
         for info in &mut self.workspace.panes {
             if !self
                 .panes
@@ -2156,10 +2277,15 @@ impl Server {
 }
 
 struct DiscoveryRequest {
+    revision: u64,
+    links: Vec<crate::discovery::polling::Link>,
+    list_for: Option<PaneId>,
     bridge: Vec<crate::tmux::Pane>,
     identities: BTreeMap<PaneId, (u32, u64)>,
 }
 struct DiscoveryResult {
+    revision: u64,
+    sessions: Option<Result<Vec<crate::discovery::polling::Session>>>,
     identities: BTreeMap<PaneId, (u32, u64)>,
     agents: Vec<crate::model::Agent>,
     tree: BTreeMap<u32, process::Process>,
@@ -2177,11 +2303,19 @@ fn discovery_worker(
         let home = std::env::var_os("HOME")
             .map(PathBuf::from)
             .unwrap_or_default();
-        let discovery = Discovery::new(&home);
+        let mut poller = crate::discovery::polling::Poller::new(Discovery::new(&home));
         while let Ok(request) = receiver.recv() {
-            let Ok(agents) = discovery.scan(&request.bridge, crate::now()) else {
+            let Ok(cycle) = poller.poll(&request.bridge, &request.links, crate::now()) else {
                 continue;
             };
+            let agents = cycle.agents;
+            let sessions = request.list_for.map(|pane| {
+                let agent = agents
+                    .iter()
+                    .find(|agent| agent.pane == format!("%{pane}"))
+                    .ok_or("agent has exited")?;
+                poller.sessions(agent.kind)
+            });
             // A registry client may hold the lock. Skip that journal cycle rather than wait forever.
             let root = state.join("native");
             let agents = if journal::private_dir(&root).is_ok() {
@@ -2204,9 +2338,11 @@ fn discovery_worker(
                 agents
             };
             let result = DiscoveryResult {
+                revision: request.revision,
+                sessions,
                 identities: request.identities,
                 agents,
-                tree: process::snapshot(Path::new("/proc")).unwrap_or_default(),
+                tree: cycle.tree,
             };
             if sender.send(result).is_err() {
                 break;
@@ -2244,6 +2380,10 @@ pub fn serve(config: ServerConfig) -> Result<()> {
         initializing: true,
         recovery_job: None,
         recovery_pending: false,
+        agent_links: Vec::new(),
+        discovered_agents: Vec::new(),
+        poll_revision: 0,
+        agent_link_target: None,
         aliases: BTreeMap::new(),
         activity: super::activity::Activity::load(
             &config.state_dir,
@@ -2268,6 +2408,7 @@ pub fn serve(config: ServerConfig) -> Result<()> {
         notice: None,
         shutdown: false,
     };
+    server.workspace.ui.notification_run = server.activity.run().into();
     let count = server.config.initial_tabs.unwrap_or(
         usize::from(server.config.initial_grid.0) * usize::from(server.config.initial_grid.1),
     );
