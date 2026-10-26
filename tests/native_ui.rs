@@ -2967,3 +2967,54 @@ fn status_summary_uses_equal_columns_paired_disks_and_complete_pids() {
         );
     }
 }
+
+#[test]
+fn dev_badge_is_visible_in_grid_horizontal_tabs_and_compact_sidebars() {
+    use kelpmux::native::ui::TabPosition;
+    for size in [(40, 12), (80, 24), (160, 50)] {
+        for position in [TabPosition::Left, TabPosition::Top, TabPosition::Bottom] {
+            for grid in [false, true] {
+                let mut ws = workspace(size, (1, 1));
+                ws.ui.config.tab_position = position;
+                if !grid {
+                    ws.apply(&Action::Select(1)).unwrap();
+                }
+                let plain = frame(&ws);
+                ws.ui.show_dev_badge = true;
+                ws.ui.vitals = vec![("CPU 100% RAM 51%".into(), 114)];
+                let f = frame(&ws);
+                let cells: Vec<_> = f
+                    .cells
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, cell)| cell.bg == Color::Indexed(214))
+                    .collect();
+                assert_eq!(cells.len(), 5);
+                assert_eq!(
+                    cells
+                        .iter()
+                        .map(|(_, cell)| cell.text.as_str())
+                        .collect::<String>(),
+                    " DEV "
+                );
+                assert!(
+                    cells
+                        .iter()
+                        .all(|(_, cell)| cell.bold && cell.fg == Color::Indexed(232))
+                );
+                let sidebar = f.sidebar_status();
+                assert!(cells.iter().all(|(i, _)| {
+                    let x = *i as u16 % f.cols;
+                    let y = *i as u16 / f.cols;
+                    if sidebar {
+                        x < kelpmux::native::workspace::sidebar_width(f.cols) - 1
+                    } else {
+                        y == f.rows - 1 && x >= plain.footer_cols()
+                    }
+                }));
+                assert_eq!(plain.controls(), f.controls());
+                assert_eq!(plain.panes, f.panes);
+            }
+        }
+    }
+}
