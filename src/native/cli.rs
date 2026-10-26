@@ -1225,10 +1225,22 @@ mod fit_tests {
         assert_eq!(pending.len(), 4);
     }
 
+    fn grid_workspace() -> super::super::workspace::Workspace {
+        let mut workspace = super::super::workspace::Workspace::new(120, 40).unwrap();
+        workspace.panes.push(super::super::protocol::PaneInfo {
+            id: 1,
+            number: 1,
+            ..Default::default()
+        });
+        workspace.active = 1;
+        workspace.reading = super::super::protocol::ReadingMode::Grid;
+        workspace
+    }
+
     #[test]
     fn hover_paint_maps_footer_controls_on_smaller_frontends() {
-        let mut ws = super::super::workspace::Workspace::new(120, 40).unwrap();
-        ws.ui.config.tab_position = super::super::ui::TabPosition::Top;
+        let mut ws = grid_workspace();
+        ws.ui.config.tab_position = super::super::ui::TabPosition::Left;
         let frame = super::super::render::compose(&ws, &Default::default(), true, None, 0);
         let mut output = Vec::new();
         paint(
@@ -1282,8 +1294,8 @@ mod fit_tests {
     }
     #[test]
     fn fitted_narrow_observer_preserves_observer_marker() {
-        let mut workspace = super::super::workspace::Workspace::new(120, 40).unwrap();
-        workspace.ui.config.tab_position = super::super::ui::TabPosition::Top;
+        let mut workspace = grid_workspace();
+        workspace.ui.config.tab_position = super::super::ui::TabPosition::Left;
         workspace.ui.vitals = vec![("cpu 51%".into(), 114), ("clock 12:34".into(), 250)];
         let frame = super::super::render::compose(&workspace, &Default::default(), false, None, 0);
         let fit = fitted(&frame, (40, 10), None);
@@ -1295,85 +1307,79 @@ mod fit_tests {
         assert!(footer.contains("Obs"));
     }
     #[test]
-    fn fitted_footer_metrics_open_status_in_both_horizontal_tab_modes() {
+    fn fitted_grid_footer_metrics_open_status() {
         use super::super::{
             input::Router,
             protocol::{Action, ClientMessage, InputEvent, MouseEvent, MouseKind},
             status::Sort,
             ui::TabPosition,
         };
-        for position in [TabPosition::Top, TabPosition::Bottom] {
-            for controller in [true, false] {
-                let mut workspace = super::super::workspace::Workspace::new(120, 40).unwrap();
-                workspace.ui.config.tab_position = position;
-                workspace.ui.vitals = vec![("cpu 51%".into(), 114), ("12:34".into(), 250)];
-                let frame = super::super::render::compose(
-                    &workspace,
-                    &Default::default(),
-                    controller,
-                    None,
-                    0,
-                );
-                for size in [(40, 10), (120, 40), (160, 50)] {
-                    if size.0 <= frame.footer_cols() + if controller { 0 } else { 10 } {
-                        continue;
+        let position = TabPosition::Left;
+        for controller in [true, false] {
+            let mut workspace = grid_workspace();
+            workspace.ui.config.tab_position = position;
+            workspace.ui.vitals = vec![("cpu 51%".into(), 114), ("12:34".into(), 250)];
+            let frame =
+                super::super::render::compose(&workspace, &Default::default(), controller, None, 0);
+            for size in [(40, 10), (120, 40), (160, 50)] {
+                if size.0 <= frame.footer_cols() + if controller { 0 } else { 10 } {
+                    continue;
+                }
+                let point = fitted_mouse(
+                    &frame,
+                    size,
+                    Point {
+                        x: size.0 - 2,
+                        y: size.1 - 1,
+                    },
+                )
+                .unwrap();
+                assert_eq!(
+                    point,
+                    Point {
+                        x: frame.cols - 2,
+                        y: frame.rows - 1
                     }
-                    let point = fitted_mouse(
+                );
+                let messages = Router::default().route(
+                    InputEvent::Mouse(MouseEvent {
+                        position: point,
+                        kind: MouseKind::Press,
+                        button: 0,
+                        shift: false,
+                        alt: false,
+                        ctrl: false,
+                    }),
+                    &frame,
+                );
+                assert_eq!(
+                    messages.iter().any(|message| matches!(
+                        message,
+                        ClientMessage::Action(Action::StatusOpen(Sort::Cpu))
+                    )),
+                    controller
+                );
+                assert_eq!(
+                    fitted_mouse(
                         &frame,
                         size,
                         Point {
-                            x: size.0 - 2,
-                            y: size.1 - 1,
-                        },
-                    )
-                    .unwrap();
-                    assert_eq!(
-                        point,
-                        Point {
-                            x: frame.cols - 2,
-                            y: frame.rows - 1
-                        }
-                    );
-                    let messages = Router::default().route(
-                        InputEvent::Mouse(MouseEvent {
-                            position: point,
-                            kind: MouseKind::Press,
-                            button: 0,
-                            shift: false,
-                            alt: false,
-                            ctrl: false,
-                        }),
-                        &frame,
-                    );
-                    assert_eq!(
-                        messages.iter().any(|message| matches!(
-                            message,
-                            ClientMessage::Action(Action::StatusOpen(Sort::Cpu))
-                        )),
-                        controller
-                    );
-                    assert_eq!(
-                        fitted_mouse(
-                            &frame,
-                            size,
-                            Point {
-                                x: 1,
-                                y: size.1 - 1
-                            }
-                        ),
-                        Some(Point {
                             x: 1,
-                            y: frame.rows - 1
-                        })
-                    );
-                }
+                            y: size.1 - 1
+                        }
+                    ),
+                    Some(Point {
+                        x: 1,
+                        y: frame.rows - 1
+                    })
+                );
             }
         }
     }
     #[test]
     fn fitted_footer_keeps_controls_left_vitals_right_and_notices_separate() {
-        let mut workspace = super::super::workspace::Workspace::new(120, 40).unwrap();
-        workspace.ui.config.tab_position = super::super::ui::TabPosition::Top;
+        let mut workspace = grid_workspace();
+        workspace.ui.config.tab_position = super::super::ui::TabPosition::Left;
         workspace.ui.vitals = vec![("cpu 51%".into(), 114), ("clock 12:34".into(), 250)];
         let frame = super::super::render::compose(&workspace, &Default::default(), true, None, 0);
         for size in [(40, 10), (120, 40), (160, 50)] {
