@@ -98,21 +98,8 @@ pub fn target(frame: &Frame, point: Point) -> Option<Rect> {
         }
     } else {
         regions.extend(frame.controls());
-        if super::status::metric_target(frame, point).is_some() {
-            let (x, cols) = if frame.sidebar_status() {
-                (0, ws::sidebar_width(frame.cols) - 1)
-            } else {
-                (
-                    frame.footer_cols(),
-                    frame.cols.saturating_sub(frame.footer_cols()),
-                )
-            };
-            regions.push(Rect {
-                x,
-                y: point.y,
-                cols,
-                rows: 1,
-            });
+        if let Some(region) = super::status::metric_region(frame) {
+            regions.push(region);
         }
         if frame.reading != ReadingMode::Grid || frame.active == 0 {
             let panes: Vec<_> = frame
@@ -173,7 +160,30 @@ pub fn target(frame: &Frame, point: Point) -> Option<Rect> {
     actionable.then_some(rect)
 }
 
-pub fn highlight(cell: &mut Cell, theme: [Option<[u8; 3]>; 2]) {
+pub fn strength(frame: &Frame, region: Rect) -> u8 {
+    let click = InputEvent::Mouse(MouseEvent {
+        position: Point {
+            x: region.x + region.cols / 2,
+            y: region.y + region.rows / 2,
+        },
+        kind: MouseKind::Press,
+        button: 0,
+        shift: false,
+        alt: false,
+        ctrl: false,
+    });
+    if Router::default()
+        .route(click, frame)
+        .iter()
+        .any(|message| matches!(message, ClientMessage::Action(Action::NewTab)))
+    {
+        8
+    } else {
+        24
+    }
+}
+
+pub fn highlight(cell: &mut Cell, theme: [Option<[u8; 3]>; 2], amount: u8) {
     let background = if cell.bg == Color::Default {
         theme[1].map_or(Color::Default, |[r, g, b]| Color::Rgb(r, g, b))
     } else {
@@ -183,9 +193,9 @@ pub fn highlight(cell: &mut Cell, theme: [Option<[u8; 3]>; 2]) {
     let light = u16::from(r) * 3 + u16::from(g) * 6 + u16::from(b) >= 1600;
     let [r, g, b] = [r, g, b].map(|v| {
         if light {
-            v.saturating_sub(24)
+            v.saturating_sub(amount)
         } else {
-            v.saturating_add(24)
+            v.saturating_add(amount)
         }
     });
     cell.bg = Color::Rgb(r, g, b);

@@ -2236,10 +2236,10 @@ fn sidebar_status_controls_and_metrics_leave_the_last_terminal_row_usable() {
                             Color::Indexed(color)
                         );
                     }
-                    for (offset, value) in [(1, "▂  51%"), (2, "▄ 100%"), (3, "▁   0%")] {
-                        let start = usize::from((status_top + offset) * f.cols + width - 7);
+                    for (offset, value) in [(1, " 51%"), (2, "100%"), (3, "  0%")] {
+                        let start = usize::from((status_top + offset) * f.cols + width - 5);
                         assert_eq!(
-                            f.cells[start..start + 6]
+                            f.cells[start..start + 4]
                                 .iter()
                                 .map(|cell| cell.text.as_str())
                                 .collect::<String>(),
@@ -2997,19 +2997,15 @@ fn dev_badge_is_visible_in_grid_horizontal_tabs_and_compact_sidebars() {
                         .expect("centered sidebar watermark missing");
                     assert!(y < f.rows - kelpmux::native::workspace::sidebar_status_rows(f.rows));
                     let cell = &f.cells[usize::from(y * f.cols + x)];
-                    assert_eq!(cell.bg, Color::Indexed(88));
-                    assert_eq!(cell.fg, Color::Indexed(231));
+                    assert_eq!(cell.bg, Color::Indexed(238));
+                    assert_eq!(cell.fg, Color::Indexed(203));
                     assert!(cell.bold);
                     assert_eq!(plain.controls(), f.controls());
                     assert_eq!(plain.panes, f.panes);
                     continue;
                 }
-                let cells: Vec<_> = f
-                    .cells
-                    .iter()
-                    .enumerate()
-                    .filter(|(_, cell)| cell.bg == Color::Indexed(88))
-                    .collect();
+                let start = usize::from((f.rows - 1) * f.cols + plain.footer_cols());
+                let cells: Vec<_> = f.cells.iter().enumerate().skip(start).take(5).collect();
                 assert_eq!(cells.len(), 5);
                 assert_eq!(
                     cells
@@ -3018,11 +3014,9 @@ fn dev_badge_is_visible_in_grid_horizontal_tabs_and_compact_sidebars() {
                         .collect::<String>(),
                     " DEV "
                 );
-                assert!(
-                    cells
-                        .iter()
-                        .all(|(_, cell)| cell.bold && cell.fg == Color::Indexed(231))
-                );
+                assert!(cells.iter().all(|(_, cell)| cell.bold
+                    && cell.fg == Color::Indexed(203)
+                    && cell.bg == Color::Indexed(240)));
                 let sidebar = f.sidebar_status();
                 assert!(cells.iter().all(|(i, _)| {
                     let x = *i as u16 % f.cols;
@@ -3041,7 +3035,7 @@ fn dev_badge_is_visible_in_grid_horizontal_tabs_and_compact_sidebars() {
 }
 
 #[test]
-fn vertical_metric_bars_have_contrasting_tracks_in_every_environment_and_view() {
+fn sidebar_horizontal_bars_and_footer_tracks_preserve_values_colors_and_disk_pies() {
     use kelpmux::native::{
         ui::TabPosition,
         vitals::{Vitals, render_segments},
@@ -3049,11 +3043,7 @@ fn vertical_metric_bars_have_contrasting_tracks_in_every_environment_and_view() 
     for dev in [false, true] {
         for position in [TabPosition::Left, TabPosition::Top] {
             for grid in [false, true] {
-                for (theme, sidebar_track) in [
-                    (None, Color::Indexed(244)),
-                    (Some([16, 16, 16]), Color::Rgb(66, 66, 66)),
-                    (Some([240, 240, 240]), Color::Indexed(239)),
-                ] {
+                for theme in [None, Some([16, 16, 16]), Some([240, 240, 240])] {
                     let mut ws = workspace((160, 40), (1, 1));
                     ws.ui.config.tab_position = position;
                     ws.ui.show_dev_badge = dev;
@@ -3074,18 +3064,42 @@ fn vertical_metric_bars_have_contrasting_tracks_in_every_environment_and_view() 
                         .iter()
                         .filter(|cell| matches!(cell.text.as_str(), "▁" | "▄" | "█"))
                         .collect();
-                    assert_eq!(bars.len(), 3);
-                    let track = if f.sidebar_status() {
-                        sidebar_track
+                    if f.sidebar_status() {
+                        assert!(bars.is_empty());
+                        let width = kelpmux::native::workspace::sidebar_width(f.cols) - 1;
+                        let top = f.rows - kelpmux::native::workspace::sidebar_status_rows(f.rows);
+                        let length = width - 14;
+                        for (index, (percent, color)) in
+                            [(0u16, 114), (51, 141), (100, 73)].into_iter().enumerate()
+                        {
+                            let start = usize::from((top + 1 + index as u16) * f.cols);
+                            let filled = (percent * length + 50) / 100;
+                            for offset in 0..length {
+                                let cell = &f.cells[start + usize::from(8 + offset)];
+                                assert_eq!(cell.text, if offset < filled { "▰" } else { "▱" });
+                                if offset < filled {
+                                    assert_eq!(cell.fg, Color::Indexed(color));
+                                }
+                                assert_ne!(cell.fg, cell.bg);
+                            }
+                            assert_eq!(
+                                f.cells[start + usize::from(width - 5)
+                                    ..start + usize::from(width - 1)]
+                                    .iter()
+                                    .map(|cell| cell.text.as_str())
+                                    .collect::<String>(),
+                                format!("{percent:>3}%")
+                            );
+                        }
                     } else {
-                        Color::Indexed(244)
-                    };
-                    for bar in bars {
-                        assert_eq!(bar.bg, track);
-                        assert_ne!(bar.fg, bar.bg);
+                        assert_eq!(bars.len(), 3);
+                        for bar in bars {
+                            assert_eq!(bar.bg, Color::Indexed(244));
+                            assert_ne!(bar.fg, bar.bg);
+                        }
                     }
                     let pie = f.cells.iter().find(|cell| cell.text == "◑").unwrap();
-                    assert_ne!(pie.bg, track);
+                    assert_ne!(pie.bg, Color::Indexed(244));
                     let mut terminal = Terminal::new(f.cols, f.rows);
                     terminal.feed(&terminal_diff(None, &f));
                     assert_eq!(terminal.snapshot().cells, f.cells);
@@ -3120,8 +3134,110 @@ fn crowded_compact_sidebar_keeps_dev_watermark_between_metric_labels_and_values(
     assert!(text.contains("CPU"));
     assert!(text.contains("DEV"));
     assert!(text.contains("51%"));
-    assert_eq!(row[usize::from(width - 7)].text, "▄");
-    assert_eq!(row[usize::from(width - 7)].bg, Color::Indexed(244));
+    assert_eq!(
+        row[5..8]
+            .iter()
+            .map(|cell| cell.text.as_str())
+            .collect::<String>(),
+        "DEV"
+    );
+    assert_eq!(row[9].text, "▰");
+    assert_eq!(row[10].text, "▱");
+    assert_eq!(
+        row[usize::from(width - 5)..usize::from(width - 1)]
+            .iter()
+            .map(|cell| cell.text.as_str())
+            .collect::<String>(),
+        " 51%"
+    );
+}
+
+#[test]
+fn compact_sampler_metrics_use_horizontal_sidebar_bars() {
+    use kelpmux::native::ui::TabPosition;
+    let mut ws = workspace((40, 24), (1, 1));
+    ws.ui.config.tab_position = TabPosition::Left;
+    ws.ui.vitals = vec![("C51".into(), 114), ("M45".into(), 141)];
+    ws.apply(&Action::Select(1)).unwrap();
+    let f = frame(&ws);
+    let top = f.rows - kelpmux::native::workspace::sidebar_status_rows(f.rows);
+    let width = kelpmux::native::workspace::sidebar_width(f.cols) - 1;
+    for (offset, label, percent) in [(1, "CPU", "51%"), (2, "Memory", "45%")] {
+        let start = usize::from((top + offset) * f.cols);
+        let row = f.cells[start..start + usize::from(width)]
+            .iter()
+            .map(|cell| cell.text.as_str())
+            .collect::<String>();
+        assert!(
+            row.contains(label) && row.contains(percent) && row.contains('▰') && row.contains('▱'),
+            "{row}"
+        );
+    }
+}
+
+#[test]
+fn metrics_hover_as_one_block_and_new_tab_highlights_more_subtly() {
+    use kelpmux::native::{
+        hover,
+        status::{self, Sort},
+        ui::TabPosition,
+        vitals::{Vitals, render_segments},
+        workspace::{self, TabTarget},
+    };
+    for position in [TabPosition::Left, TabPosition::Top] {
+        let mut ws = workspace((120, 40), (1, 1));
+        ws.ui.config.tab_position = position;
+        ws.apply(&Action::Select(1)).unwrap();
+        ws.ui.vitals = render_segments(&Vitals {
+            cpu: Some(51),
+            memory: Some(45),
+            swap: Some(0),
+            disks: vec![51],
+            ..Default::default()
+        });
+        let f = frame(&ws);
+        let block = status::metric_region(&f).unwrap();
+        for y in block.y..block.y + block.rows {
+            for x in block.x..block.x + block.cols {
+                let point = Point { x, y };
+                assert_eq!(hover::target(&f, point), Some(block));
+                assert!(matches!(
+                    Router::default().route(click(point), &f).as_slice(),
+                    [ClientMessage::Action(Action::StatusOpen(_))]
+                ));
+            }
+        }
+        if f.sidebar_status() {
+            assert_eq!(
+                status::metric_target(
+                    &f,
+                    Point {
+                        x: 1,
+                        y: block.y + 2
+                    }
+                ),
+                Some(Sort::Memory)
+            );
+        }
+        let new = workspace::tab_targets(f.cols, f.rows, &f.ui.config, 1, 0, 0)
+            .into_iter()
+            .find(|(target, _)| *target == TabTarget::New)
+            .unwrap()
+            .1;
+        assert_eq!(hover::strength(&f, new), 8);
+        assert_eq!(hover::strength(&f, f.controls()[0]), 24);
+        let mut subtle = Cell {
+            bg: Color::Rgb(40, 40, 40),
+            ..Default::default()
+        };
+        let mut normal = subtle.clone();
+        hover::highlight(&mut subtle, [None, None], hover::strength(&f, new));
+        hover::highlight(&mut normal, [None, None], 24);
+        assert_eq!(subtle.bg, Color::Rgb(48, 48, 48));
+        assert_eq!(normal.bg, Color::Rgb(64, 64, 64));
+        let notice = compose(&ws, &BTreeMap::new(), true, Some("Reconnecting"), 0);
+        assert!(status::metric_region(&notice).is_none());
+    }
 }
 
 #[test]
