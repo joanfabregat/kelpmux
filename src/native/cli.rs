@@ -896,6 +896,7 @@ fn paint(
 ) -> Result<()> {
     let mut fit = fitted(frame, size, notice);
     if let Some(area) = hover {
+        let strength = super::hover::strength(frame, area);
         for y in 0..fit.rows {
             for x in 0..fit.cols {
                 if fitted_mouse(frame, size, Point { x, y })
@@ -904,6 +905,7 @@ fn paint(
                     super::hover::highlight(
                         &mut fit.cells[usize::from(y * fit.cols + x)],
                         frame.ui.terminal_theme,
+                        strength,
                     );
                 }
             }
