@@ -50,6 +50,7 @@ pub enum DialogKind {
     Status,
     Parked,
     Overview,
+    AgentLink,
     Notifications,
     Recovery,
     Search,
@@ -139,6 +140,7 @@ impl UiConfig {
             "tab-position",
             "config",
             "overview",
+            "agent-link",
             "notifications",
             "recovery",
             "next-attention",
@@ -184,6 +186,14 @@ pub struct UiState {
     pub title_ticks: BTreeMap<u64, u16>,
     pub recovery_loading: bool,
     pub notifications: Vec<super::protocol::Notification>,
+    #[serde(default)]
+    pub notification_run: String,
+    #[serde(default)]
+    pub agent_sessions: Vec<crate::discovery::polling::Session>,
+    #[serde(default)]
+    pub agent_link_loading: bool,
+    #[serde(default)]
+    pub agent_link_error: Option<String>,
     pub recovery: Vec<super::protocol::RecoveryItem>,
     pub search_query: String,
     pub search_all: bool,
