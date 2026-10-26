@@ -1,6 +1,8 @@
 # Release procedure
 
-The next development beta is `0.2.0-beta.3` (unreleased). The latest published beta is `0.2.0-beta.2`. A version change prepares code for a release; it does not publish a tag, install anything or start a server. Keep an existing alpha or tmux workspace alive during a beta trial, using a separate binary and state root. Never replace the executable of a running preview to test an upgrade.
+The current published beta is `0.2.0-beta.3`. Dev remains a rolling channel, and each new pre-prod build gets a numbered beta with a signed tag, published GitHub prerelease, changelog and retained binary. Before the next promotion, check existing tags rather than inferring the next number from a package file. A version change alone does not publish a tag, install anything or start a server. Keep an existing tmux workspace independent during beta trials. Never overwrite the executable of a running workspace.
+
+The `v0.2.0-beta.3` tag identifies commit `50a5f02af1721e50dbefbfdef984a40f5c32deed`, the first versioned promotion of the persistent dev channel to pre-prod. Channel selections and immutable build manifests retain the exact commit; the previous pre-prod selection remains available for rollback. Publishing a beta and selecting pre-prod are separate from activation: a running pre-prod server keeps its old shells until an explicitly authorized stop/start. Neither promotion nor activation changes the default tmux environment.
 
 1. Ensure CI is green for the exact release commit, including native PTY/client/UI/tracking/workspace lifecycle tests on Linux x86-64 and ARM64, Rust 1.85, RustSec and license checks, and legacy tmux compatibility tests.
 2. Confirm `Cargo.toml`, `Cargo.lock`, README and documentation contain the intended version. Complete the hardware checklist below and describe any unverified device explicitly in release notes.
