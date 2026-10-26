@@ -706,3 +706,120 @@ fn explicit_template_override_rebalances_saved_grid_weights() {
     assert!(saved.grid_weights.iter().all(Vec::is_empty));
     fixture.stop();
 }
+
+// Use the real composed-client handshake so this checks startup presentation,
+// rather than just the existence of an on-disk crash marker.
+fn attach_frame(fixture: &Fixture) -> (std::os::unix::net::UnixStream, Frame) {
+    use std::os::unix::net::UnixStream;
+    let mut stream = UnixStream::connect(&fixture.socket).unwrap();
+    stream
+        .set_read_timeout(Some(Duration::from_secs(5)))
+        .unwrap();
+    write_message(
+        &mut stream,
+        &ClientMessage::Attach {
+            version: VERSION,
+            cols: 80,
+            rows: 24,
+            takeover: false,
+        },
+    )
+    .unwrap();
+    loop {
+        if let ServerMessage::Frame(frame) =
+            read_message::<ServerMessage>(&mut stream).unwrap().unwrap()
+        {
+            return (stream, frame);
+        }
+    }
+}
+#[test]
+fn recovery_opens_after_real_server_crash_once_but_not_after_clean_stop() {
+    use kelpmux::native::ui::DialogKind;
+    let fixture = Fixture::new();
+    let mut crashed = fixture
+        .command("server")
+        .args(["--shell", "/bin/sh", "--cwd"])
+        .arg(&fixture.root)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap();
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let original = loop {
+        if let Ok(ServerMessage::State { panes, .. }) =
+            kelpmux::native::lifecycle::inspect(&fixture.socket)
+        {
+            break panes;
+        }
+        assert!(Instant::now() < deadline);
+        assert!(crashed.try_wait().unwrap().is_none());
+        thread::sleep(Duration::from_millis(10));
+    };
+    let marker = fixture.state.join("server.running.json");
+    assert!(marker.is_file());
+    let (first, frame) = attach_frame(&fixture);
+    assert!(frame.ui.dialog.is_none());
+    drop(first);
+    crashed.kill().unwrap();
+    crashed.wait().unwrap();
+    assert!(marker.is_file());
+    let restarted = fixture.start(&[]);
+    assert_ne!(original[0].pid, restarted[0].pid);
+    let (mut controller, frame) = attach_frame(&fixture);
+    assert_eq!(frame.ui.dialog.unwrap().kind, DialogKind::Recovery);
+    write_message(
+        &mut controller,
+        &ClientMessage::Command(Action::DialogClose),
+    )
+    .unwrap();
+    loop {
+        if matches!(
+            read_message::<ServerMessage>(&mut controller)
+                .unwrap()
+                .unwrap(),
+            ServerMessage::State { .. }
+        ) {
+            break;
+        }
+    }
+    drop(controller);
+    let (reconnected, frame) = attach_frame(&fixture);
+    assert!(frame.ui.dialog.is_none());
+    drop(reconnected);
+    fixture.stop();
+    assert!(!marker.exists());
+    fixture.start(&[]);
+    let (_controller, frame) = attach_frame(&fixture);
+    assert!(frame.ui.dialog.is_none());
+    fixture.stop();
+}
+
+#[test]
+fn dev_feature_flag_reaches_frames_without_changing_saved_settings_or_child_environment() {
+    for flag in ["1", "0"] {
+        let fixture = Fixture::new();
+        let out = bounded_output(
+            fixture
+                .command("start")
+                .env("KELPMUX_DEV_BADGE", flag)
+                .args(["--shell", "/bin/sh", "--cwd"])
+                .arg(&fixture.root),
+        );
+        let pane = panes(&out)[0].clone();
+        let (_controller, frame) = attach_frame(&fixture);
+        assert_eq!(frame.ui.show_dev_badge, flag == "1");
+        let config: serde_json::Value =
+            serde_json::from_slice(&fs::read(fixture.state.join("workspace.json")).unwrap())
+                .unwrap();
+        assert!(config["ui"].get("show_dev_badge").is_none());
+        let environment = fs::read(format!("/proc/{}/environ", pane.pid)).unwrap();
+        assert!(
+            !environment
+                .split(|byte| *byte == 0)
+                .any(|entry| entry.starts_with(b"KELPMUX_DEV_BADGE="))
+        );
+        fixture.stop();
+    }
+}

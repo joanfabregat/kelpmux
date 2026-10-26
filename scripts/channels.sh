@@ -77,7 +77,18 @@ case "$command" in
       launch+=(--config "$path/defaults.json")
     fi
     launch+=("${args[@]}")
-    if $inspect; then printf '%q ' "${launch[@]}"; printf '\n'; exit; fi
+    # Channel-owned defaults also apply when the workspace already has settings.
+    # An explicit 0/1 override is the feature flag for the next server startup.
+    if [[ $channel == dev ]]; then
+      export KELPMUX_DEV_BADGE=${KELPMUX_DEV_BADGE:-1}
+    else
+      export KELPMUX_DEV_BADGE=${KELPMUX_DEV_BADGE:-0}
+    fi
+    [[ $KELPMUX_DEV_BADGE == 0 || $KELPMUX_DEV_BADGE == 1 ]] || fail 'KELPMUX_DEV_BADGE must be 0 or 1.'
+    if $inspect; then
+      printf 'KELPMUX_DEV_BADGE=%q ' "$KELPMUX_DEV_BADGE"
+      printf '%q ' "${launch[@]}"; printf '\n'; exit
+    fi
     printf 'KelpMux %s · selected build %s · reconnect preserves the running server\n' "$channel" "$build" >&2
     exec "${launch[@]}"
     ;;

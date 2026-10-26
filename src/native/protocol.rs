@@ -3,7 +3,7 @@ use crate::{Result, model::Status};
 use serde::{Deserialize, Serialize};
 use std::io::{Read, Write};
 
-pub const VERSION: u16 = 30;
+pub const VERSION: u16 = 31;
 pub const MAX_MESSAGE: usize = 16 * 1024 * 1024;
 pub const MAX_INPUT: usize = 64 * 1024;
 pub type PaneId = u64;
@@ -194,7 +194,7 @@ impl Frame {
     }
     pub fn footer_cols(&self) -> u16 {
         let help = self.controls()[3];
-        help.x + help.cols
+        help.x + help.cols + if self.ui.show_dev_badge { 5 } else { 0 }
     }
 }
 

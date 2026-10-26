@@ -11,6 +11,7 @@ manager="$repo/scripts/channels.sh"
 cat > "$fixture/kelpmux" <<'MOCK'
 #!/usr/bin/env bash
 printf '%s\n' "$@" > "$XDG_STATE_HOME/arguments"
+printf '%s\n' "${KELPMUX_DEV_BADGE:-unset}" > "$XDG_STATE_HOME/badge"
 MOCK
 chmod +x "$fixture/kelpmux"
 for build in aaaaaaa bbbbbbb; do
@@ -23,13 +24,18 @@ bash "$manager" select dev aaaaaaa
 bash "$manager" promote preprod
 (cd / && bash "$manager" launch preprod)
 grep -Fx preprod "$XDG_STATE_HOME/arguments"
+grep -Fx 0 "$XDG_STATE_HOME/badge"
 grep -Fx -- --config "$XDG_STATE_HOME/arguments"
 mkdir -p "$XDG_STATE_HOME/kelpmux/workspaces/preprod"
 printf '{"tab_count":4}\n' > "$XDG_STATE_HOME/kelpmux/workspaces/preprod/workspace.json"
 bash "$manager" select dev bbbbbbb
 bash "$manager" launch dev --takeover
 grep -Fx dev "$XDG_STATE_HOME/arguments"
+grep -Fx 1 "$XDG_STATE_HOME/badge"
 grep -Fx -- --takeover "$XDG_STATE_HOME/arguments"
+KELPMUX_DEV_BADGE=0 bash "$manager" launch dev
+grep -Fx 0 "$XDG_STATE_HOME/badge"
+if KELPMUX_DEV_BADGE=invalid bash "$manager" launch dev --print-command 2>/dev/null; then exit 1; fi
 # Promoting changes only the selection. It cannot invoke the binary, stop jobs,
 # overwrite workspace settings, or create build-specific workspaces.
 rm "$XDG_STATE_HOME/arguments"
