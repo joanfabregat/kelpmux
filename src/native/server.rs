@@ -178,6 +178,7 @@ impl NativePane {
             .env_remove("STY")
             .env_remove("CODEX_THREAD_ID")
             .env_remove("CLAUDECODE")
+            .env_remove("KELPMUX_DEV_BADGE")
             .stdin(Stdio::from(slave.try_clone()?))
             .stdout(Stdio::from(slave.try_clone()?))
             .stderr(Stdio::from(slave));
@@ -544,6 +545,7 @@ struct Server {
     leases: BTreeMap<PaneId, PaneLease>,
     initializing: bool,
     recovery_job: Option<RecoveryJob>,
+    recovery_pending: bool,
     aliases: BTreeMap<PaneId, String>,
     activity: super::activity::Activity,
     started: Instant,
@@ -1542,6 +1544,10 @@ impl Server {
                         client_id: id,
                         controller: self.controller == Some(id),
                     })?;
+                if self.controller == Some(id) && self.recovery_pending {
+                    self.feature_action(id, &Action::Recovery)?;
+                    self.recovery_pending = false;
+                }
                 self.dirty = true;
             }
             ClientMessage::Action(Action::Detach) => {
@@ -2219,6 +2225,13 @@ pub fn serve(config: ServerConfig) -> Result<()> {
     Workspace::grid_count(config.initial_grid.0, config.initial_grid.1)?;
     let mut workspace = Workspace::new(config.cols, config.rows)?;
     workspace.ui.config = config.ui.clone();
+    if let Some(value) = std::env::var_os("KELPMUX_DEV_BADGE") {
+        workspace.ui.show_dev_badge = match value.to_str() {
+            Some("1") => true,
+            Some("0") => false,
+            _ => return Err("KELPMUX_DEV_BADGE must be 0 or 1".into()),
+        };
+    }
     let (listener, _endpoint) = endpoint(&config)?;
     super::lifecycle::save_pid(&config.state_dir)?;
     let mut server = Server {
@@ -2230,6 +2243,7 @@ pub fn serve(config: ServerConfig) -> Result<()> {
         leases: BTreeMap::new(),
         initializing: true,
         recovery_job: None,
+        recovery_pending: false,
         aliases: BTreeMap::new(),
         activity: super::activity::Activity::load(
             &config.state_dir,
@@ -2264,6 +2278,8 @@ pub fn serve(config: ServerConfig) -> Result<()> {
     server.workspace.reflow();
     server.persist_geometry()?;
     server.resize();
+    let unclean = super::lifecycle::begin_run(&server.config.state_dir)?;
+    server.recovery_pending = unclean;
     let (requests, results, worker) = discovery_worker(server.config.state_dir.clone());
     let mut discovery = Instant::now() - Duration::from_secs(2);
     let mut render_time = Instant::now() - Duration::from_secs(1);
@@ -2453,5 +2469,6 @@ pub fn serve(config: ServerConfig) -> Result<()> {
     {
         let _ = store.reconcile(vec![], crate::now());
     }
+    super::lifecycle::finish_run(&server.config.state_dir)?;
     Ok(())
 }

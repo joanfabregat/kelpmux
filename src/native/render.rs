@@ -163,7 +163,10 @@ pub fn compose(
         let parked_count = workspace.panes.iter().filter(|pane| pane.parked).count();
         let help = super::workspace::help_button(frame.rows, parked_count);
         let [config, mode, _, _] = frame.controls();
-        let footer_cols = help.x + help.cols;
+        let footer_cols = frame.footer_cols();
+        if workspace.ui.show_dev_badge {
+            draw_dev_badge(&mut frame, help.x + help.cols, y);
+        }
         let width = frame.cols.saturating_sub(footer_cols);
         write_text(
             &mut frame,
@@ -1873,6 +1876,19 @@ fn sidebar_metrics(segments: &[(String, u8)]) -> Vec<SidebarMetric> {
     metrics
 }
 
+fn draw_dev_badge(frame: &mut Frame, x: u16, y: u16) {
+    write_text(
+        frame,
+        x,
+        y,
+        5,
+        " DEV ",
+        Color::Indexed(232),
+        Color::Indexed(214),
+        true,
+    );
+}
+
 fn draw_sidebar_status(frame: &mut Frame, workspace: &Workspace, notice: Option<&str>) {
     let rows = super::workspace::sidebar_status_rows(frame.rows);
     let width = super::workspace::sidebar_width(frame.cols) - 1;
@@ -1902,6 +1918,8 @@ fn draw_sidebar_status(frame: &mut Frame, workspace: &Workspace, notice: Option<
     let metric_top = if rows > 3 { top + 1 } else { top };
     let metric_end = if rows > 3 {
         frame.rows - 3
+    } else if workspace.ui.show_dev_badge {
+        metric_top
     } else {
         frame.rows - 2
     };
@@ -1920,7 +1938,17 @@ fn draw_sidebar_status(frame: &mut Frame, workspace: &Workspace, notice: Option<
         }
     }
     if !frame.controller && rows > 3 {
-        write_text(frame, 2, top, width - 4, " Observer ", muted, bg, false);
+        let reserved = if workspace.ui.show_dev_badge { 9 } else { 4 };
+        write_text(
+            frame,
+            2,
+            top,
+            width.saturating_sub(reserved),
+            " Observer ",
+            muted,
+            bg,
+            false,
+        );
     }
     if let Some(notice) = notice {
         let mut y = metric_top;
@@ -1950,7 +1978,7 @@ fn draw_sidebar_status(frame: &mut Frame, workspace: &Workspace, notice: Option<
             frame,
             1,
             metric_top,
-            width - 2,
+            width.saturating_sub(if workspace.ui.show_dev_badge { 7 } else { 2 }),
             "Observer",
             muted,
             bg,
@@ -2040,6 +2068,9 @@ fn draw_sidebar_status(frame: &mut Frame, workspace: &Workspace, notice: Option<
                 false,
             );
         }
+    }
+    if workspace.ui.show_dev_badge {
+        draw_dev_badge(frame, width.saturating_sub(6), top);
     }
     let [config, mode, parked, help] = frame.controls();
     let unread = workspace.ui.notifications.iter().any(|item| !item.read);
