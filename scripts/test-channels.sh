@@ -12,6 +12,14 @@ cat > "$fixture/kelpmux" <<'MOCK'
 #!/usr/bin/env bash
 printf '%s\n' "$@" > "$XDG_STATE_HOME/arguments"
 printf '%s\n' "${KELPMUX_DEV_BADGE:-unset}" > "$XDG_STATE_HOME/badge"
+printf '%s ' "$@" >> "$XDG_STATE_HOME/calls"
+printf '\n' >> "$XDG_STATE_HOME/calls"
+if [[ $1 == start ]]; then
+  test ! -e "/proc/$$/fd/9"
+  if flock -n "$XDG_DATA_HOME/kelpmux/channels/lock" true; then exit 1; fi
+elif [[ $1 == ssh-entry ]]; then
+  flock -n "$XDG_DATA_HOME/kelpmux/channels/lock" true
+fi
 MOCK
 chmod +x "$fixture/kelpmux"
 for build in aaaaaaa bbbbbbb; do
@@ -29,7 +37,9 @@ grep -Fx -- --config "$XDG_STATE_HOME/arguments"
 mkdir -p "$XDG_STATE_HOME/kelpmux/workspaces/preprod"
 printf '{"tab_count":4}\n' > "$XDG_STATE_HOME/kelpmux/workspaces/preprod/workspace.json"
 bash "$manager" select dev bbbbbbb
+rm "$XDG_STATE_HOME/calls"
 bash "$manager" launch dev --takeover
+grep -F 'start --workspace dev --replace-running --server-binary' "$XDG_STATE_HOME/calls"
 grep -Fx dev "$XDG_STATE_HOME/arguments"
 grep -Fx 1 "$XDG_STATE_HOME/badge"
 grep -Fx -- --takeover "$XDG_STATE_HOME/arguments"
@@ -43,6 +53,7 @@ bash "$manager" promote preprod
 test ! -e "$XDG_STATE_HOME/arguments"
 jq -e '.tab_count == 4' "$XDG_STATE_HOME/kelpmux/workspaces/preprod/workspace.json" >/dev/null
 bash "$manager" launch preprod
+if tail -n 1 "$XDG_STATE_HOME/calls" | grep -Fq -- '--replace-running'; then exit 1; fi
 if grep -Fxq -- --config "$XDG_STATE_HOME/arguments"; then exit 1; fi
 test "$(jq -r .current "$XDG_DATA_HOME/kelpmux/channels/preprod.json")" = bbbbbbb
 test "$(jq -r .previous "$XDG_DATA_HOME/kelpmux/channels/preprod.json")" = aaaaaaa
@@ -55,6 +66,9 @@ grep -F 'preprod: selected=aaaaaaa' "$fixture/status"
 bash "$manager" launch preprod --print-command > "$fixture/command"
 test ! -e "$XDG_STATE_HOME/arguments"
 grep -F -- '--workspace preprod' "$fixture/command"
+bash "$manager" launch dev --print-command > "$fixture/dev-command"
+test ! -e "$XDG_STATE_HOME/arguments"
+grep -F -- '--replace-running' "$fixture/dev-command"
 bash "$manager" stop dev
 printf 'stop\n--workspace\ndev\n' > "$fixture/expected"
 cmp "$fixture/expected" "$XDG_STATE_HOME/arguments"

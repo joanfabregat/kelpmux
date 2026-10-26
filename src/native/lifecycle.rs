@@ -176,6 +176,8 @@ pub struct StartRequest<'a> {
     pub cols: u16,
     pub rows: u16,
     pub settings: &'a Settings,
+    pub replace_running: bool,
+    pub executable: Option<&'a Path>,
 }
 pub fn start(request: StartRequest<'_>) -> Result<()> {
     private_state(request.state)?;
@@ -194,15 +196,39 @@ pub fn start(request: StartRequest<'_>) -> Result<()> {
     if !meta.is_file() || meta.uid() != unsafe { libc::geteuid() } || meta.mode() & 0o077 != 0 {
         return Err("workspace startup lock must be an owned private regular file".into());
     }
-    if unsafe { libc::flock(startup_lock.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } != 0 {
+    let lock_deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        if unsafe { libc::flock(startup_lock.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } == 0 {
+            break;
+        }
         let error = std::io::Error::last_os_error();
         if error.kind() != std::io::ErrorKind::WouldBlock {
             return Err(error.into());
         }
-        return Err("workspace startup is already in progress; retry when ready".into());
+        if !request.replace_running || Instant::now() >= lock_deadline {
+            return Err("workspace startup is already in progress; retry when ready".into());
+        }
+        thread::sleep(Duration::from_millis(20));
     }
+    let executable = request
+        .executable
+        .map(Path::to_path_buf)
+        .unwrap_or(std::env::current_exe()?);
+    let target = fs::metadata(&executable)?;
+    if !target.is_file() || target.mode() & 0o111 == 0 {
+        return Err("selected server binary must be an executable regular file".into());
+    }
+    let mut previous = None;
     if matches!(inspect(request.socket), Ok(ServerMessage::State { .. })) {
-        return Ok(());
+        if !request.replace_running {
+            return Ok(());
+        }
+        let stream = super::cli::connect(request.socket)?;
+        let identity = super::upgrade::identify(&stream, request.state)?;
+        if identity.device == target.dev() && identity.inode == target.ino() {
+            return Ok(());
+        }
+        previous = Some(stream);
     }
     // Fail obvious configuration mistakes before persisting or forking. The
     // server still handles races and relative shell names resolved through PATH.
@@ -215,12 +241,41 @@ pub fn start(request: StartRequest<'_>) -> Result<()> {
             return Err("workspace shell must be an executable file".into());
         }
     }
+    request.settings.ui.validate()?;
+    if let Some(template) = &request.settings.template {
+        template.validate()?;
+    }
+    if let Some(mut stream) = previous {
+        eprintln!("Updating workspace: ending the previous build's shells and jobs.");
+        write_message(&mut stream, &ClientMessage::Command(Action::Shutdown))?;
+        match super::cli::response(&mut stream)? {
+            ServerMessage::State { .. } => (),
+            ServerMessage::Error(error) => return Err(error.into()),
+            _ => return Err("previous server did not acknowledge shutdown".into()),
+        }
+        drop(stream);
+        let deadline = Instant::now() + Duration::from_secs(10);
+        loop {
+            if !request.socket.try_exists()? {
+                // Socket removal precedes release of the endpoint's locks.
+                if let Ok(guard) = journal::Lock::acquire(&request.state.join("native.lock"), false)
+                {
+                    drop(guard);
+                    break;
+                }
+            }
+            if Instant::now() >= deadline {
+                return Err("previous server is still shutting down; reconnect shortly".into());
+            }
+            thread::sleep(Duration::from_millis(20));
+        }
+    }
     let mut persisted = request.settings.clone();
     persisted.shell = Some(request.shell.to_path_buf());
     persisted.cwd = Some(request.cwd.to_path_buf());
     journal::atomic(&request.state.join("workspace.json"), &persisted)?;
     let size = format!("{}x{}", request.cols, request.rows);
-    let mut child = Command::new(std::env::current_exe()?)
+    let mut child = Command::new(&executable)
         .arg("server")
         .arg("--background")
         .arg("--socket")

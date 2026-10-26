@@ -823,3 +823,92 @@ fn dev_feature_flag_reaches_frames_without_changing_saved_settings_or_child_envi
         fixture.stop();
     }
 }
+
+#[test]
+fn replacing_outdated_dev_ends_old_jobs_reuses_current_build_and_supports_rollback() {
+    let dev = Fixture::new();
+    let preprod = Fixture::new();
+    let preserved = preprod.start(&[])[0].pid;
+    let old_binary = dev.root.join("old-kelpmux");
+    // A separate copy process cannot leak a temporary writable executable FD
+    // into a concurrent fixture's fork/exec path (ETXTBSY).
+    assert!(
+        Command::new("cp")
+            .arg(env!("CARGO_BIN_EXE_kelpmux"))
+            .arg(&old_binary)
+            .status()
+            .unwrap()
+            .success()
+    );
+    let old_path = old_binary.to_str().unwrap();
+    let old = dev.start(&["--server-binary", old_path])[0].pid;
+    let (mut controller, _) = attach_frame(&dev);
+    write_message(
+        &mut controller,
+        &ClientMessage::Input(b"sleep 60 & echo $! > old-job.pid\n".to_vec()),
+    )
+    .unwrap();
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let job: u32 = loop {
+        if let Ok(text) = fs::read_to_string(dev.root.join("old-job.pid")) {
+            if let Ok(pid) = text.trim().parse() {
+                break pid;
+            }
+        }
+        assert!(Instant::now() < deadline);
+        thread::sleep(Duration::from_millis(10));
+    };
+    assert_eq!(
+        dev.start(&[])[0].pid,
+        old,
+        "ordinary startup preserves its server"
+    );
+    let bad = dev.cmd(
+        "start",
+        &["--replace-running", "--server-binary", "/no-such-server"],
+    );
+    assert!(!bad.status.success());
+    assert_eq!(dev.status()[0].pid, old);
+    let bad = dev.cmd(
+        "start",
+        &["--replace-running", "--cwd", "/no-such-workspace-directory"],
+    );
+    assert!(!bad.status.success());
+    assert_eq!(dev.status()[0].pid, old);
+    let updated = dev.start(&["--replace-running"])[0].pid;
+    assert_ne!(updated, old);
+    wait_absent(Path::new(&format!("/proc/{old}")));
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while kelpmux::process::read(Path::new("/proc"), job).is_ok_and(|p| p.state != 'Z') {
+        assert!(
+            Instant::now() < deadline,
+            "old dev job survived replacement"
+        );
+        thread::sleep(Duration::from_millis(10));
+    }
+    assert_eq!(
+        dev.start(&["--replace-running"])[0].pid,
+        updated,
+        "reconnect must preserve jobs on the selected build"
+    );
+    let (_new_controller, frame) = attach_frame(&dev);
+    assert!(
+        frame.ui.dialog.is_none(),
+        "an intentional update is not a crash"
+    );
+    let rollback = dev.start(&["--replace-running", "--server-binary", old_path])[0].pid;
+    assert_ne!(rollback, updated);
+    let identities = thread::scope(|scope| {
+        let first = scope.spawn(|| dev.start(&["--replace-running"])[0].pid);
+        let second = scope.spawn(|| dev.start(&["--replace-running"])[0].pid);
+        (first.join().unwrap(), second.join().unwrap())
+    });
+    assert_eq!(
+        identities.0, identities.1,
+        "concurrent connections must converge on one server"
+    );
+    assert_ne!(identities.0, rollback);
+    assert_eq!(preprod.status()[0].pid, preserved);
+    dev.stop();
+    preprod.stop();
+}
