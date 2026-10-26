@@ -15,6 +15,7 @@ printf '%s\n' "${KELPMUX_DEV_BADGE:-unset}" > "$XDG_STATE_HOME/badge"
 printf '%s ' "$@" >> "$XDG_STATE_HOME/calls"
 printf '\n' >> "$XDG_STATE_HOME/calls"
 if [[ $1 == start ]]; then
+  test ! -e "/proc/$$/fd/9"
   if flock -n "$XDG_DATA_HOME/kelpmux/channels/lock" true; then exit 1; fi
 elif [[ $1 == ssh-entry ]]; then
   flock -n "$XDG_DATA_HOME/kelpmux/channels/lock" true

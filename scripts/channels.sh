@@ -108,7 +108,7 @@ case "$command" in
       printf '%q ' "${launch[@]}"; printf '\n'; exit
     fi
     if [[ $channel == dev ]]; then
-      "${startup[@]}" >/dev/null
+      "${startup[@]}" 9>&- >/dev/null
       flock -u 9
       exec 9>&-
     fi
