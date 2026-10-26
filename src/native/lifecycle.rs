@@ -270,3 +270,33 @@ pub fn save_pid(state: &Path) -> Result<()> {
     journal::atomic(&state.join("server.pid"), &std::process::id())?;
     super::upgrade::save(state)
 }
+
+/// Call under the exclusive workspace lock, only after startup succeeds.
+/// A marker is cleared solely on a completed orderly shutdown, never by Drop.
+pub fn begin_run(state: &Path) -> Result<bool> {
+    let path = state.join("server.running.json");
+    let unclean = match fs::symlink_metadata(&path) {
+        Ok(meta) => {
+            if !meta.is_file()
+                || meta.uid() != unsafe { libc::geteuid() }
+                || meta.mode() & 0o077 != 0
+                || meta.len() > 32
+            {
+                return Err("server run marker must be an owned private regular file".into());
+            }
+            if !serde_json::from_slice::<bool>(&fs::read(&path)?)? {
+                return Err("invalid server run marker".into());
+            }
+            true
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => false,
+        Err(error) => return Err(error.into()),
+    };
+    journal::atomic(&path, &true)?;
+    Ok(unclean)
+}
+pub fn finish_run(state: &Path) -> Result<()> {
+    fs::remove_file(state.join("server.running.json"))?;
+    fs::File::open(state)?.sync_all()?;
+    Ok(())
+}
