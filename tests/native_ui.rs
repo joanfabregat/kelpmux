@@ -2983,6 +2983,27 @@ fn dev_badge_is_visible_in_grid_horizontal_tabs_and_compact_sidebars() {
                 ws.ui.show_dev_badge = true;
                 ws.ui.vitals = vec![("CPU 100% RAM 51%".into(), 114)];
                 let f = frame(&ws);
+                if f.sidebar_status() {
+                    let width = kelpmux::native::workspace::sidebar_width(f.cols) - 1;
+                    let x = width.saturating_sub(5) / 2;
+                    let y = (0..f.rows)
+                        .find(|y| {
+                            f.cells[usize::from(y * f.cols + x)..usize::from(y * f.cols + x + 5)]
+                                .iter()
+                                .map(|cell| cell.text.as_str())
+                                .collect::<String>()
+                                == "D E V"
+                        })
+                        .expect("centered sidebar watermark missing");
+                    assert!(y < f.rows - kelpmux::native::workspace::sidebar_status_rows(f.rows));
+                    let cell = &f.cells[usize::from(y * f.cols + x)];
+                    assert_eq!(cell.bg, Color::Indexed(236));
+                    assert_eq!(cell.fg, Color::Indexed(240));
+                    assert!(!cell.bold);
+                    assert_eq!(plain.controls(), f.controls());
+                    assert_eq!(plain.panes, f.panes);
+                    continue;
+                }
                 let cells: Vec<_> = f
                     .cells
                     .iter()
@@ -3017,4 +3038,88 @@ fn dev_badge_is_visible_in_grid_horizontal_tabs_and_compact_sidebars() {
             }
         }
     }
+}
+
+#[test]
+fn vertical_metric_bars_have_contrasting_tracks_in_every_environment_and_view() {
+    use kelpmux::native::{
+        ui::TabPosition,
+        vitals::{Vitals, render_segments},
+    };
+    for dev in [false, true] {
+        for position in [TabPosition::Left, TabPosition::Top] {
+            for grid in [false, true] {
+                for (theme, sidebar_track) in [
+                    (None, Color::Indexed(244)),
+                    (Some([16, 16, 16]), Color::Rgb(66, 66, 66)),
+                    (Some([240, 240, 240]), Color::Indexed(239)),
+                ] {
+                    let mut ws = workspace((160, 40), (1, 1));
+                    ws.ui.config.tab_position = position;
+                    ws.ui.show_dev_badge = dev;
+                    ws.ui.terminal_theme[1] = theme;
+                    if !grid {
+                        ws.apply(&Action::Select(1)).unwrap();
+                    }
+                    ws.ui.vitals = render_segments(&Vitals {
+                        cpu: Some(0),
+                        memory: Some(51),
+                        swap: Some(100),
+                        disks: vec![51],
+                        ..Default::default()
+                    });
+                    let f = frame(&ws);
+                    let bars: Vec<_> = f
+                        .cells
+                        .iter()
+                        .filter(|cell| matches!(cell.text.as_str(), "▁" | "▄" | "█"))
+                        .collect();
+                    assert_eq!(bars.len(), 3);
+                    let track = if f.sidebar_status() {
+                        sidebar_track
+                    } else {
+                        Color::Indexed(244)
+                    };
+                    for bar in bars {
+                        assert_eq!(bar.bg, track);
+                        assert_ne!(bar.fg, bar.bg);
+                    }
+                    let pie = f.cells.iter().find(|cell| cell.text == "◑").unwrap();
+                    assert_ne!(pie.bg, track);
+                    let mut terminal = Terminal::new(f.cols, f.rows);
+                    terminal.feed(&terminal_diff(None, &f));
+                    assert_eq!(terminal.snapshot().cells, f.cells);
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn crowded_compact_sidebar_keeps_dev_watermark_between_metric_labels_and_values() {
+    use kelpmux::native::{
+        ui::TabPosition,
+        vitals::{Vitals, render_segments},
+    };
+    let mut ws = workspace((40, 11), (5, 4));
+    ws.ui.config.tab_position = TabPosition::Left;
+    ws.ui.show_dev_badge = true;
+    ws.ui.vitals = render_segments(&Vitals {
+        cpu: Some(51),
+        ..Default::default()
+    });
+    ws.apply(&Action::Select(1)).unwrap();
+    let f = frame(&ws);
+    let y = f.rows - kelpmux::native::workspace::sidebar_status_rows(f.rows);
+    let width = kelpmux::native::workspace::sidebar_width(f.cols) - 1;
+    let row = &f.cells[usize::from(y * f.cols)..usize::from(y * f.cols + width)];
+    let text = row
+        .iter()
+        .map(|cell| cell.text.as_str())
+        .collect::<String>();
+    assert!(text.contains("CPU"));
+    assert!(text.contains("DEV"));
+    assert!(text.contains("51%"));
+    assert_eq!(row[usize::from(width - 7)].text, "▄");
+    assert_eq!(row[usize::from(width - 7)].bg, Color::Indexed(244));
 }

@@ -1889,10 +1889,70 @@ fn draw_dev_badge(frame: &mut Frame, x: u16, y: u16) {
     );
 }
 
+fn sidebar_dev_watermark(frame: &Frame) -> Point {
+    use super::workspace::{TabTarget, sidebar_status_rows, sidebar_width, tab_targets};
+    let panes: Vec<_> = frame
+        .panes
+        .iter()
+        .filter(|view| !view.pane.parked && Some(view.pane.id) != frame.ui.scratch)
+        .collect();
+    let active_id = if frame.ui.scratch_visible {
+        frame.ui.scratch_return.unwrap_or(frame.active)
+    } else {
+        frame.active
+    };
+    let active = panes
+        .iter()
+        .position(|view| view.pane.id == active_id)
+        .unwrap_or(0);
+    let top = frame.rows - sidebar_status_rows(frame.rows);
+    let occupied = tab_targets(
+        frame.cols,
+        frame.rows,
+        &frame.ui.config,
+        panes.len(),
+        frame
+            .ui
+            .tab_scroll_anchor
+            .unwrap_or(active)
+            .min(panes.len().saturating_sub(1)),
+        frame.panes.iter().filter(|view| view.pane.parked).count(),
+    )
+    .into_iter()
+    .filter(|(target, _)| *target != TabTarget::Parked)
+    .map(|(_, rect)| rect.y + rect.rows)
+    .max()
+    .unwrap_or(0)
+    .min(top);
+    Point {
+        x: (sidebar_width(frame.cols) - 1).saturating_sub(5) / 2,
+        y: occupied + (top - occupied) / 2,
+    }
+}
+
+fn metric_bar_background(frame: &mut Frame, area: Rect, background: Color) {
+    for y in area.y..area.y + area.rows {
+        for x in area.x..area.x + area.cols {
+            let cell = &mut frame.cells[usize::from(y * frame.cols + x)];
+            if matches!(
+                cell.text.as_str(),
+                "▁" | "▂" | "▃" | "▄" | "▅" | "▆" | "▇" | "█"
+            ) {
+                cell.bg = background;
+            }
+        }
+    }
+}
+
 fn draw_sidebar_status(frame: &mut Frame, workspace: &Workspace, notice: Option<&str>) {
     let rows = super::workspace::sidebar_status_rows(frame.rows);
     let width = super::workspace::sidebar_width(frame.cols) - 1;
     let top = frame.rows - rows;
+    let watermark = if workspace.ui.show_dev_badge {
+        sidebar_dev_watermark(frame)
+    } else {
+        Point { x: 0, y: 0 }
+    };
     let bg = tab_surface(workspace);
     fill(
         frame,
@@ -1918,8 +1978,6 @@ fn draw_sidebar_status(frame: &mut Frame, workspace: &Workspace, notice: Option<
     let metric_top = if rows > 3 { top + 1 } else { top };
     let metric_end = if rows > 3 {
         frame.rows - 3
-    } else if workspace.ui.show_dev_badge {
-        metric_top
     } else {
         frame.rows - 2
     };
@@ -1938,13 +1996,16 @@ fn draw_sidebar_status(frame: &mut Frame, workspace: &Workspace, notice: Option<
         }
     }
     if !frame.controller && rows > 3 {
-        let reserved = if workspace.ui.show_dev_badge { 9 } else { 4 };
         write_text(
             frame,
             2,
             top,
-            width.saturating_sub(reserved),
-            " Observer ",
+            width.saturating_sub(4),
+            if workspace.ui.show_dev_badge && watermark.y == top {
+                "Obs"
+            } else {
+                " Observer "
+            },
             muted,
             bg,
             false,
@@ -1978,8 +2039,12 @@ fn draw_sidebar_status(frame: &mut Frame, workspace: &Workspace, notice: Option<
             frame,
             1,
             metric_top,
-            width.saturating_sub(if workspace.ui.show_dev_badge { 7 } else { 2 }),
-            "Observer",
+            width.saturating_sub(2),
+            if workspace.ui.show_dev_badge && watermark.y == top {
+                "Obs"
+            } else {
+                "Observer"
+            },
             muted,
             bg,
             false,
@@ -2069,8 +2134,36 @@ fn draw_sidebar_status(frame: &mut Frame, workspace: &Workspace, notice: Option<
             );
         }
     }
+    metric_bar_background(
+        frame,
+        Rect {
+            x: 0,
+            y: metric_top,
+            cols: width,
+            rows: metric_end - metric_top,
+        },
+        if foreground == Color::Indexed(232) {
+            Color::Indexed(239)
+        } else {
+            theme_surface(workspace, 50)
+        },
+    );
     if workspace.ui.show_dev_badge {
-        draw_dev_badge(frame, width.saturating_sub(6), top);
+        let compact = rows == 3 && watermark.y == top;
+        write_text(
+            frame,
+            if compact {
+                width.saturating_sub(3) / 2
+            } else {
+                watermark.x
+            },
+            watermark.y,
+            if compact { 3 } else { 5 },
+            if compact { "DEV" } else { "D E V" },
+            theme_surface(workspace, 32),
+            bg,
+            false,
+        );
     }
     let [config, mode, parked, help] = frame.controls();
     let unread = workspace.ui.notifications.iter().any(|item| !item.read);
@@ -2211,6 +2304,16 @@ fn draw_vitals(frame: &mut Frame, segments: &[(String, u8)]) {
         );
         x = x.saturating_add(width + 1);
     }
+    metric_bar_background(
+        frame,
+        Rect {
+            x: start,
+            y: frame.rows - 1,
+            cols: available,
+            rows: 1,
+        },
+        Color::Indexed(244),
+    );
 }
 fn draw_parked(
     frame: &mut Frame,
