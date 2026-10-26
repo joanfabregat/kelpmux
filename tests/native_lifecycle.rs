@@ -246,6 +246,37 @@ fn dev_example_starts_exactly_one_shell() {
 }
 
 #[test]
+fn legacy_tab_placements_start_and_save_as_left_tabs() {
+    for placement in ["auto", "top", "bottom", "left"] {
+        let fixture = Fixture::new();
+        let config = fixture.root.join("legacy-tabs.json");
+        fs::write(
+            &config,
+            serde_json::to_vec(&serde_json::json!({
+                "tab_count": 1,
+                "ui": {"tab_position": placement, "notification_sound": true}
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        let first = fixture.start(&["--config", config.to_str().unwrap()]);
+        assert_eq!(first.len(), 1);
+        let settings = fs::read(fixture.state.join("workspace.json")).unwrap();
+        let saved: serde_json::Value = serde_json::from_slice(&settings).unwrap();
+        assert_eq!(saved["ui"]["tab_position"], "left");
+        assert_eq!(saved["ui"]["notification_sound"], true);
+        let attached = fixture.start(&[]);
+        assert_eq!(
+            (attached[0].id, attached[0].pid),
+            (first[0].id, first[0].pid)
+        );
+        fixture.stop();
+        assert_eq!(fixture.start(&[]).len(), 1);
+        fixture.stop();
+    }
+}
+
+#[test]
 fn configured_large_startup_and_invalid_config_are_checked() {
     let fixture = Fixture::new();
     let config = fixture.root.join("config.json");
