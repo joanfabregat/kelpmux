@@ -2142,7 +2142,11 @@ fn draw_sidebar_status(frame: &mut Frame, workspace: &Workspace, notice: Option<
             cols: width,
             rows: metric_end - metric_top,
         },
-        theme_surface(workspace, 50),
+        if foreground == Color::Indexed(232) {
+            Color::Indexed(239)
+        } else {
+            theme_surface(workspace, 50)
+        },
     );
     if workspace.ui.show_dev_badge {
         let compact = rows == 3 && watermark.y == top;

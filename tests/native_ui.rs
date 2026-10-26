@@ -3052,7 +3052,7 @@ fn vertical_metric_bars_have_contrasting_tracks_in_every_environment_and_view() 
                 for (theme, sidebar_track) in [
                     (None, Color::Indexed(244)),
                     (Some([16, 16, 16]), Color::Rgb(66, 66, 66)),
-                    (Some([240, 240, 240]), Color::Rgb(190, 190, 190)),
+                    (Some([240, 240, 240]), Color::Indexed(239)),
                 ] {
                     let mut ws = workspace((160, 40), (1, 1));
                     ws.ui.config.tab_position = position;
