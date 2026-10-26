@@ -1106,3 +1106,69 @@ fn maximum_literal_paste_fits_the_wire_queue_and_keeps_client_attached() {
     tty.finish(true);
     backend.join().unwrap();
 }
+
+#[test]
+fn hover_highlights_locally_without_backend_motion_or_redrawing_within_a_control() {
+    let fixture = Fixture::new();
+    let path = fixture.socket.clone();
+    let (sender, receiver) = mpsc::channel();
+    let backend = thread::spawn(move || {
+        let mut socket = fixture.accept();
+        welcome(&mut socket, true);
+        while let Some(message) = read_message::<ClientMessage>(&mut socket).unwrap() {
+            let detach = matches!(message, ClientMessage::Action(Action::Detach));
+            sender.send(message).unwrap();
+            if detach {
+                write_message(&mut socket, &ServerMessage::Detached).unwrap();
+                break;
+            }
+        }
+    });
+    let mut tty = Pty::spawn(&path, 80, 24);
+    tty.ready();
+    assert!(String::from_utf8_lossy(&tty.output).contains("\x1b[?1003h"));
+    tty.input(b"\x1b[<35;2;24M");
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        tty.drain();
+        let mut terminal = kelpmux::native::engine::Terminal::new(80, 24);
+        terminal.feed(&tty.output);
+        if terminal.snapshot().cells[23 * 80 + 1].bg == Color::Rgb(40, 40, 40) {
+            break;
+        }
+        assert!(Instant::now() < deadline, "hover highlight never painted");
+        thread::sleep(Duration::from_millis(5));
+    }
+    assert!(receiver.try_recv().is_err(), "hover sent a backend action");
+    let unchanged = tty.output.len();
+    tty.input(b"\x1b[<35;3;24MX");
+    assert!(
+        matches!(receiver.recv_timeout(Duration::from_secs(2)).unwrap(), ClientMessage::Input(bytes) if bytes == b"X")
+    );
+    tty.drain();
+    assert_eq!(
+        tty.output.len(),
+        unchanged,
+        "moving within one control repainted it"
+    );
+    tty.input(b"\x1b[<35;21;3M");
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        tty.drain();
+        let mut terminal = kelpmux::native::engine::Terminal::new(80, 24);
+        terminal.feed(&tty.output);
+        if terminal.snapshot().cells[23 * 80 + 1].bg == Color::Default {
+            break;
+        }
+        assert!(Instant::now() < deadline, "hover highlight did not clear");
+        thread::sleep(Duration::from_millis(5));
+    }
+    assert!(
+        receiver.try_recv().is_err(),
+        "click-only application received idle motion"
+    );
+    tty.input(b"\x02d");
+    tty.finish(true);
+    assert!(String::from_utf8_lossy(&tty.output).contains("\x1b[?1003l"));
+    backend.join().unwrap();
+}
