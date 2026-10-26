@@ -12,6 +12,7 @@ use kelpmux::{
 use std::collections::BTreeMap;
 fn workspace(size: (u16, u16), shape: (u8, u8)) -> Workspace {
     let mut ws = Workspace::new(size.0, size.1).unwrap();
+    ws.ui.notification_run = "test-run".into();
     ws.panes = (1..=u64::from(shape.0) * u64::from(shape.1))
         .map(|id| PaneInfo {
             id,
@@ -1226,6 +1227,10 @@ fn working_tabs_animate_only_one_character_and_keep_bells_beside_titles() {
                 at: 1,
                 read: false,
                 workspace: "test".into(),
+                origin: Some(NotificationOrigin {
+                    run: "test-run".into(),
+                    pid: 0,
+                }),
             });
             let tab = tab_targets(ws.cols, ws.rows, &ws.ui.config, 2, active - 1, 0)
                 .into_iter()
@@ -1588,6 +1593,10 @@ fn automatic_grid_parking_controls_alert_colors_and_three_row_tabs() {
             at: 1,
             read: false,
             workspace: "test".into(),
+            origin: Some(NotificationOrigin {
+                run: "test-run".into(),
+                pid: 0,
+            }),
         });
         let unread = frame(&ws);
         let alert = start
@@ -2937,14 +2946,14 @@ fn sidebar_horizontal_bars_and_footer_tracks_preserve_values_colors_and_disk_pie
                     assert!(bars.is_empty());
                     let width = kelpmux::native::workspace::sidebar_width(f.cols) - 1;
                     let top = f.rows - kelpmux::native::workspace::sidebar_status_rows(f.rows);
-                    let length = width - 14;
+                    let length = width - 16;
                     for (index, (percent, color)) in
                         [(0u16, 114), (51, 141), (100, 73)].into_iter().enumerate()
                     {
                         let start = usize::from((top + 1 + index as u16) * f.cols);
                         let filled = (percent * length + 50) / 100;
                         for offset in 0..length {
-                            let cell = &f.cells[start + usize::from(8 + offset)];
+                            let cell = &f.cells[start + usize::from(10 + offset)];
                             assert_eq!(cell.text, if offset < filled { "▰" } else { "▱" });
                             if offset < filled {
                                 assert_eq!(cell.fg, Color::Indexed(color));
@@ -3008,10 +3017,11 @@ fn crowded_compact_sidebar_keeps_dev_watermark_between_metric_labels_and_values(
             .collect::<String>(),
         "DEV"
     );
-    assert_eq!(row[9].text, "▰");
-    assert_eq!(row[10].text, "▱");
+    assert_eq!(row[9].text, " ");
+    assert_eq!(row[10].text, " ");
+    assert_eq!(row[11].text, "▰");
     assert_eq!(
-        row[usize::from(width - 5)..usize::from(width - 1)]
+        row[usize::from(width - 4)..usize::from(width)]
             .iter()
             .map(|cell| cell.text.as_str())
             .collect::<String>(),
@@ -3036,7 +3046,9 @@ fn compact_sampler_metrics_use_horizontal_sidebar_bars() {
             .map(|cell| cell.text.as_str())
             .collect::<String>();
         assert!(
-            row.contains(label) && row.contains(percent) && row.contains('▰') && row.contains('▱'),
+            row.contains(label)
+                && row.contains(percent)
+                && (row.contains('▰') || row.contains('▱')),
             "{row}"
         );
     }
@@ -3240,5 +3252,111 @@ fn modal_hover_only_highlights_visible_dialog_buttons() {
             }
         )
         .is_none()
+    );
+}
+
+#[test]
+fn conversation_picker_blocks_loading_clicks_and_routes_shared_dialog_geometry() {
+    use kelpmux::{
+        discovery::polling::Session,
+        native::{hover, ui::DialogKind, workspace::dialog_bounds_for},
+    };
+    let mut ws = workspace((120, 40), (1, 1));
+    ws.panes[0].kind = Some(Kind::Codex);
+    ws.apply(&Action::AgentLinkPicker(1)).unwrap();
+    let f = frame(&ws);
+    assert!(
+        Router::default()
+            .route(InputEvent::Bytes(b"\r".to_vec()), &f)
+            .is_empty()
+    );
+    ws.ui.agent_link_loading = false;
+    ws.ui.agent_sessions = vec![Session {
+        kind: Kind::Codex,
+        id: "alpha".into(),
+        name: "Running conversation".into(),
+        status: Status::Working,
+    }];
+    let f = frame(&ws);
+    let bounds = dialog_bounds_for(f.cols, f.rows, DialogKind::AgentLink);
+    let point = Point {
+        x: bounds.x + 2,
+        y: bounds.y + 3,
+    };
+    assert!(hover::target(&f, point).is_some());
+    assert_eq!(
+        actions(Router::default().route(click(point), &f)),
+        vec![Action::AgentLinkChoose(1)]
+    );
+    assert_eq!(
+        actions(Router::default().route(InputEvent::Bytes(b"\r".to_vec()), &f)),
+        vec![Action::AgentLinkChoose(0)]
+    );
+    let mut observer = f;
+    observer.controller = false;
+    assert!(Router::default().route(click(point), &observer).is_empty());
+    ws.apply(&Action::Overview).unwrap();
+    assert_eq!(
+        actions(Router::default().route(InputEvent::Bytes(b"l".to_vec()), &frame(&ws))),
+        vec![Action::AgentLinkPicker(1)]
+    );
+}
+
+#[test]
+fn old_alerts_are_labeled_historical_and_cannot_jump_to_reused_pane_ids() {
+    use kelpmux::native::{ui::DialogKind, workspace::dialog_bounds_for};
+    let mut ws = workspace((120, 40), (1, 1));
+    ws.panes[0].number = 7;
+    ws.panes[0].pid = 100;
+    ws.ui.notifications = vec![Notification {
+        id: 1,
+        pane: 1,
+        title: "Bell · previous conversation".into(),
+        status: Status::Unknown,
+        at: 1,
+        read: false,
+        workspace: "preprod".into(),
+        origin: Some(NotificationOrigin {
+            run: "previous-run".into(),
+            pid: 100,
+        }),
+    }];
+    ws.apply(&Action::Notifications).unwrap();
+    let f = frame(&ws);
+    let text = f
+        .cells
+        .iter()
+        .map(|cell| cell.text.as_str())
+        .collect::<String>();
+    assert!(text.contains("historical · former pane 1"));
+    let bounds = dialog_bounds_for(f.cols, f.rows, DialogKind::Notifications);
+    let point = Point {
+        x: bounds.x + 2,
+        y: bounds.y + 2,
+    };
+    assert_eq!(
+        actions(Router::default().route(click(point), &f)),
+        vec![Action::Acknowledge(1), Action::DialogClose]
+    );
+    ws.ui.notifications[0].origin.as_mut().unwrap().run = ws.ui.notification_run.clone();
+    let f = frame(&ws);
+    let text = f
+        .cells
+        .iter()
+        .map(|cell| cell.text.as_str())
+        .collect::<String>();
+    assert!(text.contains("tab 7"));
+    assert!(actions(Router::default().route(click(point), &f)).contains(&Action::Focus(1)));
+    ws.panes[0].pid = 200;
+    ws.apply(&Action::Focus(1)).unwrap();
+    assert!(
+        !ws.ui.notifications[0].read,
+        "selecting a new shell must not acknowledge another shell's alert"
+    );
+    ws.ui.notifications[0].origin = None;
+    ws.apply(&Action::Notifications).unwrap();
+    assert_eq!(
+        actions(Router::default().route(click(point), &frame(&ws))),
+        vec![Action::Acknowledge(1), Action::DialogClose]
     );
 }

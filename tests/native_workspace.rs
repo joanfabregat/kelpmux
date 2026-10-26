@@ -125,6 +125,10 @@ fn focusing_reused_panes_acknowledges_only_their_history() {
                 at: 1,
                 read: false,
                 workspace: "test".into(),
+                origin: Some(NotificationOrigin {
+                    run: "test-run".into(),
+                    pid: 1,
+                }),
             })
             .collect();
         ws.apply(&selection).unwrap();
@@ -158,6 +162,7 @@ fn restoring_parked_panes_preserves_grid_or_tab_presentation() {
 }
 fn workspace(cols: u16, rows: u16, shape: (u8, u8)) -> Workspace {
     let mut workspace = Workspace::new(cols, rows).unwrap();
+    workspace.ui.notification_run = "test-run".into();
     workspace.panes = (1..=Workspace::grid_count(shape.0, shape.1).unwrap() as u64)
         .map(pane)
         .collect();
