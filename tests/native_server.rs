@@ -954,29 +954,6 @@ fn configuration_tab_position_persists_for_the_named_workspace() {
             .collect::<String>()
             .contains(&output)
     });
-    for position in [
-        kelpmux::native::ui::TabPosition::Top,
-        kelpmux::native::ui::TabPosition::Bottom,
-    ] {
-        command(&mut stream, Action::TabPositionSet(position)).unwrap();
-        let horizontal = wait_frame(&mut stream, |frame| {
-            frame.ui.config.tab_position == position && frame.panes[0].body.rows == 37
-        });
-        assert_eq!(
-            (horizontal.panes[0].pane.id, horizontal.panes[0].pane.pid),
-            identity
-        );
-        assert_eq!(horizontal.panes[0].body.cols, 240);
-        write_message(&mut stream, &ClientMessage::Input(b"stty size\n".to_vec())).unwrap();
-        wait_frame(&mut stream, |frame| {
-            frame
-                .cells
-                .iter()
-                .map(|cell| cell.text.as_str())
-                .collect::<String>()
-                .contains("37 240")
-        });
-    }
 }
 
 #[test]
@@ -1084,79 +1061,78 @@ fn scrolling_tab_bars_preserves_active_shell_and_real_pty_size() {
     let (mut controller, _, _) = daemon.attach();
     let panes = create_tabs(&mut controller, 4, 3);
     let identities: Vec<_> = panes.iter().map(|pane| (pane.id, pane.pid)).collect();
-    for position in [TabPosition::Top, TabPosition::Bottom, TabPosition::Left] {
-        command(&mut controller, Action::TabPositionSet(position)).unwrap();
-        command(&mut controller, Action::Select(1)).unwrap();
-        let before = wait_frame(&mut controller, |frame| {
-            frame.active == panes[0].id
-                && frame.ui.config.tab_position == position
-                && frame.ui.tab_scroll_anchor.is_none()
-        });
-        let body = before
+    let position = TabPosition::Left;
+    command(&mut controller, Action::TabPositionSet(position)).unwrap();
+    command(&mut controller, Action::Select(1)).unwrap();
+    let before = wait_frame(&mut controller, |frame| {
+        frame.active == panes[0].id
+            && frame.ui.config.tab_position == position
+            && frame.ui.tab_scroll_anchor.is_none()
+    });
+    let body = before
+        .panes
+        .iter()
+        .find(|view| view.pane.id == before.active)
+        .unwrap()
+        .body;
+    let bar = tab_bar_area(before.cols, before.rows, &before.ui.config);
+    let messages = kelpmux::native::input::Router::default().route(
+        InputEvent::Mouse(MouseEvent {
+            position: Point {
+                x: bar.x + 1,
+                y: bar.y,
+            },
+            kind: MouseKind::WheelDown,
+            button: 0,
+            shift: false,
+            alt: false,
+            ctrl: false,
+        }),
+        &before,
+    );
+    assert!(matches!(
+        messages.as_slice(),
+        [ClientMessage::Action(Action::ScrollTabs(1))]
+    ));
+    for message in messages {
+        write_message(&mut controller, &message).unwrap();
+    }
+    let after = wait_frame(&mut controller, |frame| {
+        frame.ui.tab_scroll_anchor.is_some()
+    });
+    assert_eq!(after.active, before.active);
+    assert_eq!(after.reading, before.reading);
+    assert_eq!(
+        after
             .panes
             .iter()
-            .find(|view| view.pane.id == before.active)
+            .map(|view| (view.pane.id, view.pane.pid))
+            .collect::<Vec<_>>(),
+        identities
+    );
+    assert_eq!(
+        after
+            .panes
+            .iter()
+            .find(|view| view.pane.id == after.active)
             .unwrap()
-            .body;
-        let bar = tab_bar_area(before.cols, before.rows, &before.ui.config);
-        let messages = kelpmux::native::input::Router::default().route(
-            InputEvent::Mouse(MouseEvent {
-                position: Point {
-                    x: bar.x + 1,
-                    y: bar.y,
-                },
-                kind: MouseKind::WheelDown,
-                button: 0,
-                shift: false,
-                alt: false,
-                ctrl: false,
-            }),
-            &before,
-        );
-        assert!(matches!(
-            messages.as_slice(),
-            [ClientMessage::Action(Action::ScrollTabs(1))]
-        ));
-        for message in messages {
-            write_message(&mut controller, &message).unwrap();
-        }
-        let after = wait_frame(&mut controller, |frame| {
-            frame.ui.tab_scroll_anchor.is_some()
-        });
-        assert_eq!(after.active, before.active);
-        assert_eq!(after.reading, before.reading);
-        assert_eq!(
-            after
-                .panes
-                .iter()
-                .map(|view| (view.pane.id, view.pane.pid))
-                .collect::<Vec<_>>(),
-            identities
-        );
-        assert_eq!(
-            after
-                .panes
-                .iter()
-                .find(|view| view.pane.id == after.active)
-                .unwrap()
-                .body,
-            body
-        );
-        write_message(
-            &mut controller,
-            &ClientMessage::Input(b"printf 'SCROLLED_'; stty size\n".to_vec()),
-        )
-        .unwrap();
-        let expected = format!("SCROLLED_{} {}", body.rows, body.cols);
-        wait_frame(&mut controller, |frame| {
-            frame
-                .cells
-                .iter()
-                .map(|cell| cell.text.as_str())
-                .collect::<String>()
-                .contains(&expected)
-        });
-    }
+            .body,
+        body
+    );
+    write_message(
+        &mut controller,
+        &ClientMessage::Input(b"printf 'SCROLLED_'; stty size\n".to_vec()),
+    )
+    .unwrap();
+    let expected = format!("SCROLLED_{} {}", body.rows, body.cols);
+    wait_frame(&mut controller, |frame| {
+        frame
+            .cells
+            .iter()
+            .map(|cell| cell.text.as_str())
+            .collect::<String>()
+            .contains(&expected)
+    });
 }
 
 #[test]

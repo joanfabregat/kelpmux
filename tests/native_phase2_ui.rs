@@ -213,7 +213,10 @@ fn viewport_reading_preferences_and_automatic_grid_preserve_all_ids() {
     })
     .unwrap();
     ws.resize(40, 10).unwrap();
-    assert_eq!(ws.layout()[0].body.cols, 40);
+    assert_eq!(
+        ws.layout()[0].body.cols,
+        40 - kelpmux::native::workspace::sidebar_width(40)
+    );
     ws.apply(&Action::ReadResize { cols: 30, rows: 3 }).unwrap();
     ws.resize(120, 40).unwrap();
     // Legacy resize requests cannot limit tabs after a viewport change.
@@ -227,7 +230,10 @@ fn viewport_reading_preferences_and_automatic_grid_preserve_all_ids() {
         140 - kelpmux::native::workspace::sidebar_width(140)
     );
     ws.resize(240, 70).unwrap();
-    assert_eq!(ws.layout()[0].body.cols, 240);
+    assert_eq!(
+        ws.layout()[0].body.cols,
+        240 - kelpmux::native::workspace::sidebar_width(240)
+    );
     ws.apply(&Action::CloseReading).unwrap();
     let ids = ws.panes.iter().map(|p| p.id).collect::<Vec<_>>();
     ws.apply(&Action::ResizeGrid {
@@ -343,7 +349,7 @@ fn recovery_and_sound_settings_are_actionable_and_small_screen_help_scrolls() {
     let bounds = dialog_bounds_for(f.cols, f.rows, DialogKind::Config);
     let choice = config_targets(bounds)
         .into_iter()
-        .find(|(index, value, _)| *index == 4 && *value == Some(true))
+        .find(|(index, value, _)| *index == 0 && *value == Some(true))
         .unwrap()
         .2;
     assert_eq!(
@@ -495,6 +501,11 @@ fn dialogs_and_help_take_click_priority_above_scratch_on_compact_terminal() {
         vec![Action::DialogClose]
     );
     ws.apply(&Action::Help).unwrap();
+    let help = kelpmux::native::input::help_bounds(ws.cols, ws.rows);
+    let point = Point {
+        x: help.x + help.cols - 1,
+        y: help.y,
+    };
     assert_eq!(
         actions(Router::default().route(mouse(point, MouseKind::Press), &frame(&ws))),
         vec![Action::Help]

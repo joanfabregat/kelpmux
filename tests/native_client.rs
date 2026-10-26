@@ -817,7 +817,7 @@ fn live_server_attach_layout_read_fullscreen_detach_reconnect_preserves_shell() 
         let mut display = kelpmux::native::engine::Terminal::new(80, 24);
         display.feed(&tty.output);
         let snapshot = display.snapshot();
-        if snapshot.cells[2].fg == Color::Indexed(231)
+        if snapshot.cells[2].fg == Color::Indexed(226)
             && snapshot.cells[2].bg == Color::Indexed(240)
         {
             break;
@@ -843,8 +843,8 @@ fn live_server_attach_layout_read_fullscreen_detach_reconnect_preserves_shell() 
         reading == ReadingMode::Fullscreen(original.id)
     });
     // Exercise the real frontend footer translation, not just router helpers.
-    tty.input(b"\x1b[<0;2;24M");
-    wait_text(&mut tty, "Tab placement");
+    tty.input(b"\x02,");
+    wait_text(&mut tty, "Notifications");
     let bounds = kelpmux::native::workspace::dialog_bounds_for(
         80,
         24,
@@ -852,7 +852,7 @@ fn live_server_attach_layout_read_fullscreen_detach_reconnect_preserves_shell() 
     );
     let choice = kelpmux::native::workspace::config_targets(bounds)
         .into_iter()
-        .find(|(index, _, _)| *index == 2)
+        .find(|(_, value, _)| *value == Some(true))
         .unwrap()
         .2;
     tty.input(format!("\x1b[<0;{};{}M", choice.x + 1, choice.y + 1).as_bytes());
@@ -860,15 +860,13 @@ fn live_server_attach_layout_read_fullscreen_detach_reconnect_preserves_shell() 
     loop {
         tty.drain();
         if kelpmux::native::lifecycle::Settings::load(&server.root.join("state/workspace.json"))
-            .is_ok_and(|settings| {
-                settings.ui.tab_position == kelpmux::native::ui::TabPosition::Left
-            })
+            .is_ok_and(|settings| settings.ui.notification_sound)
         {
             break;
         }
         assert!(
             Instant::now() < deadline,
-            "click did not save tab placement"
+            "click did not save notification sound"
         );
         thread::sleep(Duration::from_millis(10));
     }

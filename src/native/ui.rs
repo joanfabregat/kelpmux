@@ -29,20 +29,12 @@ pub const COLOR_NAMES: [&str; 9] = [
 #[serde(rename_all = "snake_case")]
 pub enum TabPosition {
     #[default]
-    Auto,
-    Top,
+    #[serde(alias = "auto", alias = "top", alias = "bottom")]
     Left,
-    Bottom,
 }
 impl TabPosition {
-    pub fn resolve(self, cols: u16, rows: u16) -> Self {
-        match self {
-            Self::Auto if cols <= 60 => Self::Bottom,
-            Self::Auto if cols >= 160 && cols >= rows.saturating_mul(3) => Self::Top,
-            Self::Auto if cols >= 90 => Self::Left,
-            Self::Auto => Self::Top,
-            _ => self,
-        }
+    pub fn resolve(self, _cols: u16, _rows: u16) -> Self {
+        Self::Left
     }
 }
 
@@ -106,7 +98,7 @@ impl Default for UiConfig {
             pane_colors: BTreeMap::new(),
             read_height_percent: 95,
             bindings: BTreeMap::new(),
-            tab_position: TabPosition::Auto,
+            tab_position: TabPosition::Left,
             legacy_read_widths: None,
         }
     }
