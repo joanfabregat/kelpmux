@@ -1857,6 +1857,22 @@ fn sidebar_metrics(segments: &[(String, u8)]) -> Vec<SidebarMetric> {
             metrics.push(metric("Memory", value.to_string(), *color));
         } else if let Some(value) = text.strip_prefix("swap ") {
             metrics.push(metric("Swap", value.to_string(), *color));
+        } else if let Some((label, value)) = text
+            .strip_prefix('C')
+            .map(|value| ("CPU", value))
+            .or_else(|| text.strip_prefix('M').map(|value| ("Memory", value)))
+        {
+            if let Ok(percent) = value.parse::<u8>() {
+                metrics.push(metric(
+                    label,
+                    format!(
+                        "{} {}%",
+                        super::vitals::bar_glyph(percent),
+                        percent.min(100)
+                    ),
+                    *color,
+                ));
+            }
         } else if text == "disk" {
             continue;
         } else if text.starts_with(['●', '◕', '◑', '◔', '○']) || text.starts_with("disk ")
@@ -1883,8 +1899,8 @@ fn draw_dev_badge(frame: &mut Frame, x: u16, y: u16) {
         y,
         5,
         " DEV ",
-        Color::Indexed(231),
-        Color::Indexed(88),
+        Color::Indexed(203),
+        Color::Indexed(240),
         true,
     );
 }
@@ -1933,7 +1949,11 @@ fn sidebar_dev_watermark(frame: &Frame) -> Rect {
             7
         };
         return Rect {
-            x: width.saturating_sub(cols) / 2,
+            x: if cols == 3 {
+                5
+            } else {
+                width.saturating_sub(cols) / 2
+            },
             y: top,
             cols,
             rows: 1,
@@ -1999,6 +2019,7 @@ fn draw_sidebar_status(frame: &mut Frame, workspace: &Workspace, notice: Option<
     } else {
         frame.rows - 2
     };
+    let compact_dev = workspace.ui.show_dev_badge && rows == 3 && watermark.y == top;
     if rows > 3 {
         for y in [top, frame.rows - 3] {
             write_text(
@@ -2074,7 +2095,17 @@ fn draw_sidebar_status(frame: &mut Frame, workspace: &Workspace, notice: Option<
         let visible: Vec<_> = metrics.iter().take(capacity).collect();
         for (index, metric) in visible.into_iter().enumerate() {
             let y = metric_top + index as u16;
-            write_text(frame, 1, y, 6, metric.label, muted, bg, false);
+            let label = if compact_dev {
+                match metric.label {
+                    "Memory" => "RAM",
+                    "Swap" => "SWP",
+                    "Disks" => "DSK",
+                    label => label,
+                }
+            } else {
+                metric.label
+            };
+            write_text(frame, 1, y, 6, label, muted, bg, false);
             if metric.label == "Disks" {
                 let total = metric
                     .values
@@ -2105,14 +2136,38 @@ fn draw_sidebar_status(frame: &mut Frame, workspace: &Workspace, notice: Option<
             }
             let (value, color) = &metric.values[0];
             if matches!(metric.label, "CPU" | "Memory" | "Swap") {
-                if let Some((bar, percent)) = value.split_once(' ') {
-                    let display = format!("{bar} {percent:>4}");
+                if let Some((_, percent)) = value.split_once(' ') {
+                    let percent = percent.trim();
+                    let load = percent
+                        .strip_suffix('%')
+                        .and_then(|value| value.parse::<u16>().ok())
+                        .unwrap_or(0)
+                        .min(100);
+                    let start = if compact_dev { 9 } else { 8 };
+                    let length = width.saturating_sub(start + 6);
+                    let filled = (load * length + 50) / 100;
+                    for index in 0..length {
+                        write_text(
+                            frame,
+                            start + index,
+                            y,
+                            1,
+                            if index < filled { "▰" } else { "▱" },
+                            if index < filled {
+                                Color::Indexed(*color)
+                            } else {
+                                muted
+                            },
+                            bg,
+                            false,
+                        );
+                    }
                     write_text(
                         frame,
-                        width - 7,
+                        width - 5,
                         y,
-                        6,
-                        &display,
+                        4,
+                        &format!("{percent:>4}"),
                         Color::Indexed(*color),
                         bg,
                         false,
@@ -2152,22 +2207,9 @@ fn draw_sidebar_status(frame: &mut Frame, workspace: &Workspace, notice: Option<
             );
         }
     }
-    metric_bar_background(
-        frame,
-        Rect {
-            x: 0,
-            y: metric_top,
-            cols: width,
-            rows: metric_end - metric_top,
-        },
-        if foreground == Color::Indexed(232) {
-            Color::Indexed(239)
-        } else {
-            theme_surface(workspace, 50)
-        },
-    );
     if workspace.ui.show_dev_badge {
-        fill(frame, watermark, Color::Indexed(88));
+        let panel = theme_surface(workspace, 24);
+        fill(frame, watermark, panel);
         let label = if watermark.cols == 3 {
             "DEV"
         } else {
@@ -2180,8 +2222,12 @@ fn draw_sidebar_status(frame: &mut Frame, workspace: &Workspace, notice: Option<
             watermark.y + watermark.rows / 2,
             label_width,
             label,
-            Color::Indexed(231),
-            Color::Indexed(88),
+            Color::Indexed(if foreground == Color::Indexed(232) {
+                124
+            } else {
+                203
+            }),
+            panel,
             true,
         );
     }
