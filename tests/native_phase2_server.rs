@@ -34,6 +34,9 @@ impl Daemon {
         let state = root.join("kelpmux/workspaces/current");
         let socket = root.join("native.sock");
         let child = Command::new(env!("CARGO_BIN_EXE_kelpmux"))
+            .env("CODEX_HOME", root.join("codex-home"))
+            .env("CLAUDE_CONFIG_DIR", root.join("claude-home"))
+            .env_remove("CODEX_THREAD_ID")
             .args(["server", "--socket"])
             .arg(&socket)
             .arg("--state-dir")
@@ -861,4 +864,136 @@ fn search_resets_result_selection_and_reveals_hidden_scratch() {
     let found = peer.wait(|frame| frame.ui.search_query == "MANY_MATCH_11");
     assert_eq!(found.ui.search_hits.len(), 1);
     assert_eq!(found.ui.dialog.unwrap().selection, 0);
+}
+
+#[test]
+fn shared_codex_conversation_picker_drives_live_tab_status_and_drops_links_after_process_exit() {
+    use std::{
+        io::{BufRead, BufReader},
+        os::unix::net::UnixListener,
+        sync::{
+            Arc,
+            atomic::{AtomicBool, AtomicUsize},
+        },
+        time::Instant,
+    };
+    let daemon = Daemon::start();
+    let metadata = daemon.root.join("codex-home/app-server-control");
+    fs::create_dir_all(&metadata).unwrap();
+    let listener = UnixListener::bind(metadata.join("app-server-control.sock")).unwrap();
+    listener.set_nonblocking(true).unwrap();
+    let status = Arc::new(AtomicUsize::new(0));
+    let stop = Arc::new(AtomicBool::new(false));
+    let (mode, cancel) = (status.clone(), stop.clone());
+    let metadata_server = thread::spawn(move || {
+        let deadline = Instant::now() + Duration::from_secs(30);
+        while !cancel.load(Ordering::SeqCst) && Instant::now() < deadline {
+            let (stream, _) = match listener.accept() {
+                Ok(value) => value,
+                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                    thread::sleep(Duration::from_millis(5));
+                    continue;
+                }
+                Err(error) => panic!("{error}"),
+            };
+            stream
+                .set_read_timeout(Some(Duration::from_millis(500)))
+                .unwrap();
+            let mut reader = BufReader::new(stream);
+            loop {
+                let mut line = String::new();
+                if !matches!(reader.read_line(&mut line), Ok(size) if size > 0) {
+                    break;
+                }
+                let message: serde_json::Value = serde_json::from_str(&line).unwrap();
+                let result = match message["method"].as_str().unwrap() {
+                    "initialize" => serde_json::json!({}),
+                    "initialized" => continue,
+                    "thread/loaded/list" => serde_json::json!({"data":["alpha","beta"]}),
+                    "thread/read" => {
+                        assert_eq!(message["params"]["includeTurns"], false);
+                        let id = message["params"]["threadId"].as_str().unwrap();
+                        let status = match mode.load(Ordering::SeqCst) {
+                            0 => serde_json::json!({"type":"active"}),
+                            1 => {
+                                serde_json::json!({"type":"active","activeFlags":["waitingOnUserInput"]})
+                            }
+                            _ => serde_json::json!({"type":"idle"}),
+                        };
+                        serde_json::json!({"thread":{"id":id,"name":format!("Conversation {id}"),"status":status}})
+                    }
+                    method => panic!("unexpected mutating method {method}"),
+                };
+                if writeln!(
+                    reader.get_mut(),
+                    "{}",
+                    serde_json::json!({"id":message["id"],"result":result})
+                )
+                .is_err()
+                {
+                    break;
+                }
+            }
+        }
+    });
+    let executable = daemon.root.join("codex");
+    fs::copy("/bin/bash", &executable).unwrap();
+    let mut peer = daemon.attach();
+    let pane = peer.panes()[0].id;
+    let command = format!(
+        "{} -c {}\n",
+        shell_quote(executable.to_str().unwrap()),
+        shell_quote("while :; do sleep 0.1; done")
+    );
+    peer.input(&command);
+    peer.wait(|frame| {
+        frame.panes.iter().any(|view| {
+            view.pane.id == pane
+                && view.pane.kind == Some(Kind::Codex)
+                && view.pane.session_id.is_none()
+        })
+    });
+    peer.action(Action::AgentLinkPicker(pane));
+    peer.wait(|frame| !frame.ui.agent_link_loading && frame.ui.agent_sessions.len() == 2);
+    peer.action(Action::AgentLinkChoose(1));
+    peer.wait(|frame| {
+        frame.panes.iter().any(|view| {
+            view.pane.id == pane
+                && view.pane.session_id.as_deref() == Some("alpha")
+                && view.pane.status == Status::Working
+        })
+    });
+    status.store(1, Ordering::SeqCst);
+    peer.wait(|frame| {
+        frame
+            .panes
+            .iter()
+            .any(|view| view.pane.id == pane && view.pane.status == Status::InputNeeded)
+    });
+    status.store(2, Ordering::SeqCst);
+    peer.wait(|frame| {
+        frame
+            .panes
+            .iter()
+            .any(|view| view.pane.id == pane && view.pane.status == Status::Idle)
+    });
+    peer.send(ClientMessage::Input(vec![3]));
+    peer.wait(|frame| {
+        frame
+            .panes
+            .iter()
+            .any(|view| view.pane.id == pane && view.pane.kind.is_none())
+    });
+    peer.input(&command);
+    peer.wait(|frame| {
+        frame.panes.iter().any(|view| {
+            view.pane.id == pane
+                && view.pane.kind == Some(Kind::Codex)
+                && view.pane.session_id.is_none()
+        })
+    });
+    drop(peer);
+    drop(daemon);
+    stop.store(true, Ordering::SeqCst);
+    metadata_server.join().unwrap();
 }

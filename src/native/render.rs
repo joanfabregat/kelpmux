@@ -275,7 +275,10 @@ fn help_entries(config: &super::ui::UiConfig) -> Vec<(String, &'static str)> {
         ("p".into(), "Park tab (confirm)"),
         ("u".into(), "Show parked tabs"),
         (key("s", "move"), "Move pane to a destination"),
-        (key("a", "agents"), "Agent picker"),
+        (
+            format!("{} / {}", key("a", "agents"), key("i", "agent-link")),
+            "Agents / link conversation",
+        ),
         (key("!", "attention"), "Agents needing attention"),
         (key("n", "finished"), "Finished agents"),
         (
@@ -563,7 +566,8 @@ fn draw_dialog(
         DialogKind::Status => " System status · live",
         DialogKind::Parked => " ⊟ Parked tabs · select to restore",
         DialogKind::Grid => " ▦ Grid · arrows, Enter or click",
-        DialogKind::Overview => " Workspace overview",
+        DialogKind::Overview => " Workspace overview · l links conversation",
+        DialogKind::AgentLink => " Link agent conversation · Enter or click",
         DialogKind::Notifications => " ⚠︎ Notifications",
         DialogKind::Recovery => {
             if workspace.ui.recovery_loading {
@@ -786,6 +790,7 @@ fn draw_dialog(
     } else if matches!(
         dialog.kind,
         DialogKind::Overview
+            | DialogKind::AgentLink
             | DialogKind::Notifications
             | DialogKind::Recovery
             | DialogKind::Search
@@ -1467,11 +1472,9 @@ fn draw_tab(
         bg,
         true,
     );
-    let unread = workspace
-        .ui
-        .notifications
-        .iter()
-        .any(|item| item.pane == pane.id && !item.read);
+    let unread = workspace.ui.notifications.iter().any(|item| {
+        !item.read && super::activity::matches(item, pane, &workspace.ui.notification_run)
+    });
     let close = super::workspace::tab_close(rect);
     let park = super::workspace::tab_park(rect);
     let count_width = count.len() as u16;
@@ -2025,8 +2028,9 @@ fn draw_sidebar_status(frame: &mut Frame, workspace: &Workspace, notice: Option<
                         .and_then(|value| value.parse::<u16>().ok())
                         .unwrap_or(0)
                         .min(100);
-                    let start = if compact_dev { 9 } else { 8 };
-                    let length = width.saturating_sub(start + 6);
+                    let start = if compact_dev { 11 } else { 10 };
+                    let percent_x = width - if compact_dev { 4 } else { 5 };
+                    let length = percent_x.saturating_sub(start + 1);
                     let filled = (load * length + 50) / 100;
                     for index in 0..length {
                         write_text(
@@ -2046,7 +2050,7 @@ fn draw_sidebar_status(frame: &mut Frame, workspace: &Workspace, notice: Option<
                     }
                     write_text(
                         frame,
-                        width - 5,
+                        percent_x,
                         y,
                         4,
                         &format!("{percent:>4}"),
@@ -2426,6 +2430,27 @@ fn draw_dashboard(
         );
     }
     let labels: Vec<String> = match dialog.kind {
+        DialogKind::AgentLink => {
+            if workspace.ui.agent_link_loading {
+                vec!["Loading running conversations…".into()]
+            } else if let Some(error) = &workspace.ui.agent_link_error {
+                vec![
+                    "Automatic discovery / clear explicit link".into(),
+                    error.clone(),
+                ]
+            } else {
+                std::iter::once("Automatic discovery / clear explicit link".into())
+                    .chain(workspace.ui.agent_sessions.iter().map(|session| {
+                        format!(
+                            "{} · {} · {}",
+                            session.name,
+                            session.status.text(),
+                            session.id
+                        )
+                    }))
+                    .collect()
+            }
+        }
         DialogKind::Overview => workspace
             .panes
             .iter()
@@ -2458,13 +2483,31 @@ fn draw_dashboard(
             .notifications
             .iter()
             .map(|item| {
+                let target = workspace.panes.iter().find(|pane| {
+                    super::activity::matches(item, pane, &workspace.ui.notification_run)
+                });
+                let location = target.map_or_else(
+                    || format!("historical · former pane {}", item.pane),
+                    |pane| {
+                        format!(
+                            "{}tab {}",
+                            if pane.parked { "parked " } else { "" },
+                            pane.number
+                        )
+                    },
+                );
                 format!(
-                    "{} {} {} · {} · pane {}",
+                    "{} {} {} · {} · {} · {}s ago",
                     if item.read { "○" } else { "●" },
-                    item.status.marker(),
+                    if item.title.starts_with("Bell · ") {
+                        super::ui::ALERT_ICON
+                    } else {
+                        item.status.marker()
+                    },
+                    location,
                     item.title,
                     item.workspace,
-                    item.pane
+                    crate::now().saturating_sub(item.at)
                 )
             })
             .collect(),

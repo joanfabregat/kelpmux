@@ -13,6 +13,7 @@ use kelpmux::{
 use std::collections::BTreeMap;
 fn workspace(cols: u16, rows: u16) -> Workspace {
     let mut ws = Workspace::new(cols, rows).unwrap();
+    ws.ui.notification_run = "test-run".into();
     ws.panes = (1..=4)
         .map(|id| PaneInfo {
             id,
@@ -172,6 +173,10 @@ fn notification_history_acknowledges_and_jumps_and_next_agent_navigation_wraps()
         at: 1,
         read: false,
         workspace: "main".into(),
+        origin: Some(NotificationOrigin {
+            run: "test-run".into(),
+            pid: 0,
+        }),
     });
     let f = frame(&ws);
     assert_eq!(

@@ -15,6 +15,11 @@ use std::{
     time::{Duration, Instant},
 };
 
+mod claude;
+mod codex;
+pub mod polling;
+
+#[derive(Clone)]
 pub struct Discovery {
     pub proc_root: PathBuf,
     pub codex_home: PathBuf,
@@ -34,26 +39,39 @@ impl Discovery {
     }
     pub fn scan(&self, panes: &[Pane], time: u64) -> Result<Vec<Agent>> {
         let tree = process::snapshot(&self.proc_root)?;
+        self.scan_tree(panes, time, &tree, &mut polling::builtins(), &[])
+    }
+    pub fn scan_tree(
+        &self,
+        panes: &[Pane],
+        time: u64,
+        tree: &BTreeMap<u32, Process>,
+        adapters: &mut [Box<dyn polling::Adapter>],
+        links: &[polling::Link],
+    ) -> Result<Vec<Agent>> {
         let mut result = Vec::new();
         for pane in panes {
-            let mut candidates: Vec<_> = process::descendants(&tree, pane.pid)
+            let mut candidates: Vec<_> = process::descendants(tree, pane.pid)
                 .into_iter()
                 .filter_map(|pid| {
                     let proc = tree.get(&pid)?;
                     let args = process::args(&self.proc_root, pid);
-                    classify(proc, &args).map(|kind| (proc, kind, args))
+                    adapters
+                        .iter()
+                        .position(|adapter| adapter.matches(proc, &args))
+                        .map(|index| (proc, index, args))
                 })
                 .collect();
             // Parent-most interactive agent wins. Nested tool processes are not new panes.
-            candidates.sort_by_key(|(p, _, _)| depth(&tree, p.pid, pane.pid));
+            candidates.sort_by_key(|(p, _, _)| depth(tree, p.pid, pane.pid));
             // npm's Codex launcher is a node parent; metadata belongs to its native child.
-            candidates.retain(|(p, kind, _)| {
+            candidates.retain(|(p, index, _)| {
                 !(p.command == "node"
-                    && tree
-                        .values()
-                        .any(|child| child.parent == p.pid && child.command == kind.as_str()))
+                    && tree.values().any(|child| {
+                        child.parent == p.pid && child.command == adapters[*index].kind().as_str()
+                    }))
             });
-            let Some((proc, kind, args)) = candidates.first() else {
+            let Some((proc, index, args)) = candidates.first() else {
                 continue;
             };
             let cwd = fs::read_link(self.proc_root.join(proc.pid.to_string()).join("cwd"))
@@ -65,7 +83,7 @@ impl Discovery {
                 window: pane.window.clone(),
                 pid: proc.pid,
                 process_start: proc.start,
-                kind: *kind,
+                kind: adapters[*index].kind(),
                 session_id: None,
                 name: Path::new(&cwd)
                     .file_name()
@@ -83,117 +101,31 @@ impl Discovery {
                 last_seen: time,
                 ended_at: None,
             };
-            match kind {
-                Kind::Claude => self.claude(proc, args, &mut agent),
-                Kind::Codex => self.codex(proc, args, &mut agent),
+            if let Some(link) = links.iter().find(|link| {
+                link.pane == pane.id
+                    && link.pid == proc.pid
+                    && link.birth == proc.start
+                    && link.kind == agent.kind
+                    && session_id(&link.session_id)
+            }) {
+                agent.session_id = Some(link.session_id.clone());
+                agent.source = "explicit-link".into();
+            }
+            let mut enriched = agent.clone();
+            if adapters[*index]
+                .poll(self, proc, args, &mut enriched)
+                .is_ok()
+                && enriched.pid == agent.pid
+                && enriched.process_start == agent.process_start
+                && enriched.pane == agent.pane
+                && enriched.kind == agent.kind
+                && (agent.source != "explicit-link" || enriched.session_id == agent.session_id)
+            {
+                agent = enriched;
             }
             result.push(agent);
         }
         Ok(result)
-    }
-    fn claude(&self, proc: &Process, args: &[String], agent: &mut Agent) {
-        let file = self
-            .claude_home
-            .join("sessions")
-            .join(format!("{}.json", proc.pid));
-        if let Some(value) = read_json(&file) {
-            let start = value.get("procStart").and_then(|v| {
-                v.as_str()
-                    .and_then(|s| s.parse::<u64>().ok())
-                    .or_else(|| v.as_u64())
-            });
-            if value.get("pid").and_then(Value::as_u64) == Some(proc.pid as u64)
-                && start == Some(proc.start)
-            {
-                agent.session_id =
-                    string(&value, &["sessionId", "session_id"]).filter(|s| session_id(s));
-                if let Some(name) = string(&value, &["name"]) {
-                    agent.name = name;
-                }
-                if let Some(status) = string(&value, &["status"]) {
-                    agent.status = Status::from_live(&status);
-                    agent.observation.source = crate::model::StatusSource::LiveRecord;
-                }
-                agent.source = "claude-live-record".into();
-            }
-        }
-        if agent.session_id.is_none() {
-            agent.session_id = resume_id(args, true);
-            if agent.session_id.is_some() {
-                agent.source = "resume-argument".into();
-            }
-        }
-    }
-    fn codex(&self, proc: &Process, args: &[String], agent: &mut Agent) {
-        agent.session_id = process::environment(&self.proc_root, proc.pid, "CODEX_THREAD_ID")
-            .filter(|s| session_id(s))
-            .or_else(|| resume_id(args, false));
-        if agent.session_id.is_some() {
-            agent.source = "process-identity".into();
-        }
-        let mut rollout = None;
-        let mut open_rollouts = BTreeMap::new();
-        for path in process::links(&self.proc_root, proc.pid) {
-            if path.extension().is_some_and(|e| e == "jsonl")
-                && path
-                    .file_name()
-                    .is_some_and(|n| n.to_string_lossy().starts_with("rollout-"))
-            {
-                if let Ok(file) = File::open(&path) {
-                    let mut line = String::new();
-                    let _ = BufReader::new(file).take(128 * 1024).read_line(&mut line);
-                    if let Ok(value) = serde_json::from_str::<Value>(&line) {
-                        if value["type"] == "session_meta" {
-                            if let Some(id) =
-                                value["payload"]["id"].as_str().filter(|s| session_id(s))
-                            {
-                                open_rollouts.insert(id.to_owned(), path);
-                            }
-                        }
-                    }
-                }
-            }
-        }
-        // Several open conversations in a process do not identify the active TUI.
-        // Never let arbitrary descriptor iteration choose an unrelated session.
-        if open_rollouts.len() == 1 {
-            let (id, path) = open_rollouts.into_iter().next().unwrap();
-            agent.session_id = Some(id);
-            agent.source = "open-rollout".into();
-            rollout = Some(path);
-        } else if let Some(id) = &agent.session_id {
-            rollout = open_rollouts.remove(id);
-        }
-        let Some(id) = agent.session_id.clone() else {
-            return;
-        };
-        if let Some(name) = index_name(&self.codex_home.join("session_index.jsonl"), &id) {
-            agent.name = name;
-        }
-        // Connect only to an already-running daemon; never start or resume an agent.
-        if let Ok(value) = read_codex_thread(
-            &self
-                .codex_home
-                .join("app-server-control/app-server-control.sock"),
-            &id,
-        ) {
-            let thread = &value["thread"];
-            if thread["id"].as_str() == Some(&id) {
-                if let Some(name) = thread["name"].as_str().filter(|s| !s.is_empty()) {
-                    agent.name = name.into();
-                }
-                agent.status = codex_status(&thread["status"]);
-                agent.observation.source = crate::model::StatusSource::AppServer;
-                return;
-            }
-        }
-        if rollout.is_none() {
-            rollout = find_rollout(&self.codex_home.join("sessions"), &id, 0);
-        }
-        if let Some(path) = rollout {
-            agent.status = rollout_status(&path);
-            agent.observation.source = crate::model::StatusSource::Transcript;
-        }
     }
 }
 
@@ -354,25 +286,6 @@ pub fn codex_status(v: &Value) -> Status {
     } else {
         Status::from_live(v["type"].as_str().unwrap_or(""))
     }
-}
-fn read_codex_thread(socket: &Path, id: &str) -> Result<Value> {
-    let mut stream = UnixStream::connect(socket)?;
-    stream.set_read_timeout(Some(Duration::from_millis(300)))?;
-    stream.set_write_timeout(Some(Duration::from_millis(300)))?;
-    let mut reader = BufReader::new(stream.try_clone()?);
-    writeln!(
-        stream,
-        "{}",
-        json!({"id":1,"method":"initialize","params":{"clientInfo":{"name":"kelpmux","version":env!("CARGO_PKG_VERSION")},"capabilities":{"experimentalApi":true}}})
-    )?;
-    rpc_result(&mut reader, 1)?;
-    writeln!(stream, "{}", json!({"method":"initialized"}))?;
-    writeln!(
-        stream,
-        "{}",
-        json!({"id":2,"method":"thread/read","params":{"threadId":id,"includeTurns":false}})
-    )?;
-    rpc_result(&mut reader, 2)
 }
 const RPC_TIMEOUT: Duration = Duration::from_millis(300);
 const MAX_RPC_LINE: usize = 1024 * 1024;
