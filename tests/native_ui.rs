@@ -3197,6 +3197,7 @@ fn metrics_hover_as_one_block_and_new_tab_highlights_more_subtly() {
         });
         let f = frame(&ws);
         let block = status::metric_region(&f).unwrap();
+        assert_eq!(hover::strength(&f, block), 8);
         for y in block.y..block.y + block.rows {
             for x in block.x..block.x + block.cols {
                 let point = Point { x, y };
