@@ -255,6 +255,36 @@ pub struct Router {
 }
 impl Router {
     pub fn route(&mut self, event: InputEvent, frame: &Frame) -> Vec<ClientMessage> {
+        if let InputEvent::Mouse(mouse) = &event {
+            if mouse.kind == MouseKind::Move && mouse.button == 3 {
+                let enabled = frame.controller
+                    && !self.focus_click
+                    && !self.selecting
+                    && !self.pending_modal
+                    && !self.help_override.unwrap_or(frame.help)
+                    && frame.ui.dialog.is_none()
+                    && self.selection.is_none()
+                    && self.header_drag.is_none()
+                    && self.boundary_drag.is_none();
+                if enabled
+                    && !mouse.shift
+                    && frame
+                        .panes
+                        .iter()
+                        .rev()
+                        .find(|view| view.rect.contains(mouse.position))
+                        .is_some_and(|view| {
+                            view.body.contains(mouse.position)
+                                && view.modes.mouse_motion
+                                && (!frame.ui.scratch_visible
+                                    || Some(view.pane.id) == frame.ui.scratch)
+                        })
+                {
+                    return vec![ClientMessage::Mouse(*mouse)];
+                }
+                return vec![];
+            }
+        }
         if let InputEvent::ThemeColor { background, rgb } = event {
             return vec![ClientMessage::ThemeColor { background, rgb }];
         }

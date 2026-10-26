@@ -1020,7 +1020,7 @@ fn binding_label(config: &super::ui::UiConfig, defaults: &str, action: &str) -> 
         keys.join("/")
     }
 }
-fn color_rgb(color: Color, foreground: bool) -> (u8, u8, u8) {
+pub(super) fn color_rgb(color: Color, foreground: bool) -> (u8, u8, u8) {
     match color {
         Color::Default => {
             if foreground {
@@ -1883,13 +1883,13 @@ fn draw_dev_badge(frame: &mut Frame, x: u16, y: u16) {
         y,
         5,
         " DEV ",
-        Color::Indexed(232),
-        Color::Indexed(214),
+        Color::Indexed(231),
+        Color::Indexed(88),
         true,
     );
 }
 
-fn sidebar_dev_watermark(frame: &Frame) -> Point {
+fn sidebar_dev_watermark(frame: &Frame) -> Rect {
     use super::workspace::{TabTarget, sidebar_status_rows, sidebar_width, tab_targets};
     let panes: Vec<_> = frame
         .panes
@@ -1924,9 +1924,27 @@ fn sidebar_dev_watermark(frame: &Frame) -> Point {
     .max()
     .unwrap_or(0)
     .min(top);
-    Point {
-        x: (sidebar_width(frame.cols) - 1).saturating_sub(5) / 2,
-        y: occupied + (top - occupied) / 2,
+    let width = sidebar_width(frame.cols) - 1;
+    let free = top - occupied;
+    if free == 0 {
+        let cols = if sidebar_status_rows(frame.rows) == 3 {
+            3
+        } else {
+            7
+        };
+        return Rect {
+            x: width.saturating_sub(cols) / 2,
+            y: top,
+            cols,
+            rows: 1,
+        };
+    }
+    let rows = if free >= 3 { 3 } else { 1 };
+    Rect {
+        x: 1,
+        y: occupied + (free - rows) / 2,
+        cols: width - 2,
+        rows,
     }
 }
 
@@ -1951,7 +1969,7 @@ fn draw_sidebar_status(frame: &mut Frame, workspace: &Workspace, notice: Option<
     let watermark = if workspace.ui.show_dev_badge {
         sidebar_dev_watermark(frame)
     } else {
-        Point { x: 0, y: 0 }
+        Rect::default()
     };
     let bg = tab_surface(workspace);
     fill(
@@ -2149,20 +2167,22 @@ fn draw_sidebar_status(frame: &mut Frame, workspace: &Workspace, notice: Option<
         },
     );
     if workspace.ui.show_dev_badge {
-        let compact = rows == 3 && watermark.y == top;
+        fill(frame, watermark, Color::Indexed(88));
+        let label = if watermark.cols == 3 {
+            "DEV"
+        } else {
+            " D E V "
+        };
+        let label_width = label.len() as u16;
         write_text(
             frame,
-            if compact {
-                width.saturating_sub(3) / 2
-            } else {
-                watermark.x
-            },
-            watermark.y,
-            if compact { 3 } else { 5 },
-            if compact { "DEV" } else { "D E V" },
-            theme_surface(workspace, 32),
-            bg,
-            false,
+            watermark.x + watermark.cols.saturating_sub(label_width) / 2,
+            watermark.y + watermark.rows / 2,
+            label_width,
+            label,
+            Color::Indexed(231),
+            Color::Indexed(88),
+            true,
         );
     }
     let [config, mode, parked, help] = frame.controls();
