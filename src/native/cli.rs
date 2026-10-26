@@ -535,7 +535,7 @@ impl RawTty {
         // Mark entered before writing: a partial write still needs restoration.
         guard.entered = true;
         TerminalWriter.write_all(
-            b"\x1b[?1l\x1b>\x1b[?1049h\x1b[?25l\x1b[?1002h\x1b[?1006h\x1b[?1004h\x1b[?2004h\x1b[>1u",
+            b"\x1b[?1l\x1b>\x1b[?1049h\x1b[?25l\x1b[?1002h\x1b[?1003h\x1b[?1006h\x1b[?1004h\x1b[?2004h\x1b[>1u",
         )?;
         TerminalWriter.write_all(b"\x1b]10;?\x1b\\\x1b]11;?\x1b\\")?;
         Ok(guard)
@@ -550,7 +550,7 @@ impl Drop for RawTty {
             let flags = unsafe { libc::fcntl(1, libc::F_GETFL) };
             if flags >= 0 && unsafe { libc::fcntl(1, libc::F_SETFL, flags | libc::O_NONBLOCK) } == 0
             {
-                let mut bytes: &[u8]=b"\x1b[<1u\x1b[0m\x1b[?1l\x1b>\x1b[?2004l\x1b[?1004l\x1b[?1006l\x1b[?1002l\x1b[?1000l\x1b[?25h\x1b[?1049l";
+                let mut bytes: &[u8]=b"\x1b[<1u\x1b[0m\x1b[?1l\x1b>\x1b[?2004l\x1b[?1004l\x1b[?1006l\x1b[?1003l\x1b[?1002l\x1b[?1000l\x1b[?25h\x1b[?1049l";
                 let deadline = Instant::now() + Duration::from_millis(100);
                 while !bytes.is_empty() && Instant::now() < deadline {
                     let count = unsafe { libc::write(1, bytes.as_ptr().cast(), bytes.len()) };
@@ -867,7 +867,13 @@ fn fitted(frame: &Frame, size: (u16, u16), notice: Option<&str>) -> Frame {
     fit
 }
 fn queue_events(pending: &mut VecDeque<InputEvent>, events: Vec<InputEvent>) -> Result<()> {
-    pending.extend(events);
+    for event in events {
+        let idle_move = |event: &InputEvent| matches!(event, InputEvent::Mouse(mouse) if mouse.kind == MouseKind::Move && mouse.button == 3);
+        if idle_move(&event) && pending.back().is_some_and(idle_move) {
+            pending.pop_back();
+        }
+        pending.push_back(event);
+    }
     let size: usize = pending
         .iter()
         .map(|event| match event {
@@ -886,8 +892,23 @@ fn paint(
     frame: &Frame,
     size: (u16, u16),
     notice: Option<&str>,
+    hover: Option<Rect>,
 ) -> Result<()> {
-    let fit = fitted(frame, size, notice);
+    let mut fit = fitted(frame, size, notice);
+    if let Some(area) = hover {
+        for y in 0..fit.rows {
+            for x in 0..fit.cols {
+                if fitted_mouse(frame, size, Point { x, y })
+                    .is_some_and(|point| area.contains(point))
+                {
+                    super::hover::highlight(
+                        &mut fit.cells[usize::from(y * fit.cols + x)],
+                        frame.ui.terminal_theme,
+                    );
+                }
+            }
+        }
+    }
     let keypad = |frame: &Frame| {
         frame.controller
             && !frame.help
@@ -954,6 +975,10 @@ fn attach(mut socket: UnixStream, takeover: bool) -> Result<()> {
     let mut pending = VecDeque::new();
     let mut revision = 0;
     let mut keyboard_mode = 1;
+    let mut pointer = None;
+    let mut hovered = None;
+    let mut hover_dirty = false;
+    let mut hover_painted_at = Instant::now() - Duration::from_secs(1);
     loop {
         if INTERRUPTED.load(Ordering::Relaxed) {
             return Ok(());
@@ -961,12 +986,22 @@ fn attach(mut socket: UnixStream, takeover: bool) -> Result<()> {
         if RESIZED.swap(false, Ordering::Relaxed) {
             size = tty_size()?;
             painted = None;
+            pointer = None;
+            hovered = None;
+            hover_dirty = false;
             // Server stores observer geometry without resizing the workspace.
             let (cols, rows) = backend_size(size);
             channel.send(&ClientMessage::Resize { cols, rows })?;
             channel.flush()?;
             if let Some(frame) = latest.as_ref() {
-                paint(&mut stdout, &mut painted, frame, size, notice.as_deref())?;
+                paint(
+                    &mut stdout,
+                    &mut painted,
+                    frame,
+                    size,
+                    notice.as_deref(),
+                    None,
+                )?;
             }
         }
         let mut newest = None;
@@ -1004,6 +1039,7 @@ fn attach(mut socket: UnixStream, takeover: bool) -> Result<()> {
             }
         }
         if let Some(frame) = newest {
+            hovered = pointer.and_then(|point| super::hover::target(&frame, point));
             let mode = if frame.controller && !frame.help && frame.ui.dialog.is_none() {
                 frame
                     .panes
@@ -1025,7 +1061,15 @@ fn attach(mut socket: UnixStream, takeover: bool) -> Result<()> {
                         !event.read && !old.ui.notifications.iter().any(|seen| seen.id == event.id)
                     })
                 });
-            paint(&mut stdout, &mut painted, &frame, size, notice.as_deref())?;
+            paint(
+                &mut stdout,
+                &mut painted,
+                &frame,
+                size,
+                notice.as_deref(),
+                hovered,
+            )?;
+            hover_dirty = false;
             if sound {
                 stdout.write_all(b"\x07")?;
                 stdout.flush()?;
@@ -1033,7 +1077,14 @@ fn attach(mut socket: UnixStream, takeover: bool) -> Result<()> {
             latest = Some(frame);
         } else if error_changed {
             if let Some(frame) = latest.as_ref() {
-                paint(&mut stdout, &mut painted, frame, size, notice.as_deref())?;
+                paint(
+                    &mut stdout,
+                    &mut painted,
+                    frame,
+                    size,
+                    notice.as_deref(),
+                    hovered,
+                )?;
             }
         }
         if channel.eof {
@@ -1049,17 +1100,42 @@ fn attach(mut socket: UnixStream, takeover: bool) -> Result<()> {
                 // Pane and help-panel coordinates stay in backend geometry.
                 if let InputEvent::Mouse(mouse) = &mut event {
                     let Some(point) = fitted_mouse(frame, size, mouse.position) else {
+                        pointer = None;
+                        hover_dirty |= hovered.take().is_some();
                         continue;
                     };
                     mouse.position = point;
+                    if mouse.kind == MouseKind::Move {
+                        pointer = if mouse.button == 3 { Some(point) } else { None };
+                    } else if pointer.is_some() {
+                        pointer = Some(point);
+                    }
+                    let next = pointer.and_then(|point| super::hover::target(frame, point));
+                    hover_dirty |= next != hovered;
+                    hovered = next;
+                } else if matches!(&event, InputEvent::Bytes(bytes) if bytes == b"\x1b[O") {
+                    pointer = None;
+                    hover_dirty |= hovered.take().is_some();
                 }
                 let messages = router.route(event, frame);
                 if !messages.is_empty() && notice.take().is_some() {
-                    paint(&mut stdout, &mut painted, frame, size, None)?;
+                    paint(&mut stdout, &mut painted, frame, size, None, hovered)?;
                 }
                 for message in messages {
                     channel.send(&message)?;
                 }
+            }
+            if hover_dirty && hover_painted_at.elapsed() >= Duration::from_millis(33) {
+                paint(
+                    &mut stdout,
+                    &mut painted,
+                    frame,
+                    size,
+                    notice.as_deref(),
+                    hovered,
+                )?;
+                hover_dirty = false;
+                hover_painted_at = Instant::now();
             }
         }
         channel.flush()?;
@@ -1114,6 +1190,62 @@ fn attach(mut socket: UnixStream, takeover: bool) -> Result<()> {
 #[cfg(test)]
 mod fit_tests {
     use super::*;
+    #[test]
+    fn idle_motion_bursts_coalesce_without_discarding_clicks_or_drags() {
+        let mouse = |kind, button, x| {
+            InputEvent::Mouse(MouseEvent {
+                position: Point { x, y: 1 },
+                kind,
+                button,
+                shift: false,
+                alt: false,
+                ctrl: false,
+            })
+        };
+        let mut pending = VecDeque::new();
+        queue_events(
+            &mut pending,
+            (0..10000)
+                .map(|i| mouse(MouseKind::Move, 3, i % 80))
+                .collect(),
+        )
+        .unwrap();
+        assert_eq!(pending.len(), 1);
+        queue_events(
+            &mut pending,
+            vec![
+                mouse(MouseKind::Press, 0, 2),
+                mouse(MouseKind::Move, 0, 3),
+                mouse(MouseKind::Move, 0, 4),
+            ],
+        )
+        .unwrap();
+        assert_eq!(pending.len(), 4);
+    }
+
+    #[test]
+    fn hover_paint_maps_footer_controls_on_smaller_frontends() {
+        let mut ws = super::super::workspace::Workspace::new(120, 40).unwrap();
+        ws.ui.config.tab_position = super::super::ui::TabPosition::Top;
+        let frame = super::super::render::compose(&ws, &Default::default(), true, None, 0);
+        let mut output = Vec::new();
+        paint(
+            &mut output,
+            &mut None,
+            &frame,
+            (40, 10),
+            None,
+            Some(frame.controls()[0]),
+        )
+        .unwrap();
+        let mut terminal = super::super::engine::Terminal::new(40, 10);
+        terminal.feed(&output);
+        assert_eq!(
+            terminal.snapshot().cells[9 * 40 + 2].bg,
+            Color::Rgb(24, 119, 159)
+        );
+        assert_eq!(frame.cells[39 * 120 + 2].bg, Color::Indexed(24));
+    }
     #[test]
     fn fitted_sidebar_keeps_controls_bottom_aligned_and_maps_their_clicks() {
         let mut workspace = super::super::workspace::Workspace::new(120, 40).unwrap();
