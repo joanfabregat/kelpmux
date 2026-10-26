@@ -161,6 +161,9 @@ pub fn target(frame: &Frame, point: Point) -> Option<Rect> {
 }
 
 pub fn strength(frame: &Frame, region: Rect) -> u8 {
+    if super::status::metric_region(frame) == Some(region) {
+        return 8;
+    }
     let click = InputEvent::Mouse(MouseEvent {
         position: Point {
             x: region.x + region.cols / 2,
