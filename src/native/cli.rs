@@ -25,7 +25,7 @@ use std::{
 };
 
 pub const HELP: &str = "Owned native terminal workspaces (Linux):
-  kelpmux start [--workspace NAME] [--config PATH] [--template PATH] [--shell PATH] [--cwd PATH]
+  kelpmux start [--workspace NAME] [--config PATH] [--template PATH] [--shell PATH] [--cwd PATH] [--replace-running] [--server-binary PATH]
   kelpmux ssh-entry [--workspace NAME] [--takeover]
   kelpmux status|stop|recover|diagnostics|templates [--workspace NAME]
   kelpmux benchmark
@@ -36,6 +36,7 @@ pub const HELP: &str = "Owned native terminal workspaces (Linux):
   kelpmux ctl [--socket PATH] list|new|park ID|restore ID|focus ID|read ID|fullscreen ID|reclaim ID|close|shutdown
 
 start owns a detached server; ssh-entry starts or attaches. stop ends its processes.
+--replace-running ends an outdated server's shells/jobs before starting the selected binary.
 --current-client explicitly skips retained-client selection; the protocol handshake remains mandatory.
 Custom sockets infer adjacent state; specify --state-dir when state lives elsewhere.
 Default workspace: main; socket: $XDG_STATE_HOME/kelpmux/workspaces/main/control.sock
@@ -69,6 +70,8 @@ struct Options {
     size: (u16, u16),
     takeover: bool,
     current_client: bool,
+    replace_running: bool,
+    server_binary: Option<PathBuf>,
     command: Vec<String>,
     background: bool,
     settings: super::lifecycle::Settings,
@@ -85,6 +88,8 @@ fn options(args: &[String]) -> Result<Options> {
         size: (120, 40),
         takeover: false,
         current_client: false,
+        replace_running: false,
+        server_binary: None,
         command: vec![],
         background: false,
         settings: super::lifecycle::Settings::default(),
@@ -113,10 +118,17 @@ fn options(args: &[String]) -> Result<Options> {
             result.current_client = true;
             continue;
         }
+        if arg == "--replace-running" && verb == "start" {
+            result.replace_running = true;
+            continue;
+        }
         if arg.starts_with("--") {
             let value = args.get(position).ok_or("option needs a value")?;
             position += 1;
             match arg.as_str() {
+                "--server-binary" if verb == "start" => {
+                    result.server_binary = Some(PathBuf::from(value))
+                }
                 "--template" => template_path = Some(PathBuf::from(value)),
                 "--socket" => {
                     result.socket = PathBuf::from(value);
@@ -251,6 +263,8 @@ pub fn run(args: &[String]) -> Result<()> {
                 cols: options.size.0,
                 rows: options.size.1,
                 settings: &options.settings,
+                replace_running: options.replace_running,
+                executable: options.server_binary.as_deref(),
             })?;
             if args[0] == "ssh-entry" {
                 attach(attach_socket(&options)?, options.takeover)
