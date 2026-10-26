@@ -236,9 +236,12 @@ fn compositor_footer_help_and_control_sanitization() {
             .iter()
             .all(|c| !c.text.chars().any(char::is_control))
     );
-    assert_eq!(
-        frame.cells[23 * 80 + usize::from(frame.footer_cols() - 2)].text,
-        "?"
+    let help = frame.controls()[3];
+    assert!(
+        frame.cells[usize::from(help.y * frame.cols + help.x)
+            ..usize::from(help.y * frame.cols + help.x + help.cols)]
+            .iter()
+            .any(|cell| cell.text == "?")
     );
     workspace.help = true;
     let frame = compose(&workspace, &BTreeMap::new(), true, None, 0);

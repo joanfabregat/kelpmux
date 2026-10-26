@@ -417,7 +417,6 @@ impl Router {
                         b"\x1b[Z" => tab_navigation(frame, -1, false),
                         b"\x1b[5~" => tab_navigation(frame, -1, true),
                         b"\x1b[6~" => tab_navigation(frame, 1, true),
-                        b"v" => Some(Action::TabPosition),
                         b"," => Some(Action::Config),
                         b"o" => Some(Action::Overview),
                         b"b" => Some(Action::Notifications),
@@ -765,7 +764,7 @@ impl Router {
                 {
                     if event.kind == MouseKind::Press {
                         let current = match index {
-                            4 => Some(frame.ui.config.notification_sound),
+                            0 => Some(frame.ui.config.notification_sound),
                             _ => None,
                         };
                         if value.is_none() || value != current {
@@ -1224,19 +1223,10 @@ impl Router {
                 .unwrap_or_default();
         }
         if dialog.kind == DialogKind::Config {
-            if index == 4 {
+            if index == 0 {
                 return vec![ClientMessage::Action(Action::NotificationSoundToggle)];
             }
-            let positions = [
-                super::ui::TabPosition::Auto,
-                super::ui::TabPosition::Top,
-                super::ui::TabPosition::Left,
-                super::ui::TabPosition::Bottom,
-            ];
-            let Some(&position) = positions.get(index) else {
-                return vec![];
-            };
-            return vec![ClientMessage::Action(Action::TabPositionSet(position))];
+            return vec![];
         }
         if matches!(
             dialog.kind,
