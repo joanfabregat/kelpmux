@@ -542,7 +542,7 @@ pub fn metric_region(frame: &super::protocol::Frame) -> Option<super::protocol::
         Rect {
             x: 0,
             y: frame.rows - height,
-            cols: workspace::sidebar_width(frame.cols) - 1,
+            cols: frame.sidebar_width() - 1,
             rows: height - 2,
         }
     } else {
@@ -566,7 +566,7 @@ pub fn metric_target(
         if super::render::sidebar_disk_region(frame).is_some_and(|rect| rect.contains(point)) {
             return Some(Sort::Read);
         }
-        let width = super::workspace::sidebar_width(frame.cols) - 1;
+        let width = frame.sidebar_width() - 1;
         let start = usize::from(point.y * frame.cols);
         let text: String = frame.cells[start..start + usize::from(width)]
             .iter()

@@ -17,6 +17,17 @@ pub fn target(frame: &Frame, point: Point) -> Option<Rect> {
         let bounds = ws::dialog_bounds_for(frame.cols, frame.rows, dialog.kind);
         regions.push(close(bounds));
         match dialog.kind {
+            DialogKind::Notifications => {
+                regions.extend(super::ui::notification_buttons(bounds));
+                if point.y >= bounds.y + 2 && point.y < bounds.y + bounds.rows {
+                    regions.push(Rect {
+                        x: bounds.x + 1,
+                        y: point.y,
+                        cols: bounds.cols - 2,
+                        rows: 1,
+                    });
+                }
+            }
             DialogKind::Config => regions.extend(
                 ws::config_targets(bounds)
                     .into_iter()
@@ -97,6 +108,14 @@ pub fn target(frame: &Frame, point: Point) -> Option<Rect> {
             regions.push(close(view.rect));
         }
     } else {
+        if frame.sidebar_status() {
+            regions.push(Rect {
+                x: frame.sidebar_width() - 1,
+                y: 0,
+                cols: 1,
+                rows: frame.rows,
+            });
+        }
         regions.extend(frame.controls());
         if let Some(region) = super::status::metric_region(frame) {
             regions.push(region);

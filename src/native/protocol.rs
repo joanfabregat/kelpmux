@@ -3,7 +3,7 @@ use crate::{Result, model::Status};
 use serde::{Deserialize, Serialize};
 use std::io::{Read, Write};
 
-pub const VERSION: u16 = 34;
+pub const VERSION: u16 = 35;
 pub const MAX_MESSAGE: usize = 16 * 1024 * 1024;
 pub const MAX_INPUT: usize = 64 * 1024;
 pub type PaneId = u64;
@@ -164,6 +164,9 @@ pub struct Frame {
     pub ui: super::ui::UiState,
 }
 impl Frame {
+    pub fn sidebar_width(&self) -> u16 {
+        self.ui.config.sidebar_width(self.cols)
+    }
     pub fn sidebar_status(&self) -> bool {
         (self.reading != ReadingMode::Grid || self.active == 0)
             && self.ui.config.tab_position.resolve(self.cols, self.rows)
@@ -172,7 +175,7 @@ impl Frame {
     pub fn controls(&self) -> [Rect; 4] {
         let count = self.panes.iter().filter(|view| view.pane.parked).count();
         if self.sidebar_status() {
-            super::workspace::sidebar_controls(self.cols, self.rows, count)
+            super::workspace::sidebar_controls(self.cols, self.rows, count, &self.ui.config)
         } else {
             [
                 Rect {
@@ -239,6 +242,9 @@ pub enum Action {
     SearchCopy(usize),
     NotificationSoundToggle,
     Acknowledge(u64),
+    AcknowledgeAll,
+    NotificationHistory,
+    ResizeSidebar(u16),
     NextAttention,
     NextFinished,
     Scratch,

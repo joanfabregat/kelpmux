@@ -153,8 +153,8 @@ impl Workspace {
     }
     pub fn grid_layout(&self) -> Vec<PaneView> {
         let (_, grid_rows) = self.automatic_shape();
-        // Each row's pane header separates it from the preceding terminal.
-        let usable_rows = self.rows.saturating_sub(1);
+        // Reserve a blank row before every row of headers after the first.
+        let usable_rows = self.rows.saturating_sub(u16::from(grid_rows));
         let mut views = Vec::new();
         let y_boundaries = weighted_boundaries(usable_rows, grid_rows, &[]);
         let (page_start, count) = self.grid_page();
@@ -199,7 +199,7 @@ impl Workspace {
             let top = y_boundaries[usize::from(row)];
             let rect = Rect {
                 x: left + col,
-                y: top,
+                y: top + row,
                 cols: x_boundaries[usize::from(col + 1)] - left,
                 rows: y_boundaries[usize::from(row + 1)] - top,
             };
@@ -557,6 +557,9 @@ impl Workspace {
                     _ => DialogKind::Search,
                 };
                 self.help = false;
+                if kind == DialogKind::Notifications {
+                    self.ui.notification_history = false;
+                }
                 self.ui.dialog = Some(Dialog {
                     kind,
                     selection: 0,
@@ -603,6 +606,23 @@ impl Workspace {
                 {
                     notification.read = true;
                 }
+            }
+            Action::AcknowledgeAll => {
+                for notification in &mut self.ui.notifications {
+                    notification.read = true;
+                }
+                if let Some(dialog) = &mut self.ui.dialog {
+                    dialog.selection = 0;
+                }
+            }
+            Action::NotificationHistory => {
+                self.ui.notification_history = !self.ui.notification_history;
+                if let Some(dialog) = &mut self.ui.dialog {
+                    dialog.selection = 0;
+                }
+            }
+            Action::ResizeSidebar(columns) => {
+                self.ui.config.sidebar_columns = Some(columns.clamp(18, 4096));
             }
             Action::NotificationSoundToggle => {
                 self.ui.config.notification_sound = !self.ui.config.notification_sound
@@ -1009,7 +1029,9 @@ impl Workspace {
                 return (0..=self.ui.agent_sessions.len() as u64).collect();
             }
             Some(DialogKind::Notifications) => {
-                return self.ui.notifications.iter().map(|item| item.id).collect();
+                return super::ui::visible_notifications(&self.ui, &self.panes)
+                    .map(|item| item.id)
+                    .collect();
             }
             Some(DialogKind::Recovery) => return (0..self.ui.recovery.len() as u64).collect(),
             Some(DialogKind::Search) => return (0..self.ui.search_hits.len() as u64).collect(),
@@ -1170,11 +1192,11 @@ pub fn sidebar_width(cols: u16) -> u16 {
 pub fn tab_body(
     cols: u16,
     rows: u16,
-    _config: &super::ui::UiConfig,
+    config: &super::ui::UiConfig,
     _full: bool,
     _size: Option<(u16, u16)>,
 ) -> Rect {
-    let sidebar = sidebar_width(cols);
+    let sidebar = config.sidebar_width(cols);
     Rect {
         x: sidebar,
         y: 0,
@@ -1238,11 +1260,11 @@ pub enum TabTarget {
     Next,
     New,
 }
-pub fn tab_bar_area(cols: u16, rows: u16, _config: &super::ui::UiConfig) -> Rect {
+pub fn tab_bar_area(cols: u16, rows: u16, config: &super::ui::UiConfig) -> Rect {
     Rect {
         x: 0,
         y: 0,
-        cols: sidebar_width(cols) - 1,
+        cols: config.sidebar_width(cols) - 1,
         rows: rows - sidebar_status_rows(rows),
     }
 }
@@ -1334,8 +1356,13 @@ pub fn help_button(rows: u16, count: usize) -> Rect {
 pub fn sidebar_status_rows(rows: u16) -> u16 {
     if rows >= 18 { 9 } else { 3 }
 }
-pub fn sidebar_controls(cols: u16, rows: u16, _count: usize) -> [Rect; 4] {
-    let width = sidebar_width(cols) - 1;
+pub fn sidebar_controls(
+    cols: u16,
+    rows: u16,
+    _count: usize,
+    config: &super::ui::UiConfig,
+) -> [Rect; 4] {
+    let width = config.sidebar_width(cols) - 1;
     let rect = |x, y, cols| Rect {
         x,
         y,
@@ -1365,31 +1392,36 @@ pub fn color_cards(bounds: Rect) -> Vec<Rect> {
         })
         .collect()
 }
-pub fn sidebar_actions(cols: u16, rows: u16, parked_count: usize) -> [Rect; 2] {
+pub fn sidebar_actions(
+    cols: u16,
+    rows: u16,
+    parked_count: usize,
+    config: &super::ui::UiConfig,
+) -> [Rect; 2] {
     let height = 3;
     let new = Rect {
         x: 0,
         y: rows - sidebar_status_rows(rows) - height,
-        cols: sidebar_width(cols) - 1,
+        cols: config.sidebar_width(cols) - 1,
         rows: height,
     };
-    [new, sidebar_controls(cols, rows, parked_count)[2]]
+    [new, sidebar_controls(cols, rows, parked_count, config)[2]]
 }
 pub fn tab_targets(
     cols: u16,
     rows: u16,
-    _config: &super::ui::UiConfig,
+    config: &super::ui::UiConfig,
     count: usize,
     active: usize,
     parked_count: usize,
 ) -> Vec<(TabTarget, Rect)> {
     if count == 0 {
-        let [mut new, parked] = sidebar_actions(cols, rows, parked_count);
+        let [mut new, parked] = sidebar_actions(cols, rows, parked_count, config);
         new.y = 1;
         return vec![(TabTarget::New, new), (TabTarget::Parked, parked)];
     }
-    let width = sidebar_width(cols) - 1;
-    let [mut new, parked] = sidebar_actions(cols, rows, parked_count);
+    let width = config.sidebar_width(cols) - 1;
+    let [mut new, parked] = sidebar_actions(cols, rows, parked_count, config);
     let area = new.y;
     let height = new.rows;
     let overflow = count > usize::from(area / height);

@@ -310,6 +310,18 @@ impl Activity {
     pub fn snapshots(&self) -> Vec<Notification> {
         self.data.events.iter().rev().take(128).cloned().collect()
     }
+    pub fn acknowledge_all(&mut self) -> Result<()> {
+        if self.data.events.iter().all(|event| event.read) {
+            return Ok(());
+        }
+        let mut data = self.data.clone();
+        for event in &mut data.events {
+            event.read = true;
+        }
+        journal::atomic(&self.path, &data)?;
+        self.data = data;
+        Ok(())
+    }
     pub fn all(&self) -> &[Notification] {
         &self.data.events
     }

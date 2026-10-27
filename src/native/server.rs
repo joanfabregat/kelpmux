@@ -1102,6 +1102,11 @@ impl Server {
                 self.activity.acknowledge(*id)?;
                 self.workspace.ui.notifications = self.activity.all().to_vec();
             }
+            Action::AcknowledgeAll => {
+                self.activity.acknowledge_all()?;
+                self.workspace.ui.notifications = self.activity.all().to_vec();
+                self.workspace.apply(action)?;
+            }
             Action::Recovery => {
                 if self.recovery_job.is_none() {
                     let state = self.config.state_dir.clone();
