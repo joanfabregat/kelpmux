@@ -1867,6 +1867,97 @@ fn metric_bar_background(frame: &mut Frame, area: Rect, background: Color) {
     }
 }
 
+fn draw_sidebar_disks(
+    frame: &mut Frame,
+    rect: Rect,
+    disks: &[(String, u8)],
+    colors: (Color, Color),
+) {
+    let (muted, bg) = colors;
+    let count = disks.len().min(2);
+    if count == 0 || rect.rows == 0 {
+        return;
+    }
+    let width = (rect.cols - count.saturating_sub(1) as u16) / count as u16;
+    for (index, (mount, percent)) in disks.iter().take(count).enumerate() {
+        let x = rect.x + index as u16 * (width + 1);
+        let percent = (*percent).min(100);
+        let color = Color::Indexed(if percent >= 90 { 196 } else { 222 });
+        let mount = safe_text(mount);
+        let mut label = if mount == "/" || !mount.starts_with('/') {
+            mount.clone()
+        } else {
+            format!(
+                "/{}",
+                mount
+                    .rsplit('/')
+                    .find(|part| !part.is_empty())
+                    .unwrap_or("?")
+            )
+        };
+        if index + 1 == count && disks.len() > count {
+            label.push('…');
+        }
+        write_text(
+            frame,
+            x,
+            rect.y,
+            width.saturating_sub(5),
+            &label,
+            muted,
+            bg,
+            false,
+        );
+        write_text(
+            frame,
+            x + width.saturating_sub(4),
+            rect.y,
+            4,
+            &format!("{percent:>3}%"),
+            color,
+            bg,
+            false,
+        );
+        if rect.rows > 1 {
+            let filled = (u32::from(percent) * u32::from(width) + 50) / 100;
+            for offset in 0..width {
+                let active = u32::from(offset) < filled;
+                write_text(
+                    frame,
+                    x + offset,
+                    rect.y + 1,
+                    1,
+                    if active { "▰" } else { "▱" },
+                    if active { color } else { muted },
+                    bg,
+                    false,
+                );
+            }
+        }
+    }
+}
+
+pub(super) fn sidebar_disk_region(frame: &Frame) -> Option<Rect> {
+    if !frame.sidebar_status() {
+        return None;
+    }
+    let metrics = sidebar_metrics(&frame.ui.vitals);
+    let index = metrics.iter().position(|metric| metric.label == "Disks");
+    if index.is_none() && frame.ui.disk_readings.is_empty() {
+        return None;
+    }
+    let height = super::workspace::sidebar_status_rows(frame.rows);
+    let top = frame.rows - height + u16::from(height > 3);
+    let end = frame.rows - if height > 3 { 3 } else { 2 };
+    let y = top + index.unwrap_or(metrics.len()) as u16;
+    (y < end).then(|| Rect {
+        x: 0,
+        y,
+        cols: super::workspace::sidebar_width(frame.cols) - 1,
+        rows: (end - y).min(2),
+    })
+}
+
 fn draw_sidebar_status(frame: &mut Frame, workspace: &Workspace, notice: Option<&str>) {
     let rows = super::workspace::sidebar_status_rows(frame.rows);
     let width = super::workspace::sidebar_width(frame.cols) - 1;
@@ -1975,11 +2066,59 @@ fn draw_sidebar_status(frame: &mut Frame, workspace: &Workspace, notice: Option<
         );
     } else {
         let value_width = width.saturating_sub(9);
-        let metrics = sidebar_metrics(&workspace.ui.vitals);
+        let mut metrics = sidebar_metrics(&workspace.ui.vitals);
+        if !workspace.ui.disk_readings.is_empty()
+            && !metrics.iter().any(|metric| metric.label == "Disks")
+        {
+            metrics.push(SidebarMetric {
+                label: "Disks",
+                values: vec![],
+            });
+        }
         let capacity = usize::from(metric_end - metric_top);
         let visible: Vec<_> = metrics.iter().take(capacity).collect();
-        for (index, metric) in visible.into_iter().enumerate() {
-            let y = metric_top + index as u16;
+        let mut y = metric_top;
+        for metric in visible {
+            if y >= metric_end {
+                break;
+            }
+            if metric.label == "Disks" {
+                let fallback: Vec<_> = metric
+                    .values
+                    .iter()
+                    .enumerate()
+                    .filter_map(|(index, (value, _))| {
+                        let percent = value
+                            .split_whitespace()
+                            .last()?
+                            .strip_suffix('%')?
+                            .parse::<u8>()
+                            .ok()?;
+                        Some((format!("Disk{}", index + 1), percent))
+                    })
+                    .collect();
+                let disks = if workspace.ui.disk_readings.is_empty() {
+                    &fallback
+                } else {
+                    &workspace.ui.disk_readings
+                };
+                draw_sidebar_disks(
+                    frame,
+                    Rect {
+                        x: 1,
+                        y,
+                        cols: width - 2,
+                        rows: (metric_end - y).min(2),
+                    },
+                    disks,
+                    (muted, bg),
+                );
+                y += 2;
+                continue;
+            }
+            let row_y = y;
+            y += 1;
+            let y = row_y;
             let label = if compact_dev {
                 match metric.label {
                     "Memory" => "RAM",
@@ -1991,34 +2130,6 @@ fn draw_sidebar_status(frame: &mut Frame, workspace: &Workspace, notice: Option<
                 metric.label
             };
             write_text(frame, 1, y, 6, label, muted, bg, false);
-            if metric.label == "Disks" {
-                let total = metric
-                    .values
-                    .iter()
-                    .map(|(value, _)| value.chars().map(char_width).sum::<u16>())
-                    .sum::<u16>()
-                    + metric.values.len().saturating_sub(1) as u16;
-                let mut x = width - 1 - total.min(value_width);
-                for (value, color) in &metric.values {
-                    let size = value.chars().map(char_width).sum::<u16>();
-                    if x + size > width - 1 {
-                        write_text(
-                            frame,
-                            x,
-                            y,
-                            width.saturating_sub(x + 1),
-                            "…",
-                            muted,
-                            bg,
-                            false,
-                        );
-                        break;
-                    }
-                    write_text(frame, x, y, size, value, Color::Indexed(*color), bg, false);
-                    x += size + 1;
-                }
-                continue;
-            }
             let (value, color) = &metric.values[0];
             if matches!(metric.label, "CPU" | "Memory" | "Swap") {
                 if let Some((_, percent)) = value.split_once(' ') {
@@ -2593,21 +2704,46 @@ fn draw_status(frame: &mut Frame, workspace: &Workspace, bounds: Rect) {
         bg,
         true,
     );
-    let query = if ui.status_query.is_empty() {
+    let mut query = if ui.status_query.is_empty() {
         "/ search · c CPU · m memory · p PID · r/w I/O".to_string()
     } else {
         format!("Search: {}", safe_text(&ui.status_query))
     };
+    let tasks = format!("Tasks {} ({} running)", data.tasks, data.running);
+    let tasks_width = tasks.chars().map(char_width).sum::<u16>();
+    let show_tasks = data.ready
+        && width >= 50
+        && (ui.status_query.is_empty()
+            || query.chars().map(char_width).sum::<u16>() + tasks_width + 2 <= width);
+    if show_tasks && query.chars().map(char_width).sum::<u16>() + tasks_width + 2 > width {
+        query = "/ search".into();
+    }
     write_text(
         frame,
         x,
         tabs_y + 1,
-        width,
+        if show_tasks {
+            width - tasks_width - 2
+        } else {
+            width
+        },
         &query,
         Color::Indexed(245),
         bg,
         false,
     );
+    if show_tasks {
+        write_text(
+            frame,
+            x + width - tasks_width,
+            tabs_y + 1,
+            tasks_width,
+            &tasks,
+            Color::Indexed(250),
+            bg,
+            false,
+        );
+    }
     draw_status_summary(frame, workspace, bounds, summary_height);
     let table_y = status::table_y(bounds, data);
     fill(
@@ -2747,7 +2883,12 @@ fn draw_status_meter(
     color: u8,
 ) {
     let bg = Color::Indexed(236);
-    let bar_width = rect.cols.saturating_sub(8);
+    let label_width = if label.starts_with('/') {
+        (label.chars().map(char_width).sum::<u16>() + 1).min(rect.cols / 3)
+    } else {
+        6
+    };
+    let bar_width = rect.cols.saturating_sub(label_width + 2);
     let value = if detail.is_empty() || detail.chars().map(char_width).sum::<u16>() + 5 > bar_width
     {
         format!("{percent:>3}%")
@@ -2759,14 +2900,14 @@ fn draw_status_meter(
         frame,
         rect.x,
         rect.y,
-        6,
+        label_width,
         label,
         Color::Indexed(color),
         bg,
         false,
     );
     if bar_width > 0 {
-        let start = rect.x + 6;
+        let start = rect.x + label_width;
         write_text(frame, start, rect.y, 1, "[", Color::Indexed(245), bg, false);
         let filled = (u32::from(bar_width) * u32::from(percent.min(100)) + 50) / 100;
         for index in 0..bar_width {
@@ -2846,33 +2987,16 @@ fn draw_status_summary(frame: &mut Frame, workspace: &Workspace, bounds: Rect, h
     } else {
         format!("{clock} · {uptime}")
     };
-    let mut details = if two_columns {
-        vec![
-            (
-                format!("Tasks {} ({} running)", data.tasks, data.running),
-                250,
-            ),
-            (format!("Load {}", data.load), 250),
-        ]
-    } else {
-        vec![
-            (
-                format!(
-                    "Tasks {} ({} running) · Load {}",
-                    data.tasks, data.running, data.load
-                ),
-                250,
-            ),
-            (clock_uptime.clone(), 39),
-        ]
-    };
+    let mut details = vec![(format!("Load {}", data.load), 250)];
     if two_columns {
-        if status::summary_detail_rows(bounds) == 6 {
+        if status::summary_detail_rows(bounds) == 5 {
             details.push((clock, 39));
             details.push((uptime, 39));
         } else {
             details.push((clock_uptime, 39));
         }
+    } else {
+        details.push((clock_uptime, 39));
     }
     details.push((
         format!(
@@ -2890,26 +3014,7 @@ fn draw_status_summary(frame: &mut Frame, workspace: &Workspace, bounds: Rect, h
         ),
         222,
     ));
-    let disks: Vec<_> = data
-        .disks
-        .iter()
-        .map(|disk| {
-            (
-                format!(
-                    "{} {} {}% ({}/{})",
-                    safe_text(&disk.mount),
-                    super::vitals::pie_glyph(disk.percent),
-                    disk.percent,
-                    status::bytes(disk.available),
-                    status::bytes(disk.total),
-                ),
-                if disk.percent >= 90 { 196 } else { 222 },
-            )
-        })
-        .collect();
-    if !two_columns {
-        details.extend(disks.iter().cloned());
-    }
+    let disks = &data.disks;
     let percent =
         |used: u64, total: u64| (u128::from(used) * 100 / u128::from(total.max(1))).min(100) as u8;
     let ram = percent(data.memory_used, data.memory_total);
@@ -2958,7 +3063,7 @@ fn draw_status_summary(frame: &mut Frame, workspace: &Workspace, bounds: Rect, h
     let lower_rows = if two_columns {
         disks.len().div_ceil(2)
     } else {
-        details.len()
+        details.len() + disks.len()
     }
     .min(usize::from(u16::MAX)) as u16;
     let memory_rows = if two_columns { 1 } else { 2 };
@@ -3020,23 +3125,30 @@ fn draw_status_summary(frame: &mut Frame, workspace: &Workspace, bounds: Rect, h
         }
     }
     let lower_y = cpu_rows + memory_rows;
-    if two_columns {
-        for (index, (text, color)) in disks
-            .iter()
-            .take(usize::from(height.saturating_sub(lower_y)) * 2)
-            .enumerate()
-        {
-            write_text(
-                frame,
-                x + (index % 2) as u16 * (meter_width + meter_gap),
-                y + lower_y + (index / 2) as u16,
-                meter_width,
-                text,
-                Color::Indexed(*color),
-                Color::Indexed(236),
-                false,
-            );
-        }
+    let disk_y = lower_y + if two_columns { 0 } else { details.len() as u16 };
+    let disk_columns = if two_columns { 2 } else { 1 };
+    for (index, disk) in disks
+        .iter()
+        .take(usize::from(height.saturating_sub(disk_y)) * disk_columns)
+        .enumerate()
+    {
+        draw_status_meter(
+            frame,
+            Rect {
+                x: x + (index % disk_columns) as u16 * (meter_width + meter_gap),
+                y: y + disk_y + (index / disk_columns) as u16,
+                cols: meter_width,
+                rows: 1,
+            },
+            &safe_text(&disk.mount),
+            disk.percent,
+            &format!(
+                "({}/{})",
+                status::bytes(disk.available),
+                status::bytes(disk.total)
+            ),
+            if disk.percent >= 90 { 196 } else { 222 },
+        );
     }
     let (detail_x, detail_y, detail_width, capacity) = if two_columns {
         (x + 2 * (meter_width + meter_gap), y, meter_width, height)

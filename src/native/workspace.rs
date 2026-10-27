@@ -1332,13 +1332,7 @@ pub fn help_button(rows: u16, count: usize) -> Rect {
     }
 }
 pub fn sidebar_status_rows(rows: u16) -> u16 {
-    if rows >= 24 {
-        8
-    } else if rows >= 18 {
-        7
-    } else {
-        3
-    }
+    if rows >= 18 { 9 } else { 3 }
 }
 pub fn sidebar_controls(cols: u16, rows: u16, _count: usize) -> [Rect; 4] {
     let width = sidebar_width(cols) - 1;
