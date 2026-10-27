@@ -3,7 +3,7 @@ use crate::{Result, model::Status};
 use serde::{Deserialize, Serialize};
 use std::io::{Read, Write};
 
-pub const VERSION: u16 = 36;
+pub const VERSION: u16 = 37;
 pub const MAX_MESSAGE: usize = 16 * 1024 * 1024;
 pub const MAX_INPUT: usize = 64 * 1024;
 pub type PaneId = u64;
@@ -168,7 +168,8 @@ impl Frame {
         self.ui.config.sidebar_width(self.cols)
     }
     pub fn sidebar_status(&self) -> bool {
-        (self.reading != ReadingMode::Grid || self.active == 0)
+        !matches!(self.reading, ReadingMode::Fullscreen(_))
+            && (self.reading != ReadingMode::Grid || self.active == 0)
             && self.ui.config.tab_position.resolve(self.cols, self.rows)
                 == super::ui::TabPosition::Left
     }

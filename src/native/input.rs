@@ -1,4 +1,5 @@
 use super::protocol::*;
+use std::time::{Duration, Instant};
 
 /// Incremental terminal framing. Paste payloads are never interpreted as keys.
 #[derive(Default)]
@@ -244,6 +245,8 @@ pub struct Router {
     search_utf8: Vec<u8>,
     selecting: bool,
     header_drag: Option<PaneId>,
+    header_press: Option<(PaneId, Point)>,
+    header_click: Option<(PaneId, Point, Instant)>,
     boundary_drag: Option<(Option<u8>, Option<u8>)>,
     sidebar_drag: bool,
     prefix: bool,
@@ -256,6 +259,16 @@ pub struct Router {
 }
 impl Router {
     pub fn route(&mut self, event: InputEvent, frame: &Frame) -> Vec<ClientMessage> {
+        if !frame.controller || self.help_override.unwrap_or(frame.help) || frame.ui.scratch_visible
+        {
+            self.header_drag = None;
+            self.header_press = None;
+            self.header_click = None;
+        }
+        if matches!(event, InputEvent::Bytes(_) | InputEvent::Paste(_)) {
+            self.header_press = None;
+            self.header_click = None;
+        }
         if !frame.controller
             || self.help_override.unwrap_or(frame.help)
             || frame.ui.scratch_visible
@@ -300,6 +313,8 @@ impl Router {
         if frame.ui.dialog.is_some() {
             self.suppressed_releases.clear();
             self.header_drag = None;
+            self.header_press = None;
+            self.header_click = None;
             self.boundary_drag = None;
             self.sidebar_drag = false;
             self.selecting = false;
@@ -698,6 +713,25 @@ impl Router {
         }
         output
     }
+    fn header_action(&mut self, pane: PaneId, event: MouseEvent) -> Action {
+        let previous = self.header_click.take();
+        if event.button == 0 && !event.shift && !event.alt && !event.ctrl {
+            if previous.is_some_and(|(id, position, at)| {
+                id == pane
+                    && position.x.abs_diff(event.position.x) <= 1
+                    && position.y.abs_diff(event.position.y) <= 1
+                    && at.elapsed() <= Duration::from_millis(400)
+            }) {
+                self.header_drag = None;
+                self.header_press = None;
+                self.focus_click = true;
+                return Action::Fullscreen(pane);
+            }
+            self.header_drag = Some(pane);
+            self.header_press = Some((pane, event.position));
+        }
+        Action::Focus(pane)
+    }
     fn mouse(&mut self, event: MouseEvent, frame: &Frame) -> Vec<ClientMessage> {
         let mut output = Vec::new();
         if !frame.controller {
@@ -773,12 +807,26 @@ impl Router {
                 return output;
             }
         }
+        if let Some((pane, start)) = self.header_press {
+            if matches!(event.kind, MouseKind::Move | MouseKind::Release) {
+                if start.x.abs_diff(event.position.x) > 1 || start.y.abs_diff(event.position.y) > 1
+                {
+                    self.header_press = None;
+                    self.header_click = None;
+                } else if event.kind == MouseKind::Release {
+                    self.header_press = None;
+                    self.header_click = Some((pane, start, Instant::now()));
+                }
+            }
+        }
         if let Some(source) = self.header_drag {
             if matches!(event.kind, MouseKind::Move | MouseKind::Release) {
                 if event.kind == MouseKind::Release {
                     self.header_drag = None;
                     if let Some(view) = frame.panes.iter().find(|v| {
-                        v.rect.contains(event.position) && Some(v.pane.id) != frame.ui.scratch
+                        frame.reading == ReadingMode::Grid
+                            && v.rect.contains(event.position)
+                            && Some(v.pane.id) != frame.ui.scratch
                     }) {
                         if view.pane.id != source {
                             emit(
@@ -946,6 +994,13 @@ impl Router {
             }
         }
         let [config, mode, parked, help] = frame.controls();
+        if event.kind == MouseKind::Press
+            && [config, mode, parked, help]
+                .iter()
+                .any(|rect| rect.contains(event.position))
+        {
+            self.header_click = None;
+        }
         if event.kind == MouseKind::Press && frame.ui.dialog.is_none() && !frame.help {
             if let Some(sort) = super::status::metric_target(frame, event.position) {
                 self.pending_modal = true;
@@ -1002,7 +1057,7 @@ impl Router {
                 return output;
             }
         }
-        if (frame.reading != ReadingMode::Grid || frame.active == 0) && !frame.ui.scratch_visible {
+        if frame.sidebar_status() && !frame.ui.scratch_visible {
             let tabviews: Vec<_> = frame
                 .panes
                 .iter()
@@ -1103,7 +1158,8 @@ impl Router {
                             self.pending_modal = true;
                             emit(&mut output, Action::ClosePaneRequest(view.pane.id), true);
                         } else {
-                            emit(&mut output, Action::Focus(view.pane.id), true);
+                            let action = self.header_action(view.pane.id, event);
+                            emit(&mut output, action, true);
                         }
                     }
                 }
@@ -1122,7 +1178,12 @@ impl Router {
         if view.overlay && Some(id) == frame.ui.scratch && event.position.y == view.rect.y {
             return output;
         }
-        if event.position.y == view.rect.y && frame.reading == ReadingMode::Grid {
+        if event.position.y == view.rect.y
+            && matches!(
+                frame.reading,
+                ReadingMode::Grid | ReadingMode::Fullscreen(_)
+            )
+        {
             if event.kind != MouseKind::Press {
                 return output;
             }
@@ -1136,19 +1197,17 @@ impl Router {
             } else if park.contains(event.position) {
                 self.pending_modal = true;
                 Action::ParkRequest(id)
-            } else if super::workspace::tab_number_for(view.rect, view.pane.number)
-                .contains(event.position)
-            {
-                Action::Focus(id)
             } else {
-                self.header_drag = Some(id);
-                Action::Focus(id)
+                self.header_action(id, event)
             };
             emit(&mut output, action, true);
             return output;
         }
         if !view.body.contains(event.position) {
             return output;
+        }
+        if event.kind == MouseKind::Press {
+            self.header_click = None;
         }
         if frame.reading == ReadingMode::Grid
             && frame.active != id

@@ -141,7 +141,15 @@ impl Workspace {
                     }
                     if pane.id == self.active {
                         view.rect = body;
-                        view.body = body;
+                        view.body = if matches!(self.reading, ReadingMode::Fullscreen(_)) {
+                            Rect {
+                                y: body.y + 1,
+                                rows: body.rows.saturating_sub(1),
+                                ..body
+                            }
+                        } else {
+                            body
+                        };
                     } else {
                         view.body = Rect::default();
                     }
@@ -152,11 +160,8 @@ impl Workspace {
         self.grid_layout()
     }
     pub fn grid_layout(&self) -> Vec<PaneView> {
-        let (_, grid_rows) = self.automatic_shape();
-        // Reserve a blank row before every row of headers after the first.
-        let usable_rows = self.rows.saturating_sub(u16::from(grid_rows));
         let mut views = Vec::new();
-        let y_boundaries = weighted_boundaries(usable_rows, grid_rows, &[]);
+        let slots = self.grid_slots();
         let (page_start, count) = self.grid_page();
         let mut visible = 0;
         for (index, pane) in self
@@ -179,33 +184,28 @@ impl Workspace {
                 views.push(view);
                 continue;
             }
-            let index = ordinal - page_start;
-            let mut row = 0usize;
-            let mut offset = 0usize;
-            let row_count = loop {
-                let length = count / usize::from(grid_rows)
-                    + usize::from(row < count % usize::from(grid_rows));
-                if index < offset + length {
-                    break length;
-                }
-                offset += length;
-                row += 1;
-            };
-            let col = (index - offset) as u16;
-            let row = row as u16;
-            let x_boundaries =
-                weighted_boundaries(self.cols - (row_count as u16 - 1), row_count as u8, &[]);
-            let left = x_boundaries[usize::from(col)];
-            let top = y_boundaries[usize::from(row)];
-            let rect = Rect {
-                x: left + col,
-                y: top + row,
-                cols: x_boundaries[usize::from(col + 1)] - left,
-                rows: y_boundaries[usize::from(row + 1)] - top,
-            };
+            let rect = slots[ordinal - page_start];
             views.push(Self::view(pane, ordinal, rect, false));
         }
         views
+    }
+    /// Fixed columns across every row, including unused visual slots.
+    pub fn grid_slots(&self) -> Vec<Rect> {
+        let (cols, rows) = self.automatic_shape();
+        let x = weighted_boundaries(self.cols - u16::from(cols - 1), cols, &[]);
+        let y = weighted_boundaries(self.rows - 1, rows, &[]);
+        (0..usize::from(cols) * usize::from(rows))
+            .map(|index| {
+                let col = index % usize::from(cols);
+                let row = index / usize::from(cols);
+                Rect {
+                    x: x[col] + col as u16,
+                    y: y[row],
+                    cols: x[col + 1] - x[col],
+                    rows: y[row + 1] - y[row],
+                }
+            })
+            .collect()
     }
     pub fn automatic_shape(&self) -> (u8, u8) {
         let (_, count) = self.grid_page();
@@ -931,8 +931,12 @@ impl Workspace {
                 self.require_pane(id)?;
                 self.active = id;
                 self.reading = if self.reading == ReadingMode::Fullscreen(id) {
-                    ReadingMode::Tabs(id)
+                    match self.ui.zoom_return.take().unwrap_or(ReadingMode::Tabs(id)) {
+                        ReadingMode::Grid => ReadingMode::Grid,
+                        _ => ReadingMode::Tabs(id),
+                    }
                 } else {
+                    self.ui.zoom_return = Some(self.reading);
                     ReadingMode::Fullscreen(id)
                 };
             }
@@ -1193,9 +1197,17 @@ pub fn tab_body(
     cols: u16,
     rows: u16,
     config: &super::ui::UiConfig,
-    _full: bool,
+    full: bool,
     _size: Option<(u16, u16)>,
 ) -> Rect {
+    if full {
+        return Rect {
+            x: 0,
+            y: 0,
+            cols,
+            rows: rows.saturating_sub(1),
+        };
+    }
     let sidebar = config.sidebar_width(cols);
     Rect {
         x: sidebar,
