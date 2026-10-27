@@ -1077,3 +1077,170 @@ fn sidebar_resize_preserves_live_ptys_and_saved_width_and_bulk_alert_reads_survi
     assert!(f.ui.notifications.iter().all(|event| event.read));
     assert_eq!(identities(&before), identities(&reconnected.panes()));
 }
+
+#[test]
+fn inactive_grid_cells_are_visual_and_new_tabs_fill_them_without_replacing_shells() {
+    let daemon = Daemon::start();
+    let mut peer = daemon.attach();
+    for _ in 1..5 {
+        peer.action(Action::NewTab);
+    }
+    let before = peer.panes();
+    assert_eq!(before.len(), 5);
+    peer.action(Action::CloseReading);
+    let f = peer.wait(|frame| frame.reading == ReadingMode::Grid && frame.panes.len() == 5);
+    assert_eq!(
+        usize::from(f.ui.grid_shape.0) * usize::from(f.ui.grid_shape.1),
+        6
+    );
+    assert!(
+        f.cells
+            .iter()
+            .map(|cell| cell.text.as_str())
+            .collect::<String>()
+            .contains("Inactive")
+    );
+    let old_layout: Vec<_> = f.panes.iter().map(|view| view.rect).collect();
+    let identities: Vec<_> = before.iter().map(|pane| (pane.id, pane.pid)).collect();
+    peer.action(Action::NewTab);
+    peer.action(Action::CloseReading);
+    let filled = peer.wait(|frame| frame.panes.len() == 6 && frame.reading == ReadingMode::Grid);
+    assert!(
+        !filled
+            .cells
+            .iter()
+            .map(|cell| cell.text.as_str())
+            .collect::<String>()
+            .contains("Inactive")
+    );
+    assert_eq!(
+        old_layout,
+        filled
+            .panes
+            .iter()
+            .take(5)
+            .map(|view| view.rect)
+            .collect::<Vec<_>>()
+    );
+    let after = peer.panes();
+    assert_eq!(
+        identities,
+        after
+            .iter()
+            .take(5)
+            .map(|pane| (pane.id, pane.pid))
+            .collect::<Vec<_>>()
+    );
+}
+
+#[test]
+fn double_click_zoom_resizes_one_live_pty_and_restores_grid_and_tab_views() {
+    use kelpmux::native::input::Router;
+    let daemon = Daemon::start();
+    let mut peer = daemon.attach();
+    peer.action(Action::NewTab);
+    let before = peer.panes();
+    let pane = before[0].id;
+    for tabs in [false, true] {
+        peer.action(if tabs {
+            Action::Select(1)
+        } else {
+            Action::CloseReading
+        });
+        let mut f = peer.wait(|frame| {
+            if tabs {
+                frame.reading == ReadingMode::Tabs(pane)
+            } else {
+                frame.reading == ReadingMode::Grid
+            }
+        });
+        let point = if tabs {
+            Point { x: 8, y: 1 }
+        } else {
+            let rect = f
+                .panes
+                .iter()
+                .find(|view| view.pane.id == pane)
+                .unwrap()
+                .rect;
+            Point {
+                x: rect.x + 8,
+                y: rect.y,
+            }
+        };
+        let mut router = Router::default();
+        for press in 0..2 {
+            for message in router.route(
+                InputEvent::Mouse(MouseEvent {
+                    position: point,
+                    kind: MouseKind::Press,
+                    button: 0,
+                    shift: false,
+                    alt: false,
+                    ctrl: false,
+                }),
+                &f,
+            ) {
+                assert!(matches!(message, ClientMessage::Action(_)));
+                peer.send(message);
+            }
+            f = peer.wait(|frame| {
+                if press == 0 {
+                    frame.active == pane
+                } else {
+                    frame.reading == ReadingMode::Fullscreen(pane)
+                }
+            });
+            assert!(
+                router
+                    .route(
+                        InputEvent::Mouse(MouseEvent {
+                            position: point,
+                            kind: MouseKind::Release,
+                            button: 0,
+                            shift: false,
+                            alt: false,
+                            ctrl: false
+                        }),
+                        &f
+                    )
+                    .is_empty()
+            );
+        }
+        let body = f
+            .panes
+            .iter()
+            .find(|view| view.pane.id == pane)
+            .unwrap()
+            .body;
+        assert_eq!((body.x, body.y, body.cols, body.rows), (0, 1, 120, 38));
+        peer.input("printf 'ZOOM_SIZE='; stty size\n");
+        peer.wait(|frame| {
+            frame
+                .cells
+                .iter()
+                .map(|cell| cell.text.as_str())
+                .collect::<String>()
+                .contains("ZOOM_SIZE=38 120")
+        });
+        peer.action(Action::Fullscreen(pane));
+        peer.wait(|frame| {
+            frame.reading
+                == if tabs {
+                    ReadingMode::Tabs(pane)
+                } else {
+                    ReadingMode::Grid
+                }
+        });
+        assert_eq!(
+            before
+                .iter()
+                .map(|pane| (pane.id, pane.pid))
+                .collect::<Vec<_>>(),
+            peer.panes()
+                .iter()
+                .map(|pane| (pane.id, pane.pid))
+                .collect::<Vec<_>>()
+        );
+    }
+}

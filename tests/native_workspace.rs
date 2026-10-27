@@ -63,7 +63,7 @@ fn adaptive_grid_supports_large_workspaces_and_pages_follow_selection() {
                 assert!(visible.iter().any(|view| view.pane.id == active));
                 let mut occupied = std::collections::BTreeSet::new();
                 for view in visible {
-                    assert!(view.body.rows >= 1 && view.rect.cols >= 12);
+                    assert!(view.body.rows >= 2 && view.rect.cols >= 12);
                     assert!(view.rect.x + view.rect.cols <= ws.cols);
                     assert!(view.rect.y + view.rect.rows < ws.rows);
                     for y in view.rect.y..view.rect.y + view.rect.rows {
@@ -343,7 +343,7 @@ fn tabs_resize_only_selected_terminal_and_restore_grid() {
             .unwrap()
             .body
             .cols,
-        ws.cols - kelpmux::native::workspace::sidebar_width(ws.cols)
+        ws.cols
     );
     assert_eq!(
         ws.layout()
@@ -352,7 +352,7 @@ fn tabs_resize_only_selected_terminal_and_restore_grid() {
             .unwrap()
             .body
             .rows,
-        ws.rows
+        ws.rows - 2
     );
     ws.apply(&Action::Fullscreen(2)).unwrap();
     assert_eq!(ws.terminal_sizes(), capped);
