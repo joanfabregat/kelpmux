@@ -210,14 +210,14 @@ pub fn compose(
             help.x,
             help.y,
             help.cols,
-            if workspace.ui.notifications.iter().any(|item| !item.read) {
+            if super::ui::has_unread_notifications(&workspace.ui, &workspace.panes) {
                 " ⚠︎ "
             } else {
                 " ? "
             },
             Color::Indexed(231),
             Color::Indexed(
-                if workspace.ui.notifications.iter().any(|item| !item.read) {
+                if super::ui::has_unread_notifications(&workspace.ui, &workspace.panes) {
                     160
                 } else {
                     94
@@ -323,11 +323,13 @@ fn draw_help(frame: &mut Frame, workspace: &Workspace) {
         " ? Help · Ctrl-{}, then key",
         char::from(b'A' + workspace.ui.config.prefix - 1)
     );
-    let header_bg = Color::Indexed(if workspace.ui.notifications.iter().any(|n| !n.read) {
-        160
-    } else {
-        94
-    });
+    let header_bg = Color::Indexed(
+        if super::ui::has_unread_notifications(&workspace.ui, &workspace.panes) {
+            160
+        } else {
+            94
+        },
+    );
     fill(frame, Rect { rows: 1, ..rect }, header_bg);
     write_text(
         frame,
@@ -1282,7 +1284,7 @@ fn draw_tabs(frame: &mut Frame, workspace: &Workspace, spinner: usize) {
     let area = Rect {
         x: 0,
         y: 0,
-        cols: super::workspace::sidebar_width(frame.cols),
+        cols: frame.sidebar_width(),
         rows: frame.rows,
     };
     fill(frame, area, tab_surface(workspace));
@@ -1391,11 +1393,21 @@ fn draw_tabs(frame: &mut Frame, workspace: &Workspace, spinner: usize) {
             }
         }
     }
-    let x = super::workspace::sidebar_width(frame.cols) - 1;
+    let x = frame.sidebar_width() - 1;
     let accent = theme_surface(workspace, 24);
     for y in 0..frame.rows {
         write_text(frame, x, y, 1, "▎", accent, Color::Default, false);
     }
+    write_text(
+        frame,
+        x,
+        frame.rows / 2,
+        1,
+        "⋮",
+        accent,
+        Color::Default,
+        false,
+    );
 }
 
 fn outline(frame: &mut Frame, rect: Rect, fg: Color, bg: Color) {
@@ -1466,8 +1478,14 @@ fn draw_tab(
         &format!(" {} ", pane.number),
         if selected {
             Color::Indexed(226)
-        } else {
+        } else if grid {
             tab_text(workspace, false)
+        } else {
+            Color::Indexed(if tab_text(workspace, false) == Color::Indexed(232) {
+                25
+            } else {
+                110
+            })
         },
         bg,
         true,
@@ -1693,7 +1711,7 @@ fn activity_spinner(frame: &mut Frame, track: Rect, foreground: Color, tick: usi
     }
     let index = usize::from(track.y) * usize::from(frame.cols) + usize::from(track.x);
     if let Some(cell) = frame.cells.get_mut(index) {
-        cell.text = ["|", "/", "-", "\\"][(tick / 2) % 4].into();
+        cell.text = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"][tick % 10].into();
         cell.fg = foreground;
         cell.width = 1;
     }
@@ -1791,7 +1809,7 @@ fn draw_dev_badge(frame: &mut Frame, x: u16, y: u16) {
 }
 
 fn sidebar_dev_watermark(frame: &Frame) -> Rect {
-    use super::workspace::{TabTarget, sidebar_status_rows, sidebar_width, tab_targets};
+    use super::workspace::{TabTarget, sidebar_status_rows, tab_targets};
     let panes: Vec<_> = frame
         .panes
         .iter()
@@ -1825,7 +1843,7 @@ fn sidebar_dev_watermark(frame: &Frame) -> Rect {
     .max()
     .unwrap_or(0)
     .min(top);
-    let width = sidebar_width(frame.cols) - 1;
+    let width = frame.sidebar_width() - 1;
     let free = top - occupied;
     if free == 0 {
         let cols = if sidebar_status_rows(frame.rows) == 3 {
@@ -1878,9 +1896,23 @@ fn draw_sidebar_disks(
     if count == 0 || rect.rows == 0 {
         return;
     }
-    let width = (rect.cols - count.saturating_sub(1) as u16) / count as u16;
+    let paired = count == 1 || rect.cols >= 19;
+    let width = if paired {
+        (rect.cols - count.saturating_sub(1) as u16) / count as u16
+    } else {
+        rect.cols
+    };
     for (index, (mount, percent)) in disks.iter().take(count).enumerate() {
-        let x = rect.x + index as u16 * (width + 1);
+        let x = rect.x
+            + if paired {
+                index as u16 * (width + 1)
+            } else {
+                0
+            };
+        let y = rect.y + if paired { 0 } else { index as u16 };
+        if y >= rect.y + rect.rows {
+            break;
+        }
         let percent = (*percent).min(100);
         let color = Color::Indexed(if percent >= 90 { 196 } else { 222 });
         let mount = safe_text(mount);
@@ -1898,11 +1930,16 @@ fn draw_sidebar_disks(
         if index + 1 == count && disks.len() > count {
             label.push('…');
         }
+        let reading = format!("{percent}%");
+        let reading_width = reading.len() as u16;
+        if !paired && label != "/" {
+            label = label.trim_start_matches('/').into();
+        }
         write_text(
             frame,
             x,
-            rect.y,
-            width.saturating_sub(5),
+            y,
+            width.saturating_sub(reading_width + 1),
             &label,
             muted,
             bg,
@@ -1910,15 +1947,15 @@ fn draw_sidebar_disks(
         );
         write_text(
             frame,
-            x + width.saturating_sub(4),
-            rect.y,
-            4,
-            &format!("{percent:>3}%"),
+            x + width.saturating_sub(reading_width),
+            y,
+            reading_width,
+            &reading,
             color,
             bg,
             false,
         );
-        if rect.rows > 1 {
+        if paired && rect.rows > 1 {
             let filled = (u32::from(percent) * u32::from(width) + 50) / 100;
             for offset in 0..width {
                 let active = u32::from(offset) < filled;
@@ -1953,14 +1990,14 @@ pub(super) fn sidebar_disk_region(frame: &Frame) -> Option<Rect> {
     (y < end).then(|| Rect {
         x: 0,
         y,
-        cols: super::workspace::sidebar_width(frame.cols) - 1,
+        cols: frame.sidebar_width() - 1,
         rows: (end - y).min(2),
     })
 }
 
 fn draw_sidebar_status(frame: &mut Frame, workspace: &Workspace, notice: Option<&str>) {
     let rows = super::workspace::sidebar_status_rows(frame.rows);
-    let width = super::workspace::sidebar_width(frame.cols) - 1;
+    let width = frame.sidebar_width() - 1;
     let top = frame.rows - rows;
     let watermark = if workspace.ui.show_dev_badge {
         sidebar_dev_watermark(frame)
@@ -2105,14 +2142,15 @@ fn draw_sidebar_status(frame: &mut Frame, workspace: &Workspace, notice: Option<
                 draw_sidebar_disks(
                     frame,
                     Rect {
-                        x: 1,
+                        x: 8,
                         y,
-                        cols: width - 2,
+                        cols: width.saturating_sub(9),
                         rows: (metric_end - y).min(2),
                     },
                     disks,
                     (muted, bg),
                 );
+                write_text(frame, 1, y, 6, "Disks", muted, bg, false);
                 y += 2;
                 continue;
             }
@@ -2229,7 +2267,7 @@ fn draw_sidebar_status(frame: &mut Frame, workspace: &Workspace, notice: Option<
         );
     }
     let [config, mode, parked, help] = frame.controls();
-    let unread = workspace.ui.notifications.iter().any(|item| !item.read);
+    let unread = super::ui::has_unread_notifications(&workspace.ui, &workspace.panes);
     let parked_count = workspace.panes.iter().filter(|pane| pane.parked).count();
     for (rect, label, color) in [
         (
@@ -2540,6 +2578,28 @@ fn draw_dashboard(
             false,
         );
     }
+    if dialog.kind == DialogKind::Notifications {
+        let buttons = super::ui::notification_buttons(bounds);
+        for (rect, label) in buttons.into_iter().zip([
+            if workspace.ui.notification_history {
+                " h Hide history "
+            } else {
+                " h Show history "
+            },
+            " a Mark all read ",
+        ]) {
+            write_text(
+                frame,
+                rect.x,
+                rect.y,
+                rect.cols,
+                label,
+                Color::Indexed(117),
+                Color::Indexed(237),
+                false,
+            );
+        }
+    }
     let labels: Vec<String> = match dialog.kind {
         DialogKind::AgentLink => {
             if workspace.ui.agent_link_loading {
@@ -2589,39 +2649,38 @@ fn draw_dashboard(
                 )
             })
             .collect(),
-        DialogKind::Notifications => workspace
-            .ui
-            .notifications
-            .iter()
-            .map(|item| {
-                let target = workspace.panes.iter().find(|pane| {
-                    super::activity::matches(item, pane, &workspace.ui.notification_run)
-                });
-                let location = target.map_or_else(
-                    || format!("historical · former pane {}", item.pane),
-                    |pane| {
-                        format!(
-                            "{}tab {}",
-                            if pane.parked { "parked " } else { "" },
-                            pane.number
-                        )
-                    },
-                );
-                format!(
-                    "{} {} {} · {} · {} · {}s ago",
-                    if item.read { "○" } else { "●" },
-                    if item.title.starts_with("Bell · ") {
-                        super::ui::ALERT_ICON
-                    } else {
-                        item.status.marker()
-                    },
-                    location,
-                    item.title,
-                    item.workspace,
-                    crate::now().saturating_sub(item.at)
-                )
-            })
-            .collect(),
+        DialogKind::Notifications => {
+            super::ui::visible_notifications(&workspace.ui, &workspace.panes)
+                .map(|item| {
+                    let target = workspace.panes.iter().find(|pane| {
+                        super::activity::matches(item, pane, &workspace.ui.notification_run)
+                    });
+                    let location = target.map_or_else(
+                        || format!("historical · former pane {}", item.pane),
+                        |pane| {
+                            format!(
+                                "{}tab {}",
+                                if pane.parked { "parked " } else { "" },
+                                pane.number
+                            )
+                        },
+                    );
+                    format!(
+                        "{} {} {} · {} · {} · {}s ago",
+                        if item.read { "○" } else { "●" },
+                        if item.title.starts_with("Bell · ") {
+                            super::ui::ALERT_ICON
+                        } else {
+                            item.status.marker()
+                        },
+                        location,
+                        item.title,
+                        item.workspace,
+                        crate::now().saturating_sub(item.at)
+                    )
+                })
+                .collect()
+        }
         DialogKind::Recovery => workspace
             .ui
             .recovery
@@ -2652,7 +2711,11 @@ fn draw_dashboard(
             bounds.x + 1,
             bounds.y + start_row,
             bounds.cols - 2,
-            "No matching entries",
+            if dialog.kind == DialogKind::Notifications && !workspace.ui.notification_history {
+                "No unread alerts"
+            } else {
+                "No matching entries"
+            },
             Color::Indexed(245),
             Color::Indexed(236),
             false,
