@@ -483,9 +483,9 @@ pub fn summary_column_width(bounds: super::protocol::Rect) -> u16 {
 }
 pub fn summary_detail_rows(bounds: super::protocol::Rect) -> usize {
     if summary_columns(bounds) == 3 && summary_column_width(bounds) < 38 {
-        6
-    } else {
         5
+    } else {
+        4
     }
 }
 pub fn summary_height(bounds: super::protocol::Rect, data: &Snapshot) -> u16 {
@@ -563,6 +563,9 @@ pub fn metric_target(
         return None;
     }
     if frame.sidebar_status() {
+        if super::render::sidebar_disk_region(frame).is_some_and(|rect| rect.contains(point)) {
+            return Some(Sort::Read);
+        }
         let width = super::workspace::sidebar_width(frame.cols) - 1;
         let start = usize::from(point.y * frame.cols);
         let text: String = frame.cells[start..start + usize::from(width)]

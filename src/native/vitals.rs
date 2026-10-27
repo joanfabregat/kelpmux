@@ -26,6 +26,7 @@ pub struct Sampler {
     metrics_at: Option<Instant>,
     disks_at: Option<Instant>,
     current: Vitals,
+    disk_readings: Vec<(String, u8)>,
 }
 impl Default for Sampler {
     fn default() -> Self {
@@ -40,6 +41,7 @@ impl Sampler {
             metrics_at: None,
             disks_at: None,
             current: Vitals::default(),
+            disk_readings: Vec::new(),
         }
     }
     pub fn sample(&mut self) -> Vitals {
@@ -77,13 +79,21 @@ impl Sampler {
             .disks_at
             .is_none_or(|last| time.saturating_duration_since(last) >= Duration::from_secs(5))
         {
-            self.current.disks = fs::read_to_string(self.proc_root.join("self/mounts"))
+            self.disk_readings = fs::read_to_string(self.proc_root.join("self/mounts"))
                 .ok()
-                .map(|mounts| disk::readings(&mounts, 10 << 30))
+                .map(|mounts| disk::readings_with_mounts(&mounts, 10 << 30))
                 .unwrap_or_default();
+            self.current.disks = self
+                .disk_readings
+                .iter()
+                .map(|(_, percent)| *percent)
+                .collect();
             self.disks_at = Some(time);
         }
         self.current.clone()
+    }
+    pub fn disk_readings(&self) -> &[(String, u8)] {
+        &self.disk_readings
     }
 }
 pub fn bar_glyph(percent: u8) -> char {
