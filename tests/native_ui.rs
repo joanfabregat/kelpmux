@@ -1766,7 +1766,7 @@ fn grid_header_numbers_park_close_and_footer_have_distinct_targets_without_zoom(
         let number_cell = &f.cells[usize::from(number.y * f.cols + number.x + 1)];
         assert_eq!(
             number_cell.fg,
-            Color::Indexed(if id == ws.active { 226 } else { 231 })
+            Color::Indexed(if id == ws.active { 226 } else { 110 })
         );
         let [park, close] = grid_controls(header);
         assert!(!f.cells.iter().any(|cell| cell.text == "⛶"));
@@ -2136,7 +2136,7 @@ fn sidebar_status_controls_and_metrics_leave_the_last_terminal_row_usable() {
                     .flat_map(|start| f.cells[start..start + usize::from(width)].iter())
                     .map(|cell| cell.text.as_str())
                     .collect::<String>();
-                assert!(disks.contains("Disks") && disks.contains("20%") && disks.contains("95%"));
+                assert!(disks.contains("20%") && disks.contains("95%"));
                 let start = usize::from((status_top + 5) * f.cols);
                 assert!(
                     f.cells[start..start + usize::from(width)]
@@ -2934,9 +2934,12 @@ fn sidebar_disks_pair_paths_percentages_and_clickable_tracks() {
         ui::TabPosition,
         vitals::{Vitals, render_segments},
     };
-    for size in [(40, 18), (80, 24), (160, 40), (240, 70)] {
+    for size in [(40, 18), (80, 24), (120, 40), (160, 40), (240, 70)] {
         let mut ws = workspace(size, (1, 1));
         ws.ui.config.tab_position = TabPosition::Left;
+        if size.0 == 120 {
+            ws.ui.config.sidebar_columns = Some(27);
+        }
         ws.apply(&Action::Select(1)).unwrap();
         ws.ui.vitals = render_segments(&Vitals {
             cpu: Some(51),
@@ -2948,13 +2951,13 @@ fn sidebar_disks_pair_paths_percentages_and_clickable_tracks() {
         ws.ui.disk_readings = vec![("/".into(), 20), ("/data".into(), 95)];
         let f = frame(&ws);
         let top = f.rows - kelpmux::native::workspace::sidebar_status_rows(f.rows);
-        let width = kelpmux::native::workspace::sidebar_width(f.cols) - 1;
-        let paired = width - 9 >= 19;
-        let card_width = if paired { (width - 10) / 2 } else { width - 9 };
+        let width = f.sidebar_width() - 1;
+        let paired = width - 2 >= 19;
+        let card_width = if paired { (width - 3) / 2 } else { width - 2 };
         for (index, (label, percent, color)) in
             [("/", 20, 222), ("/data", 95, 196)].into_iter().enumerate()
         {
-            let x = 8 + if paired {
+            let x = 1 + if paired {
                 index as u16 * (card_width + 1)
             } else {
                 0

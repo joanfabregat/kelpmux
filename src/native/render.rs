@@ -1478,8 +1478,6 @@ fn draw_tab(
         &format!(" {} ", pane.number),
         if selected {
             Color::Indexed(226)
-        } else if grid {
-            tab_text(workspace, false)
         } else {
             Color::Indexed(if tab_text(workspace, false) == Color::Indexed(232) {
                 25
@@ -2142,15 +2140,14 @@ fn draw_sidebar_status(frame: &mut Frame, workspace: &Workspace, notice: Option<
                 draw_sidebar_disks(
                     frame,
                     Rect {
-                        x: 8,
+                        x: 1,
                         y,
-                        cols: width.saturating_sub(9),
+                        cols: width.saturating_sub(2),
                         rows: (metric_end - y).min(2),
                     },
                     disks,
                     (muted, bg),
                 );
-                write_text(frame, 1, y, 6, "Disks", muted, bg, false);
                 y += 2;
                 continue;
             }
