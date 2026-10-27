@@ -120,7 +120,7 @@ pub fn target(frame: &Frame, point: Point) -> Option<Rect> {
         if let Some(region) = super::status::metric_region(frame) {
             regions.push(region);
         }
-        if frame.reading != ReadingMode::Grid || frame.active == 0 {
+        if frame.sidebar_status() {
             let panes: Vec<_> = frame
                 .panes
                 .iter()

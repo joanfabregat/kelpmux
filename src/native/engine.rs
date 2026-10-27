@@ -601,16 +601,36 @@ fn link_plain_urls(cells: &mut [Cell], cols: usize, wraps: &[bool]) {
             if !tail.starts_with("http://") && !tail.starts_with("https://") {
                 continue;
             }
+            let quoted = text[..begin].ends_with('\'');
+            let mut brackets = Vec::new();
             let length = tail
-                .find(|c: char| c.is_control() || c.is_whitespace() || matches!(c, '<' | '>' | '"'))
+                .char_indices()
+                .find_map(|(offset, c)| {
+                    if c.is_control()
+                        || c.is_whitespace()
+                        || matches!(c, '<' | '>' | '"' | '`')
+                        || c == '\'' && quoted
+                    {
+                        return Some(offset);
+                    }
+                    match c {
+                        '(' | '[' | '{' => brackets.push(c),
+                        ')' | ']' | '}' => {
+                            let opening = match c {
+                                ')' => '(',
+                                ']' => '[',
+                                _ => '{',
+                            };
+                            if brackets.pop() != Some(opening) {
+                                return Some(offset);
+                            }
+                        }
+                        _ => (),
+                    }
+                    None
+                })
                 .unwrap_or(tail.len());
-            let mut uri = tail[..length].trim_end_matches(['.', ',', ';', ':', '!', '?']);
-            for (open, close) in [('(', ')'), ('[', ']'), ('{', '}')] {
-                while uri.ends_with(close) && uri.matches(close).count() > uri.matches(open).count()
-                {
-                    uri = &uri[..uri.len() - 1];
-                }
-            }
+            let uri = tail[..length].trim_end_matches(['.', ',', ';', ':', '!', '?']);
             if !valid_hyperlink(uri) {
                 continue;
             }

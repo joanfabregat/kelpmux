@@ -29,10 +29,25 @@ pub fn compose(
             view.modes = screen.modes;
         }
     }
-    if workspace.reading != ReadingMode::Grid || workspace.active == 0 {
-        draw_tabs(&mut frame, workspace, spinner);
-    } else {
+    if workspace.reading == ReadingMode::Grid && workspace.active != 0 {
         draw_grid_separators(&mut frame, workspace);
+        let (_, count) = workspace.grid_page();
+        for rect in workspace.grid_slots().into_iter().skip(count) {
+            let bg = theme_surface(workspace, 8);
+            fill(&mut frame, rect, bg);
+            write_text(
+                &mut frame,
+                rect.x + rect.cols.saturating_sub(8) / 2,
+                rect.y + rect.rows / 2,
+                rect.cols.min(8),
+                "Inactive",
+                theme_surface(workspace, 50),
+                bg,
+                false,
+            );
+        }
+    } else if !matches!(workspace.reading, ReadingMode::Fullscreen(_)) {
+        draw_tabs(&mut frame, workspace, spinner);
     }
     for view in frame.panes.clone() {
         let selected = view.pane.id == workspace.active;
@@ -106,7 +121,9 @@ pub fn compose(
                 Color::Indexed(88),
                 true,
             );
-        } else if workspace.reading == ReadingMode::Grid {
+        } else if workspace.reading == ReadingMode::Grid
+            || matches!(workspace.reading, ReadingMode::Fullscreen(id) if id == view.pane.id)
+        {
             header(&mut frame, workspace, &view, selected, spinner);
         }
     }
@@ -440,17 +457,21 @@ fn draw_help(frame: &mut Frame, workspace: &Workspace) {
     frame.cursor = None;
 }
 fn draw_grid_separators(frame: &mut Frame, workspace: &Workspace) {
-    for view in workspace.grid_layout().iter().filter(|v| !v.pane.parked) {
-        let right = view.rect.x + view.rect.cols;
+    for rect in workspace.grid_slots() {
+        let selected = frame
+            .panes
+            .iter()
+            .any(|view| view.rect == rect && view.pane.id == workspace.active);
+        let right = rect.x + rect.cols;
         if right < frame.cols {
-            for y in view.rect.y..view.rect.y + view.rect.rows {
+            for y in rect.y..rect.y + rect.rows {
                 write_text(
                     frame,
                     right,
                     y,
                     1,
                     "│",
-                    tab_accent(workspace, view.pane.id == workspace.active),
+                    tab_accent(workspace, selected),
                     Color::Default,
                     false,
                 );
@@ -508,6 +529,7 @@ fn tab_surface(workspace: &Workspace) -> Color {
 fn theme_surface(workspace: &Workspace, offset: u8) -> Color {
     workspace.ui.terminal_theme[1].map_or_else(
         || match offset {
+            8 => Color::Indexed(234),
             14 => Color::Indexed(super::ui::TAB_BG),
             24 => Color::Indexed(238),
             32 => Color::Indexed(240),
@@ -1437,13 +1459,12 @@ fn draw_tab(
     count: &str,
     spinner: usize,
 ) {
-    let grid = workspace.reading == ReadingMode::Grid;
+    let grid = matches!(
+        workspace.reading,
+        ReadingMode::Grid | ReadingMode::Fullscreen(_)
+    );
     let accent = tab_accent(workspace, selected);
-    let bg = if grid {
-        Color::Default
-    } else {
-        tab_background(workspace, selected)
-    };
+    let bg = tab_background(workspace, selected);
     let text_color = if selected && !grid {
         let (r, g, b) = color_rgb(bg, false);
         Color::Indexed(
@@ -1457,18 +1478,6 @@ fn draw_tab(
         tab_text(workspace, selected)
     };
     fill(frame, rect, bg);
-    if grid {
-        write_text(
-            frame,
-            rect.x,
-            rect.y,
-            rect.cols,
-            &"─".repeat(usize::from(rect.cols)),
-            accent,
-            bg,
-            false,
-        );
-    }
     let number = super::workspace::tab_number_for(rect, pane.number);
     write_text(
         frame,
@@ -1678,16 +1687,7 @@ fn draw_tab(
         true,
     );
     for y in rect.y..rect.y + rect.rows {
-        write_text(
-            frame,
-            rect.x,
-            y,
-            1,
-            if grid { "─" } else { " " },
-            accent,
-            bg,
-            false,
-        );
+        write_text(frame, rect.x, y, 1, " ", accent, bg, false);
     }
     if pane.status == crate::model::Status::Working {
         activity_spinner(
@@ -3261,10 +3261,10 @@ mod tests {
                 let workspace = Workspace::new(cols, 10).unwrap();
                 let mut frame = compose(&workspace, &BTreeMap::new(), true, None, 0);
                 header(&mut frame, &workspace, &view(cols, overlay), true, 0);
-                assert_eq!(frame.cells[0].bg, Color::Default);
-                assert_eq!(frame.cells[5].bg, Color::Default);
+                assert_eq!(frame.cells[0].bg, Color::Indexed(240));
+                assert_eq!(frame.cells[5].bg, Color::Indexed(240));
                 let button_start = usize::from(cols - 10);
-                assert_eq!(frame.cells[button_start].text, "─");
+                assert_eq!(frame.cells[button_start].text, " ");
                 assert_eq!(frame.cells[usize::from(cols) - 1].text, " ");
                 let text = frame.cells[..usize::from(cols)]
                     .iter()
@@ -3280,7 +3280,7 @@ mod tests {
                 display.feed(&terminal_diff(None, &frame));
                 assert_eq!(display.snapshot().cells, frame.cells);
                 header(&mut frame, &workspace, &view(cols, overlay), false, 0);
-                assert_eq!(frame.cells[5].bg, Color::Default);
+                assert_eq!(frame.cells[5].bg, Color::Indexed(236));
             }
         }
     }
