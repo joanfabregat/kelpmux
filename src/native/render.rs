@@ -1894,78 +1894,68 @@ fn draw_sidebar_disks(
     if count == 0 || rect.rows == 0 {
         return;
     }
-    let paired = count == 1 || rect.cols >= 19;
-    let width = if paired {
-        (rect.cols - count.saturating_sub(1) as u16) / count as u16
-    } else {
-        rect.cols
-    };
-    for (index, (mount, percent)) in disks.iter().take(count).enumerate() {
-        let x = rect.x
-            + if paired {
-                index as u16 * (width + 1)
-            } else {
-                0
-            };
-        let y = rect.y + if paired { 0 } else { index as u16 };
-        if y >= rect.y + rect.rows {
-            break;
-        }
-        let percent = (*percent).min(100);
-        let color = Color::Indexed(if percent >= 90 { 196 } else { 222 });
-        let mount = safe_text(mount);
-        let mut label = if mount == "/" || !mount.starts_with('/') {
-            mount.clone()
-        } else {
-            format!(
-                "/{}",
+    let labels: Vec<_> = disks
+        .iter()
+        .take(count)
+        .map(|(mount, _)| {
+            let mount = safe_text(mount);
+            if mount == "/" || !mount.starts_with('/') {
                 mount
-                    .rsplit('/')
-                    .find(|part| !part.is_empty())
-                    .unwrap_or("?")
-            )
-        };
-        if index + 1 == count && disks.len() > count {
-            label.push('…');
-        }
-        let reading = format!("{percent}%");
-        let reading_width = reading.len() as u16;
+            } else {
+                format!(
+                    "/{}",
+                    mount
+                        .rsplit('/')
+                        .find(|part| !part.is_empty())
+                        .unwrap_or("?")
+                )
+            }
+        })
+        .collect();
+    // Keep mount prefixes even at the minimum width. The pie already denotes
+    // usage, so the tightest variant can omit redundant percent signs.
+    let entries = (0..3)
+        .map(|mode| {
+            let entries: Vec<_> = disks
+                .iter()
+                .zip(&labels)
+                .map(|((_, percent), label)| {
+                    let percent = (*percent).min(100);
+                    let text = format!(
+                        "{label}{}{}{percent}{}",
+                        if mode == 0 { " " } else { "" },
+                        super::vitals::pie_glyph(percent),
+                        if mode < 2 { "%" } else { "" }
+                    );
+                    (text, if percent >= 90 { 196 } else { 222 })
+                })
+                .collect();
+            let width = entries
+                .iter()
+                .map(|(text, _)| text.chars().map(char_width).sum::<u16>())
+                .sum::<u16>()
+                + count.saturating_sub(1) as u16;
+            (entries, width)
+        })
+        .find(|(_, width)| *width <= rect.cols)
+        .unwrap_or_else(|| (vec![("Disks…".into(), 222)], 6));
+    if entries.1 + 6 <= rect.cols {
+        write_text(frame, rect.x, rect.y, 5, "Disks", muted, bg, false);
+    }
+    let mut x = rect.x + rect.cols.saturating_sub(entries.1);
+    for (text, color) in entries.0 {
+        let width = text.chars().map(char_width).sum::<u16>();
         write_text(
             frame,
             x,
-            y,
-            width.saturating_sub(reading_width + 1),
-            &label,
-            muted,
+            rect.y,
+            width.min((rect.x + rect.cols).saturating_sub(x)),
+            &text,
+            Color::Indexed(color),
             bg,
             false,
         );
-        write_text(
-            frame,
-            x + width.saturating_sub(reading_width),
-            y,
-            reading_width,
-            &reading,
-            color,
-            bg,
-            false,
-        );
-        if paired && rect.rows > 1 {
-            let filled = (u32::from(percent) * u32::from(width) + 50) / 100;
-            for offset in 0..width {
-                let active = u32::from(offset) < filled;
-                write_text(
-                    frame,
-                    x + offset,
-                    rect.y + 1,
-                    1,
-                    if active { "▰" } else { "▱" },
-                    if active { color } else { muted },
-                    bg,
-                    false,
-                );
-            }
-        }
+        x += width + 1;
     }
 }
 
@@ -1986,7 +1976,7 @@ pub(super) fn sidebar_disk_region(frame: &Frame) -> Option<Rect> {
         x: 0,
         y,
         cols: frame.sidebar_width() - 1,
-        rows: (end - y).min(2),
+        rows: 1,
     })
 }
 
@@ -2126,7 +2116,7 @@ fn draw_sidebar_status(frame: &mut Frame, workspace: &Workspace, notice: Option<
                             .strip_suffix('%')?
                             .parse::<u8>()
                             .ok()?;
-                        Some((format!("Disk{}", index + 1), percent))
+                        Some((format!("D{}", index + 1), percent))
                     })
                     .collect();
                 let disks = if workspace.ui.disk_readings.is_empty() {
@@ -2140,12 +2130,12 @@ fn draw_sidebar_status(frame: &mut Frame, workspace: &Workspace, notice: Option<
                         x: 1,
                         y,
                         cols: width.saturating_sub(2),
-                        rows: (metric_end - y).min(2),
+                        rows: 1,
                     },
                     disks,
                     (muted, bg),
                 );
-                y += 2;
+                y += 1;
                 continue;
             }
             let row_y = y;
