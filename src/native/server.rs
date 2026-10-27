@@ -2214,7 +2214,11 @@ impl Server {
             self.dirty = false;
             return;
         }
-        self.workspace.ui.vitals = if self.workspace.cols <= 60 {
+        self.workspace.ui.disk_readings = self.vitals.disk_readings().to_vec();
+        self.workspace.ui.vitals = if self.workspace.cols <= 60
+            && self.workspace.reading == ReadingMode::Grid
+            && self.workspace.active != 0
+        {
             let mut compact = Vec::new();
             if let Some(cpu) = vitals.cpu {
                 compact.push((format!("C{cpu}"), 114));

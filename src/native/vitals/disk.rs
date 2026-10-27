@@ -125,11 +125,18 @@ pub fn read(min_bytes: u64) -> Vec<u8> {
 }
 
 pub fn readings(mounts: &str, min_bytes: u64) -> Vec<u8> {
+    readings_with_mounts(mounts, min_bytes)
+        .into_iter()
+        .map(|(_, percent)| percent)
+        .collect()
+}
+pub fn readings_with_mounts(mounts: &str, min_bytes: u64) -> Vec<(String, u8)> {
     parse_mounts(mounts)
-        .iter()
-        .filter_map(|m| statvfs(&m.target))
-        .filter(|space| space.size >= min_bytes)
-        .filter_map(df_percent)
+        .into_iter()
+        .filter_map(|mount| {
+            let space = statvfs(&mount.target).filter(|space| space.size >= min_bytes)?;
+            Some((mount.target, df_percent(space)?))
+        })
         .collect()
 }
 

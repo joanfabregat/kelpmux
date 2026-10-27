@@ -2101,7 +2101,6 @@ fn sidebar_status_controls_and_metrics_leave_the_last_terminal_row_usable() {
                     (1, "CPU", "51%", 114),
                     (2, "Memory", "100%", 141),
                     (3, "Swap", "0%", 73),
-                    (4, "Disks", "◔ 20% ● 95%", 196),
                 ] {
                     let start = usize::from((status_top + offset) * f.cols);
                     let row: String = f.cells[start..start + usize::from(width)]
@@ -2125,13 +2124,22 @@ fn sidebar_status_controls_and_metrics_leave_the_last_terminal_row_usable() {
                         value
                     );
                 }
-                assert_eq!(
-                    f.cells[usize::from((status_top + 4) * f.cols + width - 12)].fg,
-                    Color::Indexed(222)
+                let start = usize::from((status_top + 4) * f.cols);
+                let disks = f.cells[start..start + usize::from(width)]
+                    .iter()
+                    .map(|cell| cell.text.as_str())
+                    .collect::<String>();
+                assert!(
+                    disks.contains("Disk1")
+                        && disks.contains("Disk2")
+                        && disks.contains("20%")
+                        && disks.contains("95%")
                 );
-                assert_eq!(
-                    f.cells[usize::from((status_top + 4) * f.cols + width - 6)].fg,
-                    Color::Indexed(196)
+                let start = usize::from((status_top + 5) * f.cols);
+                assert!(
+                    f.cells[start..start + usize::from(width)]
+                        .iter()
+                        .any(|cell| cell.text == "▰" && cell.fg == Color::Indexed(196))
                 );
                 for (control, color) in f.controls().into_iter().zip([24, 67, 60, 94]) {
                     for x in control.x..control.x + control.cols {
@@ -2818,15 +2826,20 @@ fn status_summary_uses_equal_columns_paired_disks_and_complete_pids() {
                 .iter()
                 .map(|cell| cell.text.as_str())
                 .collect::<String>();
-            assert_eq!(text, "Tasks");
+            assert_eq!(text, "Load ");
             let disk_row = row_text(bounds.y + 4);
-            assert!(disk_row.starts_with("/ ◔ 20% (75B/100B)"));
+            assert!(disk_row.starts_with("/ [") && disk_row.contains("20% (75B/100B)"));
+            assert!(
+                row_text(tabs_y + 1)
+                    .trim_end()
+                    .ends_with("Tasks 0 (0 running)")
+            );
             let start = usize::from((bounds.y + 4) * f.cols + bounds.x + 1 + meter_width + 2);
             let disk: String = f.cells[start..start + usize::from(meter_width)]
                 .iter()
                 .map(|cell| cell.text.as_str())
                 .collect();
-            assert!(disk.starts_with("/data ● 90% (8B/100B)"));
+            assert!(disk.starts_with("/data [") && disk.contains("90% (8B/100B)"));
             assert!(height < 12);
         }
         let mut terminal = Terminal::new(f.cols, f.rows);
@@ -2913,6 +2926,107 @@ fn dev_badge_is_visible_in_grid_horizontal_tabs_and_compact_sidebars() {
 }
 
 #[test]
+fn sidebar_disks_pair_paths_percentages_and_clickable_tracks() {
+    use kelpmux::native::{
+        status::{self, Sort},
+        ui::TabPosition,
+        vitals::{Vitals, render_segments},
+    };
+    for size in [(40, 18), (80, 24), (160, 40), (240, 70)] {
+        let mut ws = workspace(size, (1, 1));
+        ws.ui.config.tab_position = TabPosition::Left;
+        ws.apply(&Action::Select(1)).unwrap();
+        ws.ui.vitals = render_segments(&Vitals {
+            cpu: Some(51),
+            memory: Some(45),
+            swap: Some(0),
+            disks: vec![20, 95],
+            ..Default::default()
+        });
+        ws.ui.disk_readings = vec![("/".into(), 20), ("/data".into(), 95)];
+        let f = frame(&ws);
+        let top = f.rows - kelpmux::native::workspace::sidebar_status_rows(f.rows);
+        let width = kelpmux::native::workspace::sidebar_width(f.cols) - 1;
+        let card_width = (width - 3) / 2;
+        for (index, (label, percent, color)) in
+            [("/", 20, 222), ("/data", 95, 196)].into_iter().enumerate()
+        {
+            let x = 1 + index as u16 * (card_width + 1);
+            let y = top + 4;
+            let row =
+                &f.cells[usize::from(y * f.cols + x)..usize::from(y * f.cols + x + card_width)];
+            let text = row
+                .iter()
+                .map(|cell| cell.text.as_str())
+                .collect::<String>();
+            assert!(
+                text.starts_with(
+                    &label[..label.len().min(usize::from(card_width.saturating_sub(5)))]
+                )
+            );
+            assert!(text.ends_with(&format!("{percent:>3}%")));
+            let track = &f.cells
+                [usize::from((y + 1) * f.cols + x)..usize::from((y + 1) * f.cols + x + card_width)];
+            let filled = (percent * card_width + 50) / 100;
+            for (offset, cell) in track.iter().enumerate() {
+                assert_eq!(
+                    cell.text,
+                    if offset < usize::from(filled) {
+                        "▰"
+                    } else {
+                        "▱"
+                    }
+                );
+                if offset < usize::from(filled) {
+                    assert_eq!(cell.fg, Color::Indexed(color));
+                }
+            }
+            for row in [y, y + 1] {
+                assert_eq!(
+                    status::metric_target(&f, Point { x, y: row }),
+                    Some(Sort::Read)
+                );
+            }
+        }
+        assert!(top + 5 < f.rows - 3);
+    }
+}
+
+#[test]
+fn status_task_counts_yield_to_long_searches_and_narrow_windows() {
+    use kelpmux::native::status::{self, Snapshot, Sort};
+    for size in [(40, 24), (80, 30), (160, 40)] {
+        for query in [String::new(), "worker".into(), "x".repeat(160)] {
+            let mut ws = workspace(size, (1, 1));
+            ws.apply(&Action::StatusOpen(Sort::Cpu)).unwrap();
+            ws.ui.status = Snapshot {
+                ready: true,
+                tasks: 123,
+                running: 4,
+                ..Default::default()
+            };
+            ws.ui.status_query = query.clone();
+            let f = frame(&ws);
+            let bounds = status::bounds(f.cols, f.rows);
+            let y = bounds.y + 2 + status::summary_height(bounds, &ws.ui.status);
+            let text = f.cells[usize::from(y * f.cols + bounds.x + 1)
+                ..usize::from(y * f.cols + bounds.x + bounds.cols - 1)]
+                .iter()
+                .map(|cell| cell.text.as_str())
+                .collect::<String>();
+            if size.0 >= 80 && query.len() < 160 {
+                assert!(text.ends_with("Tasks 123 (4 running)"));
+            } else {
+                assert!(!text.contains("Tasks"));
+            }
+            if !query.is_empty() {
+                assert!(text.starts_with("Search: "));
+            }
+        }
+    }
+}
+
+#[test]
 fn sidebar_horizontal_bars_and_footer_tracks_preserve_values_colors_and_disk_pies() {
     use kelpmux::native::{
         ui::TabPosition,
@@ -2975,8 +3089,10 @@ fn sidebar_horizontal_bars_and_footer_tracks_preserve_values_colors_and_disk_pie
                         assert_ne!(bar.fg, bar.bg);
                     }
                 }
-                let pie = f.cells.iter().find(|cell| cell.text == "◑").unwrap();
-                assert_ne!(pie.bg, Color::Indexed(244));
+                if !f.sidebar_status() {
+                    let pie = f.cells.iter().find(|cell| cell.text == "◑").unwrap();
+                    assert_ne!(pie.bg, Color::Indexed(244));
+                }
                 let mut terminal = Terminal::new(f.cols, f.rows);
                 terminal.feed(&terminal_diff(None, &f));
                 assert_eq!(terminal.snapshot().cells, f.cells);

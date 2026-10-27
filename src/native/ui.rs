@@ -211,6 +211,8 @@ pub struct UiState {
     pub reading_size: Option<(u16, u16)>,
     pub grid_shape: (u8, u8),
     pub vitals: Vec<(String, u8)>,
+    #[serde(default)]
+    pub disk_readings: Vec<(String, u8)>,
 }
 fn status_descending() -> bool {
     true
