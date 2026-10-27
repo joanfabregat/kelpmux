@@ -2137,7 +2137,7 @@ fn sidebar_status_controls_and_metrics_leave_the_last_terminal_row_usable() {
                     .map(|cell| cell.text.as_str())
                     .collect::<String>();
                 assert!(disks.contains("20%") && disks.contains("95%"));
-                let start = usize::from((status_top + 5) * f.cols);
+                let start = usize::from((status_top + 4) * f.cols);
                 assert!(
                     f.cells[start..start + usize::from(width)]
                         .iter()
@@ -2928,7 +2928,7 @@ fn dev_badge_is_visible_in_grid_horizontal_tabs_and_compact_sidebars() {
 }
 
 #[test]
-fn sidebar_disks_pair_paths_percentages_and_clickable_tracks() {
+fn sidebar_disks_keep_prefixed_pies_on_one_clickable_line() {
     use kelpmux::native::{
         status::{self, Sort},
         ui::TabPosition,
@@ -2952,55 +2952,38 @@ fn sidebar_disks_pair_paths_percentages_and_clickable_tracks() {
         let f = frame(&ws);
         let top = f.rows - kelpmux::native::workspace::sidebar_status_rows(f.rows);
         let width = f.sidebar_width() - 1;
-        let paired = width - 2 >= 19;
-        let card_width = if paired { (width - 3) / 2 } else { width - 2 };
-        for (index, (label, percent, color)) in
-            [("/", 20, 222), ("/data", 95, 196)].into_iter().enumerate()
-        {
-            let x = 1 + if paired {
-                index as u16 * (card_width + 1)
-            } else {
-                0
-            };
-            let y = top + 4 + if paired { 0 } else { index as u16 };
-            let row =
-                &f.cells[usize::from(y * f.cols + x)..usize::from(y * f.cols + x + card_width)];
-            let text = row
-                .iter()
-                .map(|cell| cell.text.as_str())
-                .collect::<String>();
+        let y = top + 4;
+        let row = &f.cells[usize::from(y * f.cols)..usize::from(y * f.cols + width)];
+        let text = row
+            .iter()
+            .map(|cell| cell.text.as_str())
+            .collect::<String>();
+        assert!(text.contains('/'), "{text}");
+        assert!(text.contains("/data"), "{text}");
+        assert!(text.contains("20%") && text.contains("95%"), "{text}");
+        assert!(
+            !row.iter()
+                .any(|cell| matches!(cell.text.as_str(), "▰" | "▱"))
+        );
+        for (pie, color) in [("◔", 222), ("●", 196)] {
             assert!(
-                text.starts_with(
-                    &label[..label.len().min(usize::from(card_width.saturating_sub(4)))]
-                )
+                row.iter()
+                    .any(|cell| cell.text == pie && cell.fg == Color::Indexed(color))
             );
-            assert!(text.ends_with(&format!("{percent}%")));
-            if paired {
-                let track = &f.cells[usize::from((y + 1) * f.cols + x)
-                    ..usize::from((y + 1) * f.cols + x + card_width)];
-                let filled = (percent * card_width + 50) / 100;
-                for (offset, cell) in track.iter().enumerate() {
-                    assert_eq!(
-                        cell.text,
-                        if offset < usize::from(filled) {
-                            "▰"
-                        } else {
-                            "▱"
-                        }
-                    );
-                    if offset < usize::from(filled) {
-                        assert_eq!(cell.fg, Color::Indexed(color));
-                    }
-                }
-            }
-            for row in [top + 4, top + 5] {
-                assert_eq!(
-                    status::metric_target(&f, Point { x, y: row }),
-                    Some(Sort::Read)
-                );
-            }
         }
-        assert!(top + 5 < f.rows - 3);
+        for x in 0..width {
+            assert_eq!(status::metric_target(&f, Point { x, y }), Some(Sort::Read));
+        }
+        ws.ui.disk_readings = vec![("/".into(), 100), ("/data".into(), 100)];
+        let f = frame(&ws);
+        let text = f.cells[usize::from(y * f.cols)..usize::from(y * f.cols + width)]
+            .iter()
+            .map(|cell| cell.text.as_str())
+            .collect::<String>();
+        assert!(
+            text.contains("/data") && text.matches("100").count() == 2,
+            "{text}"
+        );
     }
 }
 
