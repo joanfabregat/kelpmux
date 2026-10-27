@@ -2969,11 +2969,6 @@ fn sidebar_disks_pair_paths_percentages_and_clickable_tracks() {
                 .iter()
                 .map(|cell| cell.text.as_str())
                 .collect::<String>();
-            let label = if paired || label == "/" {
-                label
-            } else {
-                "data"
-            };
             assert!(
                 text.starts_with(
                     &label[..label.len().min(usize::from(card_width.saturating_sub(4)))]
