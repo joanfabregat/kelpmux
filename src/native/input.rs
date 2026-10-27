@@ -245,6 +245,7 @@ pub struct Router {
     selecting: bool,
     header_drag: Option<PaneId>,
     boundary_drag: Option<(Option<u8>, Option<u8>)>,
+    sidebar_drag: bool,
     prefix: bool,
     pending_modal: bool,
     scrolling: bool,
@@ -255,6 +256,13 @@ pub struct Router {
 }
 impl Router {
     pub fn route(&mut self, event: InputEvent, frame: &Frame) -> Vec<ClientMessage> {
+        if !frame.controller
+            || self.help_override.unwrap_or(frame.help)
+            || frame.ui.scratch_visible
+            || !frame.sidebar_status()
+        {
+            self.sidebar_drag = false;
+        }
         if let InputEvent::Mouse(mouse) = &event {
             if mouse.kind == MouseKind::Move && mouse.button == 3 {
                 let enabled = frame.controller
@@ -265,6 +273,7 @@ impl Router {
                     && frame.ui.dialog.is_none()
                     && self.selection.is_none()
                     && self.header_drag.is_none()
+                    && !self.sidebar_drag
                     && self.boundary_drag.is_none();
                 if enabled
                     && !mouse.shift
@@ -292,6 +301,7 @@ impl Router {
             self.suppressed_releases.clear();
             self.header_drag = None;
             self.boundary_drag = None;
+            self.sidebar_drag = false;
             self.selecting = false;
         }
         if frame
@@ -514,6 +524,19 @@ impl Router {
                 continue;
             }
             if let Some(dialog) = frame.ui.dialog {
+                if dialog.kind == super::ui::DialogKind::Notifications && matches!(key, b"h" | b"a")
+                {
+                    emit(
+                        &mut output,
+                        if key == b"h" {
+                            Action::NotificationHistory
+                        } else {
+                            Action::AcknowledgeAll
+                        },
+                        true,
+                    );
+                    continue;
+                }
                 if key == b"l" && dialog.kind == super::ui::DialogKind::Overview {
                     if let Some(&pane) = frame_entries(frame).get(dialog.selection) {
                         emit(&mut output, Action::AgentLinkPicker(pane), true);
@@ -691,6 +714,37 @@ impl Router {
         }
         if event.kind == MouseKind::Press {
             self.focus_click = false;
+            self.sidebar_drag = false;
+        }
+        if self.sidebar_drag && matches!(event.kind, MouseKind::Move | MouseKind::Release) {
+            emit(
+                &mut output,
+                Action::ResizeSidebar(event.position.x.saturating_add(1)),
+                true,
+            );
+            if event.kind == MouseKind::Release {
+                self.sidebar_drag = false;
+            }
+            return output;
+        }
+        if event.kind == MouseKind::Press
+            && event.button == 0
+            && !event.shift
+            && !event.alt
+            && !event.ctrl
+            && frame.sidebar_status()
+            && !frame.ui.scratch_visible
+            && frame.ui.dialog.is_none()
+            && !self.help_override.unwrap_or(frame.help)
+            && event.position.x == frame.sidebar_width() - 1
+        {
+            self.sidebar_drag = true;
+            emit(
+                &mut output,
+                Action::ResizeSidebar(frame.sidebar_width()),
+                true,
+            );
+            return output;
         }
         if let Some((column, row)) = self.boundary_drag {
             if matches!(event.kind, MouseKind::Move | MouseKind::Release) {
@@ -743,6 +797,24 @@ impl Router {
         }
         if let Some(dialog) = frame.ui.dialog {
             let bounds = super::workspace::dialog_bounds_for(frame.cols, frame.rows, dialog.kind);
+            if dialog.kind == super::ui::DialogKind::Notifications && event.kind == MouseKind::Press
+            {
+                if let Some(index) = super::ui::notification_buttons(bounds)
+                    .iter()
+                    .position(|rect| rect.contains(event.position))
+                {
+                    emit(
+                        &mut output,
+                        if index == 0 {
+                            Action::NotificationHistory
+                        } else {
+                            Action::AcknowledgeAll
+                        },
+                        true,
+                    );
+                    return output;
+                }
+            }
             if dialog.kind == super::ui::DialogKind::Parked && event.kind == MouseKind::Press {
                 let entries = frame_entries(frame);
                 if let Some((index, _)) =
@@ -900,7 +972,10 @@ impl Router {
             return output;
         }
         if event.kind == MouseKind::Press && help.contains(event.position) {
-            if frame.ui.notifications.iter().any(|item| !item.read) {
+            if super::ui::has_unread_notifications(
+                &frame.ui,
+                frame.panes.iter().map(|view| &view.pane),
+            ) {
                 self.pending_modal = true;
                 emit(&mut output, Action::Notifications, true);
                 return output;
@@ -1209,7 +1284,11 @@ impl Router {
             return vec![];
         }
         if dialog.kind == DialogKind::Notifications {
-            let Some(item) = frame.ui.notifications.get(index) else {
+            let Some(item) = super::ui::visible_notifications(
+                &frame.ui,
+                frame.panes.iter().map(|view| &view.pane),
+            )
+            .nth(index) else {
                 return vec![];
             };
             let mut actions = vec![ClientMessage::Action(Action::Acknowledge(item.id))];
@@ -1432,7 +1511,11 @@ fn frame_entries(frame: &Frame) -> Vec<u64> {
     use super::ui::DialogKind;
     match frame.ui.dialog.map(|dialog| dialog.kind) {
         Some(DialogKind::AgentLink) => (0..=frame.ui.agent_sessions.len() as u64).collect(),
-        Some(DialogKind::Notifications) => frame.ui.notifications.iter().map(|n| n.id).collect(),
+        Some(DialogKind::Notifications) => {
+            super::ui::visible_notifications(&frame.ui, frame.panes.iter().map(|view| &view.pane))
+                .map(|n| n.id)
+                .collect()
+        }
         Some(DialogKind::Recovery) => (0..frame.ui.recovery.len() as u64).collect(),
         Some(DialogKind::Search) => (0..frame.ui.search_hits.len() as u64).collect(),
         _ => {

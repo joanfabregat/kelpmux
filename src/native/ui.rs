@@ -7,6 +7,47 @@ pub const TAB_BG: u8 = 236;
 pub const PARKED_BG: u8 = 60;
 pub const RESTORE_BG: u8 = 29;
 pub const ALERT_ICON: &str = "⚠︎";
+pub fn visible_notifications<'a>(
+    ui: &'a UiState,
+    panes: impl IntoIterator<Item = &'a super::protocol::PaneInfo>,
+) -> impl Iterator<Item = &'a super::protocol::Notification> {
+    let panes: Vec<_> = panes.into_iter().collect();
+    ui.notifications.iter().rev().filter(move |item| {
+        ui.notification_history
+            || (!item.read
+                && panes
+                    .iter()
+                    .any(|pane| super::activity::matches(item, pane, &ui.notification_run)))
+    })
+}
+pub fn has_unread_notifications<'a>(
+    ui: &UiState,
+    panes: impl IntoIterator<Item = &'a super::protocol::PaneInfo>,
+) -> bool {
+    panes.into_iter().any(|pane| {
+        ui.notifications
+            .iter()
+            .any(|item| !item.read && super::activity::matches(item, pane, &ui.notification_run))
+    })
+}
+pub fn notification_buttons(bounds: super::protocol::Rect) -> [super::protocol::Rect; 2] {
+    use super::protocol::Rect;
+    let width = bounds.cols.saturating_sub(2) / 2;
+    [
+        Rect {
+            x: bounds.x + 1,
+            y: bounds.y + 1,
+            cols: width,
+            rows: 1,
+        },
+        Rect {
+            x: bounds.x + 1 + width,
+            y: bounds.y + 1,
+            cols: bounds.cols - 2 - width,
+            rows: 1,
+        },
+    ]
+}
 pub const CONFIG_BUTTON_LABEL: &str = " ⚙︎ Config ";
 pub const FOOTER_CONFIG_COLS: u16 = 10;
 pub const FOOTER_MODE_COLS: u16 = 8;
@@ -85,6 +126,8 @@ pub struct UiConfig {
     pub read_height_percent: u8,
     pub bindings: BTreeMap<String, String>,
     pub tab_position: TabPosition,
+    /// Preferred sidebar width in terminal columns; None follows the screen.
+    pub sidebar_columns: Option<u16>,
     #[serde(rename = "remembered_read_widths", skip_serializing)]
     pub legacy_read_widths: Option<[Option<u16>; 3]>,
 }
@@ -100,11 +143,17 @@ impl Default for UiConfig {
             read_height_percent: 95,
             bindings: BTreeMap::new(),
             tab_position: TabPosition::Left,
+            sidebar_columns: None,
             legacy_read_widths: None,
         }
     }
 }
 impl UiConfig {
+    pub fn sidebar_width(&self, cols: u16) -> u16 {
+        self.sidebar_columns
+            .unwrap_or_else(|| super::workspace::sidebar_width(cols))
+            .clamp(18.min(cols / 2), (cols / 2).max(1))
+    }
     pub fn validate(&self) -> Result<()> {
         if !(1..=26).contains(&self.prefix)
             || self
@@ -112,6 +161,9 @@ impl UiConfig {
                 .iter()
                 .any(|(&pane, &color)| pane == 0 || usize::from(color) >= PALETTE.len())
             || !(20..=100).contains(&self.read_height_percent)
+            || self
+                .sidebar_columns
+                .is_some_and(|width| !(18..=4096).contains(&width))
         {
             return Err("invalid prefix or reading dimensions".into());
         }
@@ -188,6 +240,8 @@ pub struct UiState {
     pub notifications: Vec<super::protocol::Notification>,
     #[serde(default)]
     pub notification_run: String,
+    #[serde(default)]
+    pub notification_history: bool,
     #[serde(default)]
     pub agent_sessions: Vec<crate::discovery::polling::Session>,
     #[serde(default)]
