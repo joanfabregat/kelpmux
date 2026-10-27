@@ -204,6 +204,7 @@ impl Peer {
             other => other,
         }
     }
+    #[track_caller]
     fn wait(&mut self, predicate: impl Fn(&Frame) -> bool) -> Frame {
         let deadline = Instant::now() + Duration::from_secs(12);
         loop {
@@ -996,4 +997,83 @@ fn shared_codex_conversation_picker_drives_live_tab_status_and_drops_links_after
     drop(daemon);
     stop.store(true, Ordering::SeqCst);
     metadata_server.join().unwrap();
+}
+
+#[test]
+fn sidebar_resize_preserves_live_ptys_and_saved_width_and_bulk_alert_reads_survive_reconnect() {
+    let daemon = Daemon::start();
+    let mut peer = daemon.attach();
+    peer.action(Action::NewTab);
+    let before = peer.panes();
+    let pane = before[0].id;
+    peer.action(Action::Read(pane));
+    peer.wait(|frame| frame.reading != ReadingMode::Grid);
+    peer.action(Action::ResizeSidebar(45));
+    let resized = peer.wait(|frame| frame.sidebar_width() == 45);
+    let body = resized
+        .panes
+        .iter()
+        .find(|view| view.pane.id == pane)
+        .unwrap()
+        .body;
+    assert_eq!((body.x, body.cols, body.rows), (45, 75, 40));
+    peer.input("printf 'SIZE='; stty size\n");
+    peer.wait(|frame| {
+        frame
+            .cells
+            .iter()
+            .map(|cell| cell.text.as_str())
+            .collect::<String>()
+            .contains("SIZE=40 75")
+    });
+    let identities = |panes: &[PaneInfo]| {
+        panes
+            .iter()
+            .map(|pane| (pane.id, pane.pid))
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(identities(&before), identities(&peer.panes()));
+    let saved =
+        kelpmux::native::lifecycle::Settings::load(&daemon.state.join("workspace.json")).unwrap();
+    assert_eq!(saved.ui.sidebar_columns, Some(45));
+    let executable = daemon.root.join("codex");
+    fs::copy("/bin/bash", &executable).unwrap();
+    peer.input(&format!(
+        "{} -c 'while :; do sleep 1; done' _ resume {}\n",
+        shell_quote(executable.to_str().unwrap()),
+        SESSION
+    ));
+    peer.wait(|frame| {
+        frame
+            .panes
+            .iter()
+            .any(|view| view.pane.id == pane && view.pane.kind == Some(Kind::Codex))
+    });
+    daemon.hook(pane, "UserPromptSubmit");
+    peer.wait(|frame| {
+        frame
+            .panes
+            .iter()
+            .any(|view| view.pane.id == pane && view.pane.status == Status::Working)
+    });
+    daemon.hook(pane, "PermissionRequest");
+    peer.wait(|frame| frame.ui.notifications.iter().any(|event| !event.read));
+    peer.action(Action::AcknowledgeAll);
+    peer.wait(|frame| {
+        !frame.ui.notifications.is_empty() && frame.ui.notifications.iter().all(|event| event.read)
+    });
+    let history: serde_json::Value =
+        serde_json::from_slice(&fs::read(daemon.state.join("activity.json")).unwrap()).unwrap();
+    assert!(
+        history["events"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|event| event["read"] == true)
+    );
+    drop(peer);
+    let mut reconnected = daemon.attach();
+    let f = reconnected.wait(|frame| frame.controller && frame.sidebar_width() == 45);
+    assert!(f.ui.notifications.iter().all(|event| event.read));
+    assert_eq!(identities(&before), identities(&reconnected.panes()));
 }

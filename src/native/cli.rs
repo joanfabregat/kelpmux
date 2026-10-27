@@ -713,7 +713,7 @@ fn validate_frame(frame: &Frame) -> Result<()> {
 fn fitted_mouse(frame: &Frame, size: (u16, u16), mut point: Point) -> Option<Point> {
     if frame.sidebar_status() {
         let height = super::workspace::sidebar_status_rows(frame.rows).min(size.1);
-        let width = super::workspace::sidebar_width(frame.cols) - 1;
+        let width = frame.sidebar_width() - 1;
         if point.x < width && point.y >= size.1 - height {
             point.y = frame.rows - height + point.y - (size.1 - height);
         }
@@ -759,7 +759,7 @@ fn fitted(frame: &Frame, size: (u16, u16), notice: Option<&str>) -> Frame {
     }
     if frame.sidebar_status() {
         let height = super::workspace::sidebar_status_rows(frame.rows).min(size.1);
-        let width = (super::workspace::sidebar_width(frame.cols) - 1).min(size.0);
+        let width = (frame.sidebar_width() - 1).min(size.0);
         let source_top = frame.rows - super::workspace::sidebar_status_rows(frame.rows);
         let bg = frame.cells[usize::from(source_top * frame.cols)].bg;
         for y in source_top..frame.rows.min(size.1) {

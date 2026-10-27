@@ -443,7 +443,7 @@ fn parked_table_animates_status_and_modals_dim_without_altering_terminal_content
     assert_ne!(a.cells, b.cells);
     for (before, after) in a.cells.iter().zip(&b.cells) {
         assert_eq!(before.bg, after.bg);
-        if !matches!(before.text.as_str(), "|" | "/" | "-" | "\\") {
+        if before.text != "⠋" {
             assert_eq!(before.text, after.text);
             assert_eq!(before.fg, after.fg);
         }
@@ -851,7 +851,7 @@ fn footer_buttons_and_compact_vitals_have_disjoint_hit_targets() {
 }
 
 #[test]
-fn grid_headers_separate_rows_without_gaps_and_vertical_lines_keep_the_left_pane_color() {
+fn grid_headers_have_blank_rows_above_and_vertical_lines_keep_the_left_pane_color() {
     for shape in GRIDS {
         let ws = workspace((160, 50), shape);
         let f = frame(&ws);
@@ -878,8 +878,14 @@ fn grid_headers_separate_rows_without_gaps_and_vertical_lines_keep_the_left_pane
                 assert!(
                     views
                         .iter()
-                        .any(|upper| upper.rect.y + upper.rect.rows == view.rect.y)
+                        .any(|upper| upper.rect.y + upper.rect.rows + 1 == view.rect.y)
                 );
+                for x in 0..f.cols {
+                    assert_eq!(
+                        f.cells[usize::from((view.rect.y - 1) * f.cols + x)].text,
+                        " "
+                    );
+                }
                 assert_eq!(view.body.y, view.rect.y + 1);
             }
             let line = &f.cells[usize::from(view.rect.y * f.cols + view.rect.x)];
@@ -1041,7 +1047,7 @@ fn neutral_tabs_ignore_legacy_palette_settings_and_numbers_focus() {
             let number_cell = &f.cells[usize::from(number.y * f.cols + number.x + 1)];
             assert_eq!(
                 number_cell.fg,
-                Color::Indexed(if index == 0 { 226 } else { 231 })
+                Color::Indexed(if index == 0 { 226 } else { 110 })
             );
             for x in number.x + 3..number.x + 5 {
                 assert_eq!(f.cells[usize::from(number.y * f.cols + x)].text, " ");
@@ -1511,7 +1517,7 @@ fn neutral_focus_connects_sidebar_divider_regardless_of_legacy_palette() {
             );
             for y in 0..f.rows - 1 {
                 let cell = &f.cells[usize::from(y * f.cols + body.x - 1)];
-                assert_eq!(cell.text, "▎");
+                assert_eq!(cell.text, if y == f.rows / 2 { "⋮" } else { "▎" });
                 assert_eq!(cell.fg, Color::Indexed(238));
                 assert_eq!(cell.bg, Color::Default);
             }
@@ -1814,7 +1820,7 @@ fn working_spinner_rotates_in_place_in_tabs_grid_and_parked_cards() {
             ws.apply(&Action::Park(1)).unwrap();
             ws.apply(&Action::Parked).unwrap();
         }
-        let frames: Vec<_> = [0, 2, 4, 6, 8]
+        let frames: Vec<_> = [0, 1, 2, 3, 10]
             .into_iter()
             .map(|tick| compose(&ws, &BTreeMap::new(), true, None, tick))
             .collect();
@@ -1839,7 +1845,7 @@ fn working_spinner_rotates_in_place_in_tabs_grid_and_parked_cards() {
                 .iter()
                 .map(|frame| frame.cells[index].text.as_str())
                 .collect::<Vec<_>>(),
-            vec!["|", "/", "-", "\\", "|"]
+            vec!["⠋", "⠙", "⠹", "⠸", "⠋"]
         );
         assert_eq!(frames[0].cells[index], frames[4].cells[index]);
     }
@@ -1993,9 +1999,9 @@ fn tab_surfaces_follow_dark_and_light_backgrounds_without_repainting_terminal_de
         let number = tab_number(inactive);
         assert_eq!(
             f.cells[usize::from(number.y * f.cols + number.x + 1)].fg,
-            Color::Indexed(if light { 232 } else { 231 })
+            Color::Indexed(if light { 25 } else { 110 })
         );
-        let ball = f.cells.iter().find(|cell| cell.text == "|").unwrap();
+        let ball = f.cells.iter().find(|cell| cell.text == "⠋").unwrap();
         assert_eq!(ball.fg, Color::Indexed(if light { 232 } else { 231 }));
         let body = f.panes.iter().find(|view| view.pane.id == 1).unwrap().body;
         assert_eq!(
@@ -2125,21 +2131,17 @@ fn sidebar_status_controls_and_metrics_leave_the_last_terminal_row_usable() {
                     );
                 }
                 let start = usize::from((status_top + 4) * f.cols);
-                let disks = f.cells[start..start + usize::from(width)]
-                    .iter()
+                let disks = [start, start + usize::from(f.cols)]
+                    .into_iter()
+                    .flat_map(|start| f.cells[start..start + usize::from(width)].iter())
                     .map(|cell| cell.text.as_str())
                     .collect::<String>();
-                assert!(
-                    disks.contains("Disk1")
-                        && disks.contains("Disk2")
-                        && disks.contains("20%")
-                        && disks.contains("95%")
-                );
+                assert!(disks.contains("Disks") && disks.contains("20%") && disks.contains("95%"));
                 let start = usize::from((status_top + 5) * f.cols);
                 assert!(
                     f.cells[start..start + usize::from(width)]
                         .iter()
-                        .any(|cell| cell.text == "▰" && cell.fg == Color::Indexed(196))
+                        .any(|cell| cell.text != " " && cell.fg == Color::Indexed(196))
                 );
                 for (control, color) in f.controls().into_iter().zip([24, 67, 60, 94]) {
                     for x in control.x..control.x + control.cols {
@@ -2947,41 +2949,53 @@ fn sidebar_disks_pair_paths_percentages_and_clickable_tracks() {
         let f = frame(&ws);
         let top = f.rows - kelpmux::native::workspace::sidebar_status_rows(f.rows);
         let width = kelpmux::native::workspace::sidebar_width(f.cols) - 1;
-        let card_width = (width - 3) / 2;
+        let paired = width - 9 >= 19;
+        let card_width = if paired { (width - 10) / 2 } else { width - 9 };
         for (index, (label, percent, color)) in
             [("/", 20, 222), ("/data", 95, 196)].into_iter().enumerate()
         {
-            let x = 1 + index as u16 * (card_width + 1);
-            let y = top + 4;
+            let x = 8 + if paired {
+                index as u16 * (card_width + 1)
+            } else {
+                0
+            };
+            let y = top + 4 + if paired { 0 } else { index as u16 };
             let row =
                 &f.cells[usize::from(y * f.cols + x)..usize::from(y * f.cols + x + card_width)];
             let text = row
                 .iter()
                 .map(|cell| cell.text.as_str())
                 .collect::<String>();
+            let label = if paired || label == "/" {
+                label
+            } else {
+                "data"
+            };
             assert!(
                 text.starts_with(
-                    &label[..label.len().min(usize::from(card_width.saturating_sub(5)))]
+                    &label[..label.len().min(usize::from(card_width.saturating_sub(4)))]
                 )
             );
-            assert!(text.ends_with(&format!("{percent:>3}%")));
-            let track = &f.cells
-                [usize::from((y + 1) * f.cols + x)..usize::from((y + 1) * f.cols + x + card_width)];
-            let filled = (percent * card_width + 50) / 100;
-            for (offset, cell) in track.iter().enumerate() {
-                assert_eq!(
-                    cell.text,
+            assert!(text.ends_with(&format!("{percent}%")));
+            if paired {
+                let track = &f.cells[usize::from((y + 1) * f.cols + x)
+                    ..usize::from((y + 1) * f.cols + x + card_width)];
+                let filled = (percent * card_width + 50) / 100;
+                for (offset, cell) in track.iter().enumerate() {
+                    assert_eq!(
+                        cell.text,
+                        if offset < usize::from(filled) {
+                            "▰"
+                        } else {
+                            "▱"
+                        }
+                    );
                     if offset < usize::from(filled) {
-                        "▰"
-                    } else {
-                        "▱"
+                        assert_eq!(cell.fg, Color::Indexed(color));
                     }
-                );
-                if offset < usize::from(filled) {
-                    assert_eq!(cell.fg, Color::Indexed(color));
                 }
             }
-            for row in [y, y + 1] {
+            for row in [top + 4, top + 5] {
                 assert_eq!(
                     status::metric_target(&f, Point { x, y: row }),
                     Some(Sort::Read)
@@ -3438,6 +3452,7 @@ fn old_alerts_are_labeled_historical_and_cannot_jump_to_reused_pane_ids() {
         }),
     }];
     ws.apply(&Action::Notifications).unwrap();
+    ws.apply(&Action::NotificationHistory).unwrap();
     let f = frame(&ws);
     let text = f
         .cells
@@ -3471,8 +3486,141 @@ fn old_alerts_are_labeled_historical_and_cannot_jump_to_reused_pane_ids() {
     );
     ws.ui.notifications[0].origin = None;
     ws.apply(&Action::Notifications).unwrap();
+    ws.apply(&Action::NotificationHistory).unwrap();
     assert_eq!(
         actions(Router::default().route(click(point), &frame(&ws))),
         vec![Action::Acknowledge(1), Action::DialogClose]
     );
+}
+
+#[test]
+fn sidebar_drag_owns_mouse_gesture_and_resizes_all_shared_hit_targets() {
+    use kelpmux::native::{hover, ui::DialogKind};
+    let mut ws = workspace((120, 40), (2, 1));
+    ws.apply(&Action::Read(1)).unwrap();
+    let mut router = Router::default();
+    let f = frame(&ws);
+    let divider = Point {
+        x: f.sidebar_width() - 1,
+        y: 15,
+    };
+    assert_eq!(hover::target(&f, divider).unwrap().cols, 1);
+    for action in actions(router.route(click(divider), &f)) {
+        ws.apply(&action).unwrap();
+    }
+    for kind in [MouseKind::Move, MouseKind::Release] {
+        let f = frame(&ws);
+        let event = InputEvent::Mouse(MouseEvent {
+            position: Point { x: 44, y: 20 },
+            kind,
+            button: 0,
+            shift: false,
+            alt: false,
+            ctrl: false,
+        });
+        let routed = actions(router.route(event, &f));
+        assert_eq!(routed, vec![Action::ResizeSidebar(45)]);
+        for action in routed {
+            ws.apply(&action).unwrap();
+        }
+    }
+    let f = frame(&ws);
+    assert_eq!(f.panes[0].body.x, 45);
+    assert_eq!(f.panes[0].body.cols, 75);
+    assert_eq!(f.controls()[0].cols + f.controls()[1].cols, 44);
+    let stored = serde_json::to_string(&ws.ui.config).unwrap();
+    ws.ui.config = serde_json::from_str(&stored).unwrap();
+    ws.resize(40, 20).unwrap();
+    assert_eq!(frame(&ws).panes[0].body.x, 20);
+    ws.resize(120, 40).unwrap();
+    assert_eq!(frame(&ws).panes[0].body.x, 45);
+    let mut observer = frame(&ws);
+    observer.controller = false;
+    assert!(
+        Router::default()
+            .route(click(Point { x: 44, y: 15 }), &observer)
+            .is_empty()
+    );
+    ws.apply(&Action::Notifications).unwrap();
+    assert_eq!(ws.ui.dialog.unwrap().kind, DialogKind::Notifications);
+    assert!(
+        !actions(Router::default().route(click(Point { x: 44, y: 15 }), &frame(&ws)))
+            .iter()
+            .any(|action| matches!(action, Action::ResizeSidebar(_)))
+    );
+}
+
+#[test]
+fn alerts_default_to_unread_history_toggle_and_bulk_acknowledgement_share_mouse_and_keys() {
+    use kelpmux::native::ui::{self, DialogKind};
+    let mut ws = workspace((120, 40), (2, 1));
+    ws.apply(&Action::Read(1)).unwrap();
+    ws.ui.notifications = (1..=3)
+        .map(|id| Notification {
+            id,
+            pane: 2,
+            title: format!("event {id}"),
+            status: Status::InputNeeded,
+            at: id,
+            read: id == 1,
+            workspace: "test".into(),
+            origin: Some(NotificationOrigin {
+                run: if id == 3 { "previous-run" } else { "test-run" }.into(),
+                pid: 0,
+            }),
+        })
+        .collect();
+    ws.apply(&Action::Notifications).unwrap();
+    assert_eq!(ws.dialog_entries(), vec![2]);
+    let f = frame(&ws);
+    let bounds =
+        kelpmux::native::workspace::dialog_bounds_for(f.cols, f.rows, DialogKind::Notifications);
+    let controls = ui::notification_buttons(bounds);
+    for (index, expected) in [
+        (0, Action::NotificationHistory),
+        (1, Action::AcknowledgeAll),
+    ] {
+        assert_eq!(
+            actions(Router::default().route(
+                click(Point {
+                    x: controls[index].x,
+                    y: controls[index].y
+                }),
+                &f
+            )),
+            vec![expected]
+        );
+    }
+    let history = actions(Router::default().route(InputEvent::Bytes(b"h".to_vec()), &f));
+    assert_eq!(history, vec![Action::NotificationHistory]);
+    ws.apply(&history[0]).unwrap();
+    assert_eq!(ws.dialog_entries(), vec![3, 2, 1]);
+    ws.apply(&Action::Notifications).unwrap();
+    assert_eq!(ws.dialog_entries(), vec![2]);
+    let ack = actions(Router::default().route(InputEvent::Bytes(b"a".to_vec()), &frame(&ws)));
+    assert_eq!(ack, vec![Action::AcknowledgeAll]);
+    ws.apply(&ack[0]).unwrap();
+    assert!(ws.dialog_entries().is_empty());
+    assert!(ws.ui.notifications.iter().all(|item| item.read));
+    assert_eq!(ws.ui.notifications.len(), 3);
+    let text: String = frame(&ws)
+        .cells
+        .iter()
+        .map(|cell| cell.text.as_str())
+        .collect();
+    assert!(text.contains("No unread alerts"));
+    ws.apply(&Action::NotificationHistory).unwrap();
+    assert_eq!(ws.dialog_entries(), vec![3, 2, 1]);
+    ws.ui.notifications[2].read = false;
+    assert!(!ui::has_unread_notifications(&ws.ui, &ws.panes));
+    ws.ui.notifications[2].origin = Some(NotificationOrigin {
+        run: "test-run".into(),
+        pid: 999,
+    });
+    ws.ui.notification_history = false;
+    assert!(
+        ws.dialog_entries().is_empty(),
+        "a replaced shell's alert belongs in history"
+    );
+    assert!(!ui::has_unread_notifications(&ws.ui, &ws.panes));
 }

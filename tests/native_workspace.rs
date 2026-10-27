@@ -63,7 +63,7 @@ fn adaptive_grid_supports_large_workspaces_and_pages_follow_selection() {
                 assert!(visible.iter().any(|view| view.pane.id == active));
                 let mut occupied = std::collections::BTreeSet::new();
                 for view in visible {
-                    assert!(view.body.rows >= 2 && view.rect.cols >= 12);
+                    assert!(view.body.rows >= 1 && view.rect.cols >= 12);
                     assert!(view.rect.x + view.rect.cols <= ws.cols);
                     assert!(view.rect.y + view.rect.rows < ws.rows);
                     for y in view.rect.y..view.rect.y + view.rect.rows {
