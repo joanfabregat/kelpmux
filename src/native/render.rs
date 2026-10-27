@@ -1930,9 +1930,6 @@ fn draw_sidebar_disks(
         }
         let reading = format!("{percent}%");
         let reading_width = reading.len() as u16;
-        if !paired && label != "/" {
-            label = label.trim_start_matches('/').into();
-        }
         write_text(
             frame,
             x,
