@@ -273,12 +273,14 @@ fn viewport_reading_preferences_and_automatic_grid_preserve_all_ids() {
     assert!(
         router
             .route(mouse(separator, MouseKind::Press), &f)
-            .is_empty()
+            .iter()
+            .any(|message| matches!(message, ClientMessage::Action(Action::SelectText { .. })))
     );
     assert!(
         router
             .route(mouse(Point { x: 50, y: 20 }, MouseKind::Release), &f)
-            .is_empty()
+            .iter()
+            .any(|message| matches!(message, ClientMessage::Action(Action::Copy(_))))
     );
 }
 #[test]

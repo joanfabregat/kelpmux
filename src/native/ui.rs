@@ -256,6 +256,8 @@ pub struct UiState {
     pub scratch_visible: bool,
     pub scratch_return: Option<u64>,
     pub scratch_reading: Option<super::protocol::ReadingMode>,
+    #[serde(default)]
+    pub zoom_return: Option<super::protocol::ReadingMode>,
     pub column_weights: Vec<u16>,
     pub row_weights: Vec<u16>,
     pub dialog: Option<Dialog>,

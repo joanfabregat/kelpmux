@@ -414,3 +414,40 @@ fn plain_urls_span_soft_wraps_but_not_separate_lines_and_keep_explicit_targets()
         Some("https://target.test")
     );
 }
+
+#[test]
+fn plain_url_targets_exclude_surrounding_parentheses_quotes_and_adjacent_prose() {
+    for (text, expected) in [
+        ("(http://example.test)", "http://example.test"),
+        ("[(https://example.test)]", "https://example.test"),
+        ("(https://example.test),next", "https://example.test"),
+        (
+            "(https://example.test/a(b))next",
+            "https://example.test/a(b)",
+        ),
+        ("[label](https://example.test).", "https://example.test"),
+        ("'http://example.test'", "http://example.test"),
+        ("`https://example.test`", "https://example.test"),
+        ("http://[::1]/a(b)?q=(x)", "http://[::1]/a(b)?q=(x)"),
+    ] {
+        for cols in [18, 80] {
+            let mut source = Terminal::new(cols, 10);
+            source.feed(text.as_bytes());
+            let screen = source.snapshot();
+            let links: Vec<_> = screen
+                .cells
+                .iter()
+                .filter_map(|cell| cell.hyperlink.as_deref())
+                .collect();
+            assert_eq!(
+                links.len(),
+                expected.len(),
+                "wrong clickable range for {text:?} at {cols} columns: {links:?}"
+            );
+            assert!(
+                links.iter().all(|link| *link == expected),
+                "wrong target for {text:?}: {links:?}"
+            );
+        }
+    }
+}

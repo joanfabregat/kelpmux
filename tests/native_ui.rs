@@ -769,7 +769,7 @@ fn selecting_same_tab_keeps_tabs_and_legacy_width_actions_do_not_limit_content()
     assert_eq!(cap.y, 0);
     assert_eq!(cap.x, kelpmux::native::workspace::sidebar_width(240));
     ws.apply(&Action::Fullscreen(5)).unwrap();
-    assert_eq!(ws.layout()[4].body.cols, cap.cols);
+    assert_eq!(ws.layout()[4].body.cols, ws.cols);
     ws.apply(&Action::Fullscreen(5)).unwrap();
     assert_eq!(ws.layout()[4].body, cap);
     ws.apply(&Action::Read(5)).unwrap();
@@ -851,7 +851,7 @@ fn footer_buttons_and_compact_vitals_have_disjoint_hit_targets() {
 }
 
 #[test]
-fn grid_headers_have_blank_rows_above_and_vertical_lines_keep_the_left_pane_color() {
+fn shaded_grid_headers_meet_previous_rows_without_empty_separators() {
     for shape in GRIDS {
         let ws = workspace((160, 50), shape);
         let f = frame(&ws);
@@ -878,19 +878,16 @@ fn grid_headers_have_blank_rows_above_and_vertical_lines_keep_the_left_pane_colo
                 assert!(
                     views
                         .iter()
-                        .any(|upper| upper.rect.y + upper.rect.rows + 1 == view.rect.y)
+                        .any(|upper| upper.rect.y + upper.rect.rows == view.rect.y)
                 );
-                for x in 0..f.cols {
-                    assert_eq!(
-                        f.cells[usize::from((view.rect.y - 1) * f.cols + x)].text,
-                        " "
-                    );
-                }
                 assert_eq!(view.body.y, view.rect.y + 1);
             }
             let line = &f.cells[usize::from(view.rect.y * f.cols + view.rect.x)];
-            assert_eq!(line.text, "─");
-            assert_eq!(line.bg, Color::Default);
+            assert_eq!(line.text, " ");
+            assert_eq!(
+                line.bg,
+                Color::Indexed(if view.pane.id == ws.active { 240 } else { 236 })
+            );
         }
         let mut display = Terminal::new(f.cols, f.rows);
         display.feed(&terminal_diff(None, &f));
@@ -1142,14 +1139,7 @@ fn terminal_content_has_no_blank_side_margins_in_tabs_or_grid() {
     let mut f = frame(&ws);
     let body = f.panes[0].body;
     assert_eq!(body.x + body.cols, f.cols);
-    assert_eq!(
-        body.x,
-        if position == TabPosition::Left {
-            kelpmux::native::workspace::sidebar_width(f.cols)
-        } else {
-            0
-        }
-    );
+    assert_eq!(body.x, 0);
     f.panes[0].modes.mouse_click = true;
     for x in [body.x, body.x + body.cols - 1] {
         let point = Point { x, y: body.y + 2 };
@@ -1194,7 +1184,7 @@ fn tab_bodies_fill_available_width_despite_legacy_width_settings() {
         .unwrap();
         let capped = tab_body(ws.cols, ws.rows, &ws.ui.config, false, None);
         let full = tab_body(ws.cols, ws.rows, &ws.ui.config, true, None);
-        assert_eq!(full.cols, available);
+        assert_eq!(full.cols, ws.cols);
         assert_eq!(capped.cols, available);
         let saved = serde_json::to_value(&ws.ui.config).unwrap();
         for key in ["read_width", "wrap_lines", "remembered_read_widths"] {
@@ -1541,10 +1531,11 @@ fn automatic_grid_parking_controls_alert_colors_and_three_row_tabs() {
             let views = ws.grid_layout();
             assert_eq!(views.iter().filter(|v| v.body.cols > 0).count(), count);
             for view in views.iter().filter(|v| v.body.cols > 0) {
-                let end = views
+                let end = ws
+                    .grid_slots()
                     .iter()
-                    .filter(|other| other.rect.y == view.rect.y && other.body.cols > 0)
-                    .map(|other| other.rect.x + other.rect.cols)
+                    .filter(|other| other.y == view.rect.y)
+                    .map(|other| other.x + other.cols)
                     .max()
                     .unwrap();
                 assert_eq!(end, ws.cols);
@@ -1777,7 +1768,7 @@ fn grid_header_numbers_park_close_and_footer_have_distinct_targets_without_zoom(
             for x in control.x..control.x + control.cols {
                 assert_eq!(
                     f.cells[usize::from(control.y * f.cols + x)].bg,
-                    Color::Default
+                    number_cell.bg
                 );
             }
         }
@@ -3604,4 +3595,208 @@ fn alerts_default_to_unread_history_toggle_and_bulk_acknowledgement_share_mouse_
         "a replaced shell's alert belongs in history"
     );
     assert!(!ui::has_unread_notifications(&ws.ui, &ws.panes));
+}
+
+#[test]
+fn incomplete_grids_keep_columns_and_show_noninteractive_inactive_slots() {
+    use kelpmux::native::hover;
+    for size in [(120, 40), (120, 80), (240, 70)] {
+        for background in [None, Some([12, 18, 24]), Some([246, 244, 240])] {
+            let mut ws = workspace(size, (3, 2));
+            ws.panes.pop();
+            ws.ui.terminal_theme[1] = background;
+            ws.reflow();
+            let slots = ws.grid_slots();
+            assert_eq!(slots.len(), 6);
+            let f = frame(&ws);
+            assert_eq!(f.panes.len(), 5);
+            for (view, slot) in f.panes.iter().zip(&slots) {
+                assert_eq!(view.rect, *slot);
+            }
+            let cols = usize::from(ws.automatic_shape().0);
+            for index in cols..slots.len() {
+                assert_eq!(slots[index].x, slots[index % cols].x);
+                assert_eq!(slots[index].cols, slots[index % cols].cols);
+            }
+            let empty = slots[5];
+            let point = Point {
+                x: empty.x + empty.cols / 2,
+                y: empty.y + empty.rows / 2,
+            };
+            let row: String = f.cells[usize::from(point.y * f.cols + empty.x)
+                ..usize::from(point.y * f.cols + empty.x + empty.cols)]
+                .iter()
+                .map(|cell| cell.text.as_str())
+                .collect();
+            assert!(row.contains("Inactive"));
+            assert_ne!(
+                f.cells[usize::from(point.y * f.cols + point.x)].bg,
+                Color::Default
+            );
+            assert!(Router::default().route(click(point), &f).is_empty());
+            assert!(hover::target(&f, point).is_none());
+            let mut display = Terminal::new(f.cols, f.rows);
+            display.feed(&terminal_diff(None, &f));
+            assert_eq!(display.snapshot().cells, f.cells);
+        }
+    }
+}
+
+#[test]
+fn double_click_headers_zoom_from_grid_and_sidebar_and_restore_previous_view() {
+    use kelpmux::native::workspace::{TabTarget, tab_targets};
+    for tabs in [false, true] {
+        let mut ws = workspace((120, 40), (2, 2));
+        if tabs {
+            ws.apply(&Action::Select(1)).unwrap();
+        }
+        let mut router = Router::default();
+        let point = if tabs {
+            let rect = tab_targets(ws.cols, ws.rows, &ws.ui.config, 4, 0, 0)
+                .into_iter()
+                .find(|(kind, _)| *kind == TabTarget::Pane(1))
+                .unwrap()
+                .1;
+            Point {
+                x: rect.x + 8,
+                y: rect.y + 1,
+            }
+        } else {
+            let rect = ws.layout()[1].rect;
+            Point {
+                x: rect.x + 8,
+                y: rect.y,
+            }
+        };
+        for (index, expected) in [Action::Focus(2), Action::Fullscreen(2)]
+            .into_iter()
+            .enumerate()
+        {
+            let routed = actions(router.route(click(point), &frame(&ws)));
+            assert_eq!(routed, vec![expected]);
+            for action in routed {
+                ws.apply(&action).unwrap();
+            }
+            let mut release = match click(point) {
+                InputEvent::Mouse(mouse) => mouse,
+                _ => unreachable!(),
+            };
+            release.kind = MouseKind::Release;
+            assert!(
+                router
+                    .route(InputEvent::Mouse(release), &frame(&ws))
+                    .is_empty()
+            );
+            if index == 0 {
+                assert!(!matches!(ws.reading, ReadingMode::Fullscreen(_)));
+            }
+        }
+        let zoomed = frame(&ws);
+        assert_eq!(zoomed.reading, ReadingMode::Fullscreen(2));
+        assert!(!zoomed.sidebar_status());
+        let body = zoomed.panes[1].body;
+        assert_eq!((body.x, body.y, body.cols, body.rows), (0, 1, 120, 38));
+        assert_eq!(
+            zoomed
+                .panes
+                .iter()
+                .filter(|view| view.body.cols > 0)
+                .count(),
+            1
+        );
+        let point = Point { x: 8, y: 0 };
+        for _ in 0..2 {
+            let routed = actions(router.route(click(point), &frame(&ws)));
+            for action in routed {
+                ws.apply(&action).unwrap();
+            }
+            let release = InputEvent::Mouse(MouseEvent {
+                position: point,
+                kind: MouseKind::Release,
+                button: 0,
+                shift: false,
+                alt: false,
+                ctrl: false,
+            });
+            assert!(router.route(release, &frame(&ws)).is_empty());
+        }
+        assert_eq!(
+            ws.reading,
+            if tabs {
+                ReadingMode::Tabs(2)
+            } else {
+                ReadingMode::Grid
+            }
+        );
+        assert_eq!(ws.panes.len(), 4);
+    }
+}
+
+#[test]
+fn dragging_headers_does_not_arm_double_click_zoom() {
+    let ws = workspace((120, 40), (2, 1));
+    let f = frame(&ws);
+    let mut router = Router::default();
+    let start = Point { x: 8, y: 0 };
+    assert_eq!(
+        actions(router.route(click(start), &f)),
+        vec![Action::Focus(1)]
+    );
+    for kind in [MouseKind::Move, MouseKind::Release] {
+        assert!(
+            router
+                .route(
+                    InputEvent::Mouse(MouseEvent {
+                        position: Point { x: 20, y: 0 },
+                        kind,
+                        button: 0,
+                        shift: false,
+                        alt: false,
+                        ctrl: false
+                    }),
+                    &f
+                )
+                .is_empty()
+        );
+    }
+    assert_eq!(
+        actions(router.route(click(start), &f)),
+        vec![Action::Focus(1)]
+    );
+}
+
+#[test]
+fn changing_views_between_header_clicks_does_not_trigger_zoom() {
+    let mut ws = workspace((120, 40), (2, 1));
+    let mut router = Router::default();
+    let header = Point { x: 8, y: 0 };
+    let routed = actions(router.route(click(header), &frame(&ws)));
+    for action in routed {
+        ws.apply(&action).unwrap();
+    }
+    let release = InputEvent::Mouse(MouseEvent {
+        position: header,
+        kind: MouseKind::Release,
+        button: 0,
+        shift: false,
+        alt: false,
+        ctrl: false,
+    });
+    assert!(router.route(release, &frame(&ws)).is_empty());
+    let mode = frame(&ws).controls()[1];
+    let routed = actions(router.route(
+        click(Point {
+            x: mode.x,
+            y: mode.y,
+        }),
+        &frame(&ws),
+    ));
+    assert_eq!(routed, vec![Action::Read(1)]);
+    for action in routed {
+        ws.apply(&action).unwrap();
+    }
+    assert_eq!(
+        actions(router.route(click(Point { x: 8, y: 1 }), &frame(&ws))),
+        vec![Action::Focus(1)]
+    );
 }
