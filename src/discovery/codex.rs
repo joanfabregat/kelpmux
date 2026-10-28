@@ -77,10 +77,21 @@ pub(super) fn enrich(
 #[derive(Default)]
 pub(super) struct Daemon {
     deadline: Option<Instant>,
-    reader: Option<BufReader<UnixStream>>,
+    reader: Option<RpcSocket>,
     failed: bool,
     next: u64,
     cache: BTreeMap<String, Value>,
+}
+impl Drop for Daemon {
+    fn drop(&mut self) {
+        if let Some(socket) = &mut self.reader {
+            socket
+                .get_ref()
+                .deadline
+                .set(Instant::now() + Duration::from_millis(25));
+            let _ = socket.close(None);
+        }
+    }
 }
 impl Daemon {
     fn request(&mut self, context: &Discovery, method: &str, params: Value) -> Result<Value> {
@@ -107,27 +118,20 @@ impl Daemon {
                     .codex_home
                     .join("app-server-control/app-server-control.sock"),
             )?;
-            stream.set_write_timeout(Some(RPC_TIMEOUT))?;
-            stream.set_read_timeout(Some(RPC_TIMEOUT))?;
-            let mut reader = BufReader::new(stream);
-            writeln!(
-                reader.get_mut(),
-                "{}",
-                json!({"id":1,"method":"initialize","params":{"clientInfo":{"name":"kelpmux","version":env!("CARGO_PKG_VERSION")},"capabilities":{"experimentalApi":true}}})
+            let mut reader = rpc_socket(stream)?;
+            rpc_send(
+                &mut reader,
+                json!({"id":1,"method":"initialize","params":{"clientInfo":{"name":"kelpmux","version":env!("CARGO_PKG_VERSION")},"capabilities":{"experimentalApi":true}}}),
             )?;
             rpc_result(&mut reader, 1)?;
-            writeln!(reader.get_mut(), "{}", json!({"method":"initialized"}))?;
+            rpc_send(&mut reader, json!({"method":"initialized"}))?;
             self.next = 2;
             self.reader = Some(reader);
         }
         let id = self.next;
         self.next += 1;
         let reader = self.reader.as_mut().unwrap();
-        writeln!(
-            reader.get_mut(),
-            "{}",
-            json!({"id":id,"method":method,"params":params})
-        )?;
+        rpc_send(reader, json!({"id":id,"method":method,"params":params}))?;
         rpc_result(reader, id)
     }
     fn read(&mut self, context: &Discovery, id: &str) -> Result<Value> {

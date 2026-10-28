@@ -28,6 +28,8 @@ struct Seen {
     session_id: Option<String>,
     title: String,
     status: Status,
+    #[serde(default)]
+    started_work: bool,
 }
 impl From<&PaneInfo> for Seen {
     fn from(pane: &PaneInfo) -> Self {
@@ -39,6 +41,10 @@ impl From<&PaneInfo> for Seen {
             session_id: pane.session_id.clone().filter(|id| crate::session_id(id)),
             title: clean(&pane.title),
             status: pane.status,
+            started_work: matches!(
+                pane.status,
+                Status::Working | Status::TurnFinished | Status::Failed
+            ),
         }
     }
 }
@@ -202,6 +208,9 @@ impl Activity {
                 if same_identity(old, seen) && seen.session_id.is_none() {
                     seen.session_id = old.session_id.clone();
                 }
+                if same_identity(old, seen) {
+                    seen.started_work |= old.started_work;
+                }
             }
         }
         let mut data = self.data.clone();
@@ -267,6 +276,16 @@ impl Activity {
     /// Terminal bells are explicit events, distinct from inferred agent questions.
     pub fn bell(&mut self, pane: &PaneInfo, time: u64) -> Result<bool> {
         if pane.kind.is_none() {
+            return Ok(false);
+        }
+        if pane.kind == Some(Kind::Claude)
+            && pane.status == Status::Idle
+            && !self
+                .data
+                .seen
+                .get(&pane.id)
+                .is_some_and(|seen| same_identity(seen, &Seen::from(pane)) && seen.started_work)
+        {
             return Ok(false);
         }
         if self.data.events.iter().rev().any(|event| {
