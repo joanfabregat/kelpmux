@@ -1621,6 +1621,30 @@ fn draw_tab(
             .file_name()
             .and_then(|name| name.to_str())
             .unwrap_or(&pane.cwd);
+        let folder = safe_text(folder);
+        let subtitle_width = if rect.rows >= 3 {
+            rect.cols.saturating_sub(4)
+        } else {
+            park.x.saturating_sub(track.x + track.cols + 2)
+        };
+        let subtitle = pane.kind.map_or(folder.clone(), |kind| {
+            let suffix = format!(" · {}", kind.as_str());
+            let available = subtitle_width.saturating_sub(suffix.chars().map(char_width).sum());
+            let mut prefix = String::new();
+            let mut used = 0;
+            let overflow = folder.chars().map(char_width).sum::<u16>() > available;
+            for c in folder.chars() {
+                if used + char_width(c) > available.saturating_sub(u16::from(overflow)) {
+                    break;
+                }
+                prefix.push(c);
+                used += char_width(c);
+            }
+            if overflow && available > 0 {
+                prefix.push('…');
+            }
+            format!("{prefix}{suffix}")
+        });
         write_text(
             frame,
             if rect.rows >= 3 {
@@ -1629,12 +1653,8 @@ fn draw_tab(
                 track.x + track.cols + 1
             },
             if rect.rows >= 3 { rect.y + 2 } else { rect.y },
-            if rect.rows >= 3 {
-                rect.cols.saturating_sub(4)
-            } else {
-                park.x.saturating_sub(track.x + track.cols + 2)
-            },
-            &safe_text(folder),
+            subtitle_width,
+            &subtitle,
             if text_color == Color::Indexed(232) {
                 Color::Indexed(240)
             } else {
@@ -1900,7 +1920,7 @@ fn draw_sidebar_disks(
         .map(|(_, percent)| {
             let percent = (*percent).min(100);
             (
-                format!("{}{percent}%", super::vitals::pie_glyph(percent)),
+                format!("{} {percent}%", super::vitals::pie_glyph(percent)),
                 if percent >= 90 { 196 } else { 222 },
             )
         })
