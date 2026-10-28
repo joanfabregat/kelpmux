@@ -2771,7 +2771,7 @@ fn status_summary_uses_equal_columns_paired_disks_and_complete_pids() {
             (bounds.y + 1..bounds.y + 1 + height).any(|y| row_text(y).contains("Uptime 0d 00:00"))
         );
         let tabs_y = bounds.y + 1 + height;
-        assert!(row_text(tabs_y).starts_with("[ Main ]"));
+        assert!(row_text(tabs_y).trim_start().starts_with("Main"));
         assert!(row_text(status::table_y(bounds, &ws.ui.status)).contains("CPU%"));
         if size.0 >= 120 {
             assert!(
@@ -2834,11 +2834,7 @@ fn status_summary_uses_equal_columns_paired_disks_and_complete_pids() {
             assert_eq!(text, "Load ");
             let disk_row = row_text(bounds.y + 4);
             assert!(disk_row.starts_with("/ [") && disk_row.contains("20% (75B/100B)"));
-            assert!(
-                row_text(tabs_y + 1)
-                    .trim_end()
-                    .ends_with("Tasks 0 (0 running)")
-            );
+            assert!(row_text(tabs_y).trim_end().ends_with("Tasks 0 (0 running)"));
             let start = usize::from((bounds.y + 4) * f.cols + bounds.x + 1 + meter_width + 2);
             let disk: String = f.cells[start..start + usize::from(meter_width)]
                 .iter()
@@ -3007,8 +3003,8 @@ fn status_task_counts_yield_to_long_searches_and_narrow_windows() {
             ws.ui.status_query = query.clone();
             let f = frame(&ws);
             let bounds = status::bounds(f.cols, f.rows);
-            let y = bounds.y + 2 + status::summary_height(bounds, &ws.ui.status);
-            let text = f.cells[usize::from(y * f.cols + bounds.x + 1)
+            let y = bounds.y + 1 + status::summary_height(bounds, &ws.ui.status);
+            let text = f.cells[usize::from(y * f.cols + bounds.x + 18)
                 ..usize::from(y * f.cols + bounds.x + bounds.cols - 1)]
                 .iter()
                 .map(|cell| cell.text.as_str())
@@ -3879,5 +3875,85 @@ fn minimum_sidebar_width_preserves_four_load_sections_and_legacy_saved_widths() 
                 assert_eq!(row.iter().filter(|c| c.text == "%").count(), 1);
             }
         }
+    }
+}
+
+#[test]
+fn status_tabs_have_filled_connected_headers_and_precise_hover_and_click_targets() {
+    use kelpmux::native::{
+        hover,
+        status::{self, Sort, View},
+    };
+    let mut ws = workspace((120, 40), (1, 1));
+    ws.apply(&Action::StatusOpen(Sort::Cpu)).unwrap();
+    for selected in [View::Main, View::Io] {
+        ws.apply(&Action::StatusView(selected)).unwrap();
+        let f = frame(&ws);
+        let bounds = status::bounds(f.cols, f.rows);
+        for (view, rect) in status::view_tabs(bounds, &ws.ui.status) {
+            assert_eq!(status::table_y(bounds, &ws.ui.status), rect.y + 1);
+            for x in rect.x..rect.x + rect.cols {
+                let cell = &f.cells[usize::from(rect.y * f.cols + x)];
+                assert_eq!(
+                    cell.bg,
+                    Color::Indexed(if selected == view { 114 } else { 67 })
+                );
+                assert!(!matches!(cell.text.as_str(), "[" | "]"));
+                let point = Point { x, y: rect.y };
+                assert_eq!(hover::target(&f, point), Some(rect));
+                assert_eq!(
+                    actions(Router::default().route(click(point), &f)),
+                    vec![Action::StatusView(view)]
+                );
+            }
+        }
+        let point = Point {
+            x: bounds.x + bounds.cols - 4,
+            y: bounds.y + 1 + status::summary_height(bounds, &ws.ui.status),
+        };
+        assert!(Router::default().route(click(point), &f).is_empty());
+        let mut terminal = Terminal::new(f.cols, f.rows);
+        terminal.feed(&terminal_diff(None, &f));
+        assert_eq!(terminal.snapshot().cells, f.cells);
+    }
+}
+
+#[test]
+fn input_requests_use_a_graphical_attention_symbol_in_tabs_grid_parked_and_overview() {
+    for tabs in [false, true] {
+        let mut ws = workspace((120, 40), (2, 1));
+        ws.panes[0].kind = Some(Kind::Codex);
+        ws.panes[0].status = Status::InputNeeded;
+        if tabs {
+            ws.apply(&Action::Select(1)).unwrap();
+        }
+        let f = frame(&ws);
+        assert!(
+            f.cells
+                .iter()
+                .any(|c| c.text == kelpmux::native::ui::ALERT_ICON && c.fg == Color::Indexed(226))
+        );
+        assert_eq!(
+            kelpmux::native::ui::status_icon(Status::InputNeeded),
+            kelpmux::native::ui::ALERT_ICON
+        );
+        ws.apply(&Action::Overview).unwrap();
+        let overview = frame(&ws);
+        assert!(
+            overview
+                .cells
+                .iter()
+                .any(|c| c.text == kelpmux::native::ui::ALERT_ICON)
+        );
+        ws.apply(&Action::DialogClose).unwrap();
+        ws.apply(&Action::Park(1)).unwrap();
+        ws.apply(&Action::Parked).unwrap();
+        let parked = frame(&ws);
+        assert!(
+            parked
+                .cells
+                .iter()
+                .any(|c| c.text == kelpmux::native::ui::ALERT_ICON && c.fg == Color::Indexed(226))
+        );
     }
 }
