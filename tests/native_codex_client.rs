@@ -86,6 +86,7 @@ impl Fixture {
                             let result = match request["method"].as_str().unwrap() {
                                 "initialize" => json!({"userAgent":"fixture"}),
                                 "initialized" => continue,
+                                "thread/list" => json!({"data":[],"nextCursor":null}),
                                 "thread/start" | "thread/resume" => json!({"thread":{"id":request["params"]["threadId"]}}),
                                 "thread/read" => {
                                     assert_eq!(request["params"]["includeTurns"], false);
@@ -183,6 +184,26 @@ fn synthetic_codex_tui() {
         if line == "exit" {
             break;
         }
+        if line == "picker" {
+            let stream = UnixStream::connect(std::env::var("FIXTURE_ENDPOINT").unwrap()).unwrap();
+            stream
+                .set_read_timeout(Some(Duration::from_secs(2)))
+                .unwrap();
+            let (mut picker, _) = tungstenite::client("ws://localhost/", stream).unwrap();
+            for (id, method) in [(1, "initialize"), (2, "thread/list")] {
+                picker
+                    .send(Message::Text(
+                        json!({"id":id,"method":method,"params":{}})
+                            .to_string()
+                            .into(),
+                    ))
+                    .unwrap();
+                picker.read().unwrap();
+            }
+            let _ = picker.close(None);
+            fs::write(root.join("picker-ready"), "yes").unwrap();
+            continue;
+        }
         if line == "reconnect" {
             let _ = socket.close(None);
             let stream = UnixStream::connect(std::env::var("FIXTURE_ENDPOINT").unwrap()).unwrap();
@@ -240,6 +261,14 @@ fn two_clients_in_one_directory_link_and_switch_automatically_with_live_status()
         cycle
     };
     let cycle = check(&mut poller, "thread-first", Status::Working);
+    fixture.children[0]
+        .stdin
+        .as_mut()
+        .unwrap()
+        .write_all(b"picker\n")
+        .unwrap();
+    wait(|| fixture.root.join("picker-ready").exists());
+    check(&mut poller, "thread-first", Status::Working);
     let first_pid = cycle.agents[0].pid;
     let link = process::environment(Path::new("/proc"), first_pid, "KELPMUX_CODEX_LINK").unwrap();
     assert!(

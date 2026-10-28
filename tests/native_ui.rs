@@ -2644,16 +2644,24 @@ fn tab_separators_preserve_folder_labels_geometry_and_click_targets() {
             let cells = &f.cells[start..start + usize::from(rect.cols - 2)];
             let text: String = cells.iter().map(|cell| cell.text.as_str()).collect();
             assert!(text.contains("project"));
-            assert!(
-                cells
-                    .iter()
-                    .all(|cell| cell.underline == (index + 1 < tabs.len()))
-            );
-            if index + 1 < tabs.len() {
+            assert!(cells.iter().all(|cell| !cell.underline));
+            if index > 0 {
+                assert_eq!(rect.y, tabs[index - 1].y + tabs[index - 1].rows + 1);
+                let y = rect.y - 1;
+                let row = &f.cells[usize::from(y * f.cols)..usize::from(y * f.cols + rect.cols)];
+                assert_eq!(row[0].text, " ");
+                assert_eq!(row[usize::from(rect.cols - 1)].text, " ");
                 assert!(
-                    cells
+                    row[1..usize::from(rect.cols - 1)]
                         .iter()
-                        .all(|cell| cell.underline_color == Some(Color::Indexed(238)))
+                        .all(|cell| cell.text == "─"
+                            && cell.fg == Color::Indexed(238)
+                            && !cell.underline)
+                );
+                assert!(
+                    Router::default()
+                        .route(click(Point { x: rect.x + 2, y }), &f)
+                        .is_empty()
                 );
             }
         } else if index > 0 {
