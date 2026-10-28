@@ -2178,7 +2178,7 @@ fn sidebar_status_controls_and_metrics_leave_the_last_terminal_row_usable() {
                 assert_eq!(left.x + left.cols, right.x);
                 assert_eq!(right.x + right.cols, width);
             }
-            let minimum = (size.0 / 5).clamp(18, 28);
+            let minimum = (size.0 / 5).clamp(kelpmux::native::ui::MIN_SIDEBAR_COLUMNS, 28);
             assert!((minimum..=minimum * 6 / 5).contains(&sidebar_width(size.0)));
             let targets = tab_targets(f.cols, f.rows, &f.ui.config, 9, 8, 0);
             for (target, rect) in &targets {
@@ -3512,7 +3512,7 @@ fn sidebar_drag_owns_mouse_gesture_and_resizes_all_shared_hit_targets() {
     let stored = serde_json::to_string(&ws.ui.config).unwrap();
     ws.ui.config = serde_json::from_str(&stored).unwrap();
     ws.resize(40, 20).unwrap();
-    assert_eq!(frame(&ws).panes[0].body.x, 21);
+    assert_eq!(frame(&ws).panes[0].body.x, 22);
     ws.resize(120, 40).unwrap();
     assert_eq!(frame(&ws).panes[0].body.x, 45);
     let mut observer = frame(&ws);
@@ -3828,7 +3828,7 @@ fn changing_views_between_header_clicks_does_not_trigger_zoom() {
 }
 
 #[test]
-fn minimum_sidebar_width_preserves_four_load_sections_and_legacy_saved_widths() {
+fn minimum_sidebar_width_preserves_five_load_sections_and_legacy_saved_widths() {
     use kelpmux::native::{
         ui::MIN_SIDEBAR_COLUMNS,
         vitals::{Vitals, render_segments},
@@ -3870,7 +3870,7 @@ fn minimum_sidebar_width_preserves_four_load_sections_and_legacy_saved_widths() 
                     row.iter()
                         .filter(|c| matches!(c.text.as_str(), "▰" | "▱"))
                         .count(),
-                    4
+                    5
                 );
                 assert_eq!(row.iter().filter(|c| c.text == "%").count(), 1);
             }
