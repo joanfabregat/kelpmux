@@ -1050,11 +1050,7 @@ fn neutral_tabs_ignore_legacy_palette_settings_and_numbers_focus() {
                 assert_eq!(f.cells[usize::from(number.y * f.cols + x)].text, " ");
                 assert_eq!(
                     f.cells[usize::from(number.y * f.cols + x)].bg,
-                    Color::Indexed(if index == 0 {
-                        240
-                    } else {
-                        kelpmux::native::ui::TAB_BG
-                    })
+                    Color::Indexed(if index == 0 { 240 } else { 238 })
                 );
             }
             assert_eq!(
@@ -1065,14 +1061,7 @@ fn neutral_tabs_ignore_legacy_palette_settings_and_numbers_focus() {
                 let title = &f.cells[usize::from((rect.y + 1) * f.cols + rect.x + 2)];
                 assert_eq!(title.text, "a");
                 assert_eq!(title.fg, Color::Indexed(231));
-                assert_eq!(
-                    title.bg,
-                    Color::Indexed(if index == 0 {
-                        240
-                    } else {
-                        kelpmux::native::ui::TAB_BG
-                    })
-                );
+                assert_eq!(title.bg, Color::Indexed(if index == 0 { 240 } else { 238 }));
             }
             let point = Point {
                 x: number.x + 1,
@@ -2620,7 +2609,7 @@ fn wheel_scrolls_tab_lists_without_switching_the_active_shell() {
 }
 
 #[test]
-fn tab_separators_preserve_folder_labels_geometry_and_click_targets() {
+fn tab_stripes_preserve_folder_labels_and_fill_adjacent_clickable_entries() {
     use kelpmux::native::{
         ui::TabPosition,
         workspace::{TabTarget, tab_targets},
@@ -2645,24 +2634,16 @@ fn tab_separators_preserve_folder_labels_geometry_and_click_targets() {
             let text: String = cells.iter().map(|cell| cell.text.as_str()).collect();
             assert!(text.contains("project"));
             assert!(cells.iter().all(|cell| !cell.underline));
+            assert_eq!(
+                f.cells[usize::from(rect.y * f.cols)].bg,
+                Color::Indexed(match index {
+                    0 => 240,
+                    1 | 3 => 238,
+                    _ => 236,
+                })
+            );
             if index > 0 {
-                assert_eq!(rect.y, tabs[index - 1].y + tabs[index - 1].rows + 1);
-                let y = rect.y - 1;
-                let row = &f.cells[usize::from(y * f.cols)..usize::from(y * f.cols + rect.cols)];
-                assert_eq!(row[0].text, " ");
-                assert_eq!(row[usize::from(rect.cols - 1)].text, " ");
-                assert!(
-                    row[1..usize::from(rect.cols - 1)]
-                        .iter()
-                        .all(|cell| cell.text == "─"
-                            && cell.fg == Color::Indexed(238)
-                            && !cell.underline)
-                );
-                assert!(
-                    Router::default()
-                        .route(click(Point { x: rect.x + 2, y }), &f)
-                        .is_empty()
-                );
+                assert_eq!(rect.y, tabs[index - 1].y + tabs[index - 1].rows);
             }
         } else if index > 0 {
             for y in rect.y..rect.y + rect.rows {
@@ -3535,7 +3516,7 @@ fn sidebar_drag_owns_mouse_gesture_and_resizes_all_shared_hit_targets() {
     let stored = serde_json::to_string(&ws.ui.config).unwrap();
     ws.ui.config = serde_json::from_str(&stored).unwrap();
     ws.resize(40, 20).unwrap();
-    assert_eq!(frame(&ws).panes[0].body.x, 20);
+    assert_eq!(frame(&ws).panes[0].body.x, 21);
     ws.resize(120, 40).unwrap();
     assert_eq!(frame(&ws).panes[0].body.x, 45);
     let mut observer = frame(&ws);
@@ -3848,4 +3829,55 @@ fn changing_views_between_header_clicks_does_not_trigger_zoom() {
         actions(router.route(click(Point { x: 8, y: 1 }), &frame(&ws))),
         vec![Action::Focus(1)]
     );
+}
+
+#[test]
+fn minimum_sidebar_width_preserves_four_load_sections_and_legacy_saved_widths() {
+    use kelpmux::native::{
+        ui::MIN_SIDEBAR_COLUMNS,
+        vitals::{Vitals, render_segments},
+    };
+    for cols in [40, 80, 120, 240] {
+        for dev in [false, true] {
+            let mut ws = workspace((cols, 40), (2, 2));
+            ws.apply(&Action::Select(1)).unwrap();
+            ws.apply(&Action::ResizeSidebar(1)).unwrap();
+            assert_eq!(ws.ui.config.sidebar_columns, Some(MIN_SIDEBAR_COLUMNS));
+            ws.ui.show_dev_badge = dev;
+            ws.ui.vitals = render_segments(&Vitals {
+                cpu: Some(51),
+                memory: Some(100),
+                swap: Some(0),
+                ..Default::default()
+            });
+            // Previously saved narrower sidebars remain valid, but render at the new minimum.
+            ws.ui.config.sidebar_columns = Some(18);
+            ws.ui.config.validate().unwrap();
+            let f = frame(&ws);
+            assert_eq!(f.sidebar_width(), MIN_SIDEBAR_COLUMNS);
+            let sidebar_rows: Vec<_> = f
+                .cells
+                .chunks(usize::from(f.cols))
+                .map(|row| &row[..usize::from(f.sidebar_width() - 1)])
+                .collect();
+            for labels in [&["CPU"][..], &["Memory", "RAM"][..], &["Swap", "SWP"][..]] {
+                let row = sidebar_rows
+                    .iter()
+                    .find(|row| {
+                        let text: String = row.iter().map(|c| c.text.as_str()).collect();
+                        labels
+                            .iter()
+                            .any(|label| text.trim_start().starts_with(label))
+                    })
+                    .unwrap();
+                assert_eq!(
+                    row.iter()
+                        .filter(|c| matches!(c.text.as_str(), "▰" | "▱"))
+                        .count(),
+                    4
+                );
+                assert_eq!(row.iter().filter(|c| c.text == "%").count(), 1);
+            }
+        }
+    }
 }
