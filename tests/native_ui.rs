@@ -1316,6 +1316,29 @@ fn tab_folder_subtitles_and_horizontal_bars_touch_terminal_content() {
         "project"
     );
     assert_ne!(f.cells[folder].fg, f.cells[name].fg);
+    for kind in [Some(Kind::Claude), Some(Kind::Codex), None] {
+        ws.panes[0].kind = kind;
+        let f = frame(&ws);
+        let subtitle = f.cells[folder..folder + usize::from(tab.cols - 4)]
+            .iter()
+            .map(|cell| cell.text.as_str())
+            .collect::<String>();
+        assert_eq!(
+            subtitle.trim_end(),
+            kind.map_or_else(
+                || "project".into(),
+                |kind| format!("project · {}", kind.as_str())
+            )
+        );
+    }
+    ws.panes[0].kind = Some(Kind::Codex);
+    ws.panes[0].cwd = "/repos/a-very-long-project-folder".into();
+    let f = frame(&ws);
+    let subtitle = f.cells[folder..folder + usize::from(tab.cols - 4)]
+        .iter()
+        .map(|cell| cell.text.as_str())
+        .collect::<String>();
+    assert!(subtitle.trim_end().ends_with("… · codex"), "{subtitle}");
     if position != TabPosition::Left {
         let body = f.panes[0].body;
         assert_eq!(body.rows, f.rows - 3);
@@ -2952,6 +2975,7 @@ fn sidebar_disks_keep_only_pies_and_percentages_on_one_clickable_line() {
         assert!(!text.contains('/'), "{text}");
         assert!(!text.contains("data"), "{text}");
         assert!(text.contains("20%") && text.contains("95%"), "{text}");
+        assert!(text.contains("◔ 20%") && text.contains("● 95%"), "{text}");
         assert!(
             !row.iter()
                 .any(|cell| matches!(cell.text.as_str(), "▰" | "▱"))
@@ -3643,7 +3667,7 @@ fn incomplete_grids_keep_columns_and_show_noninteractive_inactive_slots() {
 }
 
 #[test]
-fn double_click_headers_zoom_from_grid_and_sidebar_and_restore_previous_view() {
+fn double_click_grid_headers_open_regular_tabs_and_sidebar_tabs_toggle_fullscreen() {
     use kelpmux::native::workspace::{TabTarget, tab_targets};
     for tabs in [false, true] {
         let mut ws = workspace((120, 40), (2, 2));
@@ -3668,9 +3692,16 @@ fn double_click_headers_zoom_from_grid_and_sidebar_and_restore_previous_view() {
                 y: rect.y,
             }
         };
-        for (index, expected) in [Action::Focus(2), Action::Fullscreen(2)]
-            .into_iter()
-            .enumerate()
+        for (index, expected) in [
+            Action::Focus(2),
+            if tabs {
+                Action::Fullscreen(2)
+            } else {
+                Action::Read(2)
+            },
+        ]
+        .into_iter()
+        .enumerate()
         {
             let routed = actions(router.route(click(point), &frame(&ws)));
             assert_eq!(routed, vec![expected]);
@@ -3692,6 +3723,16 @@ fn double_click_headers_zoom_from_grid_and_sidebar_and_restore_previous_view() {
             }
         }
         let zoomed = frame(&ws);
+        if !tabs {
+            assert_eq!(zoomed.reading, ReadingMode::Tabs(2));
+            assert!(zoomed.sidebar_status());
+            let mut regular = workspace((120, 40), (2, 2));
+            regular.apply(&Action::Select(2)).unwrap();
+            assert_eq!(ws.layout(), regular.layout());
+            assert!(ws.ui.zoom_return.is_none());
+            assert_eq!(ws.panes.len(), 4);
+            continue;
+        }
         assert_eq!(zoomed.reading, ReadingMode::Fullscreen(2));
         assert!(!zoomed.sidebar_status());
         let body = zoomed.panes[1].body;
