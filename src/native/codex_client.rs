@@ -16,9 +16,19 @@ use std::{
     },
     path::{Path, PathBuf},
     process::{Child, Command},
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicBool, Ordering},
+    },
     time::{Duration, Instant},
 };
 use tungstenite::{Message, WebSocket, protocol::WebSocketConfig};
+
+fn trace(message: &str) {
+    if std::env::var_os("KELPMUX_CODEX_BRIDGE_DEBUG").is_some() {
+        eprintln!("KelpMux Codex bridge: {message}");
+    }
+}
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct LinkRecord {
@@ -64,25 +74,28 @@ pub fn identity(proc_root: &Path, pid: u32) -> Option<Option<String>> {
 }
 
 #[derive(Default)]
-pub struct Tracker {
-    pending: BTreeMap<String, u64>,
+struct Tracker {
+    pending: BTreeMap<(u64, String), u64>,
     sequence: u64,
     selected: u64,
     pub thread: Option<String>,
+    owner: Option<u64>,
 }
 impl Tracker {
     /// Only client-originated selection operations identify the displayed thread.
-    pub fn client(&mut self, value: &Value) -> bool {
+    fn client(&mut self, connection: u64, value: &Value) -> bool {
         match value["method"].as_str().unwrap_or("") {
             "thread/start" | "thread/resume" | "thread/fork" => {
                 self.sequence += 1;
                 self.selected = self.sequence;
                 self.thread = None;
+                self.owner = Some(connection);
                 if self.pending.len() >= 64 {
                     self.pending.clear();
                 }
                 if value["id"].is_string() || value["id"].is_number() {
-                    self.pending.insert(value["id"].to_string(), self.sequence);
+                    self.pending
+                        .insert((connection, value["id"].to_string()), self.sequence);
                 }
                 true
             }
@@ -93,6 +106,7 @@ impl Tracker {
                 {
                     self.sequence += 1;
                     self.selected = self.sequence;
+                    self.owner = Some(connection);
                     let changed = self.thread.as_deref() != Some(id);
                     self.thread = Some(id.into());
                     changed
@@ -102,7 +116,8 @@ impl Tracker {
             }
             "thread/unsubscribe"
                 if value["params"]["threadId"].as_str() == self.thread.as_deref()
-                    && self.thread.is_some() =>
+                    && self.thread.is_some()
+                    && self.owner == Some(connection) =>
             {
                 self.sequence += 1;
                 self.selected = self.sequence;
@@ -112,8 +127,8 @@ impl Tracker {
             _ => false,
         }
     }
-    pub fn server(&mut self, value: &Value) -> bool {
-        let Some(sequence) = self.pending.remove(&value["id"].to_string()) else {
+    fn server(&mut self, connection: u64, value: &Value) -> bool {
+        let Some(sequence) = self.pending.remove(&(connection, value["id"].to_string())) else {
             return false;
         };
         if sequence != self.selected {
@@ -124,6 +139,86 @@ impl Tracker {
             .filter(|id| crate::session_id(id));
         self.thread = thread.map(str::to_owned);
         true
+    }
+    fn disconnect(&mut self, connection: u64) -> bool {
+        self.pending.retain(|(id, _), _| *id != connection);
+        if self.owner != Some(connection) {
+            return false;
+        }
+        self.sequence += 1;
+        self.selected = self.sequence;
+        self.owner = None;
+        self.thread = None;
+        true
+    }
+}
+
+struct ConnectionState {
+    record: PathBuf,
+    pid: u32,
+    birth: u64,
+    tracker: Mutex<Tracker>,
+    stop: AtomicBool,
+}
+impl ConnectionState {
+    fn save(&self, tracker: &Tracker) -> Result<()> {
+        journal::atomic(
+            &self.record,
+            &LinkRecord {
+                pid: self.pid,
+                birth: self.birth,
+                thread: tracker.thread.clone(),
+            },
+        )
+    }
+    fn observe(&self, connection: u64, from_client: bool, value: &Value) -> Result<()> {
+        let mut tracker = self
+            .tracker
+            .lock()
+            .map_err(|_| "Codex selection lock failed")?;
+        let changed = if from_client {
+            tracker.client(connection, value)
+        } else {
+            tracker.server(connection, value)
+        };
+        if changed {
+            self.save(&tracker)?;
+        }
+        Ok(())
+    }
+    fn disconnect(&self, connection: u64) -> Result<()> {
+        let mut tracker = self
+            .tracker
+            .lock()
+            .map_err(|_| "Codex selection lock failed")?;
+        if tracker.disconnect(connection) {
+            self.save(&tracker)?;
+        }
+        Ok(())
+    }
+}
+struct Connections {
+    state: Arc<ConnectionState>,
+    workers: Vec<std::thread::JoinHandle<()>>,
+}
+impl Connections {
+    fn reap(&mut self) {
+        let mut index = 0;
+        while index < self.workers.len() {
+            if self.workers[index].is_finished() {
+                let _ = self.workers.swap_remove(index).join();
+            } else {
+                index += 1;
+            }
+        }
+    }
+}
+impl Drop for Connections {
+    fn drop(&mut self) {
+        self.state.stop.store(true, Ordering::Relaxed);
+        for worker in self.workers.drain(..) {
+            let _ = worker.join();
+        }
     }
 }
 
@@ -153,13 +248,11 @@ fn flush(socket: &mut WebSocket<UnixStream>) -> Result<bool> {
     }
 }
 /// Forward existing protocol operations unchanged. Observe only selection metadata.
-pub fn relay(
+fn relay(
     client: UnixStream,
     upstream: &Path,
-    record: &Path,
-    pid: u32,
-    birth: u64,
-    child: &mut Child,
+    state: &ConnectionState,
+    connection: u64,
 ) -> Result<()> {
     let mut peer: libc::ucred = unsafe { std::mem::zeroed() };
     let mut size = std::mem::size_of::<libc::ucred>() as libc::socklen_t;
@@ -179,8 +272,8 @@ pub fn relay(
     let mut verified = false;
     for _ in 0..8 {
         let process = process::read(Path::new("/proc"), current)?;
-        if process.pid == pid {
-            verified = process.start == birth;
+        if process.pid == state.pid {
+            verified = process.start == state.birth;
             break;
         }
         current = process.parent;
@@ -188,19 +281,24 @@ pub fn relay(
     if !verified {
         return Err("Codex bridge connection does not belong to its terminal client".into());
     }
+    trace("client process verified");
     client.set_read_timeout(Some(Duration::from_secs(2)))?;
     client.set_write_timeout(Some(Duration::from_secs(2)))?;
-    let mut client = tungstenite::accept_with_config(client, Some(config()))?;
-    let stream = UnixStream::connect(upstream)?;
+    let mut client = tungstenite::accept_with_config(client, Some(config()))
+        .map_err(|_| "Codex bridge could not complete the client WebSocket handshake")?;
+    trace("client WebSocket ready");
+    let stream = UnixStream::connect(upstream)
+        .map_err(|_| "Codex bridge could not connect to the shared daemon socket")?;
     stream.set_read_timeout(Some(Duration::from_secs(2)))?;
     stream.set_write_timeout(Some(Duration::from_secs(2)))?;
     let (mut daemon, _) =
-        tungstenite::client::client_with_config("ws://localhost/", stream, Some(config()))?;
+        tungstenite::client::client_with_config("ws://localhost/", stream, Some(config()))
+            .map_err(|_| "Codex bridge could not complete the daemon WebSocket handshake")?;
+    trace("daemon WebSocket ready");
     client.get_ref().set_nonblocking(true)?;
     daemon.get_ref().set_nonblocking(true)?;
-    let mut tracker = Tracker::default();
     loop {
-        if child.try_wait()?.is_some() {
+        if state.stop.load(Ordering::Relaxed) {
             return Ok(());
         }
         let mut backlog = false;
@@ -218,21 +316,7 @@ pub fn relay(
                 backlog |= index == 63;
                 if let Message::Text(text) = &message {
                     if let Ok(value) = serde_json::from_str::<Value>(text) {
-                        let changed = if from_client {
-                            tracker.client(&value)
-                        } else {
-                            tracker.server(&value)
-                        };
-                        if changed {
-                            journal::atomic(
-                                record,
-                                &LinkRecord {
-                                    pid,
-                                    birth,
-                                    thread: tracker.thread.clone(),
-                                },
-                            )?;
-                        }
+                        state.observe(connection, from_client, &value)?;
                     }
                 }
                 // Ping/pong is hop-local; tungstenite queues the corresponding pong.
@@ -425,43 +509,61 @@ pub fn run(args: &[String]) -> Result<()> {
             thread: None,
         },
     )?;
-    let mut waiting = Instant::now();
+    let mut connections = Connections {
+        state: Arc::new(ConnectionState {
+            record,
+            pid: child.0.id(),
+            birth,
+            tracker: Mutex::new(Tracker::default()),
+            stop: AtomicBool::new(false),
+        }),
+        workers: Vec::new(),
+    };
+    let waiting = Instant::now();
+    let mut next_connection = 0;
     let result = loop {
+        connections.reap();
         if let Some(status) = child.0.try_wait()? {
             break status;
         }
         match listener.accept() {
             Ok((client, _)) => {
-                let _ = relay(
-                    client,
-                    &upstream,
-                    &record,
-                    child.0.id(),
-                    birth,
-                    &mut child.0,
-                );
-                journal::atomic(
-                    &record,
-                    &LinkRecord {
-                        pid: child.0.id(),
-                        birth,
-                        thread: None,
-                    },
-                )?;
-                waiting = Instant::now();
+                trace("client connection accepted");
+                if connections.workers.len() >= 16 {
+                    trace("connection limit reached");
+                    continue;
+                }
+                next_connection += 1;
+                let connection = next_connection;
+                let state = connections.state.clone();
+                let upstream = upstream.clone();
+                connections.workers.push(std::thread::spawn(move || {
+                    if let Err(error) = relay(client, &upstream, &state, connection) {
+                        trace(&format!("connection closed: {error}"));
+                    }
+                    let _ = state.disconnect(connection);
+                }));
             }
             Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
-                if waiting.elapsed() > Duration::from_secs(30) {
+                if next_connection == 0 && waiting.elapsed() > Duration::from_secs(30) {
                     let _ = child.0.kill();
                     break child.0.wait()?;
                 }
-                std::thread::sleep(Duration::from_millis(20));
+                let mut fd = libc::pollfd {
+                    fd: listener.as_raw_fd(),
+                    events: libc::POLLIN,
+                    revents: 0,
+                };
+                unsafe {
+                    libc::poll(&mut fd, 1, 100);
+                }
             }
             Err(e) => {
                 return Err(e.into());
             }
         }
     };
+    drop(connections);
     drop(child);
     drop(dir);
     use std::os::unix::process::ExitStatusExt;
@@ -540,26 +642,59 @@ mod tests {
     #[test]
     fn selection_replies_follow_client_order_and_ignore_other_threads() {
         let mut tracker = Tracker::default();
-        assert!(tracker.client(&json!({"id":1,"method":"thread/start"})));
-        assert!(tracker.client(&json!({"id":2,"method":"thread/resume"})));
-        assert!(!tracker.server(&json!({"id":1,"result":{"thread":{"id":"wrong-thread"}}})));
-        assert!(tracker.server(&json!({"id":2,"result":{"thread":{"id":"selected-thread"}}})));
+        assert!(tracker.client(0, &json!({"id":1,"method":"thread/start"})));
+        assert!(tracker.client(0, &json!({"id":2,"method":"thread/resume"})));
+        assert!(!tracker.server(
+            0,
+            &json!({"id":1,"result":{"thread":{"id":"wrong-thread"}}})
+        ));
+        assert!(tracker.server(
+            0,
+            &json!({"id":2,"result":{"thread":{"id":"selected-thread"}}})
+        ));
         assert_eq!(tracker.thread.as_deref(), Some("selected-thread"));
-        assert!(
-            !tracker
-                .server(&json!({"method":"thread/started","params":{"thread":{"id":"subagent"}}}))
-        );
+        assert!(!tracker.server(
+            0,
+            &json!({"method":"thread/started","params":{"thread":{"id":"subagent"}}})
+        ));
         assert!(!tracker.client(
+            0,
             &json!({"id":3,"method":"thread/read","params":{"threadId":"picker-preview"}})
         ));
         assert_eq!(tracker.thread.as_deref(), Some("selected-thread"));
-        assert!(
-            tracker.client(&json!({"method":"turn/start","params":{"threadId":"switched-thread"}}))
-        );
+        assert!(tracker.client(
+            0,
+            &json!({"method":"turn/start","params":{"threadId":"switched-thread"}})
+        ));
         assert_eq!(tracker.thread.as_deref(), Some("switched-thread"));
         assert!(tracker.client(
+            0,
             &json!({"method":"thread/unsubscribe","params":{"threadId":"switched-thread"}})
         ));
+        assert!(tracker.thread.is_none());
+    }
+    #[test]
+    fn picker_connections_share_selection_without_colliding_request_ids_or_clearing_the_main_link()
+    {
+        let mut tracker = Tracker::default();
+        tracker.client(1, &json!({"id":1,"method":"thread/resume"}));
+        tracker.client(2, &json!({"id":1,"method":"thread/list"}));
+        assert!(!tracker.server(2, &json!({"id":1,"result":{"thread":{"id":"preview"}}})));
+        assert!(tracker.server(1, &json!({"id":1,"result":{"thread":{"id":"main-thread"}}})));
+        assert!(!tracker.disconnect(2));
+        assert_eq!(tracker.thread.as_deref(), Some("main-thread"));
+        tracker.client(2, &json!({"id":2,"method":"thread/resume"}));
+        tracker.client(1, &json!({"id":2,"method":"thread/resume"}));
+        assert!(!tracker.server(
+            2,
+            &json!({"id":2,"result":{"thread":{"id":"older-selection"}}})
+        ));
+        assert!(tracker.server(
+            1,
+            &json!({"id":2,"result":{"thread":{"id":"new-selection"}}})
+        ));
+        assert!(!tracker.disconnect(2));
+        assert!(tracker.disconnect(1));
         assert!(tracker.thread.is_none());
     }
     #[test]

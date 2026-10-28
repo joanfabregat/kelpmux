@@ -1436,14 +1436,15 @@ pub fn tab_targets(
     let [mut new, parked] = sidebar_actions(cols, rows, parked_count, config);
     let area = new.y;
     let height = new.rows;
-    let overflow = count > usize::from(area / height);
+    let stride = height + 1;
+    let overflow = count > usize::from((area + 1) / stride);
     let compact = area < height + 2;
     let available = area.saturating_sub(if overflow {
         if compact { 1 } else { 2 }
     } else {
         0
     });
-    let capacity = usize::from(available / height).max(1);
+    let capacity = usize::from((available + 1) / stride).max(1);
     let start = if overflow {
         active.saturating_sub(capacity - 1)
     } else {
@@ -1457,14 +1458,14 @@ pub fn tab_targets(
                 TabTarget::Pane(index),
                 Rect {
                     x: 0,
-                    y: top + i as u16 * height,
+                    y: top + i as u16 * stride,
                     cols: width,
                     rows: height,
                 },
             )
         })
         .collect();
-    let end = top + tabs.len() as u16 * height;
+    let end = top + tabs.len() as u16 * stride - 1;
     new.y = end + u16::from(overflow && !compact);
     if overflow {
         tabs.push((
