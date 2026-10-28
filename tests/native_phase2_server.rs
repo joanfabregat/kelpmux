@@ -1133,7 +1133,7 @@ fn inactive_grid_cells_are_visual_and_new_tabs_fill_them_without_replacing_shell
 }
 
 #[test]
-fn double_click_zoom_resizes_one_live_pty_and_restores_grid_and_tab_views() {
+fn double_click_grid_opens_regular_tabs_and_sidebar_zoom_preserves_live_ptys() {
     use kelpmux::native::input::Router;
     let daemon = Daemon::start();
     let mut peer = daemon.attach();
@@ -1187,7 +1187,12 @@ fn double_click_zoom_resizes_one_live_pty_and_restores_grid_and_tab_views() {
                 if press == 0 {
                     frame.active == pane
                 } else {
-                    frame.reading == ReadingMode::Fullscreen(pane)
+                    frame.reading
+                        == if tabs {
+                            ReadingMode::Fullscreen(pane)
+                        } else {
+                            ReadingMode::Tabs(pane)
+                        }
                 }
             });
             assert!(
@@ -1212,7 +1217,13 @@ fn double_click_zoom_resizes_one_live_pty_and_restores_grid_and_tab_views() {
             .find(|view| view.pane.id == pane)
             .unwrap()
             .body;
-        assert_eq!((body.x, body.y, body.cols, body.rows), (0, 1, 120, 38));
+        if tabs {
+            assert_eq!((body.x, body.y, body.cols, body.rows), (0, 1, 120, 38));
+        } else {
+            assert!(f.sidebar_status());
+            assert!(body.x > 0);
+        }
+        let expected_size = format!("ZOOM_SIZE={} {}", body.rows, body.cols);
         peer.input("printf 'ZOOM_SIZE='; stty size\n");
         peer.wait(|frame| {
             frame
@@ -1220,9 +1231,13 @@ fn double_click_zoom_resizes_one_live_pty_and_restores_grid_and_tab_views() {
                 .iter()
                 .map(|cell| cell.text.as_str())
                 .collect::<String>()
-                .contains("ZOOM_SIZE=38 120")
+                .contains(&expected_size)
         });
-        peer.action(Action::Fullscreen(pane));
+        peer.action(if tabs {
+            Action::Fullscreen(pane)
+        } else {
+            Action::CloseReading
+        });
         peer.wait(|frame| {
             frame.reading
                 == if tabs {
