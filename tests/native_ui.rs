@@ -2919,7 +2919,7 @@ fn dev_badge_is_visible_in_grid_horizontal_tabs_and_compact_sidebars() {
 }
 
 #[test]
-fn sidebar_disks_keep_prefixed_pies_on_one_clickable_line() {
+fn sidebar_disks_keep_only_pies_and_percentages_on_one_clickable_line() {
     use kelpmux::native::{
         status::{self, Sort},
         ui::TabPosition,
@@ -2949,8 +2949,8 @@ fn sidebar_disks_keep_prefixed_pies_on_one_clickable_line() {
             .iter()
             .map(|cell| cell.text.as_str())
             .collect::<String>();
-        assert!(text.contains('/'), "{text}");
-        assert!(text.contains("/data"), "{text}");
+        assert!(!text.contains('/'), "{text}");
+        assert!(!text.contains("data"), "{text}");
         assert!(text.contains("20%") && text.contains("95%"), "{text}");
         assert!(
             !row.iter()
@@ -2972,7 +2972,7 @@ fn sidebar_disks_keep_prefixed_pies_on_one_clickable_line() {
             .map(|cell| cell.text.as_str())
             .collect::<String>();
         assert!(
-            text.contains("/data") && text.matches("100").count() == 2,
+            !text.contains('/') && text.matches("100%").count() == 2,
             "{text}"
         );
     }

@@ -870,7 +870,6 @@ fn search_resets_result_selection_and_reveals_hidden_scratch() {
 #[test]
 fn shared_codex_conversation_picker_drives_live_tab_status_and_drops_links_after_process_exit() {
     use std::{
-        io::{BufRead, BufReader},
         os::unix::net::UnixListener,
         sync::{
             Arc,
@@ -900,13 +899,12 @@ fn shared_codex_conversation_picker_drives_live_tab_status_and_drops_links_after
             stream
                 .set_read_timeout(Some(Duration::from_millis(500)))
                 .unwrap();
-            let mut reader = BufReader::new(stream);
+            let mut socket = tungstenite::accept(stream).unwrap();
             loop {
-                let mut line = String::new();
-                if !matches!(reader.read_line(&mut line), Ok(size) if size > 0) {
+                let Ok(tungstenite::Message::Text(text)) = socket.read() else {
                     break;
-                }
-                let message: serde_json::Value = serde_json::from_str(&line).unwrap();
+                };
+                let message: serde_json::Value = serde_json::from_str(&text).unwrap();
                 let result = match message["method"].as_str().unwrap() {
                     "initialize" => serde_json::json!({}),
                     "initialized" => continue,
@@ -925,12 +923,13 @@ fn shared_codex_conversation_picker_drives_live_tab_status_and_drops_links_after
                     }
                     method => panic!("unexpected mutating method {method}"),
                 };
-                if writeln!(
-                    reader.get_mut(),
-                    "{}",
-                    serde_json::json!({"id":message["id"],"result":result})
-                )
-                .is_err()
+                if socket
+                    .send(tungstenite::Message::Text(
+                        serde_json::json!({"id":message["id"],"result":result})
+                            .to_string()
+                            .into(),
+                    ))
+                    .is_err()
                 {
                     break;
                 }

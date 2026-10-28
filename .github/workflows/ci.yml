@@ -212,6 +212,7 @@ jobs:
               (["MIT", "Apache-2.0", "MIT OR Apache-2.0", "Apache-2.0 OR MIT", "Unlicense OR MIT"] | index($package.license) != null)
               or ($package.name == "unicode-ident" and $package.license == "(MIT OR Apache-2.0) AND Unicode-3.0")
               or ($package.name == "cursor-icon" and $package.license == "MIT OR Apache-2.0 OR Zlib")
+              or ($package.name == "r-efi" and $package.license == "MIT OR Apache-2.0 OR LGPL-2.1-or-later")
               or ((["linux-raw-sys", "rustix", "rustix-openpty"] | index($package.name) != null)
                  and $package.license == "Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT")
             )
