@@ -9,6 +9,13 @@ pub const MIN_SIDEBAR_COLUMNS: u16 = 21;
 pub const PARKED_BG: u8 = 60;
 pub const RESTORE_BG: u8 = 29;
 pub const ALERT_ICON: &str = "⚠︎";
+pub fn status_icon(status: crate::model::Status) -> &'static str {
+    if status == crate::model::Status::InputNeeded {
+        ALERT_ICON
+    } else {
+        status.marker()
+    }
+}
 pub fn visible_notifications<'a>(
     ui: &'a UiState,
     panes: impl IntoIterator<Item = &'a super::protocol::PaneInfo>,

@@ -1788,11 +1788,10 @@ impl Router {
                     } else if mouse.position.y
                         == bounds.y + 1 + status::summary_height(bounds, &ui.status)
                     {
-                        Some(Action::StatusView(if mouse.position.x < bounds.x + 10 {
-                            View::Main
-                        } else {
-                            View::Io
-                        }))
+                        status::view_tabs(bounds, &ui.status)
+                            .into_iter()
+                            .find(|(_, rect)| rect.contains(mouse.position))
+                            .map(|(view, _)| Action::StatusView(view))
                     } else if mouse.position.y == status::table_y(bounds, &ui.status) {
                         let mut x = bounds.x + 1;
                         let mut selected = None;
