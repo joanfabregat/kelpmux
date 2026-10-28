@@ -1324,7 +1324,6 @@ fn draw_tabs(frame: &mut Frame, workspace: &Workspace, spinner: usize) {
         .iter()
         .position(|pane| pane.id == active_id)
         .unwrap_or(0);
-    let mut previous_tab = false;
     for (target, rect) in tab_targets(
         frame.cols,
         frame.rows,
@@ -1402,19 +1401,6 @@ fn draw_tabs(frame: &mut Frame, workspace: &Workspace, spinner: usize) {
                         "",
                         spinner,
                     );
-                    if previous_tab {
-                        write_text(
-                            frame,
-                            rect.x + 1,
-                            rect.y - 1,
-                            rect.cols.saturating_sub(2),
-                            &"─".repeat(usize::from(rect.cols.saturating_sub(2))),
-                            theme_surface(workspace, 24),
-                            tab_surface(workspace),
-                            false,
-                        );
-                    }
-                    previous_tab = true;
                 }
             }
         }
@@ -1468,7 +1454,11 @@ fn draw_tab(
         ReadingMode::Grid | ReadingMode::Fullscreen(_)
     );
     let accent = tab_accent(workspace, selected);
-    let bg = tab_background(workspace, selected);
+    let bg = if !grid && !selected && pane.number % 2 == 0 {
+        theme_surface(workspace, 24)
+    } else {
+        tab_background(workspace, selected)
+    };
     let text_color = if selected && !grid {
         let (r, g, b) = color_rgb(bg, false);
         Color::Indexed(
