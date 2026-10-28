@@ -622,7 +622,8 @@ impl Workspace {
                 }
             }
             Action::ResizeSidebar(columns) => {
-                self.ui.config.sidebar_columns = Some(columns.clamp(18, 4096));
+                self.ui.config.sidebar_columns =
+                    Some(columns.clamp(super::ui::MIN_SIDEBAR_COLUMNS, 4096));
             }
             Action::NotificationSoundToggle => {
                 self.ui.config.notification_sound = !self.ui.config.notification_sound
@@ -1186,7 +1187,7 @@ pub fn move_cards(bounds: Rect, columns: u8, rows: u8) -> Vec<Rect> {
 }
 /// Grow with the screen while staying within the original width and +20%.
 pub fn sidebar_width(cols: u16) -> u16 {
-    let minimum = (cols / 5).clamp(18, 28);
+    let minimum = (cols / 5).clamp(super::ui::MIN_SIDEBAR_COLUMNS, 28);
     (cols / 4)
         .clamp(minimum, minimum * 6 / 5)
         .saturating_sub(2)
@@ -1436,15 +1437,14 @@ pub fn tab_targets(
     let [mut new, parked] = sidebar_actions(cols, rows, parked_count, config);
     let area = new.y;
     let height = new.rows;
-    let stride = height + 1;
-    let overflow = count > usize::from((area + 1) / stride);
+    let overflow = count > usize::from(area / height);
     let compact = area < height + 2;
     let available = area.saturating_sub(if overflow {
         if compact { 1 } else { 2 }
     } else {
         0
     });
-    let capacity = usize::from((available + 1) / stride).max(1);
+    let capacity = usize::from(available / height).max(1);
     let start = if overflow {
         active.saturating_sub(capacity - 1)
     } else {
@@ -1458,14 +1458,14 @@ pub fn tab_targets(
                 TabTarget::Pane(index),
                 Rect {
                     x: 0,
-                    y: top + i as u16 * stride,
+                    y: top + i as u16 * height,
                     cols: width,
                     rows: height,
                 },
             )
         })
         .collect();
-    let end = top + tabs.len() as u16 * stride - 1;
+    let end = top + tabs.len() as u16 * height;
     new.y = end + u16::from(overflow && !compact);
     if overflow {
         tabs.push((
