@@ -989,7 +989,7 @@ fn draw_dialog(
                 let label = format!(
                     " {} {} {} · {} · session {}",
                     pane.number,
-                    pane.status.marker(),
+                    super::ui::status_icon(pane.status),
                     pane.title,
                     pane.status.text(),
                     pane.session_id.as_deref().unwrap_or("unknown")
@@ -1532,7 +1532,12 @@ fn draw_tab(
     } else {
         (title_x, title_width)
     };
-    let bell_width = if unread { 2.min(title_width) } else { 0 };
+    let bell_width =
+        if unread && !(pane.status == crate::model::Status::InputNeeded && track.cols > 0) {
+            2.min(title_width)
+        } else {
+            0
+        };
     if grid && title_width > 0 {
         write_text(
             frame,
@@ -1714,6 +1719,21 @@ fn draw_tab(
             },
             spinner,
         );
+    } else if pane.status == crate::model::Status::InputNeeded {
+        activity_attention(frame, track);
+    }
+}
+
+fn activity_attention(frame: &mut Frame, track: Rect) {
+    if track.cols == 0 {
+        return;
+    }
+    let index = usize::from(track.y) * usize::from(frame.cols) + usize::from(track.x);
+    if let Some(cell) = frame.cells.get_mut(index) {
+        cell.text = super::ui::ALERT_ICON.into();
+        cell.fg = Color::Indexed(226);
+        cell.width = 1;
+        cell.bold = true;
     }
 }
 
@@ -2506,6 +2526,16 @@ fn draw_parked(
                 },
                 spinner,
             );
+        } else if pane.status == crate::model::Status::InputNeeded {
+            activity_attention(
+                frame,
+                Rect {
+                    x: rect.x + 6,
+                    y,
+                    cols: 1,
+                    rows: 1,
+                },
+            );
         }
     }
 }
@@ -2599,7 +2629,7 @@ fn draw_dashboard(
                 format!(
                     "{} {} {} · {} · session {} · {} · {} · {}{}",
                     pane.number,
-                    pane.status.marker(),
+                    super::ui::status_icon(pane.status),
                     pane.title,
                     pane.status.text(),
                     pane.session_id.as_deref().unwrap_or("unknown"),
@@ -2640,7 +2670,7 @@ fn draw_dashboard(
                         if item.title.starts_with("Bell · ") {
                             super::ui::ALERT_ICON
                         } else {
-                            item.status.marker()
+                            super::ui::status_icon(item.status)
                         },
                         location,
                         item.title,
@@ -2721,21 +2751,24 @@ fn draw_status(frame: &mut Frame, workspace: &Workspace, bounds: Rect) {
     let x = bounds.x + 1;
     let summary_height = status::summary_height(bounds, data);
     let tabs_y = bounds.y + 1 + summary_height;
-    let main = ui.status_view == View::Main;
-    write_text(
-        frame,
-        x,
-        tabs_y,
-        width,
-        if main {
-            "[ Main ]   I/O"
-        } else {
-            "  Main   [ I/O ]"
-        },
-        Color::Indexed(117),
-        bg,
-        true,
-    );
+    for (view, rect) in status::view_tabs(bounds, data) {
+        let selected = ui.status_view == view;
+        let tab_bg = Color::Indexed(if selected { 114 } else { 67 });
+        let label = if view == View::Main { "Main" } else { "I/O" };
+        fill(frame, rect, tab_bg);
+        write_text(
+            frame,
+            rect.x + (rect.cols - label.len() as u16) / 2,
+            rect.y,
+            rect.cols,
+            label,
+            Color::Indexed(if selected { 232 } else { 231 }),
+            tab_bg,
+            selected,
+        );
+    }
+    let query_x = x + 17;
+    let query_width = width.saturating_sub(17);
     let mut query = if ui.status_query.is_empty() {
         "/ search · c CPU · m memory · p PID · r/w I/O".to_string()
     } else {
@@ -2745,19 +2778,20 @@ fn draw_status(frame: &mut Frame, workspace: &Workspace, bounds: Rect) {
     let tasks_width = tasks.chars().map(char_width).sum::<u16>();
     let show_tasks = data.ready
         && width >= 50
+        && query_width >= tasks_width + 10
         && (ui.status_query.is_empty()
-            || query.chars().map(char_width).sum::<u16>() + tasks_width + 2 <= width);
-    if show_tasks && query.chars().map(char_width).sum::<u16>() + tasks_width + 2 > width {
+            || query.chars().map(char_width).sum::<u16>() + tasks_width + 2 <= query_width);
+    if show_tasks && query.chars().map(char_width).sum::<u16>() + tasks_width + 2 > query_width {
         query = "/ search".into();
     }
     write_text(
         frame,
-        x,
-        tabs_y + 1,
+        query_x,
+        tabs_y,
         if show_tasks {
-            width - tasks_width - 2
+            query_width - tasks_width - 2
         } else {
-            width
+            query_width
         },
         &query,
         Color::Indexed(245),
@@ -2768,7 +2802,7 @@ fn draw_status(frame: &mut Frame, workspace: &Workspace, bounds: Rect) {
         write_text(
             frame,
             x + width - tasks_width,
-            tabs_y + 1,
+            tabs_y,
             tasks_width,
             &tasks,
             Color::Indexed(250),
@@ -2786,7 +2820,7 @@ fn draw_status(frame: &mut Frame, workspace: &Workspace, bounds: Rect) {
             cols: width,
             rows: 1,
         },
-        Color::Indexed(239),
+        Color::Indexed(114),
     );
     let columns = status::columns(width, ui.status_view, data);
     let mut col_x = x;
@@ -2807,8 +2841,16 @@ fn draw_status(frame: &mut Frame, workspace: &Workspace, bounds: Rect) {
             table_y,
             available,
             &text,
-            Color::Indexed(117),
-            Color::Indexed(239),
+            Color::Indexed(if *sort == Some(ui.status_sort) {
+                231
+            } else {
+                232
+            }),
+            Color::Indexed(if *sort == Some(ui.status_sort) {
+                67
+            } else {
+                114
+            }),
             true,
         );
         col_x += available;

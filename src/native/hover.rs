@@ -51,19 +51,9 @@ pub fn target(frame: &Frame, point: Point) -> Option<Rect> {
                 }
             }
             DialogKind::Status => {
-                let y = bounds.y + 1 + super::status::summary_height(bounds, &frame.ui.status);
-                regions.push(Rect {
-                    x: bounds.x + 1,
-                    y,
-                    cols: 9,
-                    rows: 1,
-                });
-                regions.push(Rect {
-                    x: bounds.x + 10,
-                    y,
-                    cols: 6.min(bounds.cols.saturating_sub(11)),
-                    rows: 1,
-                });
+                regions.extend(
+                    super::status::view_tabs(bounds, &frame.ui.status).map(|(_, rect)| rect),
+                );
                 let mut x = bounds.x + 1;
                 for (_, width, sort) in
                     super::status::columns(bounds.cols - 2, frame.ui.status_view, &frame.ui.status)

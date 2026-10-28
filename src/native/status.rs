@@ -502,7 +502,33 @@ pub fn summary_height(bounds: super::protocol::Rect, data: &Snapshot) -> u16 {
         .min((bounds.rows / 2).max(1))
 }
 pub fn table_y(bounds: super::protocol::Rect, data: &Snapshot) -> u16 {
-    bounds.y + 3 + summary_height(bounds, data)
+    bounds.y + 2 + summary_height(bounds, data)
+}
+pub fn view_tabs(
+    bounds: super::protocol::Rect,
+    data: &Snapshot,
+) -> [(View, super::protocol::Rect); 2] {
+    let y = bounds.y + 1 + summary_height(bounds, data);
+    [
+        (
+            View::Main,
+            super::protocol::Rect {
+                x: bounds.x + 1,
+                y,
+                cols: 9,
+                rows: 1,
+            },
+        ),
+        (
+            View::Io,
+            super::protocol::Rect {
+                x: bounds.x + 10,
+                y,
+                cols: 6,
+                rows: 1,
+            },
+        ),
+    ]
 }
 pub fn columns(width: u16, view: View, data: &Snapshot) -> Vec<(&'static str, u16, Option<Sort>)> {
     let pid_width = data
