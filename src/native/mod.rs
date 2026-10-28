@@ -2,6 +2,7 @@
 pub mod activity;
 pub mod bridge;
 pub mod cli;
+pub mod codex_client;
 pub mod delta;
 pub mod diagnostics;
 pub mod engine;

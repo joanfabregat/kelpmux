@@ -708,3 +708,51 @@ fn idle_prompt_is_idle_while_permission_notifications_request_attention() {
         Some(Status::InputNeeded)
     );
 }
+
+#[test]
+fn pending_automatic_client_selection_does_not_reuse_an_old_hook_identity() {
+    let temp = Temp::new();
+    let mut store = Store::open(&temp.0).unwrap();
+    let mut observed = agent();
+    observed.kind = Kind::Codex;
+    store.reconcile(vec![observed.clone()], 10).unwrap();
+    store
+        .hook(
+            "%1",
+            Kind::Codex,
+            &json!({"session_id":"session-test", "hook_event_name":"Stop"}),
+        )
+        .unwrap();
+    observed.source = "client-bridge".into();
+    observed.session_id = None;
+    observed.status = Status::Unknown;
+    store.reconcile(vec![observed], 11).unwrap();
+    let current = store.registry.agents.values().next().unwrap();
+    assert!(current.session_id.is_none());
+    assert_eq!(current.status, Status::Unknown);
+    assert!(
+        store
+            .hook(
+                "%1",
+                Kind::Codex,
+                &json!({"session_id":"session-test", "hook_event_name":"Stop"})
+            )
+            .is_err()
+    );
+}
+
+#[test]
+fn codex_profiles_are_interactive_while_claude_print_mode_is_excluded() {
+    let temp = Temp::new();
+    fixture_proc(&temp.0, 100, 1, "zsh", &["zsh"], 10);
+    fixture_proc(&temp.0, 101, 100, "codex", &["codex", "-p", "work"], 11);
+    let discovery = Discovery {
+        proc_root: temp.0.clone(),
+        codex_home: temp.0.join("codex-home"),
+        claude_home: temp.0.join("claude-home"),
+    };
+    assert_eq!(discovery.scan(&[pane(1, 100)], 20).unwrap().len(), 1);
+    fs::write(temp.0.join("101/stat"), stat(101, 100, "claude", 'S', 11)).unwrap();
+    fs::write(temp.0.join("101/cmdline"), b"claude\0-p\0prompt").unwrap();
+    assert!(discovery.scan(&[pane(1, 100)], 21).unwrap().is_empty());
+}

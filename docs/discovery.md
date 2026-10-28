@@ -1,5 +1,7 @@
 # Discovery and optional hooks
 
+Native KelpMux Bash/Zsh panes now add [automatic Codex client linking](agent-polling.md#linking-shared-daemon-codex-clients) for ordinary interactive `codex` launches. The client bridge supplies the active thread identity even with a shared daemon and follows conversation switches. The passive discovery limitations below still apply to legacy tmux, existing clients and launches that bypass that integration.
+
 ## Default: discover existing processes
 
 Start agents directly in tmux as usual. `kelpmux daemon` discovers them without a launch wrapper. It follows the pane shell's Linux process tree and reads metadata when an agent exposes a reliable identity. `kelpmux scan` performs one pass. Nothing pings an agent with simulated user input or starts another agent process.
