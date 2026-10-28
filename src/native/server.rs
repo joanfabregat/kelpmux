@@ -159,6 +159,7 @@ impl NativePane {
             }
         }
         let mut command = Command::new(&config.shell);
+        super::codex_client::integrate_shell(&mut command, &config.state_dir, &config.shell)?;
         command
             .arg("-i")
             .current_dir(&config.cwd)

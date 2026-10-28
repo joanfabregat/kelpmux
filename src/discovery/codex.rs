@@ -6,7 +6,16 @@ pub(super) fn enrich(
     args: &[String],
     agent: &mut Agent,
 ) {
-    if agent.source != "explicit-link" {
+    if let Some(id) = (agent.source != "explicit-link")
+        .then(|| crate::native::codex_client::identity(&context.proc_root, proc.pid))
+        .flatten()
+    {
+        agent.session_id = id;
+        agent.source = "client-bridge".into();
+        if agent.session_id.is_none() {
+            return;
+        }
+    } else if agent.source != "explicit-link" {
         agent.session_id = process::environment(&context.proc_root, proc.pid, "CODEX_THREAD_ID")
             .filter(|s| session_id(s))
             .or_else(|| resume_id(args, false));
