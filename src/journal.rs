@@ -171,7 +171,7 @@ impl Store {
             }
             if let Some(hook) = self.registry.hooks.get(&key) {
                 if hook.kind == agent.kind && hook.at >= time.saturating_sub(RETENTION) {
-                    if agent.session_id.is_none() {
+                    if agent.session_id.is_none() && agent.source != "client-bridge" {
                         agent.session_id = Some(hook.id.clone());
                         agent.source = "hook".into();
                     }
@@ -317,6 +317,9 @@ impl Store {
             .find(|a| a.pane == pane && a.kind == kind && a.ended_at.is_none())
             .ok_or("pane is not registered; run scan or daemon first")?;
         // Never overwrite a positively identified different conversation.
+        if agent.source == "client-bridge" && agent.session_id.is_none() {
+            return Err("Codex client is awaiting a verified conversation selection".into());
+        }
         if agent.session_id.as_deref().is_some_and(|s| s != id) {
             return Err("hook session does not match discovered agent".into());
         }

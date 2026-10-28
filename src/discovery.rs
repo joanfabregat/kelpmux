@@ -144,7 +144,8 @@ fn depth(tree: &BTreeMap<u32, Process>, mut pid: u32, root: u32) -> usize {
 fn classify(proc: &Process, args: &[String]) -> Option<Kind> {
     if args
         .iter()
-        .any(|s| ["app-server", "mcp-server", "exec", "-p", "--print"].contains(&s.as_str()))
+        .any(|s| ["app-server", "mcp-server", "exec"].contains(&s.as_str()))
+        || (proc.command != "codex" && args.iter().any(|s| ["-p", "--print"].contains(&s.as_str())))
     {
         return None;
     }
