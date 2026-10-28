@@ -1198,7 +1198,12 @@ impl Router {
                 self.pending_modal = true;
                 Action::ParkRequest(id)
             } else {
-                self.header_action(id, event)
+                match self.header_action(id, event) {
+                    Action::Fullscreen(id) if frame.reading == ReadingMode::Grid => {
+                        Action::Read(id)
+                    }
+                    action => action,
+                }
             };
             emit(&mut output, action, true);
             return output;
