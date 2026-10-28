@@ -382,7 +382,6 @@ fn interrupted_journal_append_preserves_completed_records_and_accepts_new_events
 
 #[test]
 fn codex_native_child_reads_existing_daemon_metadata_without_starting_a_thread() {
-    use std::io::{BufRead, BufReader, Write};
     use std::os::unix::net::UnixListener;
     let temp = Temp::new();
     let root = temp.0.join("proc");
@@ -403,28 +402,29 @@ fn codex_native_child_reads_existing_daemon_metadata_without_starting_a_thread()
     fs::create_dir_all(&socket_dir).unwrap();
     let listener = UnixListener::bind(socket_dir.join("app-server-control.sock")).unwrap();
     let responder = std::thread::spawn(move || {
-        let (mut stream, _) = listener.accept().unwrap();
-        let mut reader = BufReader::new(stream.try_clone().unwrap());
-        let mut line = String::new();
-        reader.read_line(&mut line).unwrap();
+        let (stream, _) = listener.accept().unwrap();
+        let mut socket = tungstenite::accept(stream).unwrap();
+        let message = socket.read().unwrap().into_text().unwrap();
         assert_eq!(
-            serde_json::from_str::<serde_json::Value>(&line).unwrap()["method"],
+            serde_json::from_str::<serde_json::Value>(&message).unwrap()["method"],
             "initialize"
         );
-        writeln!(stream, "{}", json!({"id":1,"result":{}})).unwrap();
-        line.clear();
-        reader.read_line(&mut line).unwrap();
+        socket
+            .send(tungstenite::Message::Text(
+                json!({"id":1,"result":{}}).to_string().into(),
+            ))
+            .unwrap();
+        let message = socket.read().unwrap().into_text().unwrap();
         assert_eq!(
-            serde_json::from_str::<serde_json::Value>(&line).unwrap()["method"],
+            serde_json::from_str::<serde_json::Value>(&message).unwrap()["method"],
             "initialized"
         );
-        line.clear();
-        reader.read_line(&mut line).unwrap();
-        let request: serde_json::Value = serde_json::from_str(&line).unwrap();
+        let message = socket.read().unwrap().into_text().unwrap();
+        let request: serde_json::Value = serde_json::from_str(&message).unwrap();
         assert_eq!(request["method"], "thread/read");
         assert_eq!(request["params"]["includeTurns"], false);
         assert_eq!(request["params"]["threadId"], "thread-test");
-        writeln!(stream, "{}", json!({"id":2,"result":{"thread":{"id":"thread-test","name":"Review","status":{"type":"active","activeFlags":["waitingOnApproval"]}}}})).unwrap();
+        socket.send(tungstenite::Message::Text(json!({"id":2,"result":{"thread":{"id":"thread-test","name":"Review","status":{"type":"active","activeFlags":["waitingOnApproval"]}}}}).to_string().into())).unwrap();
     });
     let found = Discovery {
         proc_root: root,
@@ -537,7 +537,6 @@ fn registered_polling_adapters_share_process_discovery_and_isolate_failed_observ
 fn codex_shared_daemon_polling_caches_metadata_and_links_only_the_exact_client_identity() {
     use kelpmux::discovery::polling::{Link, Poller};
     use std::{
-        io::{BufRead, BufReader, Write},
         os::unix::net::UnixListener,
         sync::{Arc, Mutex, atomic::AtomicBool},
         thread,
@@ -594,13 +593,12 @@ fn codex_shared_daemon_polling_caches_metadata_and_links_only_the_exact_client_i
             stream
                 .set_read_timeout(Some(Duration::from_secs(1)))
                 .unwrap();
-            let mut reader = BufReader::new(stream);
+            let mut socket = tungstenite::accept(stream).unwrap();
             loop {
-                let mut line = String::new();
-                if !matches!(reader.read_line(&mut line), Ok(size) if size > 0) {
+                let Ok(tungstenite::Message::Text(text)) = socket.read() else {
                     break;
-                }
-                let message: serde_json::Value = serde_json::from_str(&line).unwrap();
+                };
+                let message: serde_json::Value = serde_json::from_str(&text).unwrap();
                 let method = message["method"].as_str().unwrap();
                 let id = message["params"]["threadId"].as_str().unwrap_or("");
                 record
@@ -619,12 +617,13 @@ fn codex_shared_daemon_polling_caches_metadata_and_links_only_the_exact_client_i
                     }
                     other => panic!("poller attempted side-effectful method {other}"),
                 };
-                writeln!(
-                    reader.get_mut(),
-                    "{}",
-                    json!({"id":message["id"],"result":result})
-                )
-                .unwrap();
+                socket
+                    .send(tungstenite::Message::Text(
+                        json!({"id":message["id"],"result":result})
+                            .to_string()
+                            .into(),
+                    ))
+                    .unwrap();
             }
         }
     });
@@ -685,5 +684,27 @@ fn codex_shared_daemon_polling_caches_metadata_and_links_only_the_exact_client_i
                 && id == "alpha")
             .count(),
         1
+    );
+}
+
+#[test]
+fn idle_prompt_is_idle_while_permission_notifications_request_attention() {
+    assert_eq!(
+        kelpmux::journal::hook_status(
+            "Notification",
+            &serde_json::json!({"notification_type":"idle_prompt"})
+        ),
+        Some(Status::Idle)
+    );
+    assert_eq!(
+        kelpmux::journal::hook_status(
+            "Notification",
+            &serde_json::json!({"notification_type":"permission_prompt"})
+        ),
+        Some(Status::InputNeeded)
+    );
+    assert_eq!(
+        kelpmux::journal::hook_status("PermissionRequest", &serde_json::json!({})),
+        Some(Status::InputNeeded)
     );
 }

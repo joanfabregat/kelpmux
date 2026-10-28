@@ -400,12 +400,10 @@ pub fn hook_status(event: &str, value: &Value) -> Option<Status> {
         }
         "PreToolUse" => Some(Status::Working),
         "PermissionRequest" => Some(Status::InputNeeded),
-        "Notification"
-            if ["permission_prompt", "idle_prompt"]
-                .contains(&value["notification_type"].as_str().unwrap_or("")) =>
-        {
+        "Notification" if value["notification_type"] == "permission_prompt" => {
             Some(Status::InputNeeded)
         }
+        "Notification" if value["notification_type"] == "idle_prompt" => Some(Status::Idle),
         "Stop" | "agent-turn-complete" if !value["stop_hook_active"].as_bool().unwrap_or(false) => {
             Some(Status::TurnFinished)
         }

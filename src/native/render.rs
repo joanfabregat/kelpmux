@@ -1894,56 +1894,27 @@ fn draw_sidebar_disks(
     if count == 0 || rect.rows == 0 {
         return;
     }
-    let labels: Vec<_> = disks
+    let entries: Vec<_> = disks
         .iter()
         .take(count)
-        .map(|(mount, _)| {
-            let mount = safe_text(mount);
-            if mount == "/" || !mount.starts_with('/') {
-                mount
-            } else {
-                format!(
-                    "/{}",
-                    mount
-                        .rsplit('/')
-                        .find(|part| !part.is_empty())
-                        .unwrap_or("?")
-                )
-            }
+        .map(|(_, percent)| {
+            let percent = (*percent).min(100);
+            (
+                format!("{}{percent}%", super::vitals::pie_glyph(percent)),
+                if percent >= 90 { 196 } else { 222 },
+            )
         })
         .collect();
-    // Keep mount prefixes even at the minimum width. The pie already denotes
-    // usage, so the tightest variant can omit redundant percent signs.
-    let entries = (0..3)
-        .map(|mode| {
-            let entries: Vec<_> = disks
-                .iter()
-                .zip(&labels)
-                .map(|((_, percent), label)| {
-                    let percent = (*percent).min(100);
-                    let text = format!(
-                        "{label}{}{}{percent}{}",
-                        if mode == 0 { " " } else { "" },
-                        super::vitals::pie_glyph(percent),
-                        if mode < 2 { "%" } else { "" }
-                    );
-                    (text, if percent >= 90 { 196 } else { 222 })
-                })
-                .collect();
-            let width = entries
-                .iter()
-                .map(|(text, _)| text.chars().map(char_width).sum::<u16>())
-                .sum::<u16>()
-                + count.saturating_sub(1) as u16;
-            (entries, width)
-        })
-        .find(|(_, width)| *width <= rect.cols)
-        .unwrap_or_else(|| (vec![("Disks…".into(), 222)], 6));
-    if entries.1 + 6 <= rect.cols {
+    let width = entries
+        .iter()
+        .map(|(text, _)| text.chars().map(char_width).sum::<u16>())
+        .sum::<u16>()
+        + count.saturating_sub(1) as u16;
+    if width + 6 <= rect.cols {
         write_text(frame, rect.x, rect.y, 5, "Disks", muted, bg, false);
     }
-    let mut x = rect.x + rect.cols.saturating_sub(entries.1);
-    for (text, color) in entries.0 {
+    let mut x = rect.x + rect.cols.saturating_sub(width);
+    for (text, color) in entries {
         let width = text.chars().map(char_width).sum::<u16>();
         write_text(
             frame,

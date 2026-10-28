@@ -291,3 +291,44 @@ fn delayed_initial_discovery_does_not_create_finished_notification_flood() {
     assert!(activity.observe(&[agent], time + 3).unwrap());
     assert_eq!(activity.all().len(), 1);
 }
+
+#[test]
+fn fresh_idle_claude_bells_are_silent_but_approvals_and_post_work_bells_still_alert() {
+    let fixture = Fixture::new();
+    let time = kelpmux::now();
+    let mut activity = Activity::load(&fixture.0, "test").unwrap();
+    activity.observe(&[], time).unwrap();
+    let mut agent = pane(1, Status::Idle);
+    agent.kind = Some(Kind::Claude);
+    assert!(
+        !activity
+            .observe(std::slice::from_ref(&agent), time + 1)
+            .unwrap()
+    );
+    assert!(!activity.bell(&agent, time + 2).unwrap());
+    assert!(activity.all().is_empty());
+    agent.status = Status::InputNeeded;
+    assert!(
+        activity
+            .observe(std::slice::from_ref(&agent), time + 3)
+            .unwrap()
+    );
+    assert_eq!(activity.all()[0].status, Status::InputNeeded);
+    agent.status = Status::Working;
+    activity
+        .observe(std::slice::from_ref(&agent), time + 4)
+        .unwrap();
+    agent.status = Status::Idle;
+    activity
+        .observe(std::slice::from_ref(&agent), time + 5)
+        .unwrap();
+    assert!(activity.bell(&agent, time + 6).unwrap());
+    assert_eq!(activity.all().len(), 2);
+    agent.session_id = Some("another-session".into());
+    activity
+        .observe(std::slice::from_ref(&agent), time + 7)
+        .unwrap();
+    let count = activity.all().len();
+    assert!(!activity.bell(&agent, time + 8).unwrap());
+    assert_eq!(activity.all().len(), count);
+}

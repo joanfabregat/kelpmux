@@ -21,3 +21,9 @@ Notification history is retained for seven days, including events from closed ta
 ## Validation
 
 Fixtures cover both built-in adapters, replacement adapters, failed enrichments, reused PIDs, shared-daemon ambiguity, explicit identity conflicts, bounded metadata RPCs, caching and read-only request methods. A real PTY fixture links a synthetic Codex client to a fake daemon, follows working/waiting/idle transitions and verifies that its replacement does not inherit the link. UI fixtures cover loading, row clicks, keyboard navigation, observers, legacy alert history and reused pane IDs. Tests use private synthetic metadata and sockets, never user transcripts or credentials.
+
+## Idle Claude notifications and Codex transport
+
+The `idle_prompt` lifecycle notification means idle, while `permission_prompt` and explicit permission requests mean input needed. A newly observed idle Claude session's terminal bells are silent until that session has been observed working; explicit approvals remain actionable before its first turn. Bells after work still produce notifications, and a positively identified new session resets the work baseline.
+
+Codex's Unix app-server control socket uses HTTP Upgrade and WebSocket text messages, rather than newline-delimited JSON. KelpMux uses that transport for read-only metadata requests, with message/frame limits and absolute read/write deadlines even while a frame is incomplete. The adapter still requires reliable thread identity before reading its status. Fixing the transport does not establish an automatic association between a shared-daemon TUI and the conversation displayed by that TUI.

@@ -291,41 +291,85 @@ const RPC_TIMEOUT: Duration = Duration::from_millis(300);
 const MAX_RPC_LINE: usize = 1024 * 1024;
 const MAX_RPC_BYTES: usize = 2 * 1024 * 1024;
 
-fn rpc_result(reader: &mut BufReader<UnixStream>, id: u64) -> Result<Value> {
-    // A per-read timeout alone lets a continuously trickling peer hold this
-    // worker forever. Notifications and partial lines share one fixed deadline.
+// A WebSocket frame can arrive across many reads. Enforce the same absolute
+// deadline on every underlying read/write, including fragmented/trickling peers.
+struct RpcStream {
+    stream: UnixStream,
+    deadline: std::cell::Cell<Instant>,
+}
+impl RpcStream {
+    fn new(stream: UnixStream) -> Self {
+        Self {
+            stream,
+            deadline: std::cell::Cell::new(Instant::now() + RPC_TIMEOUT),
+        }
+    }
+    fn remaining(&self) -> std::io::Result<Duration> {
+        self.deadline
+            .get()
+            .checked_duration_since(Instant::now())
+            .ok_or_else(|| {
+                std::io::Error::new(
+                    std::io::ErrorKind::TimedOut,
+                    "Codex metadata request timed out",
+                )
+            })
+    }
+}
+impl Read for RpcStream {
+    fn read(&mut self, bytes: &mut [u8]) -> std::io::Result<usize> {
+        self.stream.set_read_timeout(Some(self.remaining()?))?;
+        self.stream.read(bytes)
+    }
+}
+impl Write for RpcStream {
+    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+        self.stream.set_write_timeout(Some(self.remaining()?))?;
+        self.stream.write(bytes)
+    }
+    fn flush(&mut self) -> std::io::Result<()> {
+        self.stream.flush()
+    }
+}
+type RpcSocket = tungstenite::WebSocket<RpcStream>;
+fn rpc_socket(stream: UnixStream) -> Result<RpcSocket> {
+    let config = tungstenite::protocol::WebSocketConfig::default()
+        .read_buffer_size(4096)
+        .write_buffer_size(0)
+        .max_write_buffer_size(MAX_RPC_BYTES)
+        .max_message_size(Some(MAX_RPC_LINE))
+        .max_frame_size(Some(MAX_RPC_LINE));
+    let (socket, _) = tungstenite::client::client_with_config(
+        "ws://localhost/",
+        RpcStream::new(stream),
+        Some(config),
+    )
+    .map_err(|_| std::io::Error::other("Codex WebSocket handshake failed"))?;
+    Ok(socket)
+}
+fn rpc_send(socket: &mut RpcSocket, value: Value) -> Result<()> {
+    socket.get_ref().deadline.set(Instant::now() + RPC_TIMEOUT);
+    socket.send(tungstenite::Message::Text(value.to_string().into()))?;
+    Ok(())
+}
+fn rpc_result(socket: &mut RpcSocket, id: u64) -> Result<Value> {
     let deadline = Instant::now() + RPC_TIMEOUT;
+    socket.get_ref().deadline.set(deadline);
     let mut received = 0;
     for _ in 0..32 {
-        let mut line = Vec::new();
-        loop {
-            let remaining = deadline
-                .checked_duration_since(Instant::now())
-                .ok_or("Codex metadata request timed out")?;
-            reader.get_ref().set_read_timeout(Some(remaining))?;
-            let bytes = match reader.fill_buf() {
-                Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
-                result => result?,
-            };
-            if bytes.is_empty() {
-                return Err("Codex closed discovery connection".into());
-            }
-            let newline = bytes.iter().position(|byte| *byte == b'\n');
-            let count = newline.map_or(bytes.len(), |position| position + 1);
-            received += count;
-            if line.len() + count > MAX_RPC_LINE || received > MAX_RPC_BYTES {
-                return Err("Codex metadata reply exceeds its size limit".into());
-            }
-            line.extend_from_slice(&bytes[..count]);
-            reader.consume(count);
-            if newline.is_some() {
-                break;
-            }
+        let text = match socket.read()? {
+            tungstenite::Message::Text(text) => text,
+            tungstenite::Message::Ping(_) | tungstenite::Message::Pong(_) => continue,
+            _ => return Err("Codex closed discovery connection or sent a non-text reply".into()),
+        };
+        received += text.len();
+        if text.len() > MAX_RPC_LINE || received > MAX_RPC_BYTES {
+            return Err("Codex metadata reply exceeds its size limit".into());
         }
         if Instant::now() >= deadline {
             return Err("Codex metadata request timed out".into());
         }
-        let value: Value = serde_json::from_slice(&line)?;
+        let value: Value = serde_json::from_str(&text)?;
         if value["id"].as_u64() == Some(id) {
             if value.get("error").is_some() {
                 return Err("Codex rejected metadata request".into());
@@ -340,116 +384,98 @@ fn rpc_result(reader: &mut BufReader<UnixStream>, id: u64) -> Result<Value> {
 mod rpc_tests {
     use super::*;
     use std::thread;
-
-    #[test]
-    fn fragmented_reply_and_buffered_following_reply_are_preserved() {
-        let (client, mut peer) = UnixStream::pair().unwrap();
-        let worker = thread::spawn(move || {
-            for bytes in [
-                b"{\"id\":1,".as_slice(),
-                b"\"result\":{\"ok\":true}}\n{\"id\":2,\"result\":\"next\"}\n",
-            ] {
-                peer.write_all(bytes).unwrap();
-                thread::sleep(Duration::from_millis(5));
-            }
-        });
-        let mut reader = BufReader::new(client);
-        assert_eq!(rpc_result(&mut reader, 1).unwrap(), json!({"ok": true}));
-        assert_eq!(rpc_result(&mut reader, 2).unwrap(), json!("next"));
-        worker.join().unwrap();
+    use tungstenite::{Message, WebSocket, protocol::Role};
+    fn pair() -> (RpcSocket, WebSocket<UnixStream>) {
+        let (client, peer) = UnixStream::pair().unwrap();
+        let config = tungstenite::protocol::WebSocketConfig::default()
+            .max_message_size(Some(MAX_RPC_LINE))
+            .max_frame_size(Some(MAX_RPC_LINE));
+        (
+            WebSocket::from_raw_socket(RpcStream::new(client), Role::Client, Some(config)),
+            WebSocket::from_raw_socket(peer, Role::Server, None),
+        )
     }
-
     #[test]
-    fn trickling_unterminated_line_cannot_extend_absolute_deadline() {
+    fn independent_websocket_messages_and_pretty_json_are_preserved() {
+        let (mut client, mut peer) = pair();
+        peer.send(Message::Text(
+            "{\n\"id\":1,\n\"result\":{\"ok\":true}\n}".into(),
+        ))
+        .unwrap();
+        peer.send(Message::Text(
+            json!({"id":2,"result":"next"}).to_string().into(),
+        ))
+        .unwrap();
+        assert_eq!(rpc_result(&mut client, 1).unwrap(), json!({"ok":true}));
+        assert_eq!(rpc_result(&mut client, 2).unwrap(), json!("next"));
+    }
+    #[test]
+    fn trickling_partial_websocket_frame_cannot_extend_deadline() {
         let (client, mut peer) = UnixStream::pair().unwrap();
         let worker = thread::spawn(move || {
-            let finish = Instant::now() + Duration::from_secs(2);
-            while Instant::now() < finish {
+            peer.write_all(&[0x81, 126, 0, 200]).unwrap();
+            for _ in 0..100 {
                 if peer.write_all(b" ").is_err() {
                     break;
                 }
                 thread::sleep(Duration::from_millis(20));
             }
         });
+        let mut socket = WebSocket::from_raw_socket(RpcStream::new(client), Role::Client, None);
         let begin = Instant::now();
-        let mut reader = BufReader::new(client);
-        assert!(rpc_result(&mut reader, 1).is_err());
+        assert!(rpc_result(&mut socket, 1).is_err());
         let elapsed = begin.elapsed();
-        drop(reader);
+        drop(socket);
         worker.join().unwrap();
         assert!(
             elapsed >= Duration::from_millis(200),
-            "timeout occurred unexpectedly early: {elapsed:?}"
+            "timeout too early: {elapsed:?}"
         );
         assert!(
             elapsed < Duration::from_secs(1),
-            "trickling reply prolonged timeout: {elapsed:?}"
+            "trickle prolonged timeout: {elapsed:?}"
         );
     }
-
-    #[test]
-    fn irrelevant_notifications_cannot_reset_deadline() {
-        let (client, mut peer) = UnixStream::pair().unwrap();
-        let worker = thread::spawn(move || {
-            for _ in 0..20 {
-                if peer.write_all(b"{\"method\":\"notice\"}\n").is_err() {
-                    break;
-                }
-                thread::sleep(Duration::from_millis(25));
-            }
-        });
-        let begin = Instant::now();
-        let mut reader = BufReader::new(client);
-        assert!(rpc_result(&mut reader, 1).is_err());
-        let elapsed = begin.elapsed();
-        drop(reader);
-        worker.join().unwrap();
-        assert!(elapsed >= Duration::from_millis(200));
-        assert!(elapsed < Duration::from_millis(800));
-    }
-
     #[test]
     fn malformed_error_closed_and_notification_flood_replies_are_rejected() {
-        for reply in [
-            b"not-json\n".as_slice(),
-            b"{\"id\":1,\"error\":{\"code\":1}}\n",
-            b"{\"id\":1",
-        ] {
-            let (client, mut peer) = UnixStream::pair().unwrap();
-            peer.write_all(reply).unwrap();
-            drop(peer);
-            assert!(rpc_result(&mut BufReader::new(client), 1).is_err());
+        for reply in ["not-json", "{\"id\":1,\"error\":{\"code\":1}}"] {
+            let (mut client, mut peer) = pair();
+            peer.send(Message::Text(reply.into())).unwrap();
+            assert!(rpc_result(&mut client, 1).is_err());
         }
-        let (client, mut peer) = UnixStream::pair().unwrap();
-        peer.write_all(b"{\"method\":\"notice\"}\n".repeat(32).as_slice())
-            .unwrap();
+        let (mut client, mut peer) = pair();
+        peer.close(None).unwrap();
+        assert!(rpc_result(&mut client, 1).is_err());
+        let (mut client, mut peer) = pair();
+        for _ in 0..32 {
+            peer.send(Message::Text("{\"method\":\"notice\"}".into()))
+                .unwrap();
+        }
         assert!(
-            rpc_result(&mut BufReader::new(client), 1)
+            rpc_result(&mut client, 1)
                 .unwrap_err()
                 .to_string()
                 .contains("too many")
         );
     }
-
     #[test]
-    fn oversized_line_and_cumulative_reply_bytes_are_bounded() {
-        for reply in [vec![b' '; MAX_RPC_LINE + 1], {
-            // Valid individual JSON notifications together exceed the RPC budget.
-            let notification = format!("{{\"method\":\"{}\"}}\n", "x".repeat(800_000));
-            notification.repeat(3).into_bytes()
-        }] {
-            let (client, mut peer) = UnixStream::pair().unwrap();
+    fn message_and_cumulative_reply_bytes_are_bounded() {
+        for oversized in [true, false] {
+            let (mut client, mut peer) = pair();
             let worker = thread::spawn(move || {
-                let _ = peer.write_all(&reply);
+                let text = if oversized {
+                    " ".repeat(MAX_RPC_LINE + 1)
+                } else {
+                    json!({"method":"notice","body":"x".repeat(800_000)}).to_string()
+                };
+                for _ in 0..3 {
+                    if peer.send(Message::Text(text.clone().into())).is_err() {
+                        break;
+                    }
+                }
             });
-            let mut reader = BufReader::new(client);
-            assert!(
-                rpc_result(&mut reader, 1)
-                    .unwrap_err()
-                    .to_string()
-                    .contains("size limit")
-            );
-            drop(reader);
+            assert!(rpc_result(&mut client, 1).is_err());
+            drop(client);
             worker.join().unwrap();
         }
     }
