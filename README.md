@@ -77,4 +77,6 @@ Release builds validate the repository and package GNU/Linux x86-64 and ARM64 bi
 
 ## Unreleased native-client foundation
 
+The planned graphical clients are macOS, iPadOS, iOS and web. The [four-client architecture proposal](docs/adr/0002-four-clients-and-web-ssh.md) complements the native protocol ADR with a shared client core, browser SSH authentication and terminal text selection requirements.
+
 Development beta.3 adds experimental independent pane streams, per-pane control/size leases, an SSH stdio bridge, read-only reference inspection and matching-client attachment without restarting workspaces. It also fixes a fragmented-Unicode rendering bug and adds conformance and nine-pane stress coverage. Existing beta.2/alpha sessions keep their current behavior until explicitly replaced. See the [implemented stream contract](docs/native-client-protocol.md) and [proposed native/MCP/device ADR](docs/adr/0001-native-client-protocol-and-device-capabilities.md). Native applications and MCP/device access remain future work.

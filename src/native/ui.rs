@@ -4,8 +4,8 @@ use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 pub const FOOTER_BG: u8 = 239;
 pub const TAB_BG: u8 = 236;
-/// Label + two-column inset + four meter sections + percentage + divider.
-pub const MIN_SIDEBAR_COLUMNS: u16 = 21;
+/// Label + two-column inset + five meter sections + percentage + divider.
+pub const MIN_SIDEBAR_COLUMNS: u16 = 22;
 pub const PARKED_BG: u8 = 60;
 pub const RESTORE_BG: u8 = 29;
 pub const ALERT_ICON: &str = "⚠︎";
