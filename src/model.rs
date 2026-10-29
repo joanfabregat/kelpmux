@@ -78,6 +78,7 @@ pub enum StatusSource {
     LiveRecord,
     AppServer,
     Transcript,
+    Terminal,
 }
 impl StatusSource {
     pub fn label(self) -> &'static str {
@@ -88,6 +89,7 @@ impl StatusSource {
             Self::LiveRecord => "live record",
             Self::AppServer => "agent server",
             Self::Transcript => "transcript observation",
+            Self::Terminal => "terminal program status",
         }
     }
 }
