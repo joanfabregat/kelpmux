@@ -127,6 +127,7 @@ struct NativePane {
     idle_observations: u8,
     agent_named: bool,
     terminal_title: Option<String>,
+    program: Option<super::program_status::Snapshot>,
 }
 impl NativePane {
     fn spawn(config: &ServerConfig, cols: u16, rows: u16, id: PaneId) -> Result<Self> {
@@ -159,7 +160,7 @@ impl NativePane {
             }
         }
         let mut command = Command::new(&config.shell);
-        super::codex_client::integrate_shell(&mut command, &config.state_dir, &config.shell)?;
+        super::shell::integrate_shell(&mut command, &config.state_dir, &config.shell)?;
         command
             .arg("-i")
             .current_dir(&config.cwd)
@@ -209,6 +210,7 @@ impl NativePane {
             idle_observations: 0,
             agent_named: false,
             terminal_title: None,
+            program: None,
         };
         pane.start = process::read(Path::new("/proc"), pane.child.id())?.start;
         let fd = pane.master.as_raw_fd();
@@ -231,6 +233,54 @@ impl NativePane {
             self.idle_observations = 0;
         }
         Ok(())
+    }
+    fn program_event(&mut self, event: super::program_status::Event) {
+        use super::program_status::{Event, Records, Snapshot};
+        if event == Event::Reset {
+            self.program = None;
+            return;
+        }
+        if event == Event::Prompt {
+            if let Some(snapshot) = &mut self.program {
+                snapshot.records.apply(&event);
+            }
+            return;
+        }
+        let group = unsafe { libc::tcgetpgrp(self.master.as_raw_fd()) };
+        let Ok(owner) = u32::try_from(group)
+            .ok()
+            .filter(|id| *id > 0)
+            .ok_or(())
+            .and_then(|id| process::read(Path::new("/proc"), id).map_err(|_| ()))
+        else {
+            self.program = None;
+            return;
+        };
+        let owner = (owner.pid, owner.start);
+        if self.program.as_ref().is_none_or(|p| {
+            p.owner != owner
+                || p.agent.is_some_and(|(pid, birth)| {
+                    !process::read(Path::new("/proc"), pid).is_ok_and(|p| p.start == birth)
+                })
+        }) {
+            self.program = Some(Snapshot {
+                owner,
+                agent: None,
+                records: Records::default(),
+                event_at: crate::now(),
+            });
+        }
+        if let Some(snapshot) = &mut self.program {
+            let before = [crate::model::Kind::Codex, crate::model::Kind::Claude]
+                .map(|kind| snapshot.records.status(kind));
+            snapshot.records.apply(&event);
+            if before
+                != [crate::model::Kind::Codex, crate::model::Kind::Claude]
+                    .map(|kind| snapshot.records.status(kind))
+            {
+                snapshot.event_at = crate::now();
+            }
+        }
     }
     fn resize(&mut self, cols: u16, rows: u16) {
         if self.size == (cols, rows) {
@@ -1916,6 +1966,7 @@ impl Server {
     fn poll_ptys(&mut self) {
         let mut clipboard = vec![];
         let mut exited = vec![];
+        let mut programs = std::collections::BTreeSet::new();
         for (id, pane) in &mut self.panes {
             let mut buf = [0; 8192];
             for _ in 0..16 {
@@ -1931,6 +1982,10 @@ impl Server {
                         }
                         for effect in pane.terminal.feed(&buf[..n]) {
                             match effect {
+                                Effect::Program(event) => {
+                                    pane.program_event(event);
+                                    programs.insert(*id);
+                                }
                                 Effect::WritePty(bytes) => {
                                     let _ = pane.queue(&bytes);
                                 }
@@ -2031,9 +2086,58 @@ impl Server {
                 self.notice = Some(format!("Close exited tab: {error}"));
             }
         }
+        self.refresh_programs(programs);
         if let Some(client) = self.controller.and_then(|id| self.clients.get_mut(&id)) {
             for text in clipboard {
                 let _ = client.send(ServerMessage::Clipboard(text));
+            }
+        }
+    }
+    fn refresh_programs(&mut self, ids: impl IntoIterator<Item = PaneId>) {
+        for id in ids {
+            let Some(mut agent) = self
+                .discovered_agents
+                .iter()
+                .find(|a| a.pane == format!("%{id}"))
+                .cloned()
+            else {
+                continue;
+            };
+            let Some(info) = self.workspace.panes.iter_mut().find(|p| p.id == id) else {
+                continue;
+            };
+            let current = self
+                .panes
+                .get_mut(&id)
+                .and_then(|pane| pane.program.as_mut())
+                .is_some_and(|snapshot| {
+                    let tree = [agent.pid, snapshot.owner.0]
+                        .into_iter()
+                        .filter_map(|pid| {
+                            process::read(Path::new("/proc"), pid)
+                                .ok()
+                                .map(|p| (pid, p))
+                        })
+                        .collect();
+                    if snapshot.apply(&mut agent, &tree, crate::now()) {
+                        snapshot.agent = Some((agent.pid, agent.process_start));
+                        true
+                    } else {
+                        false
+                    }
+                });
+            if current {
+                if info.status != agent.status {
+                    info.status_since = crate::now();
+                }
+                self.dirty |= info.status != agent.status || info.observation != agent.observation;
+                info.status = agent.status;
+                info.observation = agent.observation;
+            } else if info.observation.source == crate::model::StatusSource::Terminal {
+                info.status = Status::Unknown;
+                info.observation = Default::default();
+                info.status_since = crate::now();
+                self.dirty = true;
             }
         }
     }
@@ -2053,6 +2157,11 @@ impl Server {
             })
             .collect();
         DiscoveryRequest {
+            programs: self
+                .panes
+                .iter()
+                .filter_map(|(id, pane)| pane.program.clone().map(|p| (*id, p)))
+                .collect(),
             bridge,
             revision: self.poll_revision,
             links: self.agent_links.clone(),
@@ -2187,6 +2296,13 @@ impl Server {
             }
             self.dirty |= before != *info;
         }
+        self.refresh_programs(
+            self.workspace
+                .panes
+                .iter()
+                .map(|p| p.id)
+                .collect::<Vec<_>>(),
+        );
     }
     fn frames(&mut self, spinner: usize) {
         if let Err(error) = self.activity.observe(&self.workspace.panes, crate::now()) {
@@ -2287,6 +2403,7 @@ impl Server {
 }
 
 struct DiscoveryRequest {
+    programs: BTreeMap<PaneId, super::program_status::Snapshot>,
     revision: u64,
     links: Vec<crate::discovery::polling::Link>,
     list_for: Option<PaneId>,
@@ -2318,7 +2435,17 @@ fn discovery_worker(
             let Ok(cycle) = poller.poll(&request.bridge, &request.links, crate::now()) else {
                 continue;
             };
-            let agents = cycle.agents;
+            let mut agents = cycle.agents;
+            for agent in &mut agents {
+                if let Some(snapshot) = agent
+                    .pane
+                    .strip_prefix('%')
+                    .and_then(|id| id.parse::<u64>().ok())
+                    .and_then(|id| request.programs.get(&id))
+                {
+                    snapshot.apply(agent, &cycle.tree, crate::now());
+                }
+            }
             let sessions = request.list_for.map(|pane| {
                 let agent = agents
                     .iter()

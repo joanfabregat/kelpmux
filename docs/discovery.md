@@ -1,6 +1,6 @@
 # Discovery and optional hooks
 
-Native KelpMux Bash/Zsh panes now add [automatic Codex client linking](agent-polling.md#linking-shared-daemon-codex-clients) for ordinary interactive `codex` launches. The client bridge supplies the active thread identity even with a shared daemon and follows conversation switches. The passive discovery limitations below still apply to legacy tmux, existing clients and launches that bypass that integration.
+Native KelpMux panes consume [OSC 7501 program status](agent-polling.md#terminal-program-status) from Codex and Claude Code. The PTY identifies the pane directly, so activity no longer requires a Codex transport bridge or a thread-to-terminal guess. Process discovery and read-only daemon polling still supply supplementary metadata when a conversation ID is known. The passive identity limitations below still apply; activity and conversation identity are separate observations.
 
 ## Default: discover existing processes
 
