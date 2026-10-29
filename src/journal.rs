@@ -176,6 +176,7 @@ impl Store {
                         agent.source = "hook".into();
                     }
                     if agent.session_id.as_deref() == Some(&hook.id)
+                        && agent.observation.source != crate::model::StatusSource::Terminal
                         && (agent.status == Status::Unknown
                             || agent.source == "hook"
                             || hook.at >= time.saturating_sub(5))
@@ -324,13 +325,15 @@ impl Store {
             return Err("hook session does not match discovered agent".into());
         }
         agent.session_id = Some(id.into());
-        agent.status = status;
         let at = now();
-        agent.observation = crate::model::Observation {
-            source: crate::model::StatusSource::Hook,
-            checked_at: at,
-            event_at: Some(at),
-        };
+        if agent.observation.source != crate::model::StatusSource::Terminal {
+            agent.status = status;
+            agent.observation = crate::model::Observation {
+                source: crate::model::StatusSource::Hook,
+                checked_at: at,
+                event_at: Some(at),
+            };
+        }
         agent.source = "hook".into();
         let agent = agent.clone();
         self.registry.hooks.insert(

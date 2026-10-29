@@ -25,7 +25,7 @@ Kelpmux is a persistent terminal workspace for coding agents, inspired by Monter
 - Configurable shortcuts and graphical pane movement, preserving application word-editing keys outside explicit bindings.
 - Named persistent workspaces with explicit start, attach, status and stop commands. One controller, additional observers and explicit takeover.
 - Alacritty application colors, Unicode text, history, alternate screens, terminal query replies, application mouse reporting, local selection and bracketed paste.
-- Modular Claude/Codex discovery, automatic Codex conversation linking for native Bash/Zsh launches, optional lifecycle hooks and a seven-day metadata journal. No prompts, responses, credentials or transcripts are stored in the journal.
+- Shared OSC 7501 activity reporting from Claude/Codex, modular passive discovery and read-only daemon metadata, optional lifecycle hooks and a seven-day metadata journal. Codex launches with its original working directory and arguments. No prompts, responses, credentials or transcripts are stored in the journal.
 - Overview, persistent unread notifications with optional sound, and a recovery dashboard grouped by workspace and project with copyable resume commands.
 - A persistent scratch terminal popup, history search across one or all terminals, and keyboard or mouse selection with OSC 52 copy.
 - Startup tab counts, named terminal templates and directories; remembered view widths and automatic equalization.

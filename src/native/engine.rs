@@ -19,6 +19,7 @@ pub enum Effect {
     Title(String),
     Bell,
     Clipboard(String),
+    Program(super::program_status::Event),
 }
 
 // Callbacks run synchronously inside the parser, never block on consumers, and
@@ -57,6 +58,7 @@ impl Dimensions for Size {
 }
 
 pub struct Terminal {
+    program: super::program_status::Parser,
     theme: [Option<Rgb>; 2],
     term: Term<Listener>,
     parser: Processor,
@@ -80,6 +82,7 @@ impl Terminal {
             rows: usize::from(rows.max(1)),
         };
         Self {
+            program: Default::default(),
             theme: [None; 2],
             term: Term::new(
                 Config {
@@ -114,6 +117,14 @@ impl Terminal {
             .split_inclusive(|byte| *byte == 0x07 || *byte == b'\\')
             .flat_map(|part| part.chunks(4096))
         {
+            for event in self.program.feed(chunk) {
+                effects.push(match event {
+                    super::program_status::Event::Query => {
+                        Effect::WritePty(super::program_status::REPLY.to_vec())
+                    }
+                    event => Effect::Program(event),
+                });
+            }
             self.advance(chunk);
             let events = self
                 .listener
