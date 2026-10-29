@@ -107,9 +107,6 @@ fn scan(opts: &Options) -> Result<()> {
 
 fn run() -> Result<()> {
     let mut args: Vec<_> = env::args().skip(1).collect();
-    if args.first().is_some_and(|arg| arg == "codex-client") {
-        return kelpmux::native::codex_client::run(&args[1..]);
-    }
     if args.first().is_some_and(|arg| arg == "native-event") {
         return kelpmux::native::hooks::run(&args[1..]);
     }

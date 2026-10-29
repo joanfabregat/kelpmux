@@ -756,3 +756,39 @@ fn codex_profiles_are_interactive_while_claude_print_mode_is_excluded() {
     fs::write(temp.0.join("101/cmdline"), b"claude\0-p\0prompt").unwrap();
     assert!(discovery.scan(&[pane(1, 100)], 21).unwrap().is_empty());
 }
+
+#[test]
+fn terminal_program_evidence_wins_over_late_hooks_and_metadata_reconciliation() {
+    use kelpmux::model::{Observation, StatusSource};
+    let dir = Temp::new();
+    let mut store = Store::open(&dir.0).unwrap();
+    let mut observed = agent();
+    observed.observation = Observation {
+        source: StatusSource::Terminal,
+        checked_at: kelpmux::now(),
+        event_at: Some(kelpmux::now()),
+    };
+    store
+        .reconcile(vec![observed.clone()], kelpmux::now())
+        .unwrap();
+    store
+        .hook(
+            "%1",
+            Kind::Claude,
+            &json!({"session_id":"session-test", "hook_event_name":"Stop"}),
+        )
+        .unwrap();
+    assert_eq!(
+        store.registry.agents[&observed.key()].status,
+        Status::Working
+    );
+    assert_eq!(
+        store.registry.agents[&observed.key()].observation.source,
+        StatusSource::Terminal
+    );
+    observed.status = Status::Idle;
+    store
+        .reconcile(vec![observed.clone()], kelpmux::now())
+        .unwrap();
+    assert_eq!(store.registry.agents[&observed.key()].status, Status::Idle);
+}
