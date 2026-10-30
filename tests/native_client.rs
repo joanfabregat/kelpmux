@@ -818,7 +818,7 @@ fn live_server_attach_layout_read_fullscreen_detach_reconnect_preserves_shell() 
         display.feed(&tty.output);
         let snapshot = display.snapshot();
         if snapshot.cells[2].fg == Color::Indexed(226)
-            && snapshot.cells[2].bg == Color::Indexed(240)
+            && snapshot.cells[2].bg == Color::Indexed(242)
         {
             break;
         }

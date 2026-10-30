@@ -1127,6 +1127,9 @@ fn attach(mut socket: UnixStream, takeover: bool) -> Result<()> {
                     channel.send(&message)?;
                 }
             }
+            for message in router.tick(frame) {
+                channel.send(&message)?;
+            }
             if hover_dirty && hover_painted_at.elapsed() >= Duration::from_millis(33) {
                 paint(
                     &mut stdout,

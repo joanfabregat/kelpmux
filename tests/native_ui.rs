@@ -131,7 +131,11 @@ fn sidebar_new_follows_tabs_and_parked_stays_at_bottom_with_contextual_headers()
                 }),
                 &f
             )),
-            vec![Action::NewTab]
+            if row == new.rows / 2 {
+                vec![Action::NewTab]
+            } else {
+                vec![]
+            }
         );
         assert_eq!(
             actions(Router::default().route(
@@ -886,7 +890,7 @@ fn shaded_grid_headers_meet_previous_rows_without_empty_separators() {
             assert_eq!(line.text, " ");
             assert_eq!(
                 line.bg,
-                Color::Indexed(if view.pane.id == ws.active { 240 } else { 236 })
+                Color::Indexed(if view.pane.id == ws.active { 242 } else { 236 })
             );
         }
         let mut display = Terminal::new(f.cols, f.rows);
@@ -927,7 +931,13 @@ fn responsive_new_tabs_and_graphic_confirmation_have_disjoint_targets() {
             .unwrap()
             .1;
         assert_eq!(
-            actions(Router::default().route(click(Point { x: new.x, y: new.y }), &f)),
+            actions(Router::default().route(
+                click(Point {
+                    x: new.x,
+                    y: new.y + new.rows / 2
+                }),
+                &f
+            )),
             vec![Action::NewTab]
         );
         if position == TabPosition::Left && size.1 >= 30 {
@@ -1050,18 +1060,18 @@ fn neutral_tabs_ignore_legacy_palette_settings_and_numbers_focus() {
                 assert_eq!(f.cells[usize::from(number.y * f.cols + x)].text, " ");
                 assert_eq!(
                     f.cells[usize::from(number.y * f.cols + x)].bg,
-                    Color::Indexed(if index == 0 { 240 } else { 238 })
+                    Color::Indexed(if index == 0 { 242 } else { 238 })
                 );
             }
             assert_eq!(
                 f.cells[usize::from(rect.y * f.cols + rect.x)].fg,
-                Color::Indexed(if index == 0 { 250 } else { 244 })
+                Color::Indexed(if index == 0 { 75 } else { 244 })
             );
             if rect.rows >= 3 {
                 let title = &f.cells[usize::from((rect.y + 1) * f.cols + rect.x + 2)];
                 assert_eq!(title.text, "a");
                 assert_eq!(title.fg, Color::Indexed(231));
-                assert_eq!(title.bg, Color::Indexed(if index == 0 { 240 } else { 238 }));
+                assert_eq!(title.bg, Color::Indexed(if index == 0 { 242 } else { 238 }));
             }
             let point = Point {
                 x: number.x + 1,
@@ -1515,7 +1525,7 @@ fn neutral_focus_connects_sidebar_divider_regardless_of_legacy_palette() {
             let number = tab_number(tab);
             assert_eq!(
                 f.cells[usize::from(number.y * f.cols + number.x + 4)].bg,
-                Color::Indexed(240)
+                Color::Indexed(242)
             );
             for y in 0..f.rows - 1 {
                 let cell = &f.cells[usize::from(y * f.cols + body.x - 1)];
@@ -1979,9 +1989,9 @@ fn tab_surfaces_follow_dark_and_light_backgrounds_without_repainting_terminal_de
             y: 0,
         };
         let selected_bg = Color::Rgb(
-            background[0].saturating_add_signed(if light { -32 } else { 32 }),
-            background[1].saturating_add_signed(if light { -32 } else { 32 }),
-            background[2].saturating_add_signed(if light { -32 } else { 32 }),
+            background[0].saturating_add_signed(if light { -50 } else { 50 }),
+            background[1].saturating_add_signed(if light { -50 } else { 50 }),
+            background[2].saturating_add_signed(if light { -50 } else { 50 }),
         );
         assert_eq!(title[0].bg, selected_bg);
         if position == TabPosition::Left {
@@ -2599,7 +2609,7 @@ fn wheel_scrolls_tab_lists_without_switching_the_active_shell() {
     assert_eq!(events, vec![Action::Focus(index as u64 + 1)]);
     ws.apply(&events[0]).unwrap();
     assert_eq!(ws.active, index as u64 + 1);
-    assert!(ws.ui.tab_scroll_anchor.is_none());
+    assert!(ws.ui.tab_scroll_anchor.is_some()); // Focusing a visible row must not move it under the pointer.
     let mut one = workspace((80, 24), (1, 1));
     one.ui.config.tab_position = position;
     one.apply(&Action::Read(1)).unwrap();
@@ -2637,7 +2647,7 @@ fn tab_stripes_preserve_folder_labels_and_fill_adjacent_clickable_entries() {
             assert_eq!(
                 f.cells[usize::from(rect.y * f.cols)].bg,
                 Color::Indexed(match index {
-                    0 => 240,
+                    0 => 242,
                     1 | 3 => 238,
                     _ => 236,
                 })
@@ -3931,19 +3941,22 @@ fn input_requests_use_a_graphical_attention_symbol_in_tabs_grid_parked_and_overv
         assert!(
             f.cells
                 .iter()
-                .any(|c| c.text == kelpmux::native::ui::ALERT_ICON && c.fg == Color::Indexed(226))
+                .any(|c| c.text == kelpmux::native::ui::WAIT_ICON && c.fg == Color::Indexed(226))
         );
         assert_eq!(
             kelpmux::native::ui::status_icon(Status::InputNeeded),
-            kelpmux::native::ui::ALERT_ICON
+            kelpmux::native::ui::WAIT_ICON
         );
+        let mut terminal = Terminal::new(f.cols, f.rows);
+        terminal.feed(&terminal_diff(None, &f));
+        assert_eq!(terminal.snapshot().cells, f.cells);
         ws.apply(&Action::Overview).unwrap();
         let overview = frame(&ws);
         assert!(
             overview
                 .cells
                 .iter()
-                .any(|c| c.text == kelpmux::native::ui::ALERT_ICON)
+                .any(|c| c.text == kelpmux::native::ui::WAIT_ICON)
         );
         ws.apply(&Action::DialogClose).unwrap();
         ws.apply(&Action::Park(1)).unwrap();
@@ -3953,7 +3966,198 @@ fn input_requests_use_a_graphical_attention_symbol_in_tabs_grid_parked_and_overv
             parked
                 .cells
                 .iter()
-                .any(|c| c.text == kelpmux::native::ui::ALERT_ICON && c.fg == Color::Indexed(226))
+                .any(|c| c.text == kelpmux::native::ui::WAIT_ICON && c.fg == Color::Indexed(226))
         );
+    }
+}
+
+fn sidebar_tab(ws: &Workspace, wanted: usize) -> Rect {
+    use kelpmux::native::workspace::{TabTarget, tab_targets};
+    tab_targets(
+        ws.cols,
+        ws.rows,
+        &ws.ui.config,
+        ws.panes.len(),
+        ws.ui
+            .tab_scroll_anchor
+            .unwrap_or_else(|| ws.panes.iter().position(|p| p.id == ws.active).unwrap_or(0)),
+        0,
+    )
+    .into_iter()
+    .find_map(|(target, rect)| (target == TabTarget::Pane(wanted)).then_some(rect))
+    .unwrap()
+}
+fn drag_event(kind: MouseKind, position: Point) -> InputEvent {
+    InputEvent::Mouse(MouseEvent {
+        kind,
+        position,
+        button: 0,
+        shift: false,
+        alt: false,
+        ctrl: false,
+    })
+}
+#[test]
+fn sidebar_drag_inserts_without_swapping_and_keeps_active_pane_and_controls() {
+    let mut ws = workspace((120, 40), (4, 1));
+    ws.apply(&Action::Read(1)).unwrap();
+    let mut router = Router::default();
+    let source = sidebar_tab(&ws, 0);
+    let start = Point {
+        x: 5,
+        y: source.y + 1,
+    };
+    for action in actions(router.route(click(start), &frame(&ws))) {
+        ws.apply(&action).unwrap();
+    }
+    let target = sidebar_tab(&ws, 2);
+    let drop = Point {
+        x: 5,
+        y: target.y + target.rows - 1,
+    };
+    let moved = actions(router.route(drag_event(MouseKind::Move, drop), &frame(&ws)));
+    assert_eq!(moved, vec![Action::TabDrag(Some((1, Some(4))))]);
+    for action in moved {
+        ws.apply(&action).unwrap();
+    }
+    assert!(frame(&ws).cells.iter().any(|cell| cell.text == "▔"));
+    let released = actions(router.route(drag_event(MouseKind::Release, drop), &frame(&ws)));
+    assert_eq!(
+        released,
+        vec![Action::Reorder {
+            source: 1,
+            before: Some(4)
+        }]
+    );
+    for action in released {
+        ws.apply(&action).unwrap();
+    }
+    assert_eq!(
+        ws.panes.iter().map(|p| p.id).collect::<Vec<_>>(),
+        [2, 3, 1, 4]
+    );
+    assert_eq!(ws.active, 1);
+    assert!(ws.ui.tab_drop.is_none());
+    assert_eq!(
+        ws.panes.iter().map(|p| p.number).collect::<Vec<_>>(),
+        [1, 2, 3, 4]
+    );
+    // A drop outside the sidebar is a cancel and cannot reach the application.
+    let source = sidebar_tab(&ws, 0);
+    router.route(
+        click(Point {
+            x: 5,
+            y: source.y + 1,
+        }),
+        &frame(&ws),
+    );
+    let outside = Point { x: 100, y: 10 };
+    router.route(drag_event(MouseKind::Move, outside), &frame(&ws));
+    assert_eq!(
+        actions(router.route(drag_event(MouseKind::Release, outside), &frame(&ws))),
+        vec![Action::TabDrag(None)]
+    );
+}
+#[test]
+fn held_sidebar_drag_scrolls_at_edges_and_escape_cancels() {
+    use std::time::{Duration, Instant};
+    let mut ws = workspace((100, 24), (10, 2));
+    ws.apply(&Action::Read(1)).unwrap();
+    let mut router = Router::default();
+    let start = sidebar_tab(&ws, 0);
+    router.route(
+        click(Point {
+            x: 4,
+            y: start.y + 1,
+        }),
+        &frame(&ws),
+    );
+    let last = (0..20)
+        .filter_map(|i| {
+            let f = frame(&ws);
+            kelpmux::native::workspace::tab_targets(f.cols, f.rows, &f.ui.config, 20, 0, 0)
+                .into_iter()
+                .find_map(|(t, r)| {
+                    (t == kelpmux::native::workspace::TabTarget::Pane(i)).then_some(r)
+                })
+        })
+        .next_back()
+        .unwrap();
+    router.route(
+        drag_event(
+            MouseKind::Move,
+            Point {
+                x: 4,
+                y: last.y + last.rows - 1,
+            },
+        ),
+        &frame(&ws),
+    );
+    let tick = actions(router.tick_at(&frame(&ws), Instant::now() + Duration::from_secs(1)));
+    assert!(tick.contains(&Action::ScrollTabs(1)));
+    assert_eq!(
+        actions(router.route(InputEvent::Bytes(vec![27]), &frame(&ws))),
+        vec![Action::TabDrag(None)]
+    );
+    assert!(router.tick(&frame(&ws)).is_empty());
+    // Losing control while holding a tab cancels locally without observer actions.
+    router.route(
+        click(Point {
+            x: 4,
+            y: start.y + 1,
+        }),
+        &frame(&ws),
+    );
+    let mut observer = frame(&ws);
+    observer.controller = false;
+    assert!(router.tick(&observer).is_empty());
+    assert!(
+        router
+            .route(
+                drag_event(MouseKind::Release, Point { x: 4, y: last.y }),
+                &observer
+            )
+            .is_empty()
+    );
+}
+#[test]
+fn config_has_one_blank_row_on_each_side_and_new_tab_only_uses_its_text_row() {
+    use kelpmux::native::{
+        hover,
+        ui::DialogKind,
+        workspace::{TabTarget, config_targets, dialog_bounds_for, tab_targets},
+    };
+    let mut ws = workspace((120, 40), (2, 1));
+    ws.apply(&Action::Read(1)).unwrap();
+    let f = frame(&ws);
+    let new = tab_targets(f.cols, f.rows, &f.ui.config, 2, 0, 0)
+        .into_iter()
+        .find(|(kind, _)| *kind == TabTarget::New)
+        .unwrap()
+        .1;
+    for y in new.y..new.y + new.rows {
+        let p = Point { x: 3, y };
+        let routed = actions(Router::default().route(click(p), &f));
+        assert_eq!(
+            routed,
+            if y == new.y + new.rows / 2 {
+                vec![Action::NewTab]
+            } else {
+                vec![]
+            }
+        );
+        assert_eq!(hover::target(&f, p).is_some(), y == new.y + new.rows / 2);
+    }
+    ws.apply(&Action::Config).unwrap();
+    let f = frame(&ws);
+    let bounds = dialog_bounds_for(f.cols, f.rows, DialogKind::Config);
+    let controls = config_targets(bounds);
+    for y in [bounds.y + 1, controls[0].2.y + controls[0].2.rows] {
+        let text: String = f.cells[usize::from(y * f.cols + bounds.x + 1)
+            ..usize::from(y * f.cols + bounds.x + bounds.cols - 1)]
+            .iter()
+            .map(|c| c.text.as_str())
+            .collect();
+        assert!(text.trim().is_empty(), "padding row contained {text:?}");
     }
 }
