@@ -3,7 +3,7 @@ use crate::{Result, model::Status};
 use serde::{Deserialize, Serialize};
 use std::io::{Read, Write};
 
-pub const VERSION: u16 = 42;
+pub const VERSION: u16 = 43;
 pub const MAX_MESSAGE: usize = 16 * 1024 * 1024;
 pub const MAX_INPUT: usize = 64 * 1024;
 pub type PaneId = u64;
@@ -271,6 +271,11 @@ pub enum Action {
     WrapToggle,
     NewTab,
     ScrollTabs(i16),
+    TabDrag(Option<(PaneId, Option<PaneId>)>),
+    Reorder {
+        source: PaneId,
+        before: Option<PaneId>,
+    },
     ParkRequest(PaneId),
     RestoreRequest(PaneId),
     Park(PaneId),
