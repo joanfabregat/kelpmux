@@ -4,6 +4,7 @@ use crate::{Result, journal};
 use serde::{Deserialize, Serialize};
 use std::{
     fs::{self, OpenOptions},
+    io::Read,
     os::{
         fd::AsRawFd,
         unix::fs::{MetadataExt, OpenOptionsExt},
@@ -354,4 +355,57 @@ pub fn finish_run(state: &Path) -> Result<()> {
     fs::remove_file(state.join("server.running.json"))?;
     fs::File::open(state)?.sync_all()?;
     Ok(())
+}
+
+/// Persist startup definitions in display order, never live process/session state.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TabLayout {
+    pub template: Option<super::templates::Template>,
+    pub cwd: PathBuf,
+    pub shell: PathBuf,
+    pub panes: Vec<StartupPane>,
+}
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct StartupPane {
+    pub name: Option<String>,
+    pub cwd: PathBuf,
+    pub shell: PathBuf,
+}
+impl TabLayout {
+    pub fn load(path: &Path) -> Result<Self> {
+        let meta = fs::symlink_metadata(path)?;
+        if !meta.is_file()
+            || meta.uid() != unsafe { libc::geteuid() }
+            || meta.mode() & 0o077 != 0
+            || meta.len() > 512 * 1024
+        {
+            return Err("tab layout must be an owned private file smaller than 512 KiB".into());
+        }
+        let file = OpenOptions::new()
+            .read(true)
+            .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
+            .open(path)?;
+        let mut bytes = vec![];
+        file.take(512 * 1024 + 1).read_to_end(&mut bytes)?;
+        if bytes.len() > 512 * 1024 {
+            return Err("saved tab layout is too large".into());
+        }
+        let layout: Self = serde_json::from_slice(&bytes)?;
+        if layout.panes.is_empty()
+            || layout.panes.iter().any(|pane| {
+                !pane.cwd.is_absolute()
+                    || pane.shell.as_os_str().is_empty()
+                    || pane.name.as_ref().is_some_and(|name| {
+                        name.trim().is_empty()
+                            || name.len() > 128
+                            || name.chars().any(char::is_control)
+                    })
+            })
+        {
+            return Err("invalid saved tab startup layout".into());
+        }
+        Ok(layout)
+    }
 }

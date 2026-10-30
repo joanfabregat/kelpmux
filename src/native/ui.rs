@@ -9,9 +9,10 @@ pub const MIN_SIDEBAR_COLUMNS: u16 = 22;
 pub const PARKED_BG: u8 = 60;
 pub const RESTORE_BG: u8 = 29;
 pub const ALERT_ICON: &str = "⚠︎";
+pub const WAIT_ICON: &str = "⌛︎";
 pub fn status_icon(status: crate::model::Status) -> &'static str {
     if status == crate::model::Status::InputNeeded {
-        ALERT_ICON
+        WAIT_ICON
     } else {
         status.marker()
     }
@@ -230,6 +231,8 @@ pub struct UiState {
     pub show_dev_badge: bool,
     #[serde(default)]
     pub tab_scroll_anchor: Option<usize>,
+    #[serde(default)]
+    pub tab_drop: Option<(super::protocol::PaneId, Option<super::protocol::PaneId>)>,
     #[serde(default)]
     pub status: super::status::Snapshot,
     #[serde(default)]

@@ -327,6 +327,33 @@ impl Workspace {
             .ok_or_else(|| "unknown pane".into())
     }
     pub fn apply(&mut self, action: &Action) -> Result<()> {
+        if !matches!(
+            action,
+            Action::TabDrag(_) | Action::Reorder { .. } | Action::ScrollTabs(_)
+        ) {
+            self.ui.tab_drop = None;
+        }
+        let sidebar_anchor = if let Action::Focus(id) = action {
+            if matches!(self.reading, ReadingMode::Tabs(_) | ReadingMode::Capped(_)) {
+                let visible: Vec<_> = self
+                    .panes
+                    .iter()
+                    .filter(|p| !p.parked && Some(p.id) != self.ui.scratch)
+                    .collect();
+                let anchor = self.ui.tab_scroll_anchor.unwrap_or_else(|| {
+                    visible
+                        .iter()
+                        .position(|p| p.id == self.active)
+                        .unwrap_or(0)
+                });
+                tab_targets(self.cols, self.rows, &self.ui.config, visible.len(), anchor, self.panes.iter().filter(|p| p.parked).count())
+                    .iter().any(|(target, _)| matches!(target, TabTarget::Pane(index) if visible[*index].id == *id)).then_some(anchor)
+            } else {
+                None
+            }
+        } else {
+            None
+        };
         if matches!(
             action,
             Action::Focus(_)
@@ -339,7 +366,38 @@ impl Workspace {
         ) {
             self.ui.tab_scroll_anchor = None;
         }
+        if let Some(anchor) = sidebar_anchor {
+            self.ui.tab_scroll_anchor = Some(anchor);
+        }
         match *action {
+            Action::TabDrag(drop) => {
+                if let Some((source, before)) = drop {
+                    for id in std::iter::once(source).chain(before) {
+                        let index = self.require_pane(id)?;
+                        if self.panes[index].parked || Some(id) == self.ui.scratch {
+                            return Err("only visible tabs can be reordered".into());
+                        }
+                    }
+                }
+                self.ui.tab_drop = drop;
+            }
+            Action::Reorder { source, before } => {
+                self.apply(&Action::TabDrag(Some((source, before))))?;
+                if before != Some(source) {
+                    let index = self.require_pane(source)?;
+                    let pane = self.panes.remove(index);
+                    let target = before
+                        .or(self.ui.scratch)
+                        .and_then(|id| self.panes.iter().position(|p| p.id == id))
+                        .unwrap_or(self.panes.len());
+                    self.panes.insert(target, pane);
+                    for (index, pane) in self.panes.iter_mut().enumerate() {
+                        pane.number = index + 1;
+                    }
+                }
+                self.ui.tab_drop = None;
+                self.ui.tab_scroll_anchor = None;
+            }
             Action::AgentLinkPicker(pane) => {
                 self.require_pane(pane)?;
                 self.help = false;
@@ -1134,11 +1192,14 @@ pub fn dialog_bounds_for(cols: u16, rows: u16, kind: super::ui::DialogKind) -> R
     }
 }
 pub fn config_geometry(bounds: Rect) -> (u16, u16) {
-    (0, if bounds.rows >= 7 { 3 } else { 1 })
+    (
+        u16::from(bounds.rows >= 7),
+        if bounds.rows >= 7 { 3 } else { 1 },
+    )
 }
 /// Logical focus index, optional explicit on/off value, and shared mouse geometry.
 pub fn config_targets(bounds: Rect) -> Vec<(usize, Option<bool>, Rect)> {
-    let (_, height) = config_geometry(bounds);
+    let (offset, height) = config_geometry(bounds);
     let mut choices = Vec::new();
     let inner = bounds.cols - 4;
     for value in 0..2u16 {
@@ -1147,7 +1208,7 @@ pub fn config_targets(bounds: Rect) -> Vec<(usize, Option<bool>, Rect)> {
             Some(value == 0),
             Rect {
                 x: bounds.x + 2 + inner / 2 + (inner - inner / 2 - 1) * value / 2 + value,
-                y: bounds.y + 2,
+                y: bounds.y + 2 + offset,
                 cols: (inner - inner / 2 - 1) * (value + 1) / 2
                     - (inner - inner / 2 - 1) * value / 2,
                 rows: height,
@@ -1490,6 +1551,14 @@ pub fn tab_targets(
     tabs.push((TabTarget::New, new));
     tabs.push((TabTarget::Parked, parked));
     tabs
+}
+
+pub fn tab_new_line(rect: Rect) -> Rect {
+    Rect {
+        y: rect.y + rect.rows / 2,
+        rows: 1,
+        ..rect
+    }
 }
 
 /// Restore and close buttons occupy the full height of a parked entry.

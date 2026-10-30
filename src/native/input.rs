@@ -238,6 +238,7 @@ fn decode_mouse(bytes: &[u8]) -> Option<MouseEvent> {
 
 #[derive(Default)]
 pub struct Router {
+    tab_drag: Option<TabDrag>,
     status_search: bool,
     status_query: Option<String>,
     focus_click: bool,
@@ -259,6 +260,24 @@ pub struct Router {
 }
 impl Router {
     pub fn route(&mut self, event: InputEvent, frame: &Frame) -> Vec<ClientMessage> {
+        if matches!(&event, InputEvent::Bytes(bytes) if bytes == b"\x1b")
+            && self.tab_drag.take().is_some()
+        {
+            self.header_press = None;
+            self.header_click = None;
+            return if frame.controller {
+                vec![ClientMessage::Action(Action::TabDrag(None))]
+            } else {
+                vec![]
+            };
+        }
+        if !self.tab_drag_allowed(frame) && self.tab_drag.take().is_some() {
+            return if frame.controller {
+                vec![ClientMessage::Action(Action::TabDrag(None))]
+            } else {
+                vec![]
+            };
+        }
         if !frame.controller || self.help_override.unwrap_or(frame.help) || frame.ui.scratch_visible
         {
             self.header_drag = None;
@@ -732,6 +751,71 @@ impl Router {
         }
         Action::Focus(pane)
     }
+    fn tab_drag_allowed(&self, frame: &Frame) -> bool {
+        frame.controller
+            && !self.pending_modal
+            && frame.sidebar_status()
+            && frame.ui.dialog.is_none()
+            && !frame.ui.scratch_visible
+            && !self.help_override.unwrap_or(frame.help)
+            && self.tab_drag.as_ref().is_none_or(|drag| {
+                frame
+                    .panes
+                    .iter()
+                    .any(|v| v.pane.id == drag.source && !v.pane.parked)
+            })
+    }
+    pub fn tick(&mut self, frame: &Frame) -> Vec<ClientMessage> {
+        self.tick_at(frame, Instant::now())
+    }
+    pub fn tick_at(&mut self, frame: &Frame, now: Instant) -> Vec<ClientMessage> {
+        if !self.tab_drag_allowed(frame) {
+            return self.tab_drag.take().map_or_else(Vec::new, |_| {
+                if frame.controller {
+                    vec![ClientMessage::Action(Action::TabDrag(None))]
+                } else {
+                    vec![]
+                }
+            });
+        }
+        let Some(drag) = self.tab_drag.as_mut().filter(|drag| drag.active) else {
+            return vec![];
+        };
+        let mut output = vec![];
+        let hint = sidebar_drop(frame, drag.point).map(|before| (drag.source, before));
+        if hint != drag.hint {
+            drag.hint = hint;
+            output.push(ClientMessage::Action(Action::TabDrag(hint)));
+        }
+        if hint.is_some()
+            && now.saturating_duration_since(drag.scrolled) >= Duration::from_millis(180)
+        {
+            let slots = sidebar_slots(frame);
+            let count = frame
+                .panes
+                .iter()
+                .filter(|v| !v.pane.parked && Some(v.pane.id) != frame.ui.scratch)
+                .count();
+            let direction = if slots
+                .first()
+                .is_some_and(|(i, _, r)| *i > 0 && drag.point.y <= r.y + 1)
+            {
+                -1
+            } else if slots
+                .last()
+                .is_some_and(|(i, _, r)| *i + 1 < count && drag.point.y + 1 >= r.y + r.rows)
+            {
+                1
+            } else {
+                0
+            };
+            if direction != 0 {
+                output.push(ClientMessage::Action(Action::ScrollTabs(direction)));
+                drag.scrolled = now;
+            }
+        }
+        output
+    }
     fn mouse(&mut self, event: MouseEvent, frame: &Frame) -> Vec<ClientMessage> {
         let mut output = Vec::new();
         if !frame.controller {
@@ -739,6 +823,36 @@ impl Router {
         }
         if self.pending_modal {
             return output;
+        }
+        if let Some(drag) = &mut self.tab_drag {
+            if matches!(event.kind, MouseKind::Move | MouseKind::Release) {
+                drag.point = event.position;
+                if !drag.active
+                    && (drag.start.x.abs_diff(event.position.x) > 1
+                        || drag.start.y.abs_diff(event.position.y) > 1)
+                {
+                    drag.active = true;
+                    self.header_press = None;
+                    self.header_click = None;
+                }
+                if event.kind == MouseKind::Release {
+                    let drag = self.tab_drag.take().unwrap();
+                    if drag.active {
+                        output.push(ClientMessage::Action(
+                            match sidebar_drop(frame, event.position) {
+                                Some(before) => Action::Reorder {
+                                    source: drag.source,
+                                    before,
+                                },
+                                None => Action::TabDrag(None),
+                            },
+                        ));
+                        return output;
+                    }
+                } else {
+                    return self.tick(frame);
+                }
+            }
         }
         if self.focus_click && matches!(event.kind, MouseKind::Move | MouseKind::Release) {
             if event.kind == MouseKind::Release {
@@ -1104,6 +1218,21 @@ impl Router {
                     return output;
                 }
                 if event.kind == MouseKind::Press && target == super::workspace::TabTarget::New {
+                    let rect = super::workspace::tab_targets(
+                        frame.cols,
+                        frame.rows,
+                        &frame.ui.config,
+                        tabviews.len(),
+                        anchor,
+                        frame.panes.iter().filter(|view| view.pane.parked).count(),
+                    )
+                    .into_iter()
+                    .find(|(kind, _)| *kind == target)
+                    .map(|(_, rect)| rect)
+                    .unwrap();
+                    if !super::workspace::tab_new_line(rect).contains(event.position) {
+                        return output;
+                    }
                     emit(&mut output, Action::NewTab, true);
                     return output;
                 }
@@ -1159,6 +1288,22 @@ impl Router {
                             emit(&mut output, Action::ClosePaneRequest(view.pane.id), true);
                         } else {
                             let action = self.header_action(view.pane.id, event);
+                            if matches!(action, Action::Focus(_))
+                                && event.button == 0
+                                && !event.shift
+                                && !event.alt
+                                && !event.ctrl
+                            {
+                                self.tab_drag = Some(TabDrag {
+                                    source: view.pane.id,
+                                    start: event.position,
+                                    point: event.position,
+                                    active: false,
+                                    hint: None,
+                                    scrolled: Instant::now(),
+                                });
+                                self.header_drag = None;
+                            }
                             emit(&mut output, action, true);
                         }
                     }
@@ -1895,4 +2040,72 @@ impl Router {
             .map(|action| vec![ClientMessage::Action(action)])
             .unwrap_or_default()
     }
+}
+
+/// Visible sidebar rows and their stable pane identities.
+fn sidebar_slots(frame: &Frame) -> Vec<(usize, PaneId, Rect)> {
+    let panes: Vec<_> = frame
+        .panes
+        .iter()
+        .filter(|v| !v.pane.parked && Some(v.pane.id) != frame.ui.scratch)
+        .collect();
+    let active = panes
+        .iter()
+        .position(|v| v.pane.id == frame.active)
+        .unwrap_or(0);
+    super::workspace::tab_targets(
+        frame.cols,
+        frame.rows,
+        &frame.ui.config,
+        panes.len(),
+        frame
+            .ui
+            .tab_scroll_anchor
+            .unwrap_or(active)
+            .min(panes.len().saturating_sub(1)),
+        frame.panes.iter().filter(|v| v.pane.parked).count(),
+    )
+    .into_iter()
+    .filter_map(|(target, rect)| {
+        if let super::workspace::TabTarget::Pane(index) = target {
+            Some((index, panes[index].pane.id, rect))
+        } else {
+            None
+        }
+    })
+    .collect()
+}
+fn sidebar_drop(frame: &Frame, point: Point) -> Option<Option<PaneId>> {
+    if point.x >= frame.sidebar_width().saturating_sub(1) {
+        return None;
+    }
+    let slots = sidebar_slots(frame);
+    let (_, first, first_rect) = slots.first()?;
+    if point.y <= first_rect.y {
+        return Some(Some(*first));
+    }
+    let panes: Vec<_> = frame
+        .panes
+        .iter()
+        .filter(|v| !v.pane.parked && Some(v.pane.id) != frame.ui.scratch)
+        .collect();
+    for (index, id, rect) in &slots {
+        if point.y < rect.y + rect.rows {
+            return Some(if point.y < rect.y + rect.rows.div_ceil(2) {
+                Some(*id)
+            } else {
+                panes.get(index + 1).map(|v| v.pane.id)
+            });
+        }
+    }
+    let (index, _, rect) = slots.last()?;
+    (point.y <= rect.y + rect.rows + 1).then(|| panes.get(index + 1).map(|v| v.pane.id))
+}
+struct TabDrag {
+    source: PaneId,
+    start: Point,
+    point: Point,
+    active: bool,
+    hint: Option<(PaneId, Option<PaneId>)>,
+    scrolled: Instant,
 }

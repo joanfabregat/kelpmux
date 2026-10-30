@@ -136,7 +136,11 @@ pub fn target(frame: &Frame, point: Point) -> Option<Rect> {
                     regions.push(ws::tab_close(rect));
                     regions.push(ws::tab_park(rect));
                 }
-                regions.push(rect);
+                regions.push(if kind == ws::TabTarget::New {
+                    ws::tab_new_line(rect)
+                } else {
+                    rect
+                });
             }
         } else {
             for view in frame.panes.iter().filter(|view| {

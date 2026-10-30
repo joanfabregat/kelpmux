@@ -116,6 +116,8 @@ fn endpoint(config: &ServerConfig) -> Result<(UnixListener, Endpoint)> {
 }
 
 struct NativePane {
+    launch_cwd: PathBuf,
+    launch_shell: PathBuf,
     size: (u16, u16),
     child: Child,
     master: File,
@@ -199,6 +201,8 @@ impl NativePane {
         }
         let child = command.spawn()?;
         let mut pane = Self {
+            launch_cwd: config.cwd.clone(),
+            launch_shell: config.shell.clone(),
             size: (cols, rows),
             child,
             master,
@@ -590,6 +594,7 @@ impl Drop for RecoveryJob {
     }
 }
 struct Server {
+    remember_tab_order: bool,
     focus_click: bool,
     title_animation: BTreeMap<PaneId, (String, u16)>,
     epoch: String,
@@ -976,6 +981,34 @@ impl Server {
             self.workspace.ui.row_weights.clone(),
         ];
         settings.template = self.config.template.clone();
+        let layout = self
+            .remember_tab_order
+            .then(|| super::lifecycle::TabLayout {
+                template: self.config.template.clone(),
+                cwd: self.config.cwd.clone(),
+                shell: self.config.shell.clone(),
+                panes: self
+                    .workspace
+                    .panes
+                    .iter()
+                    .filter(|p| Some(p.id) != self.workspace.ui.scratch)
+                    .filter_map(|p| {
+                        self.panes
+                            .get(&p.id)
+                            .map(|pane| super::lifecycle::StartupPane {
+                                name: self.aliases.get(&p.id).cloned(),
+                                cwd: pane.launch_cwd.clone(),
+                                shell: pane.launch_shell.clone(),
+                            })
+                    })
+                    .collect(),
+            });
+        let layout_path = self.config.state_dir.join("tab-layout.json");
+        if let Some(layout) = layout.filter(|layout| !layout.panes.is_empty()) {
+            journal::atomic(&layout_path, &layout)?;
+        } else if layout_path.try_exists()? {
+            fs::remove_file(layout_path)?;
+        }
         settings.tab_count = Some(
             self.workspace
                 .panes
@@ -1012,6 +1045,19 @@ impl Server {
     }
     fn feature_action(&mut self, client: u64, action: &Action) -> Result<bool> {
         match action {
+            Action::TabDrag(_) => {
+                self.workspace.apply(action)?;
+                self.dirty = true;
+                return Ok(true);
+            }
+            Action::Reorder { .. } | Action::Swap { .. } => {
+                self.workspace.apply(action)?;
+                self.remember_tab_order = true;
+                self.persist_geometry()?;
+                self.resize();
+                self.dirty = true;
+                return Ok(true);
+            }
             Action::AgentLinkPicker(pane) => {
                 let agent = self
                     .discovered_agents
@@ -1661,6 +1707,7 @@ impl Server {
                 self.clients.get_mut(&id).unwrap().attached = true;
                 self.clients.get_mut(&id).unwrap().geometry = Some((cols, rows));
                 if self.controller.is_none() || takeover {
+                    self.workspace.ui.tab_drop = None;
                     self.controller = Some(id);
                     self.apply_theme();
                     self.workspace.resize(cols, rows)?;
@@ -1692,6 +1739,7 @@ impl Server {
                 self.dirty = true;
             }
             ClientMessage::Action(Action::Takeover) if self.clients[&id].attached => {
+                self.workspace.ui.tab_drop = None;
                 let (cols, rows) = self.clients[&id]
                     .geometry
                     .ok_or("attached client has no geometry")?;
@@ -2305,6 +2353,9 @@ impl Server {
         );
     }
     fn frames(&mut self, spinner: usize) {
+        if self.controller.is_none() {
+            self.workspace.ui.tab_drop = None;
+        }
         if let Err(error) = self.activity.observe(&self.workspace.panes, crate::now()) {
             self.notice = Some(format!("Notification history: {error}"));
         }
@@ -2508,6 +2559,7 @@ pub fn serve(config: ServerConfig) -> Result<()> {
     let (listener, _endpoint) = endpoint(&config)?;
     super::lifecycle::save_pid(&config.state_dir)?;
     let mut server = Server {
+        remember_tab_order: false,
         focus_click: false,
         title_animation: BTreeMap::new(),
         epoch: fs::read_to_string("/proc/sys/kernel/random/uuid")?
@@ -2549,8 +2601,38 @@ pub fn serve(config: ServerConfig) -> Result<()> {
     let count = server.config.initial_tabs.unwrap_or(
         usize::from(server.config.initial_grid.0) * usize::from(server.config.initial_grid.1),
     );
-    for _ in 0..count {
-        server.add_pane()?;
+    let layout =
+        super::lifecycle::TabLayout::load(&server.config.state_dir.join("tab-layout.json"))
+            .ok()
+            .filter(|layout| {
+                layout.panes.len() == count
+                    && layout.template == server.config.template
+                    && layout.cwd == server.config.cwd
+                    && layout.shell == server.config.shell
+            });
+    server.remember_tab_order = layout.is_some();
+    for index in 0..count {
+        if let Some(saved) = layout.as_ref().and_then(|layout| layout.panes.get(index)) {
+            let (cwd, shell) = (server.config.cwd.clone(), server.config.shell.clone());
+            server.config.cwd = saved.cwd.clone();
+            server.config.shell = saved.shell.clone();
+            let result =
+                server.spawn_pane(
+                    saved
+                        .name
+                        .as_ref()
+                        .map(|name| super::templates::TemplatePane {
+                            name: name.clone(),
+                            cwd: saved.cwd.clone(),
+                            shell: Some(saved.shell.clone()),
+                        }),
+                );
+            server.config.cwd = cwd;
+            server.config.shell = shell;
+            result?;
+        } else {
+            server.add_pane()?;
+        }
     }
     server.initializing = false;
     server.workspace.reflow();
