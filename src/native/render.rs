@@ -1416,7 +1416,7 @@ fn draw_tabs(frame: &mut Frame, workspace: &Workspace, spinner: usize) {
         let marker = targets
             .iter()
             .find_map(|(target, rect)| match target {
-                TabTarget::Pane(i) if *i == index => Some((rect.y, "▔")),
+                TabTarget::Pane(i) if *i == index => Some(rect.y.saturating_sub(1)),
                 _ => None,
             })
             .or_else(|| {
@@ -1424,24 +1424,18 @@ fn draw_tabs(frame: &mut Frame, workspace: &Workspace, spinner: usize) {
                     .iter()
                     .rev()
                     .find_map(|(target, rect)| match target {
-                        TabTarget::Pane(i) if *i + 1 == index => {
-                            Some((rect.y + rect.rows - 1, "▁"))
-                        }
+                        TabTarget::Pane(i) if *i + 1 == index => Some(rect.y + rect.rows - 1),
                         _ => None,
                     })
             });
-        if let Some((y, glyph)) = marker {
+        if let Some(y) = marker {
             let width = frame.sidebar_width() - 1;
-            write_text(
-                frame,
-                0,
-                y,
-                width,
-                &glyph.repeat(usize::from(width)),
-                Color::Indexed(75),
-                tab_surface(workspace),
-                true,
-            );
+            for x in 0..width {
+                let cell =
+                    &mut frame.cells[usize::from(y) * usize::from(frame.cols) + usize::from(x)];
+                cell.underline = true;
+                cell.underline_color = Some(Color::Indexed(75));
+            }
         }
     }
     let x = frame.sidebar_width() - 1;

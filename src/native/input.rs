@@ -1287,13 +1287,11 @@ impl Router {
                             self.pending_modal = true;
                             emit(&mut output, Action::ClosePaneRequest(view.pane.id), true);
                         } else {
-                            let action = self.header_action(view.pane.id, event);
-                            if matches!(action, Action::Focus(_))
-                                && event.button == 0
-                                && !event.shift
-                                && !event.alt
-                                && !event.ctrl
-                            {
+                            self.header_click = None;
+                            self.header_press = None;
+                            self.header_drag = None;
+                            let action = Action::Focus(view.pane.id);
+                            if event.button == 0 && !event.shift && !event.alt && !event.ctrl {
                                 self.tab_drag = Some(TabDrag {
                                     source: view.pane.id,
                                     start: event.position,
