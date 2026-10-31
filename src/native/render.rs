@@ -330,7 +330,7 @@ fn help_entries(config: &super::ui::UiConfig) -> Vec<(String, &'static str)> {
         (key("c", "scratch"), "Scratch terminal popup"),
         (key("/", "search"), "Search; Tab scope; Ctrl-Y copy"),
         (key("Space", "selection"), "Select with arrows; y copies"),
-        ("Header drag".into(), "Swap panes; grid auto-balances"),
+        ("Header drag".into(), "Sidebar: reorder; grid: swap panes"),
     ]
 }
 fn draw_help(frame: &mut Frame, workspace: &Workspace) {
@@ -553,7 +553,10 @@ fn tab_accent(workspace: &Workspace, selected: bool) -> Color {
     theme_surface(workspace, if selected { 88 } else { 50 })
 }
 fn tab_background(workspace: &Workspace, selected: bool) -> Color {
-    theme_surface(workspace, if selected { 32 } else { 14 })
+    if selected && workspace.ui.terminal_theme[1].is_none() {
+        return Color::Indexed(242);
+    }
+    theme_surface(workspace, if selected { 50 } else { 14 })
 }
 fn tab_text(workspace: &Workspace, _selected: bool) -> Color {
     if workspace.ui.terminal_theme[1]
@@ -752,13 +755,13 @@ fn draw_dialog(
             );
         }
     } else if dialog.kind == DialogKind::Config {
-        let (_, height) = super::workspace::config_geometry(bounds);
+        let (offset, height) = super::workspace::config_geometry(bounds);
         {
             fill(
                 frame,
                 Rect {
                     x: bounds.x + 1,
-                    y: bounds.y + 1,
+                    y: bounds.y + 1 + offset,
                     cols: bounds.cols - 2,
                     rows: height + 1,
                 },
@@ -767,7 +770,7 @@ fn draw_dialog(
             write_text(
                 frame,
                 bounds.x + 2,
-                bounds.y + 1,
+                bounds.y + 1 + offset,
                 bounds.cols - 4,
                 "Notifications",
                 Color::Indexed(117),
@@ -802,7 +805,7 @@ fn draw_dialog(
         write_text(
             frame,
             bounds.x + 2,
-            bounds.y + 2 + height / 2,
+            bounds.y + 2 + offset + height / 2,
             inner / 2 - 1,
             "Sound",
             Color::Indexed(250),
@@ -1324,7 +1327,7 @@ fn draw_tabs(frame: &mut Frame, workspace: &Workspace, spinner: usize) {
         .iter()
         .position(|pane| pane.id == active_id)
         .unwrap_or(0);
-    for (target, rect) in tab_targets(
+    let targets = tab_targets(
         frame.cols,
         frame.rows,
         &workspace.ui.config,
@@ -1335,7 +1338,8 @@ fn draw_tabs(frame: &mut Frame, workspace: &Workspace, spinner: usize) {
             .unwrap_or(active)
             .min(panes.len().saturating_sub(1)),
         workspace.panes.iter().filter(|pane| pane.parked).count(),
-    ) {
+    );
+    for (target, rect) in targets.iter().copied() {
         match target {
             TabTarget::Parked => {}
             TabTarget::New => {
@@ -1402,6 +1406,35 @@ fn draw_tabs(frame: &mut Frame, workspace: &Workspace, spinner: usize) {
                         spinner,
                     );
                 }
+            }
+        }
+    }
+    if let Some((_, before)) = workspace.ui.tab_drop {
+        let index = before
+            .and_then(|id| panes.iter().position(|p| p.id == id))
+            .unwrap_or(panes.len());
+        let marker = targets
+            .iter()
+            .find_map(|(target, rect)| match target {
+                TabTarget::Pane(i) if *i == index => Some(rect.y.saturating_sub(1)),
+                _ => None,
+            })
+            .or_else(|| {
+                targets
+                    .iter()
+                    .rev()
+                    .find_map(|(target, rect)| match target {
+                        TabTarget::Pane(i) if *i + 1 == index => Some(rect.y + rect.rows - 1),
+                        _ => None,
+                    })
+            });
+        if let Some(y) = marker {
+            let width = frame.sidebar_width() - 1;
+            for x in 0..width {
+                let cell =
+                    &mut frame.cells[usize::from(y) * usize::from(frame.cols) + usize::from(x)];
+                cell.underline = true;
+                cell.underline_color = Some(Color::Indexed(75));
             }
         }
     }
@@ -1511,18 +1544,30 @@ fn draw_tab(
             park.x.saturating_sub(count_width).saturating_sub(x),
         )
     };
+    let marker_width = if pane.status == crate::model::Status::InputNeeded {
+        2
+    } else {
+        1
+    };
     let track = if rect.rows >= 2 {
         Rect {
             x: number.x + number.cols + 1,
             y: rect.y,
-            cols: park.x.saturating_sub(number.x + number.cols + 1).min(1),
+            cols: park
+                .x
+                .saturating_sub(number.x + number.cols + 1)
+                .min(marker_width),
             rows: 1,
         }
     } else {
         Rect {
             x: title_x,
             y: title_y,
-            cols: if title_width >= 3 { 1 } else { 0 },
+            cols: if title_width >= marker_width + 2 {
+                marker_width
+            } else {
+                0
+            },
             rows: 1,
         }
     };
@@ -1706,7 +1751,24 @@ fn draw_tab(
         true,
     );
     for y in rect.y..rect.y + rect.rows {
-        write_text(frame, rect.x, y, 1, " ", accent, bg, false);
+        write_text(
+            frame,
+            rect.x,
+            y,
+            1,
+            if selected && !grid { "▎" } else { " " },
+            if selected && !grid {
+                Color::Indexed(if tab_text(workspace, false) == Color::Indexed(232) {
+                    24
+                } else {
+                    75
+                })
+            } else {
+                accent
+            },
+            bg,
+            false,
+        );
     }
     if pane.status == crate::model::Status::Working {
         activity_spinner(
@@ -1729,11 +1791,18 @@ fn activity_attention(frame: &mut Frame, track: Rect) {
         return;
     }
     let index = usize::from(track.y) * usize::from(frame.cols) + usize::from(track.x);
-    if let Some(cell) = frame.cells.get_mut(index) {
-        cell.text = super::ui::ALERT_ICON.into();
-        cell.fg = Color::Indexed(226);
-        cell.width = 1;
-        cell.bold = true;
+    if let Some(cell) = frame.cells.get(index) {
+        let bg = cell.bg;
+        write_text(
+            frame,
+            track.x,
+            track.y,
+            track.cols,
+            super::ui::WAIT_ICON,
+            Color::Indexed(226),
+            bg,
+            true,
+        );
     }
 }
 
@@ -2532,7 +2601,7 @@ fn draw_parked(
                 Rect {
                     x: rect.x + 6,
                     y,
-                    cols: 1,
+                    cols: 2,
                     rows: 1,
                 },
             );
@@ -3288,8 +3357,8 @@ mod tests {
                 let workspace = Workspace::new(cols, 10).unwrap();
                 let mut frame = compose(&workspace, &BTreeMap::new(), true, None, 0);
                 header(&mut frame, &workspace, &view(cols, overlay), true, 0);
-                assert_eq!(frame.cells[0].bg, Color::Indexed(240));
-                assert_eq!(frame.cells[5].bg, Color::Indexed(240));
+                assert_eq!(frame.cells[0].bg, Color::Indexed(242));
+                assert_eq!(frame.cells[5].bg, Color::Indexed(242));
                 let button_start = usize::from(cols - 10);
                 assert_eq!(frame.cells[button_start].text, " ");
                 assert_eq!(frame.cells[usize::from(cols) - 1].text, " ");

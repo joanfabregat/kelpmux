@@ -943,3 +943,63 @@ fn replacing_outdated_dev_ends_old_jobs_reuses_current_build_and_supports_rollba
     dev.stop();
     preprod.stop();
 }
+
+#[test]
+fn reordered_tabs_keep_live_pids_and_restart_in_saved_startup_order() {
+    use kelpmux::native::templates::{Template, TemplatePane};
+    let fixture = Fixture::new();
+    let mut template = Template {
+        grid: (3, 1),
+        panes: vec![],
+    };
+    for name in ["first", "second", "third"] {
+        let cwd = fixture.root.join(name);
+        fs::create_dir(&cwd).unwrap();
+        template.panes.push(TemplatePane {
+            name: name.into(),
+            cwd,
+            shell: Some("/bin/sh".into()),
+        });
+    }
+    let file = fixture.root.join("template.json");
+    fs::write(&file, serde_json::to_vec(&template).unwrap()).unwrap();
+    let original = fixture.start(&["--template", file.to_str().unwrap()]);
+    let mut socket = std::os::unix::net::UnixStream::connect(&fixture.socket).unwrap();
+    write_message(
+        &mut socket,
+        &ClientMessage::Command(Action::Reorder {
+            source: original[0].id,
+            before: Some(original[2].id),
+        }),
+    )
+    .unwrap();
+    let response = read_message::<ServerMessage>(&mut socket).unwrap().unwrap();
+    let ServerMessage::State {
+        panes: reordered, ..
+    } = response
+    else {
+        panic!("{response:?}");
+    };
+    assert_eq!(
+        reordered.iter().map(|p| p.pid).collect::<Vec<_>>(),
+        [original[1].pid, original[0].pid, original[2].pid]
+    );
+    assert!(fixture.state.join("tab-layout.json").is_file());
+    fixture.stop();
+    let restarted = fixture.start(&[]);
+    assert_eq!(
+        restarted
+            .iter()
+            .map(|p| p.title.as_str())
+            .collect::<Vec<_>>(),
+        ["second", "first", "third"]
+    );
+    assert_eq!(
+        restarted.iter().map(|p| p.cwd.clone()).collect::<Vec<_>>(),
+        [
+            original[1].cwd.clone(),
+            original[0].cwd.clone(),
+            original[2].cwd.clone()
+        ]
+    );
+}
