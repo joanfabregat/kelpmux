@@ -3662,7 +3662,7 @@ fn incomplete_grids_keep_columns_and_show_noninteractive_inactive_slots() {
 }
 
 #[test]
-fn double_click_grid_headers_open_regular_tabs_and_sidebar_tabs_toggle_fullscreen() {
+fn double_click_grid_headers_open_regular_tabs_and_sidebar_tabs_only_focus() {
     use kelpmux::native::workspace::{TabTarget, tab_targets};
     for tabs in [false, true] {
         let mut ws = workspace((120, 40), (2, 2));
@@ -3690,7 +3690,7 @@ fn double_click_grid_headers_open_regular_tabs_and_sidebar_tabs_toggle_fullscree
         for (index, expected) in [
             Action::Focus(2),
             if tabs {
-                Action::Fullscreen(2)
+                Action::Focus(2)
             } else {
                 Action::Read(2)
             },
@@ -3718,52 +3718,12 @@ fn double_click_grid_headers_open_regular_tabs_and_sidebar_tabs_toggle_fullscree
             }
         }
         let zoomed = frame(&ws);
-        if !tabs {
-            assert_eq!(zoomed.reading, ReadingMode::Tabs(2));
-            assert!(zoomed.sidebar_status());
-            let mut regular = workspace((120, 40), (2, 2));
-            regular.apply(&Action::Select(2)).unwrap();
-            assert_eq!(ws.layout(), regular.layout());
-            assert!(ws.ui.zoom_return.is_none());
-            assert_eq!(ws.panes.len(), 4);
-            continue;
-        }
-        assert_eq!(zoomed.reading, ReadingMode::Fullscreen(2));
-        assert!(!zoomed.sidebar_status());
-        let body = zoomed.panes[1].body;
-        assert_eq!((body.x, body.y, body.cols, body.rows), (0, 1, 120, 38));
-        assert_eq!(
-            zoomed
-                .panes
-                .iter()
-                .filter(|view| view.body.cols > 0)
-                .count(),
-            1
-        );
-        let point = Point { x: 8, y: 0 };
-        for _ in 0..2 {
-            let routed = actions(router.route(click(point), &frame(&ws)));
-            for action in routed {
-                ws.apply(&action).unwrap();
-            }
-            let release = InputEvent::Mouse(MouseEvent {
-                position: point,
-                kind: MouseKind::Release,
-                button: 0,
-                shift: false,
-                alt: false,
-                ctrl: false,
-            });
-            assert!(router.route(release, &frame(&ws)).is_empty());
-        }
-        assert_eq!(
-            ws.reading,
-            if tabs {
-                ReadingMode::Tabs(2)
-            } else {
-                ReadingMode::Grid
-            }
-        );
+        assert_eq!(zoomed.reading, ReadingMode::Tabs(2));
+        assert!(zoomed.sidebar_status());
+        let mut regular = workspace((120, 40), (2, 2));
+        regular.apply(&Action::Select(2)).unwrap();
+        assert_eq!(ws.layout(), regular.layout());
+        assert!(ws.ui.zoom_return.is_none());
         assert_eq!(ws.panes.len(), 4);
     }
 }
@@ -4015,12 +3975,28 @@ fn sidebar_drag_inserts_without_swapping_and_keeps_active_pane_and_controls() {
         x: 5,
         y: target.y + target.rows - 1,
     };
+    let before_marker = frame(&ws);
     let moved = actions(router.route(drag_event(MouseKind::Move, drop), &frame(&ws)));
     assert_eq!(moved, vec![Action::TabDrag(Some((1, Some(4))))]);
     for action in moved {
         ws.apply(&action).unwrap();
     }
-    assert!(frame(&ws).cells.iter().any(|cell| cell.text == "▔"));
+    let marked = frame(&ws);
+    assert!(
+        marked
+            .cells
+            .iter()
+            .any(|cell| cell.underline && cell.underline_color == Some(Color::Indexed(75)))
+    );
+    for (before, after) in before_marker.cells.iter().zip(&marked.cells) {
+        assert_eq!(
+            (&before.text, before.width, before.fg, before.bg),
+            (&after.text, after.width, after.fg, after.bg)
+        );
+    }
+    let mut terminal = Terminal::new(marked.cols, marked.rows);
+    terminal.feed(&terminal_diff(None, &marked));
+    assert_eq!(terminal.snapshot().cells, marked.cells);
     let released = actions(router.route(drag_event(MouseKind::Release, drop), &frame(&ws)));
     assert_eq!(
         released,
