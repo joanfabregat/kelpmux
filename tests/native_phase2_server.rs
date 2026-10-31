@@ -1133,7 +1133,7 @@ fn inactive_grid_cells_are_visual_and_new_tabs_fill_them_without_replacing_shell
 }
 
 #[test]
-fn double_click_grid_opens_regular_tabs_and_sidebar_zoom_preserves_live_ptys() {
+fn double_click_grid_opens_tabs_and_sidebar_keeps_regular_view_and_live_ptys() {
     use kelpmux::native::input::Router;
     let daemon = Daemon::start();
     let mut peer = daemon.attach();
@@ -1187,12 +1187,7 @@ fn double_click_grid_opens_regular_tabs_and_sidebar_zoom_preserves_live_ptys() {
                 if press == 0 {
                     frame.active == pane
                 } else {
-                    frame.reading
-                        == if tabs {
-                            ReadingMode::Fullscreen(pane)
-                        } else {
-                            ReadingMode::Tabs(pane)
-                        }
+                    frame.reading == ReadingMode::Tabs(pane)
                 }
             });
             assert!(
@@ -1217,12 +1212,8 @@ fn double_click_grid_opens_regular_tabs_and_sidebar_zoom_preserves_live_ptys() {
             .find(|view| view.pane.id == pane)
             .unwrap()
             .body;
-        if tabs {
-            assert_eq!((body.x, body.y, body.cols, body.rows), (0, 1, 120, 38));
-        } else {
-            assert!(f.sidebar_status());
-            assert!(body.x > 0);
-        }
+        assert!(f.sidebar_status());
+        assert!(body.x > 0);
         let expected_size = format!("ZOOM_SIZE={} {}", body.rows, body.cols);
         peer.input("printf 'ZOOM_SIZE='; stty size\n");
         peer.wait(|frame| {
@@ -1233,19 +1224,8 @@ fn double_click_grid_opens_regular_tabs_and_sidebar_zoom_preserves_live_ptys() {
                 .collect::<String>()
                 .contains(&expected_size)
         });
-        peer.action(if tabs {
-            Action::Fullscreen(pane)
-        } else {
-            Action::CloseReading
-        });
-        peer.wait(|frame| {
-            frame.reading
-                == if tabs {
-                    ReadingMode::Tabs(pane)
-                } else {
-                    ReadingMode::Grid
-                }
-        });
+        peer.action(Action::CloseReading);
+        peer.wait(|frame| frame.reading == ReadingMode::Grid);
         assert_eq!(
             before
                 .iter()
