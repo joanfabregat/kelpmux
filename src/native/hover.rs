@@ -132,7 +132,7 @@ pub fn target(frame: &Frame, point: Point) -> Option<Rect> {
                     .min(panes.len().saturating_sub(1)),
                 frame.panes.iter().filter(|view| view.pane.parked).count(),
             ) {
-                if let ws::TabTarget::Pane(_) = kind {
+                if matches!(kind, ws::TabTarget::Pane(_)) && !frame.ui.config.sidebar_folded {
                     regions.push(ws::tab_close(rect));
                     regions.push(ws::tab_park(rect));
                 }
@@ -158,6 +158,14 @@ pub fn target(frame: &Frame, point: Point) -> Option<Rect> {
     let rect = regions
         .into_iter()
         .find(|rect| rect.cols > 0 && rect.rows > 0 && rect.contains(point))?;
+    if frame.sidebar_status()
+        && frame.ui.dialog.is_none()
+        && !frame.help
+        && !frame.ui.scratch_visible
+        && point.x == frame.sidebar_width() - 1
+    {
+        return Some(rect);
+    }
     let click = InputEvent::Mouse(MouseEvent {
         position: point,
         kind: MouseKind::Press,

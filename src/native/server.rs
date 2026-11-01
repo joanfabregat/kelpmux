@@ -973,6 +973,15 @@ impl Server {
             super::lifecycle::Settings::default()
         };
         settings.ui = self.workspace.ui.config.clone();
+        // Older retained builds reject unknown UI keys. Keep the fold preference
+        // separately while continuing to save their understood expanded width.
+        settings.ui.sidebar_folded = false;
+        let folded_path = self.config.state_dir.join("sidebar-folded.json");
+        if self.workspace.ui.config.sidebar_folded {
+            journal::atomic(&folded_path, &true)?;
+        } else if folded_path.try_exists()? {
+            fs::remove_file(folded_path)?;
+        }
         settings.shell = Some(self.config.shell.clone());
         settings.cwd = Some(self.config.cwd.clone());
         settings.grid = (self.workspace.grid_cols, self.workspace.grid_rows);
@@ -2540,7 +2549,7 @@ fn discovery_worker(
     (requests, results, handle)
 }
 
-pub fn serve(config: ServerConfig) -> Result<()> {
+pub fn serve(mut config: ServerConfig) -> Result<()> {
     if let Some(template) = &config.template {
         template.validate()?;
     }
@@ -2557,6 +2566,12 @@ pub fn serve(config: ServerConfig) -> Result<()> {
         };
     }
     let (listener, _endpoint) = endpoint(&config)?;
+    if let Ok(folded) =
+        super::lifecycle::sidebar_folded(&config.state_dir.join("sidebar-folded.json"))
+    {
+        workspace.ui.config.sidebar_folded = folded;
+    }
+    config.ui = workspace.ui.config.clone();
     super::lifecycle::save_pid(&config.state_dir)?;
     let mut server = Server {
         remember_tab_order: false,

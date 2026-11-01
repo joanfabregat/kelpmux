@@ -357,6 +357,28 @@ pub fn finish_run(state: &Path) -> Result<()> {
     Ok(())
 }
 
+/// Read the private fold preference independently of retained-build settings.
+pub fn sidebar_folded(path: &Path) -> Result<bool> {
+    let file = OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
+        .open(path)?;
+    let metadata = file.metadata()?;
+    if !metadata.is_file()
+        || metadata.uid() != unsafe { libc::geteuid() }
+        || metadata.mode() & 0o077 != 0
+        || metadata.len() > 128
+    {
+        return Err("sidebar preference must be an owned private file".into());
+    }
+    let mut text = String::new();
+    file.take(129).read_to_string(&mut text)?;
+    if text.len() > 128 {
+        return Err("sidebar preference is too large".into());
+    }
+    Ok(serde_json::from_str(&text)?)
+}
+
 /// Persist startup definitions in display order, never live process/session state.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
