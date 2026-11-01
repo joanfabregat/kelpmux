@@ -1856,7 +1856,7 @@ fn working_spinner_rotates_in_place_in_tabs_grid_and_parked_cards() {
             for (row, symbol) in rows.iter().zip(["◐", "◓", "◑", "◒"]) {
                 if mode == 0 {
                     assert!(row.contains(symbol));
-                    assert!(row.contains(&format!("{symbol}  ")));
+                    assert!(row.contains(&format!("━ {symbol} Wide")));
                 } else {
                     assert_eq!(row.matches('●').count(), 1);
                 }
@@ -2077,7 +2077,7 @@ fn tab_surfaces_follow_dark_and_light_backgrounds_without_repainting_terminal_de
             Color::Indexed(if light { 25 } else { 110 })
         );
         let ball = f.cells.iter().find(|cell| cell.text == "●").unwrap();
-        assert_eq!(ball.fg, Color::Indexed(214));
+        assert_eq!(ball.fg, Color::Indexed(79));
         let body = f.panes.iter().find(|view| view.pane.id == 1).unwrap().body;
         assert_eq!(
             f.cells[usize::from(body.y * f.cols + body.x)].bg,
@@ -4283,7 +4283,7 @@ fn selected_process_header_background_fills_its_entire_column() {
             for col in x..x + available {
                 assert_eq!(
                     f.cells[usize::from(y * f.cols + col)].bg,
-                    Color::Indexed(if sort == Some(sorted) { 67 } else { 114 })
+                    Color::Indexed(if sort == Some(sorted) { 71 } else { 114 })
                 );
             }
             x += available;

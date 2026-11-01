@@ -1588,7 +1588,7 @@ fn draw_tab(
         }
     };
     let (title_x, title_width) = if rect.rows == 1 {
-        let occupied = track.cols + 2 * u16::from(track.cols > 0);
+        let occupied = track.cols + u16::from(track.cols > 0);
         (title_x + occupied, title_width.saturating_sub(occupied))
     } else {
         (title_x, title_width)
@@ -1600,12 +1600,24 @@ fn draw_tab(
             0
         };
     if grid && (title_width > 0 || track.cols > 0) {
+        if track.cols > 0 {
+            write_text(
+                frame,
+                track.x.saturating_sub(1),
+                title_y,
+                1,
+                " ",
+                text_color,
+                bg,
+                false,
+            );
+        }
         write_text(
             frame,
-            title_x.saturating_sub(2),
+            title_x.saturating_sub(1),
             title_y,
-            2,
-            "  ",
+            1,
+            " ",
             text_color,
             bg,
             false,
@@ -1811,7 +1823,7 @@ fn draw_tab(
                 track.y,
                 track.cols,
                 ["◐", "◓", "◑", "◒"][spinner % 4],
-                Color::Indexed(214),
+                Color::Indexed(79),
                 bg,
                 true,
             );
@@ -1884,7 +1896,7 @@ fn activity_ball(frame: &mut Frame, track: Rect, tick: usize) {
         track.y,
         track.cols,
         &bouncing_ball_frame(track.cols, tick),
-        Color::Indexed(214),
+        Color::Indexed(79),
         bg,
         true,
     );
@@ -3002,7 +3014,7 @@ fn draw_status(frame: &mut Frame, workspace: &Workspace, bounds: Rect) {
                     cols: available,
                     rows: 1,
                 },
-                Color::Indexed(67),
+                Color::Indexed(71),
             );
         }
         write_text(
@@ -3011,13 +3023,9 @@ fn draw_status(frame: &mut Frame, workspace: &Workspace, bounds: Rect) {
             table_y,
             available,
             &text,
+            Color::Indexed(232),
             Color::Indexed(if *sort == Some(ui.status_sort) {
-                231
-            } else {
-                232
-            }),
-            Color::Indexed(if *sort == Some(ui.status_sort) {
-                67
+                71
             } else {
                 114
             }),
