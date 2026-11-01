@@ -622,11 +622,7 @@ fn tab_body_mouse_and_dialog_close_have_separate_hit_targets() {
 fn selected_number_and_title_have_distinct_colors_and_agent_shortcuts_use_pane_numbers() {
     let mut ws = workspace((160, 50), (2, 2));
     let f = frame(&ws);
-    let title = f.cells[..usize::from(f.cols)]
-        .iter()
-        .find(|cell| cell.text == "a")
-        .unwrap();
-    assert_ne!(f.cells[3].fg, title.fg);
+    assert_ne!(f.cells[3].fg, f.cells[6].fg);
     for pane in &mut ws.panes {
         pane.kind = Some(Kind::Claude);
     }
@@ -1788,7 +1784,7 @@ fn grid_header_numbers_park_close_and_footer_have_distinct_targets_without_zoom(
         let number_cell = &f.cells[usize::from(number.y * f.cols + number.x + 1)];
         assert_eq!(
             number_cell.fg,
-            Color::Indexed(if id == ws.active { 75 } else { 110 })
+            Color::Indexed(if id == ws.active { 226 } else { 110 })
         );
         let [park, close] = grid_controls(header);
         assert!(!f.cells.iter().any(|cell| cell.text == "⛶"));
@@ -4335,35 +4331,5 @@ fn every_metrics_entry_opens_cpu_descending_even_after_changing_sort() {
             }
         }
         assert!(count > 0);
-    }
-}
-
-#[test]
-fn selected_grid_header_uses_sidebar_accent_without_filling_the_background() {
-    let mut ws = workspace((160, 40), (2, 1));
-    for active in [1, 2] {
-        ws.apply(&Action::Focus(active)).unwrap();
-        let f = frame(&ws);
-        for view in &f.panes {
-            let number = kelpmux::native::workspace::tab_number_for(view.rect, view.pane.number);
-            let selected = view.pane.id == active;
-            if selected {
-                assert_eq!(
-                    f.cells[usize::from(number.y * f.cols + number.x + 1)].fg,
-                    Color::Indexed(75)
-                );
-            }
-            let line: Vec<_> = f.cells[usize::from(view.rect.y * f.cols + view.rect.x)
-                ..usize::from(view.rect.y * f.cols + view.rect.x + view.rect.cols)]
-                .iter()
-                .filter(|c| c.text == "━")
-                .collect();
-            assert!(!line.is_empty());
-            assert!(
-                line.iter()
-                    .all(|c| c.fg == Color::Indexed(if selected { 75 } else { 39 })
-                        && c.bg == Color::Default)
-            );
-        }
     }
 }

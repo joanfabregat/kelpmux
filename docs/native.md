@@ -280,4 +280,4 @@ Working grid headers cycle through mint ◐ ◓ ◑ ◒ symbols while their pane
 
 The channel manager keeps its files private with umask 077, then restores the caller's umask for both dev server startup and frontend attachment. Shells inherit that caller mask while workspace state and sockets remain private. Existing servers retain their old mask until replaced; selecting a build does not change a running preprod workspace.
 
-Opening the stats popup from any metric always selects CPU sorting in descending order, with the highest CPU usage first, even after choosing another sort or view previously. The selected grid pane uses the sidebar's blue accent on its header line and number; the header background remains unchanged.
+Opening the stats popup from any metric always selects CPU sorting in descending order, with the highest CPU usage first, even after choosing another sort or view previously.

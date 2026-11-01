@@ -1510,7 +1510,7 @@ fn draw_tab(
             rect.y,
             rect.cols - 2,
             &"━".repeat(usize::from(rect.cols - 2)),
-            Color::Indexed(if selected { 75 } else { 39 }),
+            Color::Indexed(39),
             bg,
             false,
         );
@@ -1522,9 +1522,7 @@ fn draw_tab(
         number.y,
         number.cols,
         &format!(" {} ", pane.number),
-        if selected && grid {
-            Color::Indexed(75)
-        } else if selected {
+        if selected {
             Color::Indexed(226)
         } else {
             Color::Indexed(if tab_text(workspace, false) == Color::Indexed(232) {
