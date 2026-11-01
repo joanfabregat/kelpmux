@@ -1036,3 +1036,62 @@ fn permissive_caller_umask_reaches_shell_but_state_stays_private() {
     }
     fixture.stop();
 }
+
+#[test]
+fn folded_sidebar_survives_restart_and_keeps_retained_build_settings_compatible() {
+    fn wait_fold(stream: &mut std::os::unix::net::UnixStream, folded: bool) -> Frame {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            assert!(Instant::now() < deadline, "fold state update timed out");
+            let metadata = match read_message::<ServerMessage>(stream).unwrap().unwrap() {
+                ServerMessage::Frame(frame) => Some(frame),
+                ServerMessage::Patch(patch) => Some(patch.frame),
+                _ => None,
+            };
+            if let Some(frame) = metadata {
+                if frame.ui.config.sidebar_folded == folded {
+                    return frame;
+                }
+            }
+        }
+    }
+    let fixture = Fixture::new();
+    let original = fixture.start(&[]);
+    let (mut stream, first) = attach_frame(&fixture);
+    write_message(
+        &mut stream,
+        &ClientMessage::Action(Action::ResizeSidebar(38)),
+    )
+    .unwrap();
+    write_message(
+        &mut stream,
+        &ClientMessage::Action(Action::ToggleSidebarFold),
+    )
+    .unwrap();
+    let folded = wait_fold(&mut stream, true);
+    assert_eq!(folded.panes[0].pane.pid, original[0].pid);
+    assert_eq!(folded.active, first.active);
+    let saved: serde_json::Value =
+        serde_json::from_slice(&fs::read(fixture.state.join("workspace.json")).unwrap()).unwrap();
+    assert!(saved["ui"].get("sidebar_folded").is_none());
+    assert_eq!(saved["ui"]["sidebar_columns"], 38);
+    assert!(
+        kelpmux::native::lifecycle::sidebar_folded(&fixture.state.join("sidebar-folded.json"))
+            .unwrap()
+    );
+    drop(stream);
+    fixture.stop();
+    fixture.start(&[]);
+    let (mut stream, restored) = attach_frame(&fixture);
+    assert!(restored.ui.config.sidebar_folded);
+    assert_eq!(restored.ui.config.sidebar_columns, Some(38));
+    write_message(
+        &mut stream,
+        &ClientMessage::Action(Action::ToggleSidebarFold),
+    )
+    .unwrap();
+    assert_eq!(wait_fold(&mut stream, false).sidebar_width(), 38);
+    assert!(!fixture.state.join("sidebar-folded.json").exists());
+    drop(stream);
+    fixture.stop();
+}

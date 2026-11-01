@@ -817,8 +817,8 @@ fn live_server_attach_layout_read_fullscreen_detach_reconnect_preserves_shell() 
         let mut display = kelpmux::native::engine::Terminal::new(80, 24);
         display.feed(&tty.output);
         let snapshot = display.snapshot();
-        if snapshot.cells[2].fg == Color::Indexed(226)
-            && snapshot.cells[2].bg == Color::Indexed(242)
+        if snapshot.cells[2].fg == Color::Rgb(215, 233, 248)
+            && snapshot.cells[2].bg == Color::Rgb(54, 85, 111)
         {
             break;
         }

@@ -1067,13 +1067,21 @@ fn neutral_tabs_ignore_legacy_palette_settings_and_numbers_focus() {
             let number_cell = &f.cells[usize::from(number.y * f.cols + number.x + 1)];
             assert_eq!(
                 number_cell.fg,
-                Color::Indexed(if index == 0 { 226 } else { 110 })
+                if index == 0 {
+                    Color::Rgb(215, 233, 248)
+                } else {
+                    Color::Indexed(75)
+                }
             );
             for x in number.x + 3..number.x + 5 {
                 assert_eq!(f.cells[usize::from(number.y * f.cols + x)].text, " ");
                 assert_eq!(
                     f.cells[usize::from(number.y * f.cols + x)].bg,
-                    Color::Indexed(if index == 0 { 242 } else { 238 })
+                    if index == 0 {
+                        Color::Rgb(54, 85, 111)
+                    } else {
+                        Color::Rgb(43, 47, 53)
+                    }
                 );
             }
             assert_eq!(
@@ -1083,8 +1091,22 @@ fn neutral_tabs_ignore_legacy_palette_settings_and_numbers_focus() {
             if rect.rows >= 3 {
                 let title = &f.cells[usize::from((rect.y + 1) * f.cols + rect.x + 2)];
                 assert_eq!(title.text, "a");
-                assert_eq!(title.fg, Color::Indexed(231));
-                assert_eq!(title.bg, Color::Indexed(if index == 0 { 242 } else { 238 }));
+                assert_eq!(
+                    title.fg,
+                    if index == 0 {
+                        Color::Rgb(240, 243, 246)
+                    } else {
+                        Color::Rgb(215, 221, 228)
+                    }
+                );
+                assert_eq!(
+                    title.bg,
+                    if index == 0 {
+                        Color::Rgb(54, 85, 111)
+                    } else {
+                        Color::Rgb(43, 47, 53)
+                    }
+                );
             }
             let point = Point {
                 x: number.x + 1,
@@ -1258,7 +1280,6 @@ fn working_tabs_keep_sheen_inside_the_activity_row_and_bells_beside_titles() {
             let b = compose(&ws, &screens, true, None, 3);
             assert_ne!(a.cells, b.cells);
             for (index, (before, after)) in a.cells.iter().zip(&b.cells).enumerate() {
-                assert_eq!(before.bg, after.bg);
                 if before != after {
                     assert!(tab.contains(Point {
                         x: (index % usize::from(ws.cols)) as u16,
@@ -1269,7 +1290,10 @@ fn working_tabs_keep_sheen_inside_the_activity_row_and_bells_beside_titles() {
             for control in [tab_number(tab), tab_close(tab), tab_park(tab)] {
                 for x in control.x..control.x + control.cols {
                     let index = usize::from(control.y * ws.cols + x);
-                    assert_eq!(a.cells[index], b.cells[index]);
+                    assert_eq!(
+                        (&a.cells[index].text, a.cells[index].fg),
+                        (&b.cells[index].text, b.cells[index].fg)
+                    );
                 }
             }
             let bell = usize::from((tab.y + 1) * ws.cols + tab.x + 2);
@@ -1537,11 +1561,11 @@ fn neutral_focus_connects_sidebar_divider_regardless_of_legacy_palette() {
             let number = tab_number(tab);
             assert_eq!(
                 f.cells[usize::from(number.y * f.cols + number.x + 4)].bg,
-                Color::Indexed(242)
+                Color::Rgb(54, 85, 111)
             );
             for y in 0..f.rows - 1 {
                 let cell = &f.cells[usize::from(y * f.cols + body.x - 1)];
-                assert_eq!(cell.text, if y == f.rows / 2 { "⋮" } else { "▎" });
+                assert_eq!(cell.text, if y == f.rows / 2 { "‹" } else { "▎" });
                 assert_eq!(cell.fg, Color::Indexed(238));
                 assert_eq!(cell.bg, Color::Default);
             }
@@ -2057,11 +2081,7 @@ fn tab_surfaces_follow_dark_and_light_backgrounds_without_repainting_terminal_de
             x: f.panes[0].body.x - 1,
             y: 0,
         };
-        let selected_bg = Color::Rgb(
-            background[0].saturating_add_signed(if light { -50 } else { 50 }),
-            background[1].saturating_add_signed(if light { -50 } else { 50 }),
-            background[2].saturating_add_signed(if light { -50 } else { 50 }),
-        );
+        let selected_bg = Color::Rgb(54, 85, 111);
         assert_eq!(title[0].bg, selected_bg);
         if position == TabPosition::Left {
             assert_eq!(
@@ -2081,7 +2101,7 @@ fn tab_surfaces_follow_dark_and_light_backgrounds_without_repainting_terminal_de
         let number = tab_number(inactive);
         assert_eq!(
             f.cells[usize::from(number.y * f.cols + number.x + 1)].fg,
-            Color::Indexed(if light { 25 } else { 110 })
+            Color::Indexed(75)
         );
         let ball = f.cells.iter().find(|cell| cell.text == "●").unwrap();
         assert_eq!(ball.fg, Color::Rgb(155, 179, 174));
@@ -2715,11 +2735,11 @@ fn tab_stripes_preserve_folder_labels_and_fill_adjacent_clickable_entries() {
             assert!(cells.iter().all(|cell| !cell.underline));
             assert_eq!(
                 f.cells[usize::from(rect.y * f.cols)].bg,
-                Color::Indexed(match index {
-                    0 => 242,
-                    1 | 3 => 238,
-                    _ => 236,
-                })
+                match index {
+                    0 => Color::Rgb(54, 85, 111),
+                    1 | 3 => Color::Rgb(43, 47, 53),
+                    _ => Color::Rgb(48, 52, 58),
+                }
             );
             if index > 0 {
                 assert_eq!(rect.y, tabs[index - 1].y + tabs[index - 1].rows);
@@ -3876,7 +3896,8 @@ fn minimum_sidebar_width_preserves_five_load_sections_and_legacy_saved_widths() 
         for dev in [false, true] {
             let mut ws = workspace((cols, 40), (2, 2));
             ws.apply(&Action::Select(1)).unwrap();
-            ws.apply(&Action::ResizeSidebar(1)).unwrap();
+            ws.apply(&Action::ResizeSidebar(MIN_SIDEBAR_COLUMNS - 1))
+                .unwrap();
             assert_eq!(ws.ui.config.sidebar_columns, Some(MIN_SIDEBAR_COLUMNS));
             ws.ui.show_dev_badge = dev;
             ws.ui.vitals = render_segments(&Vitals {
@@ -4394,4 +4415,208 @@ fn grid_header_sheen_is_subtle_covers_the_background_and_keeps_text_steady() {
         }
         assert!(swept.iter().all(|changed| *changed));
     }
+}
+
+#[test]
+fn sidebar_handle_folds_on_click_restores_width_and_rail_controls_work() {
+    use kelpmux::native::{
+        hover, status,
+        workspace::{TabTarget, tab_targets},
+    };
+    let mut ws = workspace((120, 40), (4, 1));
+    ws.apply(&Action::Read(1)).unwrap();
+    ws.apply(&Action::ResizeSidebar(45)).unwrap();
+    ws.panes[0].status = Status::Working;
+    ws.panes[1].status = Status::InputNeeded;
+    ws.ui.show_dev_badge = true;
+    let mut router = Router::default();
+    let handle = Point { x: 44, y: 20 };
+    assert!(router.route(click(handle), &frame(&ws)).is_empty());
+    let toggle = actions(router.route(drag_event(MouseKind::Release, handle), &frame(&ws)));
+    assert_eq!(toggle, vec![Action::ToggleSidebarFold]);
+    ws.apply(&toggle[0]).unwrap();
+    let f = frame(&ws);
+    assert_eq!(f.sidebar_width(), 8);
+    assert_eq!(ws.ui.config.sidebar_columns, Some(45));
+    let targets = tab_targets(f.cols, f.rows, &f.ui.config, 4, 0, 0);
+    for (kind, rect) in targets {
+        let point = Point {
+            x: rect.cols - 2,
+            y: rect.y,
+        };
+        match kind {
+            TabTarget::Pane(index) => {
+                assert_eq!(rect.rows, 1);
+                assert_eq!(
+                    actions(Router::default().route(click(point), &f)),
+                    vec![Action::Focus(index as u64 + 1)]
+                );
+                assert_eq!(hover::target(&f, point), Some(rect));
+            }
+            TabTarget::New => assert_eq!(
+                actions(Router::default().route(click(point), &f)),
+                vec![Action::NewTab]
+            ),
+            _ => (),
+        }
+    }
+    for (rect, expected) in f.controls().into_iter().zip([
+        Action::Config,
+        Action::Read(1),
+        Action::Parked,
+        Action::Help,
+    ]) {
+        assert_eq!(
+            actions(Router::default().route(click(Point { x: 3, y: rect.y }), &f)),
+            vec![expected]
+        );
+    }
+    let stats = status::metric_region(&f).unwrap();
+    assert_eq!(
+        actions(Router::default().route(click(Point { x: 3, y: stats.y }), &f)),
+        vec![Action::StatusOpen(status::Sort::Cpu)]
+    );
+    let mut terminal = Terminal::new(f.cols, f.rows);
+    terminal.feed(&terminal_diff(None, &f));
+    assert_eq!(terminal.snapshot().cells, f.cells);
+    assert!(f.cells.iter().any(|c| c.text == "›"));
+    assert!(!f.cells.iter().any(|c| c.text == "×"));
+    let handle = Point { x: 7, y: 20 };
+    router.route(click(handle), &f);
+    let toggle = actions(router.route(drag_event(MouseKind::Release, handle), &f));
+    ws.apply(&toggle[0]).unwrap();
+    assert_eq!(frame(&ws).sidebar_width(), 45);
+    let mut observer = frame(&ws);
+    observer.controller = false;
+    assert!(
+        Router::default()
+            .route(click(Point { x: 44, y: 20 }), &observer)
+            .is_empty()
+    );
+}
+
+#[test]
+fn sidebar_drag_snaps_with_hysteresis_and_never_becomes_a_fold_click() {
+    let mut ws = workspace((120, 40), (4, 1));
+    ws.apply(&Action::Read(1)).unwrap();
+    ws.apply(&Action::ResizeSidebar(45)).unwrap();
+    let mut router = Router::default();
+    router.route(click(Point { x: 44, y: 20 }), &frame(&ws));
+    for (raw, expected) in [
+        (21, 22),
+        (11, 22),
+        (10, 8),
+        (13, 8),
+        (14, 22),
+        (13, 22),
+        (10, 8),
+    ] {
+        let point = Point { x: raw - 1, y: 20 };
+        let routed = actions(router.route(drag_event(MouseKind::Move, point), &frame(&ws)));
+        assert_eq!(routed, vec![Action::ResizeSidebar(raw)]);
+        ws.apply(&routed[0]).unwrap();
+        assert_eq!(frame(&ws).sidebar_width(), expected);
+    }
+    let released = actions(router.route(
+        drag_event(MouseKind::Release, Point { x: 9, y: 20 }),
+        &frame(&ws),
+    ));
+    assert_eq!(released, vec![Action::ResizeSidebar(10)]);
+    assert!(ws.ui.config.sidebar_folded);
+    router.route(click(Point { x: 7, y: 20 }), &frame(&ws));
+    assert!(
+        router
+            .route(InputEvent::Bytes(vec![27]), &frame(&ws))
+            .is_empty()
+    );
+    assert!(
+        router
+            .route(
+                drag_event(MouseKind::Release, Point { x: 7, y: 20 }),
+                &frame(&ws)
+            )
+            .is_empty()
+    );
+}
+
+#[test]
+fn folded_sidebar_targets_fit_small_screens_and_scroll_without_overlapping_controls() {
+    use kelpmux::native::workspace::{TabTarget, sidebar_controls, tab_targets};
+    let config = kelpmux::native::ui::UiConfig {
+        sidebar_folded: true,
+        ..Default::default()
+    };
+    for rows in [10, 18, 40] {
+        for count in [0, 1, 5, 50] {
+            let targets = tab_targets(80, rows, &config, count, count.saturating_sub(1), 0);
+            let controls = sidebar_controls(80, rows, 0, &config);
+            let tabs: Vec<_> = targets
+                .iter()
+                .filter(|(kind, _)| *kind != TabTarget::Parked)
+                .collect();
+            for (index, (kind, rect)) in tabs.iter().enumerate() {
+                assert_eq!(rect.rows, 1);
+                assert!(rect.y < rows - 5);
+                assert_eq!(rect.cols, 7);
+                for (_, other) in tabs.iter().skip(index + 1) {
+                    assert_ne!(rect.y, other.y);
+                }
+                if let TabTarget::Pane(pane) = kind {
+                    assert!(*pane < count);
+                }
+            }
+            for rect in controls {
+                assert!(rect.y >= rows - 4);
+                assert_eq!(rect.cols, 7);
+            }
+            assert!(targets.iter().any(|(kind, _)| *kind == TabTarget::New));
+            if count > usize::from(rows - 6) {
+                assert!(targets.iter().any(|(kind, _)| *kind == TabTarget::Previous));
+                assert!(targets.iter().any(|(kind, _)| *kind == TabTarget::Next));
+                assert!(
+                    targets
+                        .iter()
+                        .any(|(kind, _)| *kind == TabTarget::Pane(count - 1))
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn sidebar_card_matches_demo_palette_and_sheen_covers_all_rows_without_blurring_text() {
+    let mut ws = workspace((180, 40), (2, 1));
+    ws.apply(&Action::Read(1)).unwrap();
+    ws.panes[0].status = Status::Working;
+    ws.panes[0].title = "Steady 界 title".into();
+    let rect = sidebar_tab(&ws, 0);
+    let base = frame(&ws);
+    assert_eq!(
+        base.cells[usize::from(rect.y * base.cols + rect.x)].bg,
+        Color::Rgb(54, 85, 111)
+    );
+    let title = &base.cells[usize::from((rect.y + 1) * base.cols + rect.x + 2)];
+    assert_eq!(title.fg, Color::Rgb(240, 243, 246));
+    assert!(title.bold);
+    let mut swept = vec![false; usize::from(rect.cols * rect.rows)];
+    for tick in 0..30 {
+        let f = compose(&ws, &BTreeMap::new(), true, None, tick);
+        for y in 0..rect.rows {
+            for x in 0..rect.cols {
+                let index = usize::from((rect.y + y) * f.cols + rect.x + x);
+                let before = &base.cells[index];
+                let after = &f.cells[index];
+                assert_eq!(before.fg, after.fg);
+                assert_eq!(before.bold, after.bold);
+                if before.text != after.text {
+                    assert!(["●", "·"].contains(&after.text.as_str()));
+                }
+                swept[usize::from(y * rect.cols + x)] |= before.bg != after.bg;
+            }
+        }
+        let mut terminal = Terminal::new(f.cols, f.rows);
+        terminal.feed(&terminal_diff(None, &f));
+        assert_eq!(terminal.snapshot().cells, f.cells);
+    }
+    assert!(swept.iter().all(|changed| *changed));
 }

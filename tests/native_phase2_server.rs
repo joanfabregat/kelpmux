@@ -1035,6 +1035,27 @@ fn sidebar_resize_preserves_live_ptys_and_saved_width_and_bulk_alert_reads_survi
     let saved =
         kelpmux::native::lifecycle::Settings::load(&daemon.state.join("workspace.json")).unwrap();
     assert_eq!(saved.ui.sidebar_columns, Some(45));
+    peer.action(Action::ToggleSidebarFold);
+    let folded = peer.wait(|frame| frame.ui.config.sidebar_folded);
+    let body = folded
+        .panes
+        .iter()
+        .find(|view| view.pane.id == pane)
+        .unwrap()
+        .body;
+    assert_eq!((body.x, body.cols, body.rows), (8, 112, 40));
+    assert_eq!(identities(&before), identities(&peer.panes()));
+    peer.input("printf 'FOLDED_SIZE='; stty size\n");
+    peer.wait(|frame| {
+        frame
+            .cells
+            .iter()
+            .map(|cell| cell.text.as_str())
+            .collect::<String>()
+            .contains("FOLDED_SIZE=40 112")
+    });
+    peer.action(Action::ToggleSidebarFold);
+    peer.wait(|frame| !frame.ui.config.sidebar_folded && frame.sidebar_width() == 45);
     let executable = daemon.root.join("codex");
     fs::copy("/bin/bash", &executable).unwrap();
     peer.input(&format!(
