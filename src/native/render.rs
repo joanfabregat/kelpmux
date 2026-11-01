@@ -1588,7 +1588,7 @@ fn draw_tab(
         }
     };
     let (title_x, title_width) = if rect.rows == 1 {
-        let occupied = track.cols + u16::from(track.cols > 0);
+        let occupied = track.cols + 2 * u16::from(track.cols > 0);
         (title_x + occupied, title_width.saturating_sub(occupied))
     } else {
         (title_x, title_width)
@@ -1599,13 +1599,13 @@ fn draw_tab(
         } else {
             0
         };
-    if grid && title_width > 0 {
+    if grid && (title_width > 0 || track.cols > 0) {
         write_text(
             frame,
-            title_x.saturating_sub(1),
+            title_x.saturating_sub(2),
             title_y,
-            1,
-            " ",
+            2,
+            "  ",
             text_color,
             bg,
             false,
@@ -1884,7 +1884,7 @@ fn activity_ball(frame: &mut Frame, track: Rect, tick: usize) {
         track.y,
         track.cols,
         &bouncing_ball_frame(track.cols, tick),
-        Color::Indexed(141),
+        Color::Indexed(214),
         bg,
         true,
     );
@@ -2993,6 +2993,18 @@ fn draw_status(frame: &mut Frame, workspace: &Workspace, bounds: Rect) {
         } else {
             (*size).min((x + width).saturating_sub(col_x))
         };
+        if *sort == Some(ui.status_sort) {
+            fill(
+                frame,
+                Rect {
+                    x: col_x,
+                    y: table_y,
+                    cols: available,
+                    rows: 1,
+                },
+                Color::Indexed(67),
+            );
+        }
         write_text(
             frame,
             col_x,
