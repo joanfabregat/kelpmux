@@ -471,8 +471,12 @@ fn draw_grid_separators(frame: &mut Frame, workspace: &Workspace) {
                     y,
                     1,
                     "│",
-                    tab_accent(workspace, selected),
-                    Color::Default,
+                    Color::Indexed(39),
+                    if y == rect.y {
+                        Color::Indexed(if selected { 39 } else { 24 })
+                    } else {
+                        Color::Default
+                    },
                     false,
                 );
             }
@@ -1487,12 +1491,16 @@ fn draw_tab(
         ReadingMode::Grid | ReadingMode::Fullscreen(_)
     );
     let accent = tab_accent(workspace, selected);
-    let bg = if !grid && !selected && pane.number % 2 == 0 {
+    let bg = if grid {
+        Color::Indexed(if selected { 39 } else { 24 })
+    } else if !selected && pane.number % 2 == 0 {
         theme_surface(workspace, 24)
     } else {
         tab_background(workspace, selected)
     };
-    let text_color = if selected && !grid {
+    let text_color = if grid {
+        Color::Indexed(if selected { 232 } else { 231 })
+    } else if selected {
         let (r, g, b) = color_rgb(bg, false);
         Color::Indexed(
             if u16::from(r) * 3 + u16::from(g) * 6 + u16::from(b) >= 1280 {
@@ -1549,6 +1557,7 @@ fn draw_tab(
     } else {
         1
     };
+    let sidebar_working = !grid && rect.rows >= 2 && pane.status == crate::model::Status::Working;
     let track = if rect.rows >= 2 {
         Rect {
             x: number.x + number.cols + 1,
@@ -1556,7 +1565,7 @@ fn draw_tab(
             cols: park
                 .x
                 .saturating_sub(number.x + number.cols + 1)
-                .min(marker_width),
+                .min(if sidebar_working { 9 } else { marker_width }),
             rows: 1,
         }
     } else {
@@ -1771,16 +1780,20 @@ fn draw_tab(
         );
     }
     if pane.status == crate::model::Status::Working {
-        activity_spinner(
-            frame,
-            track,
-            if selected {
-                Color::Indexed(226)
-            } else {
-                tab_text(workspace, false)
-            },
-            spinner,
-        );
+        if sidebar_working {
+            activity_working(frame, track, spinner);
+        } else {
+            activity_spinner(
+                frame,
+                track,
+                if selected {
+                    Color::Indexed(226)
+                } else {
+                    tab_text(workspace, false)
+                },
+                spinner,
+            );
+        }
     } else if pane.status == crate::model::Status::InputNeeded {
         activity_attention(frame, track);
     }
@@ -1815,6 +1828,30 @@ fn activity_spinner(frame: &mut Frame, track: Rect, foreground: Color, tick: usi
         cell.text = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"][tick % 10].into();
         cell.fg = foreground;
         cell.width = 1;
+    }
+}
+
+fn activity_working(frame: &mut Frame, track: Rect, tick: usize) {
+    activity_spinner(frame, track, Color::Indexed(75), tick);
+    let label = " Working";
+    let head = (tick / 2) % 16;
+    for (offset, character) in label.chars().enumerate() {
+        let x = offset as u16 + 1;
+        if x >= track.cols {
+            break;
+        }
+        let distance = (offset + 3).abs_diff(head);
+        let color = match distance {
+            0 => 231,
+            1 => 255,
+            2 => 250,
+            _ => 244,
+        };
+        let index = usize::from(track.y) * usize::from(frame.cols) + usize::from(track.x + x);
+        if let Some(cell) = frame.cells.get_mut(index) {
+            cell.text = character.to_string();
+            cell.fg = Color::Indexed(color);
+        }
     }
 }
 
@@ -3357,8 +3394,8 @@ mod tests {
                 let workspace = Workspace::new(cols, 10).unwrap();
                 let mut frame = compose(&workspace, &BTreeMap::new(), true, None, 0);
                 header(&mut frame, &workspace, &view(cols, overlay), true, 0);
-                assert_eq!(frame.cells[0].bg, Color::Indexed(242));
-                assert_eq!(frame.cells[5].bg, Color::Indexed(242));
+                assert_eq!(frame.cells[0].bg, Color::Indexed(39));
+                assert_eq!(frame.cells[5].bg, Color::Indexed(39));
                 let button_start = usize::from(cols - 10);
                 assert_eq!(frame.cells[button_start].text, " ");
                 assert_eq!(frame.cells[usize::from(cols) - 1].text, " ");
@@ -3376,7 +3413,7 @@ mod tests {
                 display.feed(&terminal_diff(None, &frame));
                 assert_eq!(display.snapshot().cells, frame.cells);
                 header(&mut frame, &workspace, &view(cols, overlay), false, 0);
-                assert_eq!(frame.cells[5].bg, Color::Indexed(236));
+                assert_eq!(frame.cells[5].bg, Color::Indexed(24));
             }
         }
     }

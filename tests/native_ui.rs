@@ -870,7 +870,11 @@ fn shaded_grid_headers_meet_previous_rows_without_empty_separators() {
                     .unwrap();
                 assert_eq!(
                     f.cells[usize::from(view.body.y * f.cols + x)].fg,
-                    Color::Indexed(if left.pane.id == ws.active { 250 } else { 244 })
+                    Color::Indexed(39)
+                );
+                assert_eq!(
+                    f.cells[usize::from(view.rect.y * f.cols + x)].bg,
+                    Color::Indexed(if left.pane.id == ws.active { 39 } else { 24 })
                 );
                 assert!(
                     views
@@ -890,7 +894,7 @@ fn shaded_grid_headers_meet_previous_rows_without_empty_separators() {
             assert_eq!(line.text, " ");
             assert_eq!(
                 line.bg,
-                Color::Indexed(if view.pane.id == ws.active { 242 } else { 236 })
+                Color::Indexed(if view.pane.id == ws.active { 39 } else { 24 })
             );
         }
         let mut display = Terminal::new(f.cols, f.rows);
@@ -1193,7 +1197,7 @@ fn tab_bodies_fill_available_width_despite_legacy_width_settings() {
 }
 
 #[test]
-fn working_tabs_animate_only_one_character_and_keep_bells_beside_titles() {
+fn working_tabs_keep_sheen_inside_the_activity_row_and_bells_beside_titles() {
     use kelpmux::native::{
         ui::TabPosition,
         workspace::{TabTarget, tab_close, tab_number, tab_park, tab_targets},
@@ -1246,7 +1250,6 @@ fn working_tabs_animate_only_one_character_and_keep_bells_beside_titles() {
             assert_ne!(a.cells, b.cells);
             for (index, (before, after)) in a.cells.iter().zip(&b.cells).enumerate() {
                 assert_eq!(before.bg, after.bg);
-                assert_eq!(before.fg, after.fg);
                 if before != after {
                     assert!(tab.contains(Point {
                         x: (index % usize::from(ws.cols)) as u16,
@@ -1848,10 +1851,28 @@ fn working_spinner_rotates_in_place_in_tabs_grid_and_parked_cards() {
         let index = changed[0];
         for f in &frames {
             for (at, (a, b)) in frames[0].cells.iter().zip(&f.cells).enumerate() {
-                if at != index {
+                if at != index && mode != 1 {
                     assert_eq!(a, b);
                 }
+                if at != index {
+                    assert_eq!(a.text, b.text);
+                    assert_eq!(a.bg, b.bg);
+                }
             }
+        }
+        if mode == 1 {
+            let row: String = frames[0].cells[..usize::from(ws.cols)]
+                .iter()
+                .map(|cell| cell.text.as_str())
+                .collect();
+            assert!(row.contains("Working"));
+            assert!(
+                frames[0]
+                    .cells
+                    .iter()
+                    .zip(&frames[4].cells)
+                    .any(|(a, b)| a.text == b.text && a.fg != b.fg)
+            );
         }
         assert_eq!(
             frames
@@ -2015,7 +2036,7 @@ fn tab_surfaces_follow_dark_and_light_backgrounds_without_repainting_terminal_de
             Color::Indexed(if light { 25 } else { 110 })
         );
         let ball = f.cells.iter().find(|cell| cell.text == "⠋").unwrap();
-        assert_eq!(ball.fg, Color::Indexed(if light { 232 } else { 231 }));
+        assert_eq!(ball.fg, Color::Indexed(75));
         let body = f.panes.iter().find(|view| view.pane.id == 1).unwrap().body;
         assert_eq!(
             f.cells[usize::from(body.y * f.cols + body.x)].bg,

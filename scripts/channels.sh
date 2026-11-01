@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Local immutable builds and stable, independent native workspace channels.
 set -euo pipefail
+caller_umask=$(umask)
 umask 077
 fail() { printf '%s\n' "$*" >&2; exit 1; }
 usage() {
@@ -108,11 +109,12 @@ case "$command" in
       printf '%q ' "${launch[@]}"; printf '\n'; exit
     fi
     if [[ $channel == dev ]]; then
-      "${startup[@]}" 9>&- >/dev/null
+      (umask "$caller_umask"; "${startup[@]}" 9>&- >/dev/null)
       flock -u 9
       exec 9>&-
     fi
     printf 'KelpMux %s · selected build %s\n' "$channel" "$build" >&2
+    umask "$caller_umask"
     exec "${launch[@]}"
     ;;
   register)
