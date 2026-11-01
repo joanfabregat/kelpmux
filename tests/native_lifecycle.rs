@@ -1060,6 +1060,11 @@ fn folded_sidebar_survives_restart_and_keeps_retained_build_settings_compatible(
     let (mut stream, first) = attach_frame(&fixture);
     write_message(
         &mut stream,
+        &ClientMessage::Action(Action::AccentSet(kelpmux::native::ui::Accent::Sage)),
+    )
+    .unwrap();
+    write_message(
+        &mut stream,
         &ClientMessage::Action(Action::ResizeSidebar(38)),
     )
     .unwrap();
@@ -1074,6 +1079,12 @@ fn folded_sidebar_survives_restart_and_keeps_retained_build_settings_compatible(
     let saved: serde_json::Value =
         serde_json::from_slice(&fs::read(fixture.state.join("workspace.json")).unwrap()).unwrap();
     assert!(saved["ui"].get("sidebar_folded").is_none());
+    assert!(saved["ui"].get("accent").is_none());
+    assert_eq!(
+        kelpmux::native::lifecycle::sidebar_accent(&fixture.state.join("sidebar-accent.json"))
+            .unwrap(),
+        kelpmux::native::ui::Accent::Sage
+    );
     assert_eq!(saved["ui"]["sidebar_columns"], 38);
     assert!(
         kelpmux::native::lifecycle::sidebar_folded(&fixture.state.join("sidebar-folded.json"))
@@ -1084,7 +1095,13 @@ fn folded_sidebar_survives_restart_and_keeps_retained_build_settings_compatible(
     fixture.start(&[]);
     let (mut stream, restored) = attach_frame(&fixture);
     assert!(restored.ui.config.sidebar_folded);
+    assert_eq!(restored.ui.config.accent, kelpmux::native::ui::Accent::Sage);
     assert_eq!(restored.ui.config.sidebar_columns, Some(38));
+    write_message(
+        &mut stream,
+        &ClientMessage::Action(Action::AccentSet(kelpmux::native::ui::Accent::Blue)),
+    )
+    .unwrap();
     write_message(
         &mut stream,
         &ClientMessage::Action(Action::ToggleSidebarFold),
@@ -1092,6 +1109,7 @@ fn folded_sidebar_survives_restart_and_keeps_retained_build_settings_compatible(
     .unwrap();
     assert_eq!(wait_fold(&mut stream, false).sidebar_width(), 38);
     assert!(!fixture.state.join("sidebar-folded.json").exists());
+    assert!(!fixture.state.join("sidebar-accent.json").exists());
     drop(stream);
     fixture.stop();
 }

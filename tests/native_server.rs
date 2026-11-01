@@ -1150,8 +1150,8 @@ fn controller_and_observer_sidebar_surfaces_use_their_own_reported_themes() {
     });
     let (mut observer, _, _) = daemon.attach();
     for (client, background, expected) in [
-        (&mut controller, [12, 18, 24], Color::Rgb(26, 32, 38)),
-        (&mut observer, [246, 244, 240], Color::Rgb(232, 230, 226)),
+        (&mut controller, [12, 18, 24], Color::Rgb(21, 27, 33)),
+        (&mut observer, [246, 244, 240], Color::Rgb(236, 234, 230)),
     ] {
         write_message(
             client,
@@ -1174,7 +1174,7 @@ fn controller_and_observer_sidebar_surfaces_use_their_own_reported_themes() {
     assert_eq!(frame.ui.terminal_theme[1], Some([12, 18, 24]));
     assert_eq!(
         frame.cells[usize::from(frame.rows / 2 * frame.cols)].bg,
-        Color::Rgb(26, 32, 38)
+        Color::Rgb(21, 27, 33)
     );
 }
 
