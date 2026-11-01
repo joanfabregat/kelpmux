@@ -28,11 +28,14 @@ pub fn target(frame: &Frame, point: Point) -> Option<Rect> {
                     });
                 }
             }
-            DialogKind::Config => regions.extend(
-                ws::config_targets(bounds)
-                    .into_iter()
-                    .map(|(_, _, rect)| rect),
-            ),
+            DialogKind::Config => {
+                regions.extend(
+                    ws::config_targets(bounds)
+                        .into_iter()
+                        .map(|(_, _, rect)| rect),
+                );
+                regions.extend(ws::accent_targets(bounds).into_iter().map(|(_, rect)| rect));
+            }
             DialogKind::CloseConfirm | DialogKind::ParkConfirm | DialogKind::RestoreConfirm => {
                 regions.extend(ws::close_buttons(bounds))
             }

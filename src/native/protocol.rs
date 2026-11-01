@@ -3,7 +3,7 @@ use crate::{Result, model::Status};
 use serde::{Deserialize, Serialize};
 use std::io::{Read, Write};
 
-pub const VERSION: u16 = 45;
+pub const VERSION: u16 = 46;
 pub const MAX_MESSAGE: usize = 16 * 1024 * 1024;
 pub const MAX_INPUT: usize = 64 * 1024;
 pub type PaneId = u64;
@@ -242,6 +242,7 @@ pub enum Action {
     RecoveryCopy(usize),
     SearchCopy(usize),
     NotificationSoundToggle,
+    AccentSet(super::ui::Accent),
     Acknowledge(u64),
     AcknowledgeAll,
     NotificationHistory,

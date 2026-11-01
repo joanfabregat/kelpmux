@@ -704,6 +704,7 @@ impl Workspace {
             Action::NotificationSoundToggle => {
                 self.ui.config.notification_sound = !self.ui.config.notification_sound
             }
+            Action::AccentSet(accent) => self.ui.config.accent = accent,
             Action::RecoveryCopy(index) => {
                 self.ui
                     .recovery
@@ -870,7 +871,9 @@ impl Workspace {
                 let count = self.dialog_entries().len();
                 if let Some(dialog) = self.ui.dialog.as_mut() {
                     if dialog.kind == DialogKind::Config {
-                        dialog.selection = 0;
+                        dialog.selection =
+                            (dialog.selection as isize + isize::from(dx) + isize::from(dy))
+                                .rem_euclid(7) as usize;
                         return Ok(());
                     }
                     let columns = match dialog.kind {
@@ -1140,7 +1143,7 @@ pub fn dialog_entries(panes: &[PaneInfo], dialog: Option<Dialog>) -> Vec<PaneId>
         Some(Dialog {
             kind: DialogKind::Config,
             ..
-        }) => (0..1).collect(),
+        }) => (0..7).collect(),
         Some(Dialog {
             kind: DialogKind::CloseConfirm | DialogKind::ParkConfirm | DialogKind::RestoreConfirm,
             ..
@@ -1196,7 +1199,7 @@ pub fn dialog_bounds_for(cols: u16, rows: u16, kind: super::ui::DialogKind) -> R
         return dialog_bounds(cols, rows);
     }
     let (width, height) = if kind == super::ui::DialogKind::Config {
-        (72, 7)
+        (72, 12)
     } else {
         (52, 9)
     };
@@ -1211,8 +1214,8 @@ pub fn dialog_bounds_for(cols: u16, rows: u16, kind: super::ui::DialogKind) -> R
 }
 pub fn config_geometry(bounds: Rect) -> (u16, u16) {
     (
-        u16::from(bounds.rows >= 7),
-        if bounds.rows >= 7 { 3 } else { 1 },
+        u16::from(bounds.rows >= 10),
+        if bounds.rows >= 10 { 3 } else { 1 },
     )
 }
 /// Logical focus index, optional explicit on/off value, and shared mouse geometry.
@@ -1234,6 +1237,27 @@ pub fn config_targets(bounds: Rect) -> Vec<(usize, Option<bool>, Rect)> {
         ));
     }
     choices
+}
+/// Accent choices follow the notification block with one blank row between.
+pub fn accent_targets(bounds: Rect) -> Vec<(super::ui::Accent, Rect)> {
+    let (offset, height) = config_geometry(bounds);
+    let inner = bounds.cols.saturating_sub(4);
+    super::ui::Accent::ALL
+        .into_iter()
+        .enumerate()
+        .map(|(index, accent)| {
+            let col = index as u16 % 3;
+            (
+                accent,
+                Rect {
+                    x: bounds.x + 2 + inner * col / 3,
+                    y: bounds.y + 4 + offset + height + index as u16 / 3,
+                    cols: inner * (col + 1) / 3 - inner * col / 3,
+                    rows: 1,
+                },
+            )
+        })
+        .collect()
 }
 pub fn grid_cards(bounds: Rect) -> Vec<Rect> {
     let width = bounds.cols / 3;
@@ -1359,7 +1383,7 @@ pub fn tab_bar_area(cols: u16, rows: u16, config: &super::ui::UiConfig) -> Rect 
         cols: config.sidebar_width(cols) - 1,
         rows: rows
             - if config.sidebar_folded {
-                5
+                3
             } else {
                 sidebar_status_rows(rows)
             },
@@ -1467,12 +1491,7 @@ pub fn sidebar_controls(
         rows: 1,
     };
     if config.sidebar_folded {
-        return [
-            rect(0, rows - 4, width),
-            rect(0, rows - 3, width),
-            rect(0, rows - 2, width),
-            rect(0, rows - 1, width),
-        ];
+        return [Rect::default(); 4];
     }
     let right = width.div_ceil(2);
     [
@@ -1522,9 +1541,9 @@ pub fn tab_targets(
 ) -> Vec<(TabTarget, Rect)> {
     if config.sidebar_folded {
         let width = config.sidebar_width(cols) - 1;
-        let area = rows.saturating_sub(6);
-        let overflow = count > usize::from(area);
-        let capacity = usize::from(area.saturating_sub(if overflow { 2 } else { 0 })).max(1);
+        let area = rows.saturating_sub(3);
+        let overflow = count > usize::from(area / 2);
+        let capacity = usize::from(area.saturating_sub(if overflow { 2 } else { 0 }) / 2).max(1);
         let start = if overflow {
             active.saturating_sub(capacity - 1)
         } else {
@@ -1539,18 +1558,21 @@ pub fn tab_targets(
         };
         let mut targets: Vec<_> = (start..(start + capacity).min(count))
             .enumerate()
-            .map(|(i, index)| (TabTarget::Pane(index), rect(top + i as u16)))
+            .map(|(i, index)| {
+                (
+                    TabTarget::Pane(index),
+                    Rect {
+                        rows: 2,
+                        ..rect(top + i as u16 * 2)
+                    },
+                )
+            })
             .collect();
-        let end = top + targets.len() as u16;
+        let end = top + targets.len() as u16 * 2;
         if overflow {
             targets.push((TabTarget::Previous, rect(0)));
             targets.push((TabTarget::Next, rect(end)));
         }
-        targets.push((TabTarget::New, rect(end + u16::from(overflow))));
-        targets.push((
-            TabTarget::Parked,
-            sidebar_controls(cols, rows, parked_count, config)[2],
-        ));
         return targets;
     }
     if count == 0 {

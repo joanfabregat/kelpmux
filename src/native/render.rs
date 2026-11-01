@@ -520,7 +520,36 @@ fn inactive_color(color: Color, foreground: bool, theme: [Option<[u8; 3]>; 2]) -
 }
 
 fn tab_surface(workspace: &Workspace) -> Color {
-    theme_surface(workspace, 14)
+    neutral(workspace, 4)
+}
+fn terminal_backdrop(workspace: &Workspace) -> [u8; 3] {
+    workspace.ui.terminal_theme[1].unwrap_or([27, 30, 34])
+}
+fn mix(base: [u8; 3], tint: [u8; 3], percent: u16) -> Color {
+    let channels: [u8; 3] = std::array::from_fn(|i| {
+        ((u16::from(base[i]) * (100 - percent) + u16::from(tint[i]) * percent) / 100) as u8
+    });
+    Color::Rgb(channels[0], channels[1], channels[2])
+}
+fn neutral(workspace: &Workspace, percent: u16) -> Color {
+    let base = terminal_backdrop(workspace);
+    let light = u16::from(base[0]) * 3 + u16::from(base[1]) * 6 + u16::from(base[2]) >= 1280;
+    mix(base, if light { [0; 3] } else { [255; 3] }, percent)
+}
+fn accent_color(workspace: &Workspace) -> Color {
+    let [r, g, b] = workspace.ui.config.accent.rgb();
+    Color::Rgb(r, g, b)
+}
+fn card_background(workspace: &Workspace, selected: bool, number: usize, grid: bool) -> Color {
+    if selected {
+        mix(
+            terminal_backdrop(workspace),
+            workspace.ui.config.accent.rgb(),
+            34,
+        )
+    } else {
+        neutral(workspace, if grid || number % 2 == 1 { 14 } else { 5 })
+    }
 }
 fn theme_surface(workspace: &Workspace, offset: u8) -> Color {
     workspace.ui.terminal_theme[1].map_or_else(
@@ -808,6 +837,39 @@ fn draw_dialog(
             Color::Indexed(235),
             false,
         );
+        let choices = super::workspace::accent_targets(bounds);
+        if let Some((_, first)) = choices.first() {
+            write_text(
+                frame,
+                bounds.x + 2,
+                first.y - 1,
+                bounds.cols - 4,
+                "Accent color",
+                Color::Indexed(117),
+                Color::Indexed(235),
+                true,
+            );
+        }
+        for (index, (accent, rect)) in choices.into_iter().enumerate() {
+            let checked = workspace.ui.config.accent == accent;
+            let [r, g, b] = accent.rgb();
+            let bg = if checked {
+                mix([35, 38, 42], accent.rgb(), 34)
+            } else {
+                Color::Indexed(235)
+            };
+            fill(frame, rect, bg);
+            write_text(
+                frame,
+                rect.x,
+                rect.y,
+                rect.cols,
+                &format!("{} {}", if checked { "●" } else { "○" }, accent.label()),
+                Color::Rgb(r, g, b),
+                bg,
+                dialog.selection == index + 1,
+            );
+        }
     } else if dialog.kind == DialogKind::Parked {
         draw_parked(frame, workspace, dialog, bounds, spinner);
     } else if matches!(
@@ -1366,17 +1428,13 @@ fn draw_tabs(frame: &mut Frame, workspace: &Workspace, spinner: usize) {
                     rect.y + rect.rows / 2,
                     rect.cols - inset,
                     label,
-                    Color::Indexed(if tab_text(workspace, false) == Color::Indexed(232) {
-                        24
-                    } else {
-                        75
-                    }),
+                    accent_color(workspace),
                     bg,
                     false,
                 );
             }
             TabTarget::Previous | TabTarget::Next => {
-                let bg = Color::Indexed(67);
+                let bg = neutral(workspace, 5);
                 fill(frame, rect, bg);
                 let label = if target == TabTarget::Previous {
                     " ↑ "
@@ -1389,7 +1447,7 @@ fn draw_tabs(frame: &mut Frame, workspace: &Workspace, spinner: usize) {
                     rect.y + rect.rows / 2,
                     rect.cols,
                     label,
-                    Color::Indexed(231),
+                    accent_color(workspace),
                     bg,
                     true,
                 );
@@ -1397,7 +1455,14 @@ fn draw_tabs(frame: &mut Frame, workspace: &Workspace, spinner: usize) {
             TabTarget::Pane(index) => {
                 if let Some(pane) = panes.get(index) {
                     if workspace.ui.config.sidebar_folded {
-                        draw_folded_tab(frame, pane, rect, pane.id == active_id, spinner);
+                        draw_folded_tab(
+                            frame,
+                            workspace,
+                            pane,
+                            rect,
+                            pane.id == active_id,
+                            spinner,
+                        );
                         continue;
                     }
                     draw_tab(
@@ -1443,7 +1508,7 @@ fn draw_tabs(frame: &mut Frame, workspace: &Workspace, spinner: usize) {
         }
     }
     let x = frame.sidebar_width() - 1;
-    let accent = theme_surface(workspace, 24);
+    let accent = neutral(workspace, 23);
     for y in 0..frame.rows {
         write_text(frame, x, y, 1, "▎", accent, Color::Default, false);
     }
@@ -1463,32 +1528,42 @@ fn draw_tabs(frame: &mut Frame, workspace: &Workspace, spinner: usize) {
     );
 }
 
-fn draw_folded_tab(frame: &mut Frame, pane: &PaneInfo, rect: Rect, selected: bool, tick: usize) {
-    let bg = if selected {
-        Color::Rgb(54, 85, 111)
-    } else {
-        Color::Rgb(48, 52, 58)
-    };
+fn draw_folded_tab(
+    frame: &mut Frame,
+    workspace: &Workspace,
+    pane: &PaneInfo,
+    rect: Rect,
+    selected: bool,
+    tick: usize,
+) {
+    let bg = card_background(workspace, selected, pane.number, false);
     fill(frame, rect, bg);
-    let width = rect.cols.saturating_sub(3);
+    let width = rect.cols;
     write_text(
         frame,
         rect.x,
         rect.y,
         width,
-        &format!("{:>width$}", pane.number, width = usize::from(width)),
+        &format!("{:^width$}", pane.number, width = usize::from(width)),
         if selected {
-            Color::Rgb(215, 233, 248)
+            neutral(workspace, 85)
         } else {
-            Color::Indexed(75)
+            accent_color(workspace)
         },
         bg,
         true,
     );
+    let indicator_width = if pane.status == crate::model::Status::InputNeeded {
+        2
+    } else {
+        1
+    }
+    .min(rect.cols);
     let track = Rect {
-        x: rect.x + rect.cols.saturating_sub(2),
-        cols: rect.cols.min(2),
-        ..rect
+        x: rect.x + rect.cols.saturating_sub(indicator_width) / 2,
+        y: rect.y + 1,
+        cols: indicator_width,
+        rows: 1,
     };
     if pane.status == crate::model::Status::Working {
         write_text(
@@ -1497,11 +1572,11 @@ fn draw_folded_tab(frame: &mut Frame, pane: &PaneInfo, rect: Rect, selected: boo
             track.y,
             track.cols,
             ["◐", "◓", "◑", "◒"][tick % 4],
-            Color::Rgb(155, 179, 174),
+            neutral(workspace, 55),
             bg,
             true,
         );
-        activity_sheen(frame, rect, tick);
+        activity_sheen(frame, workspace, rect, tick);
     } else if pane.status == crate::model::Status::InputNeeded {
         activity_attention(frame, track);
     }
@@ -1539,22 +1614,8 @@ fn draw_tab(
         ReadingMode::Grid | ReadingMode::Fullscreen(_)
     );
     let accent = tab_accent(workspace, selected);
-    let bg = if grid || selected {
-        if selected {
-            Color::Rgb(54, 85, 111)
-        } else {
-            Color::Rgb(48, 52, 58)
-        }
-    } else if pane.number % 2 == 0 {
-        Color::Rgb(43, 47, 53)
-    } else {
-        Color::Rgb(48, 52, 58)
-    };
-    let text_color = if selected && !grid {
-        Color::Rgb(240, 243, 246)
-    } else {
-        Color::Rgb(215, 221, 228)
-    };
+    let bg = card_background(workspace, selected, pane.number, grid);
+    let text_color = neutral(workspace, 85);
     fill(frame, rect, bg);
     let number = super::workspace::tab_number_for(rect, pane.number);
     write_text(
@@ -1563,12 +1624,10 @@ fn draw_tab(
         number.y,
         number.cols,
         &format!(" {} ", pane.number),
-        if grid {
-            Color::Rgb(215, 221, 228)
-        } else if selected {
-            Color::Rgb(215, 233, 248)
+        if selected {
+            text_color
         } else {
-            Color::Indexed(75)
+            accent_color(workspace)
         },
         bg,
         true,
@@ -1676,11 +1735,7 @@ fn draw_tab(
     }
     let empty_shell = pane.kind.is_none() && pane.title.eq_ignore_ascii_case("shell");
     let text_color = if empty_shell {
-        Color::Indexed(if text_color == Color::Indexed(232) {
-            240
-        } else {
-            245
-        })
+        neutral(workspace, 55)
     } else {
         text_color
     };
@@ -1766,11 +1821,7 @@ fn draw_tab(
             if rect.rows >= 3 { rect.y + 2 } else { rect.y },
             subtitle_width,
             &subtitle,
-            if selected {
-                Color::Rgb(183, 199, 213)
-            } else {
-                Color::Rgb(157, 165, 174)
-            },
+            neutral(workspace, 55),
             bg,
             false,
         );
@@ -1797,7 +1848,7 @@ fn draw_tab(
         close.y,
         close.cols,
         " × ",
-        Color::Rgb(220, 150, 150),
+        neutral(workspace, 55),
         bg,
         true,
     );
@@ -1807,7 +1858,7 @@ fn draw_tab(
         park.y,
         park.cols,
         " ⊟ ",
-        Color::Rgb(179, 161, 207),
+        neutral(workspace, 55),
         bg,
         true,
     );
@@ -1819,11 +1870,7 @@ fn draw_tab(
             1,
             if selected && !grid { "▎" } else { " " },
             if selected && !grid {
-                Color::Indexed(if tab_text(workspace, false) == Color::Indexed(232) {
-                    24
-                } else {
-                    75
-                })
+                accent_color(workspace)
             } else {
                 accent
             },
@@ -1833,7 +1880,7 @@ fn draw_tab(
     }
     if pane.status == crate::model::Status::Working {
         if !grid {
-            activity_ball(frame, track, spinner);
+            activity_ball(frame, track, neutral(workspace, 55), spinner);
         } else if track.cols > 0 {
             let bg = frame.cells
                 [usize::from(track.y) * usize::from(frame.cols) + usize::from(track.x)]
@@ -1844,7 +1891,7 @@ fn draw_tab(
                 track.y,
                 track.cols,
                 ["◐", "◓", "◑", "◒"][spinner % 4],
-                Color::Rgb(155, 179, 174),
+                neutral(workspace, 55),
                 bg,
                 true,
             );
@@ -1853,7 +1900,7 @@ fn draw_tab(
         activity_attention(frame, track);
     }
     if pane.status == crate::model::Status::Working {
-        activity_sheen(frame, rect, spinner);
+        activity_sheen(frame, workspace, rect, spinner);
     }
 }
 
@@ -1909,7 +1956,7 @@ pub fn bouncing_ball_frame(width: u16, frame_index: usize) -> String {
     )
 }
 
-fn activity_ball(frame: &mut Frame, track: Rect, tick: usize) {
+fn activity_ball(frame: &mut Frame, track: Rect, foreground: Color, tick: usize) {
     if track.cols == 0 {
         return;
     }
@@ -1920,13 +1967,15 @@ fn activity_ball(frame: &mut Frame, track: Rect, tick: usize) {
         track.y,
         track.cols,
         &bouncing_ball_frame(track.cols, tick),
-        Color::Rgb(155, 179, 174),
+        foreground,
         bg,
         true,
     );
 }
 
-fn activity_sheen(frame: &mut Frame, rect: Rect, tick: usize) {
+fn activity_sheen(frame: &mut Frame, workspace: &Workspace, rect: Rect, tick: usize) {
+    let base = terminal_backdrop(workspace);
+    let light = u16::from(base[0]) * 3 + u16::from(base[1]) * 6 + u16::from(base[2]) >= 1280;
     let divisor = if rect.rows > 1 { 3 } else { 6 };
     let period = if rect.rows > 1 { 30 } else { 28 };
     let band = usize::from(rect.cols).div_ceil(divisor).max(3);
@@ -1940,7 +1989,13 @@ fn activity_sheen(frame: &mut Frame, rect: Rect, tick: usize) {
             }
             let alpha = band.saturating_sub((usize::from(x) + band).abs_diff(head)) * 16 / band;
             if let Color::Rgb(r, g, b) = frame.cells[index].bg {
-                let lift = |c: u8| c + ((255 - usize::from(c)) * alpha / 255) as u8;
+                let lift = |c: u8| {
+                    if light {
+                        c - (usize::from(c) * alpha / 255) as u8
+                    } else {
+                        c + ((255 - usize::from(c)) * alpha / 255) as u8
+                    }
+                };
                 frame.cells[index].bg = Color::Rgb(lift(r), lift(g), lift(b));
             }
         }
@@ -2191,70 +2246,32 @@ fn draw_sidebar_status(frame: &mut Frame, workspace: &Workspace, notice: Option<
             frame,
             Rect {
                 x: 0,
-                y: frame.rows - 5,
+                y: frame.rows - 3,
                 cols: width,
-                rows: 5,
+                rows: 3,
             },
             bg,
         );
-        let metric_y = frame.rows - 5;
         if workspace.ui.show_dev_badge {
+            fill(
+                frame,
+                Rect {
+                    x: 0,
+                    y: frame.rows - 3,
+                    cols: width,
+                    rows: 3,
+                },
+                neutral(workspace, 5),
+            );
             write_text(
                 frame,
                 0,
-                metric_y,
-                width.min(3),
+                frame.rows - 2,
+                width,
                 "DEV",
                 Color::Rgb(220, 150, 150),
-                bg,
+                neutral(workspace, 5),
                 true,
-            );
-        }
-        write_text(
-            frame,
-            width.saturating_sub(2),
-            metric_y,
-            1,
-            if notice.is_some() { "!" } else { "▥" },
-            if notice.is_some() {
-                Color::Rgb(220, 150, 150)
-            } else {
-                Color::Rgb(155, 179, 174)
-            },
-            bg,
-            false,
-        );
-        let controls = frame.controls();
-        let unread = super::ui::has_unread_notifications(&workspace.ui, &workspace.panes);
-        let parked_count = workspace.panes.iter().filter(|pane| pane.parked).count();
-        let parked_label = if parked_count == 0 {
-            "⊟".to_string()
-        } else {
-            format!("⊟({parked_count})")
-        };
-        let labels = [
-            "⚙",
-            "▦",
-            &parked_label,
-            if unread { super::ui::ALERT_ICON } else { "?" },
-        ];
-        let colors = [
-            Color::Indexed(75),
-            Color::Indexed(110),
-            Color::Indexed(141),
-            Color::Indexed(if unread { 203 } else { 222 }),
-        ];
-        for ((rect, label), color) in controls.into_iter().zip(labels).zip(colors) {
-            let label_width = label.chars().map(char_width).sum::<u16>().min(rect.cols);
-            write_text(
-                frame,
-                rect.x + rect.cols.saturating_sub(label_width) / 2,
-                rect.y,
-                label_width,
-                label,
-                color,
-                bg,
-                false,
             );
         }
         return;
@@ -2279,16 +2296,8 @@ fn draw_sidebar_status(frame: &mut Frame, workspace: &Workspace, notice: Option<
         bg,
     );
     let foreground = tab_text(workspace, false);
-    let muted = Color::Indexed(if foreground == Color::Indexed(232) {
-        243
-    } else {
-        245
-    });
-    let value_color = if foreground == Color::Indexed(232) {
-        foreground
-    } else {
-        Color::Indexed(250)
-    };
+    let muted = neutral(workspace, 55);
+    let value_color = neutral(workspace, 85);
     let metric_top = if rows > 3 { top + 1 } else { top };
     let metric_end = if rows > 3 {
         frame.rows - 3
@@ -2531,7 +2540,7 @@ fn draw_sidebar_status(frame: &mut Frame, workspace: &Workspace, notice: Option<
     let [config, mode, parked, help] = frame.controls();
     let unread = super::ui::has_unread_notifications(&workspace.ui, &workspace.panes);
     let parked_count = workspace.panes.iter().filter(|pane| pane.parked).count();
-    for (rect, label, color) in [
+    for (rect, label) in [
         (
             config,
             if config.cols >= 10 {
@@ -2540,7 +2549,6 @@ fn draw_sidebar_status(frame: &mut Frame, workspace: &Workspace, notice: Option<
                 "⚙︎ Config"
             }
             .into(),
-            24,
         ),
         (
             mode,
@@ -2552,24 +2560,19 @@ fn draw_sidebar_status(frame: &mut Frame, workspace: &Workspace, notice: Option<
                 " ▦ "
             }
             .into(),
-            67,
         ),
-        (
-            parked,
-            {
-                let label = super::workspace::parked_label(parked_count);
-                if label.chars().map(char_width).sum::<u16>() <= parked.cols {
-                    label
-                } else if label.trim().chars().map(char_width).sum::<u16>() <= parked.cols {
-                    label.trim().into()
-                } else if parked_count > 0 {
-                    format!(" ⊟ ({parked_count}) ")
-                } else {
-                    "⊟ Parked".into()
-                }
-            },
-            super::ui::PARKED_BG,
-        ),
+        (parked, {
+            let label = super::workspace::parked_label(parked_count);
+            if label.chars().map(char_width).sum::<u16>() <= parked.cols {
+                label
+            } else if label.trim().chars().map(char_width).sum::<u16>() <= parked.cols {
+                label.trim().into()
+            } else if parked_count > 0 {
+                format!(" ⊟ ({parked_count}) ")
+            } else {
+                "⊟ Parked".into()
+            }
+        }),
         (
             help,
             if unread {
@@ -2584,11 +2587,10 @@ fn draw_sidebar_status(frame: &mut Frame, workspace: &Workspace, notice: Option<
                 " ? "
             }
             .into(),
-            if unread { 160 } else { 94 },
         ),
     ] {
         let label_width = label.chars().map(char_width).sum::<u16>().min(rect.cols);
-        let button_bg = Color::Indexed(color);
+        let button_bg = neutral(workspace, 14);
         fill(frame, rect, button_bg);
         let inset = (rect.cols - label_width) / 2;
         write_text(
@@ -2597,7 +2599,17 @@ fn draw_sidebar_status(frame: &mut Frame, workspace: &Workspace, notice: Option<
             rect.y,
             rect.cols - inset,
             &label,
-            Color::Indexed(231),
+            if rect == config || rect == mode {
+                accent_color(workspace)
+            } else {
+                Color::Indexed(if rect == parked {
+                    141
+                } else if unread {
+                    203
+                } else {
+                    222
+                })
+            },
             button_bg,
             false,
         );
@@ -3569,8 +3581,8 @@ mod tests {
                 let workspace = Workspace::new(cols, 10).unwrap();
                 let mut frame = compose(&workspace, &BTreeMap::new(), true, None, 0);
                 header(&mut frame, &workspace, &view(cols, overlay), true, 0);
-                assert_eq!(frame.cells[0].bg, Color::Rgb(54, 85, 111));
-                assert_eq!(frame.cells[5].bg, Color::Rgb(54, 85, 111));
+                assert_eq!(frame.cells[0].bg, Color::Rgb(50, 79, 109));
+                assert_eq!(frame.cells[5].bg, Color::Rgb(50, 79, 109));
                 let button_start = usize::from(cols - 10);
                 assert_eq!(frame.cells[button_start].text, " ");
                 assert_eq!(frame.cells[usize::from(cols) - 1].text, " ");
@@ -3588,7 +3600,7 @@ mod tests {
                 display.feed(&terminal_diff(None, &frame));
                 assert_eq!(display.snapshot().cells, frame.cells);
                 header(&mut frame, &workspace, &view(cols, overlay), false, 0);
-                assert_eq!(frame.cells[5].bg, Color::Rgb(48, 52, 58));
+                assert_eq!(frame.cells[5].bg, Color::Rgb(58, 61, 64));
             }
         }
     }
