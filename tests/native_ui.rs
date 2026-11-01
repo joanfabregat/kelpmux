@@ -1840,7 +1840,7 @@ fn working_spinner_rotates_in_place_in_tabs_grid_and_parked_cards() {
             ws.apply(&Action::Parked).unwrap();
         }
         if mode != 2 {
-            let frames: Vec<_> = [0, 3, 6, 9]
+            let frames: Vec<_> = [0, 1, 2, 3]
                 .into_iter()
                 .map(|tick| compose(&ws, &BTreeMap::new(), true, None, tick))
                 .collect();
@@ -1853,10 +1853,11 @@ fn working_spinner_rotates_in_place_in_tabs_grid_and_parked_cards() {
                         .collect()
                 })
                 .collect();
-            for (row, dots) in rows.iter().zip(["·  ", "·· ", "···", "·  "]) {
-                assert_eq!(row.matches('·').count(), dots.matches('·').count());
-                if mode == 1 {
-                    assert!(row.contains(&format!("{dots} Working")), "{row:?}");
+            for (row, symbol) in rows.iter().zip(["◐", "◓", "◑", "◒"]) {
+                if mode == 0 {
+                    assert!(row.contains(symbol));
+                } else {
+                    assert_eq!(row.matches('●').count(), 1);
                 }
             }
             for f in &frames {
@@ -1864,13 +1865,15 @@ fn working_spinner_rotates_in_place_in_tabs_grid_and_parked_cards() {
                 terminal.feed(&terminal_diff(None, f));
                 assert_eq!(terminal.snapshot().cells, f.cells);
             }
-            assert!(
-                frames[0]
-                    .cells
-                    .iter()
-                    .zip(&frames[2].cells)
-                    .any(|(a, b)| a.text == b.text && a.fg != b.fg)
-            );
+            if mode == 0 {
+                assert!(
+                    frames[0]
+                        .cells
+                        .iter()
+                        .zip(&frames[2].cells)
+                        .any(|(a, b)| a.text == b.text && a.fg != b.fg)
+                );
+            }
             continue;
         }
         let frames: Vec<_> = [0, 1, 2, 3, 10]
@@ -2072,8 +2075,8 @@ fn tab_surfaces_follow_dark_and_light_backgrounds_without_repainting_terminal_de
             f.cells[usize::from(number.y * f.cols + number.x + 1)].fg,
             Color::Indexed(if light { 25 } else { 110 })
         );
-        let ball = f.cells.iter().find(|cell| cell.text == "·").unwrap();
-        assert_eq!(ball.fg, Color::Indexed(75));
+        let ball = f.cells.iter().find(|cell| cell.text == "●").unwrap();
+        assert_eq!(ball.fg, Color::Indexed(141));
         let body = f.panes.iter().find(|view| view.pane.id == 1).unwrap().body;
         assert_eq!(
             f.cells[usize::from(body.y * f.cols + body.x)].bg,
@@ -4194,4 +4197,68 @@ fn config_has_one_blank_row_on_each_side_and_new_tab_only_uses_its_text_row() {
             .collect();
         assert!(text.trim().is_empty(), "padding row contained {text:?}");
     }
+}
+
+#[test]
+fn bouncing_ball_has_exact_width_no_repeated_endpoints_and_padded_sidebar_track() {
+    use kelpmux::native::render::bouncing_ball_frame;
+    assert_eq!(bouncing_ball_frame(0, 12), "");
+    for width in [1u16, 2, 10, 20, 75] {
+        let period = if width == 1 {
+            1
+        } else {
+            2 * usize::from(width - 1)
+        };
+        let frames: Vec<_> = (0..=period * 2)
+            .map(|tick| bouncing_ball_frame(width, tick))
+            .collect();
+        for frame in &frames {
+            assert_eq!(frame.chars().count(), usize::from(width));
+            assert_eq!(frame.matches('●').count(), 1);
+            assert!(frame.chars().all(|c| matches!(c, '●' | '·')));
+        }
+        assert_eq!(frames[0], frames[period]);
+        if width > 1 {
+            for pair in frames.windows(2) {
+                let positions: Vec<_> = pair
+                    .iter()
+                    .map(|f| f.chars().position(|c| c == '●').unwrap())
+                    .collect();
+                assert_eq!(positions[0].abs_diff(positions[1]), 1);
+            }
+            assert!(frames[usize::from(width - 1)].ends_with('●'));
+        } else {
+            assert!(frames.iter().all(|f| f == "●"));
+        }
+    }
+    for width in [1, 10, 20, 50] {
+        let mut ws = workspace((180, 50), (2, 1));
+        ws.ui.config.activity_width = width;
+        ws.ui.config.validate().unwrap();
+        ws.apply(&Action::Read(1)).unwrap();
+        ws.panes[0].status = Status::Working;
+        let rect = sidebar_tab(&ws, 0);
+        let number = kelpmux::native::workspace::tab_number_for(rect, 1);
+        let park = kelpmux::native::workspace::tab_park(rect);
+        let f = frame(&ws);
+        let row = &f.cells[usize::from(rect.y * f.cols)..usize::from((rect.y + 1) * f.cols)];
+        let start = usize::from(number.x + number.cols + 2);
+        let length = usize::from(width.min(park.x.saturating_sub(number.x + number.cols + 4)));
+        assert_eq!(row[start - 1].text, " ");
+        assert_eq!(row[start - 2].text, " ");
+        assert_eq!(row[start + length].text, " ");
+        assert_eq!(row[start + length + 1].text, " ");
+        assert_eq!(
+            row[start..start + length]
+                .iter()
+                .map(|c| c.text.as_str())
+                .collect::<String>(),
+            bouncing_ball_frame(length as u16, 0)
+        );
+    }
+    let defaults = kelpmux::native::ui::UiConfig::default();
+    assert_eq!(defaults.activity_width, 20);
+    let mut invalid = defaults;
+    invalid.activity_width = 0;
+    assert!(invalid.validate().is_err());
 }
