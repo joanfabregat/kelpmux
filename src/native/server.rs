@@ -2738,7 +2738,7 @@ pub fn serve(config: ServerConfig) -> Result<()> {
         if let Ok(result) = results.try_recv() {
             server.discovery_result(result);
         }
-        if attached && animation.elapsed() >= Duration::from_millis(125) {
+        if attached && animation.elapsed() >= Duration::from_millis(100) {
             spinner += 1;
             animation = Instant::now();
             server
