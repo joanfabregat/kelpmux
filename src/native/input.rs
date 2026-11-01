@@ -1017,6 +1017,19 @@ impl Router {
                 return output;
             }
             if dialog.kind == super::ui::DialogKind::Config {
+                if let Some((index, (accent, _))) = super::workspace::accent_targets(bounds)
+                    .into_iter()
+                    .enumerate()
+                    .find(|(_, (_, rect))| rect.contains(event.position))
+                {
+                    if event.kind == MouseKind::Press {
+                        emit(&mut output, Action::AccentSet(accent), true);
+                        emit(&mut output, Action::DialogPick(index + 1), true);
+                    } else if event.kind == MouseKind::Move {
+                        emit(&mut output, Action::DialogPick(index + 1), true);
+                    }
+                    return output;
+                }
                 if let Some((index, value, _)) = super::workspace::config_targets(bounds)
                     .into_iter()
                     .find(|(_, _, rect)| rect.contains(event.position))
@@ -1561,7 +1574,10 @@ impl Router {
             if index == 0 {
                 return vec![ClientMessage::Action(Action::NotificationSoundToggle)];
             }
-            return vec![];
+            return super::ui::Accent::ALL
+                .get(index - 1)
+                .map(|accent| vec![ClientMessage::Action(Action::AccentSet(*accent))])
+                .unwrap_or_default();
         }
         if matches!(
             dialog.kind,

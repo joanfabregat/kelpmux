@@ -359,6 +359,12 @@ pub fn finish_run(state: &Path) -> Result<()> {
 
 /// Read the private fold preference independently of retained-build settings.
 pub fn sidebar_folded(path: &Path) -> Result<bool> {
+    private_preference(path)
+}
+pub fn sidebar_accent(path: &Path) -> Result<super::ui::Accent> {
+    private_preference(path)
+}
+fn private_preference<T: serde::de::DeserializeOwned>(path: &Path) -> Result<T> {
     let file = OpenOptions::new()
         .read(true)
         .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)

@@ -1043,7 +1043,7 @@ fn sidebar_resize_preserves_live_ptys_and_saved_width_and_bulk_alert_reads_survi
         .find(|view| view.pane.id == pane)
         .unwrap()
         .body;
-    assert_eq!((body.x, body.cols, body.rows), (8, 112, 40));
+    assert_eq!((body.x, body.cols, body.rows), (4, 116, 40));
     assert_eq!(identities(&before), identities(&peer.panes()));
     peer.input("printf 'FOLDED_SIZE='; stty size\n");
     peer.wait(|frame| {
@@ -1052,7 +1052,7 @@ fn sidebar_resize_preserves_live_ptys_and_saved_width_and_bulk_alert_reads_survi
             .iter()
             .map(|cell| cell.text.as_str())
             .collect::<String>()
-            .contains("FOLDED_SIZE=40 112")
+            .contains("FOLDED_SIZE=40 116")
     });
     peer.action(Action::ToggleSidebarFold);
     peer.wait(|frame| !frame.ui.config.sidebar_folded && frame.sidebar_width() == 45);

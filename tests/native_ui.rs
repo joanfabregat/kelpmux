@@ -622,7 +622,7 @@ fn tab_body_mouse_and_dialog_close_have_separate_hit_targets() {
 fn selected_number_and_title_have_distinct_colors_and_agent_shortcuts_use_pane_numbers() {
     let mut ws = workspace((160, 50), (2, 2));
     let f = frame(&ws);
-    assert_eq!(f.cells[3].fg, Color::Rgb(215, 221, 228));
+    assert_eq!(f.cells[3].fg, Color::Rgb(220, 221, 221));
     for pane in &mut ws.panes {
         pane.kind = Some(Kind::Claude);
     }
@@ -900,9 +900,9 @@ fn shaded_grid_headers_meet_previous_rows_without_empty_separators() {
             assert_eq!(
                 line.bg,
                 if view.pane.id == ws.active {
-                    Color::Rgb(54, 85, 111)
+                    Color::Rgb(50, 79, 109)
                 } else {
-                    Color::Rgb(48, 52, 58)
+                    Color::Rgb(58, 61, 64)
                 }
             );
         }
@@ -1068,9 +1068,9 @@ fn neutral_tabs_ignore_legacy_palette_settings_and_numbers_focus() {
             assert_eq!(
                 number_cell.fg,
                 if index == 0 {
-                    Color::Rgb(215, 233, 248)
+                    Color::Rgb(220, 221, 221)
                 } else {
-                    Color::Indexed(75)
+                    Color::Rgb(95, 175, 255)
                 }
             );
             for x in number.x + 3..number.x + 5 {
@@ -1078,33 +1078,30 @@ fn neutral_tabs_ignore_legacy_palette_settings_and_numbers_focus() {
                 assert_eq!(
                     f.cells[usize::from(number.y * f.cols + x)].bg,
                     if index == 0 {
-                        Color::Rgb(54, 85, 111)
+                        Color::Rgb(50, 79, 109)
                     } else {
-                        Color::Rgb(43, 47, 53)
+                        Color::Rgb(38, 41, 45)
                     }
                 );
             }
             assert_eq!(
                 f.cells[usize::from(rect.y * f.cols + rect.x)].fg,
-                Color::Indexed(if index == 0 { 75 } else { 244 })
+                if index == 0 {
+                    Color::Rgb(95, 175, 255)
+                } else {
+                    Color::Indexed(244)
+                }
             );
             if rect.rows >= 3 {
                 let title = &f.cells[usize::from((rect.y + 1) * f.cols + rect.x + 2)];
                 assert_eq!(title.text, "a");
-                assert_eq!(
-                    title.fg,
-                    if index == 0 {
-                        Color::Rgb(240, 243, 246)
-                    } else {
-                        Color::Rgb(215, 221, 228)
-                    }
-                );
+                assert_eq!(title.fg, Color::Rgb(220, 221, 221));
                 assert_eq!(
                     title.bg,
                     if index == 0 {
-                        Color::Rgb(54, 85, 111)
+                        Color::Rgb(50, 79, 109)
                     } else {
-                        Color::Rgb(43, 47, 53)
+                        Color::Rgb(38, 41, 45)
                     }
                 );
             }
@@ -1561,12 +1558,12 @@ fn neutral_focus_connects_sidebar_divider_regardless_of_legacy_palette() {
             let number = tab_number(tab);
             assert_eq!(
                 f.cells[usize::from(number.y * f.cols + number.x + 4)].bg,
-                Color::Rgb(54, 85, 111)
+                Color::Rgb(50, 79, 109)
             );
             for y in 0..f.rows - 1 {
                 let cell = &f.cells[usize::from(y * f.cols + body.x - 1)];
                 assert_eq!(cell.text, if y == f.rows / 2 { "‹" } else { "▎" });
-                assert_eq!(cell.fg, Color::Indexed(238));
+                assert_eq!(cell.fg, Color::Rgb(79, 81, 84));
                 assert_eq!(cell.bg, Color::Default);
             }
             assert_eq!(body.x + body.cols, f.cols);
@@ -1639,7 +1636,7 @@ fn automatic_grid_parking_controls_alert_colors_and_three_row_tabs() {
                 .position(|cell| cell.text == "?")
                 .unwrap();
         assert_eq!(f.cells[at].text, "?");
-        assert_eq!(f.cells[at].bg, Color::Indexed(94));
+        assert_eq!(f.cells[at].bg, Color::Rgb(58, 61, 64));
         ws.ui.notifications.push(Notification {
             id: 1,
             pane: 1,
@@ -1663,10 +1660,10 @@ fn automatic_grid_parking_controls_alert_colors_and_three_row_tabs() {
             frame(&ws).cells[alert].text,
             kelpmux::native::ui::ALERT_ICON
         );
-        assert_eq!(frame(&ws).cells[alert].bg, Color::Indexed(160));
+        assert_eq!(frame(&ws).cells[alert].bg, Color::Rgb(58, 61, 64));
         ws.apply(&Action::Acknowledge(1)).unwrap();
         assert_eq!(frame(&ws).cells[at].text, "?");
-        assert_eq!(frame(&ws).cells[at].bg, Color::Indexed(94));
+        assert_eq!(frame(&ws).cells[at].bg, Color::Rgb(58, 61, 64));
     }
 }
 
@@ -1738,7 +1735,7 @@ fn settings_zones_radio_values_and_keyboard_focus_remain_usable_on_small_screens
             }
         }
         ws.apply(&Action::DialogPick(0)).unwrap();
-        for (dx, dy, expected) in [(1, 0, 0), (-1, 0, 0), (0, 1, 0), (0, -1, 0)] {
+        for (dx, dy, expected) in [(1, 0, 1), (-1, 0, 0), (0, 1, 1), (0, -1, 0)] {
             ws.apply(&Action::DialogNavigate { dx, dy }).unwrap();
             assert_eq!(ws.ui.dialog.unwrap().selection, expected);
         }
@@ -1813,12 +1810,19 @@ fn grid_header_numbers_park_close_and_footer_have_distinct_targets_without_zoom(
         };
         let number = tab_number(header);
         let number_cell = &f.cells[usize::from(number.y * f.cols + number.x + 1)];
-        assert_eq!(number_cell.fg, Color::Rgb(215, 221, 228));
+        assert_eq!(
+            number_cell.fg,
+            if id == f.active {
+                Color::Rgb(220, 221, 221)
+            } else {
+                Color::Rgb(95, 175, 255)
+            }
+        );
         let [park, close] = grid_controls(header);
         assert!(!f.cells.iter().any(|cell| cell.text == "⛶"));
         for (control, symbol, color) in [
-            (park, "⊟", Color::Rgb(179, 161, 207)),
-            (close, "×", Color::Rgb(220, 150, 150)),
+            (park, "⊟", Color::Rgb(152, 153, 155)),
+            (close, "×", Color::Rgb(152, 153, 155)),
         ] {
             let cell = &f.cells[usize::from(control.y * f.cols + control.x + 1)];
             assert_eq!(cell.text, symbol);
@@ -2022,8 +2026,8 @@ fn tab_surfaces_follow_dark_and_light_backgrounds_without_repainting_terminal_de
     };
     let position = TabPosition::Left;
     for (background, expected, light) in [
-        ([12, 18, 24], Color::Rgb(26, 32, 38), false),
-        ([246, 244, 240], Color::Rgb(232, 230, 226), true),
+        ([12, 18, 24], Color::Rgb(21, 27, 33), false),
+        ([246, 244, 240], Color::Rgb(236, 234, 230), true),
     ] {
         let mut ws = workspace((240, 60), (2, 1));
         ws.ui.config.tab_position = position;
@@ -2045,12 +2049,12 @@ fn tab_surfaces_follow_dark_and_light_backgrounds_without_repainting_terminal_de
             .find(|(target, _)| *target == TabTarget::New)
             .unwrap()
             .1;
-        let offset = 14;
+        let offset = 4;
         let [r, g, b] = background.map(|value| {
             if light {
-                value.saturating_sub(offset)
+                (u16::from(value) * (100 - offset) / 100) as u8
             } else {
-                value.saturating_add(offset)
+                ((u16::from(value) * (100 - offset) + 255 * offset) / 100) as u8
             }
         });
         assert_eq!(
@@ -2081,15 +2085,25 @@ fn tab_surfaces_follow_dark_and_light_backgrounds_without_repainting_terminal_de
             x: f.panes[0].body.x - 1,
             y: 0,
         };
-        let selected_bg = Color::Rgb(54, 85, 111);
+        let selected_channels: [u8; 3] = std::array::from_fn(|i| {
+            ((u16::from(background[i]) * 66 + u16::from([95u8, 175, 255][i]) * 34) / 100) as u8
+        });
+        let selected_bg = Color::Rgb(
+            selected_channels[0],
+            selected_channels[1],
+            selected_channels[2],
+        );
         assert_eq!(title[0].bg, selected_bg);
         if position == TabPosition::Left {
             assert_eq!(
                 f.cells[usize::from(divider.y * f.cols + divider.x)].fg,
                 Color::Rgb(
-                    background[0].saturating_add_signed(if light { -24 } else { 24 }),
-                    background[1].saturating_add_signed(if light { -24 } else { 24 }),
-                    background[2].saturating_add_signed(if light { -24 } else { 24 })
+                    ((u16::from(background[0]) * 77 + if light { 0 } else { 255 * 23 }) / 100)
+                        as u8,
+                    ((u16::from(background[1]) * 77 + if light { 0 } else { 255 * 23 }) / 100)
+                        as u8,
+                    ((u16::from(background[2]) * 77 + if light { 0 } else { 255 * 23 }) / 100)
+                        as u8
                 )
             );
         } else {
@@ -2101,10 +2115,12 @@ fn tab_surfaces_follow_dark_and_light_backgrounds_without_repainting_terminal_de
         let number = tab_number(inactive);
         assert_eq!(
             f.cells[usize::from(number.y * f.cols + number.x + 1)].fg,
-            Color::Indexed(75)
+            Color::Rgb(95, 175, 255)
         );
         let ball = f.cells.iter().find(|cell| cell.text == "●").unwrap();
-        assert_eq!(ball.fg, Color::Rgb(155, 179, 174));
+        let gray: [u8; 3] = background
+            .map(|v| ((u16::from(v) * 45 + if light { 0 } else { 255 * 55 }) / 100) as u8);
+        assert_eq!(ball.fg, Color::Rgb(gray[0], gray[1], gray[2]));
         let body = f.panes.iter().find(|view| view.pane.id == 1).unwrap().body;
         assert_eq!(
             f.cells[usize::from(body.y * f.cols + body.x)].bg,
@@ -2245,11 +2261,11 @@ fn sidebar_status_controls_and_metrics_leave_the_last_terminal_row_usable() {
                         .iter()
                         .any(|cell| cell.text != " " && cell.fg == Color::Indexed(196))
                 );
-                for (control, color) in f.controls().into_iter().zip([24, 67, 60, 94]) {
+                for control in f.controls() {
                     for x in control.x..control.x + control.cols {
                         assert_eq!(
                             f.cells[usize::from(control.y * f.cols + x)].bg,
-                            Color::Indexed(color)
+                            Color::Rgb(58, 61, 64)
                         );
                     }
                 }
@@ -2334,7 +2350,7 @@ fn sidebar_status_controls_and_metrics_leave_the_last_terminal_row_usable() {
             assert!(
                 title
                     .iter()
-                    .all(|cell| cell.italic && matches!(cell.fg, Color::Indexed(240 | 245)))
+                    .all(|cell| cell.italic && cell.fg == Color::Rgb(152, 153, 155))
             );
         }
         let mut display = Terminal::new(f.cols, f.rows);
@@ -2393,7 +2409,11 @@ fn footer_parked_help_order_has_no_new_tab_button() {
             for x in parked.x..parked.x + parked.cols {
                 assert_eq!(
                     f.cells[usize::from(parked.y * f.cols + x)].bg,
-                    Color::Indexed(kelpmux::native::ui::PARKED_BG)
+                    if f.sidebar_status() {
+                        Color::Rgb(58, 61, 64)
+                    } else {
+                        Color::Indexed(kelpmux::native::ui::PARKED_BG)
+                    }
                 );
                 assert_eq!(
                     actions(Router::default().route(click(Point { x, y: parked.y }), &f)),
@@ -2736,9 +2756,9 @@ fn tab_stripes_preserve_folder_labels_and_fill_adjacent_clickable_entries() {
             assert_eq!(
                 f.cells[usize::from(rect.y * f.cols)].bg,
                 match index {
-                    0 => Color::Rgb(54, 85, 111),
-                    1 | 3 => Color::Rgb(43, 47, 53),
-                    _ => Color::Rgb(48, 52, 58),
+                    0 => Color::Rgb(50, 79, 109),
+                    1 | 3 => Color::Rgb(38, 41, 45),
+                    _ => Color::Rgb(58, 61, 64),
                 }
             );
             if index > 0 {
@@ -4374,9 +4394,9 @@ fn grid_header_sheen_is_subtle_covers_the_background_and_keeps_text_steady() {
         let working = base.panes[0].rect;
         let idle = base.panes[1].rect;
         let expected = if active == 1 {
-            Color::Rgb(54, 85, 111)
+            Color::Rgb(50, 79, 109)
         } else {
-            Color::Rgb(48, 52, 58)
+            Color::Rgb(58, 61, 64)
         };
         assert_eq!(
             base.cells[usize::from(working.y * base.cols + working.x)].bg,
@@ -4418,7 +4438,7 @@ fn grid_header_sheen_is_subtle_covers_the_background_and_keeps_text_steady() {
 }
 
 #[test]
-fn sidebar_handle_folds_on_click_restores_width_and_rail_controls_work() {
+fn sidebar_handle_folds_on_click_restores_width_and_hides_rail_controls() {
     use kelpmux::native::{
         hover, status,
         workspace::{TabTarget, tab_targets},
@@ -4436,7 +4456,7 @@ fn sidebar_handle_folds_on_click_restores_width_and_rail_controls_work() {
     assert_eq!(toggle, vec![Action::ToggleSidebarFold]);
     ws.apply(&toggle[0]).unwrap();
     let f = frame(&ws);
-    assert_eq!(f.sidebar_width(), 8);
+    assert_eq!(f.sidebar_width(), 4);
     assert_eq!(ws.ui.config.sidebar_columns, Some(45));
     let targets = tab_targets(f.cols, f.rows, &f.ui.config, 4, 0, 0);
     for (kind, rect) in targets {
@@ -4446,7 +4466,7 @@ fn sidebar_handle_folds_on_click_restores_width_and_rail_controls_work() {
         };
         match kind {
             TabTarget::Pane(index) => {
-                assert_eq!(rect.rows, 1);
+                assert_eq!(rect.rows, 2);
                 assert_eq!(
                     actions(Router::default().route(click(point), &f)),
                     vec![Action::Focus(index as u64 + 1)]
@@ -4460,28 +4480,33 @@ fn sidebar_handle_folds_on_click_restores_width_and_rail_controls_work() {
             _ => (),
         }
     }
-    for (rect, expected) in f.controls().into_iter().zip([
-        Action::Config,
-        Action::Read(1),
-        Action::Parked,
-        Action::Help,
-    ]) {
-        assert_eq!(
-            actions(Router::default().route(click(Point { x: 3, y: rect.y }), &f)),
-            vec![expected]
+    assert!(f.controls().iter().all(|rect| rect.cols == 0));
+    assert!(status::metric_region(&f).is_none());
+    assert!(
+        !tab_targets(f.cols, f.rows, &f.ui.config, 4, 0, 0)
+            .iter()
+            .any(|(kind, _)| matches!(kind, TabTarget::New | TabTarget::Parked))
+    );
+    for y in f.rows - 3..f.rows {
+        assert!(
+            Router::default()
+                .route(click(Point { x: 1, y }), &f)
+                .is_empty()
         );
     }
-    let stats = status::metric_region(&f).unwrap();
     assert_eq!(
-        actions(Router::default().route(click(Point { x: 3, y: stats.y }), &f)),
-        vec![Action::StatusOpen(status::Sort::Cpu)]
+        f.cells[usize::from((f.rows - 2) * f.cols)..usize::from((f.rows - 2) * f.cols + 3)]
+            .iter()
+            .map(|c| c.text.as_str())
+            .collect::<String>(),
+        "DEV"
     );
     let mut terminal = Terminal::new(f.cols, f.rows);
     terminal.feed(&terminal_diff(None, &f));
     assert_eq!(terminal.snapshot().cells, f.cells);
     assert!(f.cells.iter().any(|c| c.text == "›"));
     assert!(!f.cells.iter().any(|c| c.text == "×"));
-    let handle = Point { x: 7, y: 20 };
+    let handle = Point { x: 3, y: 20 };
     router.route(click(handle), &f);
     let toggle = actions(router.route(drag_event(MouseKind::Release, handle), &f));
     ws.apply(&toggle[0]).unwrap();
@@ -4502,15 +4527,7 @@ fn sidebar_drag_snaps_with_hysteresis_and_never_becomes_a_fold_click() {
     ws.apply(&Action::ResizeSidebar(45)).unwrap();
     let mut router = Router::default();
     router.route(click(Point { x: 44, y: 20 }), &frame(&ws));
-    for (raw, expected) in [
-        (21, 22),
-        (11, 22),
-        (10, 8),
-        (13, 8),
-        (14, 22),
-        (13, 22),
-        (10, 8),
-    ] {
+    for (raw, expected) in [(21, 22), (7, 22), (6, 4), (9, 4), (10, 22), (9, 22), (6, 4)] {
         let point = Point { x: raw - 1, y: 20 };
         let routed = actions(router.route(drag_event(MouseKind::Move, point), &frame(&ws)));
         assert_eq!(routed, vec![Action::ResizeSidebar(raw)]);
@@ -4518,12 +4535,12 @@ fn sidebar_drag_snaps_with_hysteresis_and_never_becomes_a_fold_click() {
         assert_eq!(frame(&ws).sidebar_width(), expected);
     }
     let released = actions(router.route(
-        drag_event(MouseKind::Release, Point { x: 9, y: 20 }),
+        drag_event(MouseKind::Release, Point { x: 5, y: 20 }),
         &frame(&ws),
     ));
-    assert_eq!(released, vec![Action::ResizeSidebar(10)]);
+    assert_eq!(released, vec![Action::ResizeSidebar(6)]);
     assert!(ws.ui.config.sidebar_folded);
-    router.route(click(Point { x: 7, y: 20 }), &frame(&ws));
+    router.route(click(Point { x: 3, y: 20 }), &frame(&ws));
     assert!(
         router
             .route(InputEvent::Bytes(vec![27]), &frame(&ws))
@@ -4532,7 +4549,7 @@ fn sidebar_drag_snaps_with_hysteresis_and_never_becomes_a_fold_click() {
     assert!(
         router
             .route(
-                drag_event(MouseKind::Release, Point { x: 7, y: 20 }),
+                drag_event(MouseKind::Release, Point { x: 3, y: 20 }),
                 &frame(&ws)
             )
             .is_empty()
@@ -4555,22 +4572,32 @@ fn folded_sidebar_targets_fit_small_screens_and_scroll_without_overlapping_contr
                 .filter(|(kind, _)| *kind != TabTarget::Parked)
                 .collect();
             for (index, (kind, rect)) in tabs.iter().enumerate() {
-                assert_eq!(rect.rows, 1);
-                assert!(rect.y < rows - 5);
-                assert_eq!(rect.cols, 7);
+                assert_eq!(
+                    rect.rows,
+                    if matches!(kind, TabTarget::Pane(_)) {
+                        2
+                    } else {
+                        1
+                    }
+                );
+                assert!(rect.y + rect.rows <= rows - 3);
+                assert_eq!(rect.cols, 3);
                 for (_, other) in tabs.iter().skip(index + 1) {
-                    assert_ne!(rect.y, other.y);
+                    assert!(rect.y + rect.rows <= other.y || other.y + other.rows <= rect.y);
                 }
                 if let TabTarget::Pane(pane) = kind {
                     assert!(*pane < count);
                 }
             }
             for rect in controls {
-                assert!(rect.y >= rows - 4);
-                assert_eq!(rect.cols, 7);
+                assert_eq!(rect.cols, 0);
             }
-            assert!(targets.iter().any(|(kind, _)| *kind == TabTarget::New));
-            if count > usize::from(rows - 6) {
+            assert!(
+                !targets
+                    .iter()
+                    .any(|(kind, _)| matches!(kind, TabTarget::New | TabTarget::Parked))
+            );
+            if count > usize::from((rows - 3) / 2) {
                 assert!(targets.iter().any(|(kind, _)| *kind == TabTarget::Previous));
                 assert!(targets.iter().any(|(kind, _)| *kind == TabTarget::Next));
                 assert!(
@@ -4584,7 +4611,7 @@ fn folded_sidebar_targets_fit_small_screens_and_scroll_without_overlapping_contr
 }
 
 #[test]
-fn sidebar_card_matches_demo_palette_and_sheen_covers_all_rows_without_blurring_text() {
+fn sidebar_card_matches_derived_palette_and_sheen_covers_all_rows_without_blurring_text() {
     let mut ws = workspace((180, 40), (2, 1));
     ws.apply(&Action::Read(1)).unwrap();
     ws.panes[0].status = Status::Working;
@@ -4593,10 +4620,10 @@ fn sidebar_card_matches_demo_palette_and_sheen_covers_all_rows_without_blurring_
     let base = frame(&ws);
     assert_eq!(
         base.cells[usize::from(rect.y * base.cols + rect.x)].bg,
-        Color::Rgb(54, 85, 111)
+        Color::Rgb(50, 79, 109)
     );
     let title = &base.cells[usize::from((rect.y + 1) * base.cols + rect.x + 2)];
-    assert_eq!(title.fg, Color::Rgb(240, 243, 246));
+    assert_eq!(title.fg, Color::Rgb(220, 221, 221));
     assert!(title.bold);
     let mut swept = vec![false; usize::from(rect.cols * rect.rows)];
     for tick in 0..30 {
@@ -4619,4 +4646,141 @@ fn sidebar_card_matches_demo_palette_and_sheen_covers_all_rows_without_blurring_
         assert_eq!(terminal.snapshot().cells, f.cells);
     }
     assert!(swept.iter().all(|changed| *changed));
+}
+
+#[test]
+fn accent_presets_have_shared_click_hover_and_keyboard_targets_on_small_screens() {
+    use kelpmux::native::{
+        hover,
+        ui::{Accent, DialogKind, UiConfig},
+        workspace::{accent_targets, dialog_bounds_for},
+    };
+    assert!(serde_json::from_str::<Accent>("\"#abcdef\"").is_err());
+    assert_eq!(
+        serde_json::from_str::<UiConfig>("{}").unwrap().accent,
+        Accent::Blue
+    );
+    for size in [(40, 10), (80, 20), (120, 40)] {
+        let mut ws = workspace(size, (2, 1));
+        ws.apply(&Action::Config).unwrap();
+        let bounds = dialog_bounds_for(ws.cols, ws.rows, DialogKind::Config);
+        for (index, (accent, rect)) in accent_targets(bounds).into_iter().enumerate() {
+            assert!(rect.y > bounds.y && rect.y + rect.rows < bounds.y + bounds.rows);
+            assert!(rect.x >= bounds.x && rect.x + rect.cols <= bounds.x + bounds.cols);
+            let f = frame(&ws);
+            let point = Point {
+                x: rect.x,
+                y: rect.y,
+            };
+            assert_eq!(hover::target(&f, point), Some(rect));
+            for action in actions(Router::default().route(click(point), &f)) {
+                ws.apply(&action).unwrap();
+            }
+            assert_eq!(ws.ui.config.accent, accent);
+            assert_eq!(ws.ui.dialog.unwrap().selection, index + 1);
+            // Keyboard activation uses the same preset as the clicked card.
+            ws.apply(&Action::AccentSet(Accent::Blue)).unwrap();
+            for action in
+                actions(Router::default().route(InputEvent::Bytes(vec![b'\r']), &frame(&ws)))
+            {
+                ws.apply(&action).unwrap();
+            }
+            assert_eq!(ws.ui.config.accent, accent);
+            let rendered = frame(&ws);
+            assert_eq!(
+                rendered.cells[usize::from(rect.y * rendered.cols + rect.x)].text,
+                "●"
+            );
+        }
+        let mut observer = frame(&ws);
+        observer.controller = false;
+        let rect = accent_targets(bounds)[1].1;
+        assert!(
+            Router::default()
+                .route(
+                    click(Point {
+                        x: rect.x,
+                        y: rect.y
+                    }),
+                    &observer
+                )
+                .is_empty()
+        );
+    }
+}
+
+#[test]
+fn neutral_sidebar_surfaces_follow_terminal_background_independently_of_accent() {
+    use kelpmux::native::ui::Accent;
+    let blend = |base: [u8; 3], tint: [u8; 3], percent: u16| {
+        let c: [u8; 3] = std::array::from_fn(|i| {
+            ((u16::from(base[i]) * (100 - percent) + u16::from(tint[i]) * percent) / 100) as u8
+        });
+        Color::Rgb(c[0], c[1], c[2])
+    };
+    for background in [[5, 5, 5], [17, 28, 48], [39, 33, 30], [243, 239, 231]] {
+        let light = background[0] > 128;
+        let ink = if light { [0; 3] } else { [255; 3] };
+        for accent in Accent::ALL {
+            let mut ws = workspace((120, 40), (4, 1));
+            ws.apply(&Action::Read(1)).unwrap();
+            ws.ui.terminal_theme[1] = Some(background);
+            ws.apply(&Action::AccentSet(accent)).unwrap();
+            let f = frame(&ws);
+            let at = |x: u16, y: u16| &f.cells[usize::from(y * f.cols + x)];
+            assert_eq!(at(0, 20).bg, blend(background, ink, 4));
+            let odd = sidebar_tab(&ws, 2);
+            let even = sidebar_tab(&ws, 1);
+            let selected = sidebar_tab(&ws, 0);
+            assert_eq!(at(0, odd.y).bg, blend(background, ink, 14));
+            assert_eq!(at(0, even.y).bg, blend(background, ink, 5));
+            assert_ne!(at(0, odd.y).bg, at(0, even.y).bg);
+            assert_eq!(at(0, selected.y).bg, blend(background, accent.rgb(), 34));
+            assert_eq!(at(0, selected.y).fg, blend([0; 3], accent.rgb(), 100));
+            assert_eq!(at(2, selected.y + 1).fg, blend(background, ink, 85));
+            assert!(
+                f.controls()
+                    .iter()
+                    .all(|r| at(r.x, r.y).bg == blend(background, ink, 14))
+            );
+            // Background sheen changes only the card fill, in the right direction for the theme.
+            ws.panes[0].status = Status::Working;
+            for tick in 0..30 {
+                let animated = compose(&ws, &BTreeMap::new(), true, None, tick);
+                let Color::Rgb(r, g, b) =
+                    animated.cells[usize::from(selected.y * animated.cols)].bg
+                else {
+                    panic!()
+                };
+                let Color::Rgb(br, bg, bb) = at(0, selected.y).bg else {
+                    panic!()
+                };
+                for (value, original) in [(r, br), (g, bg), (b, bb)] {
+                    if light {
+                        assert!(value <= original);
+                    } else {
+                        assert!(value >= original);
+                    }
+                }
+            }
+            ws.apply(&Action::ToggleSidebarFold).unwrap();
+            let folded = frame(&ws);
+            let second = kelpmux::native::workspace::tab_targets(
+                folded.cols,
+                folded.rows,
+                &folded.ui.config,
+                4,
+                0,
+                0,
+            )[1]
+            .1;
+            assert_eq!(
+                folded.cells[usize::from(second.y * folded.cols)].bg,
+                blend(background, ink, 5)
+            );
+            let mut terminal = Terminal::new(folded.cols, folded.rows);
+            terminal.feed(&terminal_diff(None, &folded));
+            assert_eq!(terminal.snapshot().cells, folded.cells);
+        }
+    }
 }

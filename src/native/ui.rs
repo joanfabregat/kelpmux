@@ -6,7 +6,8 @@ pub const FOOTER_BG: u8 = 239;
 pub const TAB_BG: u8 = 236;
 /// Label + two-column inset + five meter sections + percentage + divider.
 pub const MIN_SIDEBAR_COLUMNS: u16 = 22;
-pub const FOLDED_SIDEBAR_COLUMNS: u16 = 8;
+/// Three content columns plus the divider.
+pub const FOLDED_SIDEBAR_COLUMNS: u16 = 4;
 pub const PARKED_BG: u8 = 60;
 pub const RESTORE_BG: u8 = 29;
 pub const ALERT_ICON: &str = "⚠︎";
@@ -84,6 +85,50 @@ pub enum TabPosition {
     #[serde(alias = "auto", alias = "top", alias = "bottom")]
     Left,
 }
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Accent {
+    #[default]
+    Blue,
+    Sage,
+    Glacier,
+    Slate,
+    Sand,
+    Clay,
+}
+impl Accent {
+    pub const ALL: [Self; 6] = [
+        Self::Blue,
+        Self::Sage,
+        Self::Glacier,
+        Self::Slate,
+        Self::Sand,
+        Self::Clay,
+    ];
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Blue => "Blue",
+            Self::Sage => "Sage",
+            Self::Glacier => "Glacier",
+            Self::Slate => "Slate",
+            Self::Sand => "Sand",
+            Self::Clay => "Clay",
+        }
+    }
+    pub fn rgb(self) -> [u8; 3] {
+        match self {
+            Self::Blue => [95, 175, 255],
+            Self::Sage => [131, 185, 170],
+            Self::Glacier => [121, 190, 200],
+            Self::Slate => [163, 171, 200],
+            Self::Sand => [198, 173, 126],
+            Self::Clay => [201, 147, 135],
+        }
+    }
+    pub fn is_default(&self) -> bool {
+        *self == Self::Blue
+    }
+}
 impl TabPosition {
     pub fn resolve(self, _cols: u16, _rows: u16) -> Self {
         Self::Left
@@ -141,6 +186,8 @@ pub struct UiConfig {
     pub sidebar_columns: Option<u16>,
     #[serde(skip_serializing_if = "expanded_sidebar")]
     pub sidebar_folded: bool,
+    #[serde(skip_serializing_if = "Accent::is_default")]
+    pub accent: Accent,
     /// Maximum bouncing-ball track length; rendering clips it to the available space.
     #[serde(skip_serializing_if = "default_activity_width")]
     pub activity_width: u16,
@@ -161,6 +208,7 @@ impl Default for UiConfig {
             tab_position: TabPosition::Left,
             sidebar_columns: None,
             sidebar_folded: false,
+            accent: Accent::Blue,
             activity_width: 20,
             legacy_read_widths: None,
         }

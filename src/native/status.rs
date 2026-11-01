@@ -561,12 +561,7 @@ pub fn columns(width: u16, view: View, data: &Snapshot) -> Vec<(&'static str, u1
 pub fn metric_region(frame: &super::protocol::Frame) -> Option<super::protocol::Rect> {
     use super::{protocol::Rect, workspace};
     if frame.sidebar_status() && frame.ui.config.sidebar_folded {
-        return Some(Rect {
-            x: 0,
-            y: frame.rows - 5,
-            cols: frame.sidebar_width() - 1,
-            rows: 1,
-        });
+        return None;
     }
     if frame.ui.vitals.is_empty() || frame.notice.is_some() {
         return None;

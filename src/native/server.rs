@@ -976,6 +976,13 @@ impl Server {
         // Older retained builds reject unknown UI keys. Keep the fold preference
         // separately while continuing to save their understood expanded width.
         settings.ui.sidebar_folded = false;
+        settings.ui.accent = super::ui::Accent::Blue;
+        let accent_path = self.config.state_dir.join("sidebar-accent.json");
+        if !self.workspace.ui.config.accent.is_default() {
+            journal::atomic(&accent_path, &self.workspace.ui.config.accent)?;
+        } else if accent_path.try_exists()? {
+            fs::remove_file(accent_path)?;
+        }
         let folded_path = self.config.state_dir.join("sidebar-folded.json");
         if self.workspace.ui.config.sidebar_folded {
             journal::atomic(&folded_path, &true)?;
@@ -2572,6 +2579,12 @@ pub fn serve(mut config: ServerConfig) -> Result<()> {
         workspace.ui.config.sidebar_folded = folded;
     }
     config.ui = workspace.ui.config.clone();
+    if let Ok(accent) =
+        super::lifecycle::sidebar_accent(&config.state_dir.join("sidebar-accent.json"))
+    {
+        workspace.ui.config.accent = accent;
+        config.ui.accent = accent;
+    }
     super::lifecycle::save_pid(&config.state_dir)?;
     let mut server = Server {
         remember_tab_order: false,
