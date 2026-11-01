@@ -12,6 +12,7 @@ cat > "$fixture/kelpmux" <<'MOCK'
 #!/usr/bin/env bash
 printf '%s\n' "$@" > "$XDG_STATE_HOME/arguments"
 printf '%s\n' "${KELPMUX_DEV_BADGE:-unset}" > "$XDG_STATE_HOME/badge"
+printf '%s %s\n' "$1" "$(umask)" >> "$XDG_STATE_HOME/umasks"
 printf '%s ' "$@" >> "$XDG_STATE_HOME/calls"
 printf '\n' >> "$XDG_STATE_HOME/calls"
 if [[ $1 == start ]]; then
@@ -72,6 +73,20 @@ grep -F -- '--replace-running' "$fixture/dev-command"
 bash "$manager" stop dev
 printf 'stop\n--workspace\ndev\n' > "$fixture/expected"
 cmp "$fixture/expected" "$XDG_STATE_HOME/arguments"
+# Both dev startup and attach, and preprod attach, inherit the caller's mask.
+for mask in 0002 0022 0077; do
+  : > "$XDG_STATE_HOME/umasks"
+  (umask "$mask"; bash "$manager" launch dev)
+  printf 'start %s\nssh-entry %s\n' "$mask" "$mask" > "$fixture/expected-umasks"
+  cmp "$fixture/expected-umasks" "$XDG_STATE_HOME/umasks"
+  : > "$XDG_STATE_HOME/umasks"
+  (umask "$mask"; bash "$manager" launch preprod)
+  printf 'ssh-entry %s\n' "$mask" > "$fixture/expected-umasks"
+  cmp "$fixture/expected-umasks" "$XDG_STATE_HOME/umasks"
+done
+for private in "$XDG_DATA_HOME/kelpmux/channels/lock" "$XDG_DATA_HOME/kelpmux/channels/dev.json"; do
+  test "$(stat -c %a "$private")" = 600
+done
 # Re-registering altered artifacts and selecting unregistered/unsafe paths fail.
 printf '# changed\n' >> "$fixture/kelpmux"
 if bash "$manager" register aaaaaaa "$fixture/kelpmux" "$repo/examples/native-tabs.json" 2>/dev/null; then exit 1; fi

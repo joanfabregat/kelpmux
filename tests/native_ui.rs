@@ -863,14 +863,23 @@ fn shaded_grid_headers_meet_previous_rows_without_empty_separators() {
         for view in &views {
             if view.rect.x > 0 {
                 let x = view.rect.x - 1;
-                assert_eq!(f.cells[usize::from(view.body.y * f.cols + x)].text, "│");
+                assert_eq!(f.cells[usize::from(view.body.y * f.cols + x)].text, "┃");
                 let left = views
                     .iter()
                     .find(|left| left.rect.y == view.rect.y && left.rect.x + left.rect.cols == x)
                     .unwrap();
                 assert_eq!(
+                    f.cells[usize::from(view.rect.y * f.cols + left.rect.x + left.rect.cols - 1)]
+                        .text,
+                    " "
+                );
+                assert_eq!(
                     f.cells[usize::from(view.body.y * f.cols + x)].fg,
-                    Color::Indexed(if left.pane.id == ws.active { 250 } else { 244 })
+                    Color::Indexed(39)
+                );
+                assert_eq!(
+                    f.cells[usize::from(view.rect.y * f.cols + x)].bg,
+                    Color::Default
                 );
                 assert!(
                     views
@@ -888,10 +897,7 @@ fn shaded_grid_headers_meet_previous_rows_without_empty_separators() {
             }
             let line = &f.cells[usize::from(view.rect.y * f.cols + view.rect.x)];
             assert_eq!(line.text, " ");
-            assert_eq!(
-                line.bg,
-                Color::Indexed(if view.pane.id == ws.active { 242 } else { 236 })
-            );
+            assert_eq!(line.bg, Color::Default);
         }
         let mut display = Terminal::new(f.cols, f.rows);
         display.feed(&terminal_diff(None, &f));
@@ -1193,7 +1199,7 @@ fn tab_bodies_fill_available_width_despite_legacy_width_settings() {
 }
 
 #[test]
-fn working_tabs_animate_only_one_character_and_keep_bells_beside_titles() {
+fn working_tabs_keep_sheen_inside_the_activity_row_and_bells_beside_titles() {
     use kelpmux::native::{
         ui::TabPosition,
         workspace::{TabTarget, tab_close, tab_number, tab_park, tab_targets},
@@ -1242,11 +1248,10 @@ fn working_tabs_animate_only_one_character_and_keep_bells_beside_titles() {
             terminal.feed(b"\x1b[48;2;31;31;31mcontent\x1b[0m");
             let screens = BTreeMap::from([(active as u64, terminal.snapshot())]);
             let a = compose(&ws, &screens, true, None, 0);
-            let b = compose(&ws, &screens, true, None, 2);
+            let b = compose(&ws, &screens, true, None, 3);
             assert_ne!(a.cells, b.cells);
             for (index, (before, after)) in a.cells.iter().zip(&b.cells).enumerate() {
                 assert_eq!(before.bg, after.bg);
-                assert_eq!(before.fg, after.fg);
                 if before != after {
                     assert!(tab.contains(Point {
                         x: (index % usize::from(ws.cols)) as u16,
@@ -1825,6 +1830,7 @@ fn working_spinner_rotates_in_place_in_tabs_grid_and_parked_cards() {
     for mode in 0..3 {
         let mut ws = workspace((180, 50), (2, 1));
         ws.panes[0].status = Status::Working;
+        ws.panes[0].title = "Wide 界 title".into();
         ws.panes[1].status = Status::Idle;
         if mode == 1 {
             ws.apply(&Action::Read(1)).unwrap();
@@ -1832,6 +1838,40 @@ fn working_spinner_rotates_in_place_in_tabs_grid_and_parked_cards() {
         if mode == 2 {
             ws.apply(&Action::Park(1)).unwrap();
             ws.apply(&Action::Parked).unwrap();
+        }
+        if mode != 2 {
+            let frames: Vec<_> = [0, 3, 6, 9]
+                .into_iter()
+                .map(|tick| compose(&ws, &BTreeMap::new(), true, None, tick))
+                .collect();
+            let rows: Vec<String> = frames
+                .iter()
+                .map(|f| {
+                    f.cells[..usize::from(ws.cols)]
+                        .iter()
+                        .map(|c| c.text.as_str())
+                        .collect()
+                })
+                .collect();
+            for (row, dots) in rows.iter().zip(["·  ", "·· ", "···", "·  "]) {
+                assert_eq!(row.matches('·').count(), dots.matches('·').count());
+                if mode == 1 {
+                    assert!(row.contains(&format!("{dots} Working")), "{row:?}");
+                }
+            }
+            for f in &frames {
+                let mut terminal = Terminal::new(f.cols, f.rows);
+                terminal.feed(&terminal_diff(None, f));
+                assert_eq!(terminal.snapshot().cells, f.cells);
+            }
+            assert!(
+                frames[0]
+                    .cells
+                    .iter()
+                    .zip(&frames[2].cells)
+                    .any(|(a, b)| a.text == b.text && a.fg != b.fg)
+            );
+            continue;
         }
         let frames: Vec<_> = [0, 1, 2, 3, 10]
             .into_iter()
@@ -1848,10 +1888,28 @@ fn working_spinner_rotates_in_place_in_tabs_grid_and_parked_cards() {
         let index = changed[0];
         for f in &frames {
             for (at, (a, b)) in frames[0].cells.iter().zip(&f.cells).enumerate() {
-                if at != index {
+                if at != index && mode != 1 {
                     assert_eq!(a, b);
                 }
+                if at != index {
+                    assert_eq!(a.text, b.text);
+                    assert_eq!(a.bg, b.bg);
+                }
             }
+        }
+        if mode == 1 {
+            let row: String = frames[0].cells[..usize::from(ws.cols)]
+                .iter()
+                .map(|cell| cell.text.as_str())
+                .collect();
+            assert!(row.contains("Working"));
+            assert!(
+                frames[0]
+                    .cells
+                    .iter()
+                    .zip(&frames[4].cells)
+                    .any(|(a, b)| a.text == b.text && a.fg != b.fg)
+            );
         }
         assert_eq!(
             frames
@@ -2014,8 +2072,8 @@ fn tab_surfaces_follow_dark_and_light_backgrounds_without_repainting_terminal_de
             f.cells[usize::from(number.y * f.cols + number.x + 1)].fg,
             Color::Indexed(if light { 25 } else { 110 })
         );
-        let ball = f.cells.iter().find(|cell| cell.text == "⠋").unwrap();
-        assert_eq!(ball.fg, Color::Indexed(if light { 232 } else { 231 }));
+        let ball = f.cells.iter().find(|cell| cell.text == "·").unwrap();
+        assert_eq!(ball.fg, Color::Indexed(75));
         let body = f.panes.iter().find(|view| view.pane.id == 1).unwrap().body;
         assert_eq!(
             f.cells[usize::from(body.y * f.cols + body.x)].bg,
