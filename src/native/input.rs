@@ -1115,12 +1115,18 @@ impl Router {
         {
             self.header_click = None;
         }
-        if event.kind == MouseKind::Press && frame.ui.dialog.is_none() && !frame.help {
-            if let Some(sort) = super::status::metric_target(frame, event.position) {
-                self.pending_modal = true;
-                emit(&mut output, Action::StatusOpen(sort), true);
-                return output;
-            }
+        if event.kind == MouseKind::Press
+            && frame.ui.dialog.is_none()
+            && !frame.help
+            && super::status::metric_target(frame, event.position).is_some()
+        {
+            self.pending_modal = true;
+            emit(
+                &mut output,
+                Action::StatusOpen(super::status::Sort::Cpu),
+                true,
+            );
+            return output;
         }
         if event.kind == MouseKind::Press && config.contains(event.position) {
             self.pending_modal = true;
