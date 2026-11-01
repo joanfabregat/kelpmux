@@ -451,3 +451,59 @@ fn plain_url_targets_exclude_surrounding_parentheses_quotes_and_adjacent_prose()
         }
     }
 }
+
+#[test]
+fn parenthesized_oauth_urls_survive_tui_hard_wraps_and_indent_without_linking_prose() {
+    let uri = format!(
+        "https://accounts.google.com/o/oauth2/auth?response_type=code&client_id=example.apps.googleusercontent.com&redirect_uri=https%3A%2F%2Fsdk.cloud.google.com%2Fauthcode.html&scope={}&state=example&code_challenge=example&code_challenge_method=S256",
+        "openid+cloud-platform+".repeat(16)
+    );
+    for cols in [40usize, 80, 120] {
+        let prefix = "3. Sign in with user@example.test (";
+        let mut physical = String::from(prefix);
+        let mut column = prefix.len();
+        for c in uri.chars() {
+            if column >= cols - 2 {
+                physical.push_str("\r\n   ");
+                column = 3;
+            }
+            physical.push(c);
+            column += 1;
+        }
+        physical.push_str(") and paste the code shown.\r\nThis prose must not be linked.");
+        let mut terminal = Terminal::new(cols as u16, 40);
+        terminal.feed(physical.as_bytes());
+        let screen = terminal.snapshot();
+        let linked: Vec<_> = screen
+            .cells
+            .iter()
+            .filter(|cell| cell.hyperlink.is_some())
+            .collect();
+        assert_eq!(linked.len(), uri.len(), "at {cols} columns");
+        assert!(
+            linked
+                .iter()
+                .all(|cell| cell.hyperlink.as_deref() == Some(uri.as_str()))
+        );
+        assert_eq!(
+            linked
+                .iter()
+                .map(|cell| cell.text.as_str())
+                .collect::<String>(),
+            uri
+        );
+    }
+    for text in [
+        "(https://a.test/?x=y\r\nnext)",
+        "(https://a.test/?x=y\r\nnext",
+    ] {
+        let mut terminal = Terminal::new(80, 4);
+        terminal.feed(text.as_bytes());
+        let screen = terminal.snapshot();
+        assert!(
+            screen.cells[80..160]
+                .iter()
+                .all(|cell| cell.hyperlink.is_none())
+        );
+    }
+}

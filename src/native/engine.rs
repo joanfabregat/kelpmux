@@ -325,6 +325,7 @@ impl Terminal {
                     .filter(|uri| valid_hyperlink(uri) && !flags.contains(Flags::HIDDEN)),
             };
         }
+        link_hard_wrapped_urls(&mut cells, usize::from(cols), &wraps);
         link_plain_urls(&mut cells, usize::from(cols), &wraps);
         let mode = content.mode;
         let cursor = point_to_viewport(content.display_offset, content.cursor.point)
@@ -593,6 +594,105 @@ impl Terminal {
 
 /// Ordinary URLs need explicit links once separate pane streams are composed:
 /// an outer terminal cannot reconstruct wrapping inside one grid column.
+fn link_hard_wrapped_urls(cells: &mut [Cell], cols: usize, wraps: &[bool]) {
+    // TUI renderers can hard-wrap a parenthesized query URL and indent its
+    // continuation rows. Require full rows and a closing delimiter before
+    // linking anything, so ordinary short URLs and following prose stay separate.
+    for row in 0..wraps.len() {
+        if wraps[row] {
+            continue;
+        }
+        for x in 0..cols.saturating_sub(1) {
+            if cells[row * cols + x].text != "(" {
+                continue;
+            }
+            let prefix: String = cells[row * cols + x + 1..(row + 1) * cols]
+                .iter()
+                .take(8)
+                .map(|c| c.text.as_str())
+                .collect();
+            let prefix = prefix.trim_end();
+            if !prefix.starts_with("http://")
+                && !prefix.starts_with("https://")
+                && !(prefix.len() < 8
+                    && ["http://", "https://"]
+                        .iter()
+                        .any(|scheme| scheme.starts_with(prefix)))
+            {
+                continue;
+            }
+            let mut uri = String::new();
+            let mut indices = Vec::new();
+            let mut depth = 0usize;
+            let mut closed = false;
+            'rows: for next in row..wraps.len().min(row + 128) {
+                let line = &cells[next * cols..(next + 1) * cols];
+                let start = if next == row {
+                    x + 1
+                } else {
+                    let indent = line.iter().take_while(|c| c.text == " ").count();
+                    if indent > 8 {
+                        break;
+                    }
+                    indent
+                };
+                let end = line
+                    .iter()
+                    .rposition(|c| c.text != " ")
+                    .map_or(0, |i| i + 1);
+                if start >= end {
+                    break;
+                }
+                for (column, cell) in line.iter().enumerate().take(end).skip(start) {
+                    let mut chars = cell.text.chars();
+                    let Some(c) = chars.next() else {
+                        break 'rows;
+                    };
+                    if chars.next().is_some()
+                        || !c.is_ascii()
+                        || c.is_ascii_whitespace()
+                        || c.is_control()
+                        || matches!(c, '<' | '>' | '"' | '`')
+                    {
+                        break 'rows;
+                    }
+                    if c == ')' {
+                        if depth == 0 {
+                            closed = next > row;
+                            break 'rows;
+                        }
+                        depth -= 1;
+                    } else if c == '(' {
+                        depth += 1;
+                    }
+                    uri.push(c);
+                    indices.push(next * cols + column);
+                    if uri.len() > 2048 {
+                        break 'rows;
+                    }
+                }
+                if cols - end > 4 {
+                    break;
+                }
+            }
+            if !closed || !uri.contains('?') || !uri.contains('=') || !valid_hyperlink(&uri) {
+                continue;
+            }
+            if indices.iter().any(|&i| {
+                cells[i]
+                    .hyperlink
+                    .as_ref()
+                    .is_some_and(|target| target != &uri)
+            }) {
+                continue;
+            }
+            for i in indices {
+                cells[i].hyperlink = Some(uri.clone());
+            }
+        }
+    }
+}
+
 fn link_plain_urls(cells: &mut [Cell], cols: usize, wraps: &[bool]) {
     let mut start = 0;
     for (row, wrapped) in wraps.iter().enumerate() {
