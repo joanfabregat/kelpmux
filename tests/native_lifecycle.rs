@@ -1003,3 +1003,36 @@ fn reordered_tabs_keep_live_pids_and_restart_in_saved_startup_order() {
         ]
     );
 }
+
+#[test]
+fn permissive_caller_umask_reaches_shell_but_state_stays_private() {
+    let fixture = Fixture::new();
+    let mut command = fixture.command("start");
+    command
+        .args(["--shell", "/bin/sh", "--cwd"])
+        .arg(&fixture.root);
+    // Change only this child; parallel tests keep their own process umask.
+    unsafe {
+        command.pre_exec(|| {
+            libc::umask(0o002);
+            Ok(())
+        });
+    }
+    let started = panes(&bounded_output(&mut command));
+    let shell = fs::read_to_string(format!("/proc/{}/status", started[0].pid)).unwrap();
+    assert!(shell.lines().any(|line| line == "Umask:\t0002"));
+    for (path, mode) in [
+        (fixture.state.clone(), 0o700),
+        (fixture.socket.clone(), 0o600),
+        (fixture.state.join("workspace.json"), 0o600),
+        (fixture.state.join("server.pid"), 0o600),
+    ] {
+        assert_eq!(
+            fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+            mode,
+            "{}",
+            path.display()
+        );
+    }
+    fixture.stop();
+}
