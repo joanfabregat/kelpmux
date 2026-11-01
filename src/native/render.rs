@@ -1556,20 +1556,23 @@ fn draw_tab(
     };
     let marker_width = if pane.status == crate::model::Status::InputNeeded {
         2
-    } else if pane.status == crate::model::Status::Working {
-        3
     } else {
         1
     };
     let sidebar_working = !grid && rect.rows >= 2 && pane.status == crate::model::Status::Working;
     let track = if rect.rows >= 2 {
         Rect {
-            x: number.x + number.cols + 1,
+            x: number.x + number.cols + if sidebar_working { 2 } else { 1 },
             y: rect.y,
-            cols: park
-                .x
-                .saturating_sub(number.x + number.cols + 1)
-                .min(if sidebar_working { 11 } else { marker_width }),
+            cols: if sidebar_working {
+                park.x
+                    .saturating_sub(number.x + number.cols + 4)
+                    .min(workspace.ui.config.activity_width)
+            } else {
+                park.x
+                    .saturating_sub(number.x + number.cols + 1)
+                    .min(marker_width)
+            },
             rows: 1,
         }
     } else {
@@ -1796,10 +1799,22 @@ fn draw_tab(
         );
     }
     if pane.status == crate::model::Status::Working {
-        if sidebar_working {
-            activity_working(frame, track, spinner);
-        } else {
-            activity_dots(frame, track, spinner);
+        if !grid {
+            activity_ball(frame, track, spinner);
+        } else if track.cols > 0 {
+            let bg = frame.cells
+                [usize::from(track.y) * usize::from(frame.cols) + usize::from(track.x)]
+            .bg;
+            write_text(
+                frame,
+                track.x,
+                track.y,
+                track.cols,
+                ["◐", "◓", "◑", "◒"][spinner % 4],
+                Color::Indexed(214),
+                bg,
+                true,
+            );
         }
     } else if pane.status == crate::model::Status::InputNeeded {
         activity_attention(frame, track);
@@ -1838,42 +1853,41 @@ fn activity_spinner(frame: &mut Frame, track: Rect, foreground: Color, tick: usi
     }
 }
 
-fn activity_dots(frame: &mut Frame, track: Rect, tick: usize) {
-    let dots = (tick / 3) % 3 + 1;
-    for x in 0..track.cols.min(3) {
-        let index = usize::from(track.y) * usize::from(frame.cols) + usize::from(track.x + x);
-        if let Some(cell) = frame.cells.get_mut(index) {
-            cell.text = if usize::from(x) < dots { "·" } else { " " }.into();
-            cell.fg = Color::Indexed(75);
-        }
+/// A fixed-length ping-pong track without repeating the endpoint frames.
+pub fn bouncing_ball_frame(width: u16, frame_index: usize) -> String {
+    let width = usize::from(width);
+    if width == 0 {
+        return String::new();
     }
+    let position = if width == 1 {
+        0
+    } else {
+        let period = 2 * (width - 1);
+        let phase = frame_index % period;
+        phase.min(period - phase)
+    };
+    format!(
+        "{}●{}",
+        "·".repeat(position),
+        "·".repeat(width - position - 1)
+    )
 }
 
-fn activity_working(frame: &mut Frame, track: Rect, tick: usize) {
-    activity_dots(frame, track, tick);
-    if track.cols < 11 {
+fn activity_ball(frame: &mut Frame, track: Rect, tick: usize) {
+    if track.cols == 0 {
         return;
     }
-    let label = " Working";
-    let head = tick % 16;
-    for (offset, character) in label.chars().enumerate() {
-        let x = offset as u16 + 3;
-        if x >= track.cols {
-            break;
-        }
-        let distance = (offset + 3).abs_diff(head);
-        let color = match distance {
-            0 => 231,
-            1 => 255,
-            2 => 250,
-            _ => 244,
-        };
-        let index = usize::from(track.y) * usize::from(frame.cols) + usize::from(track.x + x);
-        if let Some(cell) = frame.cells.get_mut(index) {
-            cell.text = character.to_string();
-            cell.fg = Color::Indexed(color);
-        }
-    }
+    let bg = frame.cells[usize::from(track.y) * usize::from(frame.cols) + usize::from(track.x)].bg;
+    write_text(
+        frame,
+        track.x,
+        track.y,
+        track.cols,
+        &bouncing_ball_frame(track.cols, tick),
+        Color::Indexed(141),
+        bg,
+        true,
+    );
 }
 
 fn activity_sheen(frame: &mut Frame, rect: Rect, tick: usize) {

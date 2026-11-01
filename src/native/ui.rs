@@ -138,6 +138,9 @@ pub struct UiConfig {
     pub tab_position: TabPosition,
     /// Preferred sidebar width in terminal columns; None follows the screen.
     pub sidebar_columns: Option<u16>,
+    /// Maximum bouncing-ball track length; rendering clips it to the available space.
+    #[serde(skip_serializing_if = "default_activity_width")]
+    pub activity_width: u16,
     #[serde(rename = "remembered_read_widths", skip_serializing)]
     pub legacy_read_widths: Option<[Option<u16>; 3]>,
 }
@@ -154,6 +157,7 @@ impl Default for UiConfig {
             bindings: BTreeMap::new(),
             tab_position: TabPosition::Left,
             sidebar_columns: None,
+            activity_width: 20,
             legacy_read_widths: None,
         }
     }
@@ -173,6 +177,7 @@ impl UiConfig {
                 .iter()
                 .any(|(&pane, &color)| pane == 0 || usize::from(color) >= PALETTE.len())
             || !(20..=100).contains(&self.read_height_percent)
+            || !(1..=4096).contains(&self.activity_width)
             || self
                 .sidebar_columns
                 .is_some_and(|width| !(18..=4096).contains(&width))
@@ -224,6 +229,9 @@ impl UiConfig {
         }
         Ok(())
     }
+}
+fn default_activity_width(width: &u16) -> bool {
+    *width == 20
 }
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct UiState {
