@@ -1339,7 +1339,11 @@ fn draw_tabs(frame: &mut Frame, workspace: &Workspace, spinner: usize) {
         match target {
             TabTarget::Parked => {}
             TabTarget::New => {
-                let label = " + New tab ";
+                let label = if workspace.ui.config.sidebar_folded {
+                    " + "
+                } else {
+                    " + New tab "
+                };
                 let bg = tab_surface(workspace);
                 fill(frame, rect, bg);
                 write_text(
@@ -1392,6 +1396,10 @@ fn draw_tabs(frame: &mut Frame, workspace: &Workspace, spinner: usize) {
             }
             TabTarget::Pane(index) => {
                 if let Some(pane) = panes.get(index) {
+                    if workspace.ui.config.sidebar_folded {
+                        draw_folded_tab(frame, pane, rect, pane.id == active_id, spinner);
+                        continue;
+                    }
                     draw_tab(
                         frame,
                         workspace,
@@ -1444,11 +1452,59 @@ fn draw_tabs(frame: &mut Frame, workspace: &Workspace, spinner: usize) {
         x,
         frame.rows / 2,
         1,
-        "⋮",
+        if workspace.ui.config.sidebar_folded {
+            "›"
+        } else {
+            "‹"
+        },
         accent,
         Color::Default,
         false,
     );
+}
+
+fn draw_folded_tab(frame: &mut Frame, pane: &PaneInfo, rect: Rect, selected: bool, tick: usize) {
+    let bg = if selected {
+        Color::Rgb(54, 85, 111)
+    } else {
+        Color::Rgb(48, 52, 58)
+    };
+    fill(frame, rect, bg);
+    let width = rect.cols.saturating_sub(3);
+    write_text(
+        frame,
+        rect.x,
+        rect.y,
+        width,
+        &format!("{:>width$}", pane.number, width = usize::from(width)),
+        if selected {
+            Color::Rgb(215, 233, 248)
+        } else {
+            Color::Indexed(75)
+        },
+        bg,
+        true,
+    );
+    let track = Rect {
+        x: rect.x + rect.cols.saturating_sub(2),
+        cols: rect.cols.min(2),
+        ..rect
+    };
+    if pane.status == crate::model::Status::Working {
+        write_text(
+            frame,
+            track.x,
+            track.y,
+            track.cols,
+            ["◐", "◓", "◑", "◒"][tick % 4],
+            Color::Rgb(155, 179, 174),
+            bg,
+            true,
+        );
+        activity_sheen(frame, rect, tick);
+    } else if pane.status == crate::model::Status::InputNeeded {
+        activity_attention(frame, track);
+    }
 }
 
 fn outline(frame: &mut Frame, rect: Rect, fg: Color, bg: Color) {
@@ -1483,30 +1539,21 @@ fn draw_tab(
         ReadingMode::Grid | ReadingMode::Fullscreen(_)
     );
     let accent = tab_accent(workspace, selected);
-    let bg = if grid {
+    let bg = if grid || selected {
         if selected {
             Color::Rgb(54, 85, 111)
         } else {
             Color::Rgb(48, 52, 58)
         }
-    } else if !selected && pane.number % 2 == 0 {
-        theme_surface(workspace, 24)
+    } else if pane.number % 2 == 0 {
+        Color::Rgb(43, 47, 53)
     } else {
-        tab_background(workspace, selected)
+        Color::Rgb(48, 52, 58)
     };
-    let text_color = if grid {
-        Color::Rgb(215, 221, 228)
-    } else if selected {
-        let (r, g, b) = color_rgb(bg, false);
-        Color::Indexed(
-            if u16::from(r) * 3 + u16::from(g) * 6 + u16::from(b) >= 1280 {
-                232
-            } else {
-                231
-            },
-        )
+    let text_color = if selected && !grid {
+        Color::Rgb(240, 243, 246)
     } else {
-        tab_text(workspace, selected)
+        Color::Rgb(215, 221, 228)
     };
     fill(frame, rect, bg);
     let number = super::workspace::tab_number_for(rect, pane.number);
@@ -1519,13 +1566,9 @@ fn draw_tab(
         if grid {
             Color::Rgb(215, 221, 228)
         } else if selected {
-            Color::Indexed(226)
+            Color::Rgb(215, 233, 248)
         } else {
-            Color::Indexed(if tab_text(workspace, false) == Color::Indexed(232) {
-                25
-            } else {
-                110
-            })
+            Color::Indexed(75)
         },
         bg,
         true,
@@ -1654,7 +1697,7 @@ fn draw_tab(
         &title,
         text_color,
         bg,
-        false,
+        selected && !grid,
     );
     if grid {
         let width: u16 = title.chars().map(char_width).sum();
@@ -1723,10 +1766,10 @@ fn draw_tab(
             if rect.rows >= 3 { rect.y + 2 } else { rect.y },
             subtitle_width,
             &subtitle,
-            if text_color == Color::Indexed(232) {
-                Color::Indexed(240)
+            if selected {
+                Color::Rgb(183, 199, 213)
             } else {
-                Color::Indexed(if selected { 250 } else { 245 })
+                Color::Rgb(157, 165, 174)
             },
             bg,
             false,
@@ -1748,23 +1791,13 @@ fn draw_tab(
             true,
         );
     }
-    let light_controls = if grid {
-        tab_text(workspace, false) == Color::Indexed(232)
-    } else {
-        let (r, g, b) = color_rgb(bg, false);
-        u16::from(r) * 3 + u16::from(g) * 6 + u16::from(b) >= 1280
-    };
     write_text(
         frame,
         close.x,
         close.y,
         close.cols,
         " × ",
-        if grid {
-            Color::Rgb(220, 150, 150)
-        } else {
-            Color::Indexed(if light_controls { 160 } else { 203 })
-        },
+        Color::Rgb(220, 150, 150),
         bg,
         true,
     );
@@ -1774,11 +1807,7 @@ fn draw_tab(
         park.y,
         park.cols,
         " ⊟ ",
-        if grid {
-            Color::Rgb(179, 161, 207)
-        } else {
-            Color::Indexed(if light_controls { 91 } else { 141 })
-        },
+        Color::Rgb(179, 161, 207),
         bg,
         true,
     );
@@ -1823,7 +1852,7 @@ fn draw_tab(
     } else if pane.status == crate::model::Status::InputNeeded {
         activity_attention(frame, track);
     }
-    if grid && pane.status == crate::model::Status::Working {
+    if pane.status == crate::model::Status::Working {
         activity_sheen(frame, rect, spinner);
     }
 }
@@ -1898,18 +1927,22 @@ fn activity_ball(frame: &mut Frame, track: Rect, tick: usize) {
 }
 
 fn activity_sheen(frame: &mut Frame, rect: Rect, tick: usize) {
-    let band = usize::from(rect.cols).div_ceil(6).max(3);
-    let head = (tick % 28) * (usize::from(rect.cols) + band * 2) / 28;
-    for x in 0..rect.cols {
-        let index = usize::from(rect.y) * usize::from(frame.cols) + usize::from(rect.x + x);
-        if frame.cells[index].width == 0 && x > 0 {
-            frame.cells[index].bg = frame.cells[index - 1].bg;
-            continue;
-        }
-        let alpha = band.saturating_sub((usize::from(x) + band).abs_diff(head)) * 16 / band;
-        if let Color::Rgb(r, g, b) = frame.cells[index].bg {
-            let lift = |c: u8| c + ((255 - usize::from(c)) * alpha / 255) as u8;
-            frame.cells[index].bg = Color::Rgb(lift(r), lift(g), lift(b));
+    let divisor = if rect.rows > 1 { 3 } else { 6 };
+    let period = if rect.rows > 1 { 30 } else { 28 };
+    let band = usize::from(rect.cols).div_ceil(divisor).max(3);
+    let head = (tick % period) * (usize::from(rect.cols) + band * 2) / period;
+    for y in rect.y..rect.y + rect.rows {
+        for x in 0..rect.cols {
+            let index = usize::from(y) * usize::from(frame.cols) + usize::from(rect.x + x);
+            if frame.cells[index].width == 0 && x > 0 {
+                frame.cells[index].bg = frame.cells[index - 1].bg;
+                continue;
+            }
+            let alpha = band.saturating_sub((usize::from(x) + band).abs_diff(head)) * 16 / band;
+            if let Color::Rgb(r, g, b) = frame.cells[index].bg {
+                let lift = |c: u8| c + ((255 - usize::from(c)) * alpha / 255) as u8;
+                frame.cells[index].bg = Color::Rgb(lift(r), lift(g), lift(b));
+            }
         }
     }
 }
@@ -2130,7 +2163,7 @@ fn draw_sidebar_disks(
 }
 
 pub(super) fn sidebar_disk_region(frame: &Frame) -> Option<Rect> {
-    if !frame.sidebar_status() {
+    if !frame.sidebar_status() || frame.ui.config.sidebar_folded {
         return None;
     }
     let metrics = sidebar_metrics(&frame.ui.vitals);
@@ -2151,6 +2184,81 @@ pub(super) fn sidebar_disk_region(frame: &Frame) -> Option<Rect> {
 }
 
 fn draw_sidebar_status(frame: &mut Frame, workspace: &Workspace, notice: Option<&str>) {
+    if workspace.ui.config.sidebar_folded {
+        let width = frame.sidebar_width() - 1;
+        let bg = tab_surface(workspace);
+        fill(
+            frame,
+            Rect {
+                x: 0,
+                y: frame.rows - 5,
+                cols: width,
+                rows: 5,
+            },
+            bg,
+        );
+        let metric_y = frame.rows - 5;
+        if workspace.ui.show_dev_badge {
+            write_text(
+                frame,
+                0,
+                metric_y,
+                width.min(3),
+                "DEV",
+                Color::Rgb(220, 150, 150),
+                bg,
+                true,
+            );
+        }
+        write_text(
+            frame,
+            width.saturating_sub(2),
+            metric_y,
+            1,
+            if notice.is_some() { "!" } else { "▥" },
+            if notice.is_some() {
+                Color::Rgb(220, 150, 150)
+            } else {
+                Color::Rgb(155, 179, 174)
+            },
+            bg,
+            false,
+        );
+        let controls = frame.controls();
+        let unread = super::ui::has_unread_notifications(&workspace.ui, &workspace.panes);
+        let parked_count = workspace.panes.iter().filter(|pane| pane.parked).count();
+        let parked_label = if parked_count == 0 {
+            "⊟".to_string()
+        } else {
+            format!("⊟({parked_count})")
+        };
+        let labels = [
+            "⚙",
+            "▦",
+            &parked_label,
+            if unread { super::ui::ALERT_ICON } else { "?" },
+        ];
+        let colors = [
+            Color::Indexed(75),
+            Color::Indexed(110),
+            Color::Indexed(141),
+            Color::Indexed(if unread { 203 } else { 222 }),
+        ];
+        for ((rect, label), color) in controls.into_iter().zip(labels).zip(colors) {
+            let label_width = label.chars().map(char_width).sum::<u16>().min(rect.cols);
+            write_text(
+                frame,
+                rect.x + rect.cols.saturating_sub(label_width) / 2,
+                rect.y,
+                label_width,
+                label,
+                color,
+                bg,
+                false,
+            );
+        }
+        return;
+    }
     let rows = super::workspace::sidebar_status_rows(frame.rows);
     let width = frame.sidebar_width() - 1;
     let top = frame.rows - rows;

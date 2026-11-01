@@ -250,6 +250,8 @@ pub struct Router {
     header_click: Option<(PaneId, Point, Instant)>,
     boundary_drag: Option<(Option<u8>, Option<u8>)>,
     sidebar_drag: bool,
+    sidebar_start: Option<Point>,
+    sidebar_moved: bool,
     prefix: bool,
     pending_modal: bool,
     scrolling: bool,
@@ -260,6 +262,11 @@ pub struct Router {
 }
 impl Router {
     pub fn route(&mut self, event: InputEvent, frame: &Frame) -> Vec<ClientMessage> {
+        if matches!(&event, InputEvent::Bytes(bytes) if bytes == b"\x1b") && self.sidebar_drag {
+            self.sidebar_drag = false;
+            self.sidebar_start = None;
+            return vec![];
+        }
         if matches!(&event, InputEvent::Bytes(bytes) if bytes == b"\x1b")
             && self.tab_drag.take().is_some()
         {
@@ -865,11 +872,20 @@ impl Router {
             self.sidebar_drag = false;
         }
         if self.sidebar_drag && matches!(event.kind, MouseKind::Move | MouseKind::Release) {
-            emit(
-                &mut output,
-                Action::ResizeSidebar(event.position.x.saturating_add(1)),
-                true,
-            );
+            if self.sidebar_start.is_some_and(|start| {
+                start.x.abs_diff(event.position.x) > 1 || start.y.abs_diff(event.position.y) > 1
+            }) {
+                self.sidebar_moved = true;
+            }
+            if self.sidebar_moved {
+                emit(
+                    &mut output,
+                    Action::ResizeSidebar(event.position.x.saturating_add(1)),
+                    true,
+                );
+            } else if event.kind == MouseKind::Release {
+                emit(&mut output, Action::ToggleSidebarFold, true);
+            }
             if event.kind == MouseKind::Release {
                 self.sidebar_drag = false;
             }
@@ -887,11 +903,12 @@ impl Router {
             && event.position.x == frame.sidebar_width() - 1
         {
             self.sidebar_drag = true;
-            emit(
-                &mut output,
-                Action::ResizeSidebar(frame.sidebar_width()),
-                true,
-            );
+            self.tab_drag = None;
+            self.header_drag = None;
+            self.header_press = None;
+            self.header_click = None;
+            self.sidebar_start = Some(event.position);
+            self.sidebar_moved = false;
             return output;
         }
         if let Some((column, row)) = self.boundary_drag {
@@ -1281,9 +1298,11 @@ impl Router {
                         .map(|(_, rect)| rect)
                         .unwrap();
                         let close = matches!(target, TabTarget::Pane(_))
+                            && !frame.ui.config.sidebar_folded
                             && event.kind == MouseKind::Press
                             && super::workspace::tab_close(bounds).contains(event.position);
                         let park = matches!(target, TabTarget::Pane(_))
+                            && !frame.ui.config.sidebar_folded
                             && event.kind == MouseKind::Press
                             && super::workspace::tab_park(bounds).contains(event.position);
                         if park {

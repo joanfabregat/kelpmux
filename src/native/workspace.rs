@@ -680,8 +680,26 @@ impl Workspace {
                 }
             }
             Action::ResizeSidebar(columns) => {
-                self.ui.config.sidebar_columns =
-                    Some(columns.clamp(super::ui::MIN_SIDEBAR_COLUMNS, 4096));
+                let config = &mut self.ui.config;
+                if config.sidebar_folded {
+                    if columns >= super::ui::FOLDED_SIDEBAR_COLUMNS + 6 {
+                        config.sidebar_folded = false;
+                        config.sidebar_columns =
+                            Some(columns.clamp(super::ui::MIN_SIDEBAR_COLUMNS, 4096));
+                    }
+                } else if columns <= super::ui::FOLDED_SIDEBAR_COLUMNS + 2 {
+                    config.sidebar_columns = Some(config.sidebar_width(self.cols));
+                    config.sidebar_folded = true;
+                } else {
+                    config.sidebar_columns =
+                        Some(columns.clamp(super::ui::MIN_SIDEBAR_COLUMNS, 4096));
+                }
+            }
+            Action::ToggleSidebarFold => {
+                if !self.ui.config.sidebar_folded {
+                    self.ui.config.sidebar_columns = Some(self.ui.config.sidebar_width(self.cols));
+                }
+                self.ui.config.sidebar_folded = !self.ui.config.sidebar_folded;
             }
             Action::NotificationSoundToggle => {
                 self.ui.config.notification_sound = !self.ui.config.notification_sound
@@ -1339,7 +1357,12 @@ pub fn tab_bar_area(cols: u16, rows: u16, config: &super::ui::UiConfig) -> Rect 
         x: 0,
         y: 0,
         cols: config.sidebar_width(cols) - 1,
-        rows: rows - sidebar_status_rows(rows),
+        rows: rows
+            - if config.sidebar_folded {
+                5
+            } else {
+                sidebar_status_rows(rows)
+            },
     }
 }
 pub fn tab_number(rect: Rect) -> Rect {
@@ -1443,6 +1466,14 @@ pub fn sidebar_controls(
         cols,
         rows: 1,
     };
+    if config.sidebar_folded {
+        return [
+            rect(0, rows - 4, width),
+            rect(0, rows - 3, width),
+            rect(0, rows - 2, width),
+            rect(0, rows - 1, width),
+        ];
+    }
     let right = width.div_ceil(2);
     [
         rect(0, rows - 2, right),
@@ -1489,6 +1520,39 @@ pub fn tab_targets(
     active: usize,
     parked_count: usize,
 ) -> Vec<(TabTarget, Rect)> {
+    if config.sidebar_folded {
+        let width = config.sidebar_width(cols) - 1;
+        let area = rows.saturating_sub(6);
+        let overflow = count > usize::from(area);
+        let capacity = usize::from(area.saturating_sub(if overflow { 2 } else { 0 })).max(1);
+        let start = if overflow {
+            active.saturating_sub(capacity - 1)
+        } else {
+            0
+        };
+        let top = u16::from(overflow);
+        let rect = |y| Rect {
+            x: 0,
+            y,
+            cols: width,
+            rows: 1,
+        };
+        let mut targets: Vec<_> = (start..(start + capacity).min(count))
+            .enumerate()
+            .map(|(i, index)| (TabTarget::Pane(index), rect(top + i as u16)))
+            .collect();
+        let end = top + targets.len() as u16;
+        if overflow {
+            targets.push((TabTarget::Previous, rect(0)));
+            targets.push((TabTarget::Next, rect(end)));
+        }
+        targets.push((TabTarget::New, rect(end + u16::from(overflow))));
+        targets.push((
+            TabTarget::Parked,
+            sidebar_controls(cols, rows, parked_count, config)[2],
+        ));
+        return targets;
+    }
     if count == 0 {
         let [mut new, parked] = sidebar_actions(cols, rows, parked_count, config);
         new.y = 1;

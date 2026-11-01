@@ -6,6 +6,7 @@ pub const FOOTER_BG: u8 = 239;
 pub const TAB_BG: u8 = 236;
 /// Label + two-column inset + five meter sections + percentage + divider.
 pub const MIN_SIDEBAR_COLUMNS: u16 = 22;
+pub const FOLDED_SIDEBAR_COLUMNS: u16 = 8;
 pub const PARKED_BG: u8 = 60;
 pub const RESTORE_BG: u8 = 29;
 pub const ALERT_ICON: &str = "⚠︎";
@@ -138,6 +139,8 @@ pub struct UiConfig {
     pub tab_position: TabPosition,
     /// Preferred sidebar width in terminal columns; None follows the screen.
     pub sidebar_columns: Option<u16>,
+    #[serde(skip_serializing_if = "expanded_sidebar")]
+    pub sidebar_folded: bool,
     /// Maximum bouncing-ball track length; rendering clips it to the available space.
     #[serde(skip_serializing_if = "default_activity_width")]
     pub activity_width: u16,
@@ -157,6 +160,7 @@ impl Default for UiConfig {
             bindings: BTreeMap::new(),
             tab_position: TabPosition::Left,
             sidebar_columns: None,
+            sidebar_folded: false,
             activity_width: 20,
             legacy_read_widths: None,
         }
@@ -164,6 +168,11 @@ impl Default for UiConfig {
 }
 impl UiConfig {
     pub fn sidebar_width(&self, cols: u16) -> u16 {
+        if self.sidebar_folded {
+            return FOLDED_SIDEBAR_COLUMNS
+                .min(cols.saturating_sub(10).max(cols / 2))
+                .max(1);
+        }
         // Retain room for the terminal on exceptionally narrow windows.
         let minimum = MIN_SIDEBAR_COLUMNS.min(cols.saturating_sub(10).max(cols / 2));
         self.sidebar_columns
@@ -232,6 +241,9 @@ impl UiConfig {
 }
 fn default_activity_width(width: &u16) -> bool {
     *width == 20
+}
+fn expanded_sidebar(folded: &bool) -> bool {
+    !folded
 }
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct UiState {
