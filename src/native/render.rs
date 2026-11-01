@@ -467,7 +467,7 @@ fn draw_grid_separators(frame: &mut Frame, workspace: &Workspace) {
                     y,
                     1,
                     "┃",
-                    Color::Indexed(39),
+                    Color::Rgb(69, 76, 86),
                     Color::Default,
                     false,
                 );
@@ -1484,13 +1484,19 @@ fn draw_tab(
     );
     let accent = tab_accent(workspace, selected);
     let bg = if grid {
-        Color::Default
+        if selected {
+            Color::Rgb(54, 85, 111)
+        } else {
+            Color::Rgb(48, 52, 58)
+        }
     } else if !selected && pane.number % 2 == 0 {
         theme_surface(workspace, 24)
     } else {
         tab_background(workspace, selected)
     };
-    let text_color = if selected && !grid {
+    let text_color = if grid {
+        Color::Rgb(215, 221, 228)
+    } else if selected {
         let (r, g, b) = color_rgb(bg, false);
         Color::Indexed(
             if u16::from(r) * 3 + u16::from(g) * 6 + u16::from(b) >= 1280 {
@@ -1503,18 +1509,6 @@ fn draw_tab(
         tab_text(workspace, selected)
     };
     fill(frame, rect, bg);
-    if grid && rect.cols > 2 {
-        write_text(
-            frame,
-            rect.x + 1,
-            rect.y,
-            rect.cols - 2,
-            &"━".repeat(usize::from(rect.cols - 2)),
-            Color::Indexed(39),
-            bg,
-            false,
-        );
-    }
     let number = super::workspace::tab_number_for(rect, pane.number);
     write_text(
         frame,
@@ -1522,7 +1516,9 @@ fn draw_tab(
         number.y,
         number.cols,
         &format!(" {} ", pane.number),
-        if selected {
+        if grid {
+            Color::Rgb(215, 221, 228)
+        } else if selected {
             Color::Indexed(226)
         } else {
             Color::Indexed(if tab_text(workspace, false) == Color::Indexed(232) {
@@ -1662,18 +1658,6 @@ fn draw_tab(
     );
     if grid {
         let width: u16 = title.chars().map(char_width).sum();
-        if pane.status == crate::model::Status::Working {
-            activity_sheen(
-                frame,
-                Rect {
-                    x: title_x + bell_width,
-                    y: title_y,
-                    cols: width.min(title_width.saturating_sub(bell_width)),
-                    rows: 1,
-                },
-                spinner,
-            );
-        }
         if width < title_width.saturating_sub(bell_width) {
             write_text(
                 frame,
@@ -1776,7 +1760,11 @@ fn draw_tab(
         close.y,
         close.cols,
         " × ",
-        Color::Indexed(if light_controls { 160 } else { 203 }),
+        if grid {
+            Color::Rgb(220, 150, 150)
+        } else {
+            Color::Indexed(if light_controls { 160 } else { 203 })
+        },
         bg,
         true,
     );
@@ -1786,7 +1774,11 @@ fn draw_tab(
         park.y,
         park.cols,
         " ⊟ ",
-        Color::Indexed(if light_controls { 91 } else { 141 }),
+        if grid {
+            Color::Rgb(179, 161, 207)
+        } else {
+            Color::Indexed(if light_controls { 91 } else { 141 })
+        },
         bg,
         true,
     );
@@ -1823,13 +1815,16 @@ fn draw_tab(
                 track.y,
                 track.cols,
                 ["◐", "◓", "◑", "◒"][spinner % 4],
-                Color::Indexed(79),
+                Color::Rgb(155, 179, 174),
                 bg,
                 true,
             );
         }
     } else if pane.status == crate::model::Status::InputNeeded {
         activity_attention(frame, track);
+    }
+    if grid && pane.status == crate::model::Status::Working {
+        activity_sheen(frame, rect, spinner);
     }
 }
 
@@ -1896,26 +1891,26 @@ fn activity_ball(frame: &mut Frame, track: Rect, tick: usize) {
         track.y,
         track.cols,
         &bouncing_ball_frame(track.cols, tick),
-        Color::Indexed(79),
+        Color::Rgb(155, 179, 174),
         bg,
         true,
     );
 }
 
 fn activity_sheen(frame: &mut Frame, rect: Rect, tick: usize) {
-    let head = tick % (usize::from(rect.cols) + 8);
+    let band = usize::from(rect.cols).div_ceil(6).max(3);
+    let head = (tick % 28) * (usize::from(rect.cols) + band * 2) / 28;
     for x in 0..rect.cols {
         let index = usize::from(rect.y) * usize::from(frame.cols) + usize::from(rect.x + x);
         if frame.cells[index].width == 0 && x > 0 {
-            frame.cells[index].fg = frame.cells[index - 1].fg;
+            frame.cells[index].bg = frame.cells[index - 1].bg;
             continue;
         }
-        frame.cells[index].fg = Color::Indexed(match (usize::from(x) + 3).abs_diff(head) {
-            0 => 231,
-            1 => 255,
-            2 => 250,
-            _ => 244,
-        });
+        let alpha = band.saturating_sub((usize::from(x) + band).abs_diff(head)) * 16 / band;
+        if let Color::Rgb(r, g, b) = frame.cells[index].bg {
+            let lift = |c: u8| c + ((255 - usize::from(c)) * alpha / 255) as u8;
+            frame.cells[index].bg = Color::Rgb(lift(r), lift(g), lift(b));
+        }
     }
 }
 
@@ -3466,10 +3461,10 @@ mod tests {
                 let workspace = Workspace::new(cols, 10).unwrap();
                 let mut frame = compose(&workspace, &BTreeMap::new(), true, None, 0);
                 header(&mut frame, &workspace, &view(cols, overlay), true, 0);
-                assert_eq!(frame.cells[0].bg, Color::Default);
-                assert_eq!(frame.cells[5].bg, Color::Default);
+                assert_eq!(frame.cells[0].bg, Color::Rgb(54, 85, 111));
+                assert_eq!(frame.cells[5].bg, Color::Rgb(54, 85, 111));
                 let button_start = usize::from(cols - 10);
-                assert_eq!(frame.cells[button_start].text, "━");
+                assert_eq!(frame.cells[button_start].text, " ");
                 assert_eq!(frame.cells[usize::from(cols) - 1].text, " ");
                 let text = frame.cells[..usize::from(cols)]
                     .iter()
@@ -3485,7 +3480,7 @@ mod tests {
                 display.feed(&terminal_diff(None, &frame));
                 assert_eq!(display.snapshot().cells, frame.cells);
                 header(&mut frame, &workspace, &view(cols, overlay), false, 0);
-                assert_eq!(frame.cells[5].bg, Color::Default);
+                assert_eq!(frame.cells[5].bg, Color::Rgb(48, 52, 58));
             }
         }
     }

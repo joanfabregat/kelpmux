@@ -622,7 +622,7 @@ fn tab_body_mouse_and_dialog_close_have_separate_hit_targets() {
 fn selected_number_and_title_have_distinct_colors_and_agent_shortcuts_use_pane_numbers() {
     let mut ws = workspace((160, 50), (2, 2));
     let f = frame(&ws);
-    assert_ne!(f.cells[3].fg, f.cells[6].fg);
+    assert_eq!(f.cells[3].fg, Color::Rgb(215, 221, 228));
     for pane in &mut ws.panes {
         pane.kind = Some(Kind::Claude);
     }
@@ -875,7 +875,7 @@ fn shaded_grid_headers_meet_previous_rows_without_empty_separators() {
                 );
                 assert_eq!(
                     f.cells[usize::from(view.body.y * f.cols + x)].fg,
-                    Color::Indexed(39)
+                    Color::Rgb(69, 76, 86)
                 );
                 assert_eq!(
                     f.cells[usize::from(view.rect.y * f.cols + x)].bg,
@@ -897,7 +897,14 @@ fn shaded_grid_headers_meet_previous_rows_without_empty_separators() {
             }
             let line = &f.cells[usize::from(view.rect.y * f.cols + view.rect.x)];
             assert_eq!(line.text, " ");
-            assert_eq!(line.bg, Color::Default);
+            assert_eq!(
+                line.bg,
+                if view.pane.id == ws.active {
+                    Color::Rgb(54, 85, 111)
+                } else {
+                    Color::Rgb(48, 52, 58)
+                }
+            );
         }
         let mut display = Terminal::new(f.cols, f.rows);
         display.feed(&terminal_diff(None, &f));
@@ -1782,16 +1789,16 @@ fn grid_header_numbers_park_close_and_footer_have_distinct_targets_without_zoom(
         };
         let number = tab_number(header);
         let number_cell = &f.cells[usize::from(number.y * f.cols + number.x + 1)];
-        assert_eq!(
-            number_cell.fg,
-            Color::Indexed(if id == ws.active { 226 } else { 110 })
-        );
+        assert_eq!(number_cell.fg, Color::Rgb(215, 221, 228));
         let [park, close] = grid_controls(header);
         assert!(!f.cells.iter().any(|cell| cell.text == "⛶"));
-        for (control, symbol, color) in [(park, "⊟", 141), (close, "×", 203)] {
+        for (control, symbol, color) in [
+            (park, "⊟", Color::Rgb(179, 161, 207)),
+            (close, "×", Color::Rgb(220, 150, 150)),
+        ] {
             let cell = &f.cells[usize::from(control.y * f.cols + control.x + 1)];
             assert_eq!(cell.text, symbol);
-            assert_eq!(cell.fg, Color::Indexed(color));
+            assert_eq!(cell.fg, color);
             for x in control.x..control.x + control.cols {
                 assert_eq!(
                     f.cells[usize::from(control.y * f.cols + x)].bg,
@@ -1856,7 +1863,7 @@ fn working_spinner_rotates_in_place_in_tabs_grid_and_parked_cards() {
             for (row, symbol) in rows.iter().zip(["◐", "◓", "◑", "◒"]) {
                 if mode == 0 {
                     assert!(row.contains(symbol));
-                    assert!(row.contains(&format!("━ {symbol} Wide")));
+                    assert!(row.contains(&format!(" {symbol} Wide")));
                 } else {
                     assert_eq!(row.matches('●').count(), 1);
                 }
@@ -1872,7 +1879,7 @@ fn working_spinner_rotates_in_place_in_tabs_grid_and_parked_cards() {
                         .cells
                         .iter()
                         .zip(&frames[2].cells)
-                        .any(|(a, b)| a.text == b.text && a.fg != b.fg)
+                        .any(|(a, b)| a.text == b.text && a.bg != b.bg)
                 );
             }
             continue;
@@ -2077,7 +2084,7 @@ fn tab_surfaces_follow_dark_and_light_backgrounds_without_repainting_terminal_de
             Color::Indexed(if light { 25 } else { 110 })
         );
         let ball = f.cells.iter().find(|cell| cell.text == "●").unwrap();
-        assert_eq!(ball.fg, Color::Indexed(79));
+        assert_eq!(ball.fg, Color::Rgb(155, 179, 174));
         let body = f.panes.iter().find(|view| view.pane.id == 1).unwrap().body;
         assert_eq!(
             f.cells[usize::from(body.y * f.cols + body.x)].bg,
@@ -4331,5 +4338,60 @@ fn every_metrics_entry_opens_cpu_descending_even_after_changing_sort() {
             }
         }
         assert!(count > 0);
+    }
+}
+
+#[test]
+fn grid_header_sheen_is_subtle_covers_the_background_and_keeps_text_steady() {
+    let mut ws = workspace((180, 40), (2, 1));
+    ws.panes[0].status = Status::Working;
+    ws.panes[0].title = "Steady 界 title".into();
+    ws.panes[1].status = Status::Idle;
+    for active in [1, 2] {
+        ws.apply(&Action::Focus(active)).unwrap();
+        let base = frame(&ws);
+        let working = base.panes[0].rect;
+        let idle = base.panes[1].rect;
+        let expected = if active == 1 {
+            Color::Rgb(54, 85, 111)
+        } else {
+            Color::Rgb(48, 52, 58)
+        };
+        assert_eq!(
+            base.cells[usize::from(working.y * base.cols + working.x)].bg,
+            expected
+        );
+        let mut swept = vec![false; usize::from(working.cols)];
+        for tick in 0..28 {
+            let f = compose(&ws, &BTreeMap::new(), true, None, tick);
+            for x in 0..working.cols {
+                let index = usize::from(working.y * f.cols + working.x + x);
+                let before = &base.cells[index];
+                let after = &f.cells[index];
+                assert_eq!(before.fg, after.fg);
+                assert_eq!(before.width, after.width);
+                if before.text != after.text {
+                    assert!(["◐", "◓", "◑", "◒"].contains(&after.text.as_str()));
+                }
+                swept[usize::from(x)] |= before.bg != after.bg;
+                let Color::Rgb(r, g, b) = after.bg else {
+                    panic!("missing header background");
+                };
+                let Color::Rgb(br, bg, bb) = before.bg else {
+                    unreachable!()
+                };
+                for (value, original) in [(r, br), (g, bg), (b, bb)] {
+                    assert!((original..=original + 16).contains(&value));
+                }
+            }
+            for x in idle.x..idle.x + idle.cols {
+                let index = usize::from(idle.y * f.cols + x);
+                assert_eq!(f.cells[index], base.cells[index]);
+            }
+            let mut terminal = Terminal::new(f.cols, f.rows);
+            terminal.feed(&terminal_diff(None, &f));
+            assert_eq!(terminal.snapshot().cells, f.cells);
+        }
+        assert!(swept.iter().all(|changed| *changed));
     }
 }
