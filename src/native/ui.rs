@@ -32,6 +32,24 @@ pub const SIDEBAR_EQUALIZER_FRAMES: [&str; 16] = [
     "▄▂▄▆▅",
     "▂▃▅▃▄",
 ];
+pub const GRID_EQUALIZER_FRAMES: [&str; 16] = [
+    "▂▆▂",
+    "▄█▁",
+    "▆▅▃",
+    "█▃▄",
+    "▅▂▆",
+    "▃▅▅",
+    "▁▇▃",
+    "▃█▂",
+    "▅▆▄",
+    "▇▄▇",
+    "▄▆▅",
+    "▂█▃",
+    "▄▅▁",
+    "▆▂▃",
+    "▄▄▅",
+    "▂▅▄",
+];
 pub const ACTIVITY_INTERVAL_MS: u64 = 150;
 pub fn status_icon(status: crate::model::Status) -> &'static str {
     match status {
