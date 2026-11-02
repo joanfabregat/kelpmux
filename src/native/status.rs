@@ -462,8 +462,8 @@ pub fn processes<'a>(
 }
 
 pub fn bounds(cols: u16, rows: u16) -> super::protocol::Rect {
-    let width = cols.saturating_sub(4).min(160);
-    let height = rows.saturating_sub(2).min(60);
+    let width = cols.saturating_sub(6).min(160);
+    let height = rows.saturating_sub(6).min(60);
     super::protocol::Rect {
         x: (cols - width) / 2,
         y: (rows - height) / 2,
@@ -572,7 +572,7 @@ pub fn metric_region(frame: &super::protocol::Frame) -> Option<super::protocol::
             x: 0,
             y: frame.rows - height,
             cols: frame.sidebar_width() - 1,
-            rows: height - 2,
+            rows: height - 2 * workspace::sidebar_button_rows(frame.rows),
         }
     } else {
         Rect {

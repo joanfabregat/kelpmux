@@ -237,9 +237,10 @@ fn compositor_footer_help_and_control_sanitization() {
             .all(|c| !c.text.chars().any(char::is_control))
     );
     let help = frame.controls()[3];
+    let label_y = help.y + help.rows / 2;
     assert!(
-        frame.cells[usize::from(help.y * frame.cols + help.x)
-            ..usize::from(help.y * frame.cols + help.x + help.cols)]
+        frame.cells[usize::from(label_y * frame.cols + help.x)
+            ..usize::from(label_y * frame.cols + help.x + help.cols)]
             .iter()
             .any(|cell| cell.text == "?")
     );
