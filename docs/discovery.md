@@ -1,5 +1,7 @@
 # Discovery and optional hooks
 
+Native KelpMux panes consume [OSC 7501 program status](agent-polling.md#terminal-program-status) from Codex and Claude Code. The PTY identifies the pane directly, so activity no longer requires a Codex transport bridge or a thread-to-terminal guess. Process discovery and read-only daemon polling still supply supplementary metadata when a conversation ID is known. The passive identity limitations below still apply; activity and conversation identity are separate observations.
+
 ## Default: discover existing processes
 
 Start agents directly in tmux as usual. `kelpmux daemon` discovers them without a launch wrapper. It follows the pane shell's Linux process tree and reads metadata when an agent exposes a reliable identity. `kelpmux scan` performs one pass. Nothing pings an agent with simulated user input or starts another agent process.
@@ -49,3 +51,7 @@ An unidentified agent remains UNKNOWN with a null session identifier. Multiple o
 Native tab labels prefer an explicit template alias or discovered conversation name over application terminal titles. When metadata has only a directory, a meaningful application OSC title may supply the label instead. Otherwise the label shows the kind and a known ID prefix, or `session unknown`. Folder names remain directory context in the journal, rather than being presented as conversation names in tabs. An application title is a display hint, not proof of session identity.
 
 The metadata recovery helper reads the native journal under a nonblocking lock, prunes records older than seven days and lists the last observed pane, process birth ticks, session ID, display name, directory, status, identity source and timestamps. It also reconstructs sessions from completed journal records if a registry entry is missing. Running records describe the last observation, not a guarantee that the process survived a host crash. Recovery commands are offered only for validated session IDs (`codex resume 'ID'` or `claude --resume 'ID'`); names and directories are displayed as metadata and never interpolated into those commands. Kelpmux does not launch recovery commands or store prompt/tool content.
+
+## Shared polling adapters and explicit links
+
+The native workspace now uses the shared [agent polling adapter registry](agent-polling.md). Codex and Claude use the same scheduler, process discovery and UI status path, with separate metadata adapters. For an unidentified Codex TUI, prefix then `i` opens a read-only picker of loaded daemon conversations. Workspace overview also offers `l` to link its selected tab. Clear a link with the first picker row. Process exit invalidates the link; switching conversations inside a still-running TUI may require relinking. No agent is started or resumed by monitoring.

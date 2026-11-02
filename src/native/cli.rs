@@ -25,7 +25,7 @@ use std::{
 };
 
 pub const HELP: &str = "Owned native terminal workspaces (Linux):
-  kelpmux start [--workspace NAME] [--config PATH] [--template PATH] [--shell PATH] [--cwd PATH]
+  kelpmux start [--workspace NAME] [--config PATH] [--template PATH] [--shell PATH] [--cwd PATH] [--replace-running] [--server-binary PATH]
   kelpmux ssh-entry [--workspace NAME] [--takeover]
   kelpmux status|stop|recover|diagnostics|templates [--workspace NAME]
   kelpmux benchmark
@@ -36,6 +36,7 @@ pub const HELP: &str = "Owned native terminal workspaces (Linux):
   kelpmux ctl [--socket PATH] list|new|park ID|restore ID|focus ID|read ID|fullscreen ID|reclaim ID|close|shutdown
 
 start owns a detached server; ssh-entry starts or attaches. stop ends its processes.
+--replace-running ends an outdated server's shells/jobs before starting the selected binary.
 --current-client explicitly skips retained-client selection; the protocol handshake remains mandatory.
 Custom sockets infer adjacent state; specify --state-dir when state lives elsewhere.
 Default workspace: main; socket: $XDG_STATE_HOME/kelpmux/workspaces/main/control.sock
@@ -69,6 +70,8 @@ struct Options {
     size: (u16, u16),
     takeover: bool,
     current_client: bool,
+    replace_running: bool,
+    server_binary: Option<PathBuf>,
     command: Vec<String>,
     background: bool,
     settings: super::lifecycle::Settings,
@@ -85,6 +88,8 @@ fn options(args: &[String]) -> Result<Options> {
         size: (120, 40),
         takeover: false,
         current_client: false,
+        replace_running: false,
+        server_binary: None,
         command: vec![],
         background: false,
         settings: super::lifecycle::Settings::default(),
@@ -113,10 +118,17 @@ fn options(args: &[String]) -> Result<Options> {
             result.current_client = true;
             continue;
         }
+        if arg == "--replace-running" && verb == "start" {
+            result.replace_running = true;
+            continue;
+        }
         if arg.starts_with("--") {
             let value = args.get(position).ok_or("option needs a value")?;
             position += 1;
             match arg.as_str() {
+                "--server-binary" if verb == "start" => {
+                    result.server_binary = Some(PathBuf::from(value))
+                }
                 "--template" => template_path = Some(PathBuf::from(value)),
                 "--socket" => {
                     result.socket = PathBuf::from(value);
@@ -251,6 +263,8 @@ pub fn run(args: &[String]) -> Result<()> {
                 cols: options.size.0,
                 rows: options.size.1,
                 settings: &options.settings,
+                replace_running: options.replace_running,
+                executable: options.server_binary.as_deref(),
             })?;
             if args[0] == "ssh-entry" {
                 attach(attach_socket(&options)?, options.takeover)
@@ -521,7 +535,7 @@ impl RawTty {
         // Mark entered before writing: a partial write still needs restoration.
         guard.entered = true;
         TerminalWriter.write_all(
-            b"\x1b[?1l\x1b>\x1b[?1049h\x1b[?25l\x1b[?1002h\x1b[?1006h\x1b[?1004h\x1b[?2004h\x1b[>1u",
+            b"\x1b[?1l\x1b>\x1b[?1049h\x1b[?25l\x1b[?1002h\x1b[?1003h\x1b[?1006h\x1b[?1004h\x1b[?2004h\x1b[>1u",
         )?;
         TerminalWriter.write_all(b"\x1b]10;?\x1b\\\x1b]11;?\x1b\\")?;
         Ok(guard)
@@ -536,7 +550,7 @@ impl Drop for RawTty {
             let flags = unsafe { libc::fcntl(1, libc::F_GETFL) };
             if flags >= 0 && unsafe { libc::fcntl(1, libc::F_SETFL, flags | libc::O_NONBLOCK) } == 0
             {
-                let mut bytes: &[u8]=b"\x1b[<1u\x1b[0m\x1b[?1l\x1b>\x1b[?2004l\x1b[?1004l\x1b[?1006l\x1b[?1002l\x1b[?1000l\x1b[?25h\x1b[?1049l";
+                let mut bytes: &[u8]=b"\x1b[<1u\x1b[0m\x1b[?1l\x1b>\x1b[?2004l\x1b[?1004l\x1b[?1006l\x1b[?1003l\x1b[?1002l\x1b[?1000l\x1b[?25h\x1b[?1049l";
                 let deadline = Instant::now() + Duration::from_millis(100);
                 while !bytes.is_empty() && Instant::now() < deadline {
                     let count = unsafe { libc::write(1, bytes.as_ptr().cast(), bytes.len()) };
@@ -699,7 +713,7 @@ fn validate_frame(frame: &Frame) -> Result<()> {
 fn fitted_mouse(frame: &Frame, size: (u16, u16), mut point: Point) -> Option<Point> {
     if frame.sidebar_status() {
         let height = super::workspace::sidebar_status_rows(frame.rows).min(size.1);
-        let width = super::workspace::sidebar_width(frame.cols) - 1;
+        let width = frame.sidebar_width() - 1;
         if point.x < width && point.y >= size.1 - height {
             point.y = frame.rows - height + point.y - (size.1 - height);
         }
@@ -745,7 +759,7 @@ fn fitted(frame: &Frame, size: (u16, u16), notice: Option<&str>) -> Frame {
     }
     if frame.sidebar_status() {
         let height = super::workspace::sidebar_status_rows(frame.rows).min(size.1);
-        let width = (super::workspace::sidebar_width(frame.cols) - 1).min(size.0);
+        let width = (frame.sidebar_width() - 1).min(size.0);
         let source_top = frame.rows - super::workspace::sidebar_status_rows(frame.rows);
         let bg = frame.cells[usize::from(source_top * frame.cols)].bg;
         for y in source_top..frame.rows.min(size.1) {
@@ -763,7 +777,9 @@ fn fitted(frame: &Frame, size: (u16, u16), notice: Option<&str>) -> Frame {
             }
         }
         if let Some(notice) = notice {
-            let y = size.1.saturating_sub(3);
+            let y = size
+                .1
+                .saturating_sub(2 * super::workspace::sidebar_button_rows(frame.rows) + 1);
             for x in 0..width {
                 fit.cells[usize::from(y * size.0 + x)] = Cell {
                     fg: Color::Indexed(231),
@@ -853,7 +869,13 @@ fn fitted(frame: &Frame, size: (u16, u16), notice: Option<&str>) -> Frame {
     fit
 }
 fn queue_events(pending: &mut VecDeque<InputEvent>, events: Vec<InputEvent>) -> Result<()> {
-    pending.extend(events);
+    for event in events {
+        let idle_move = |event: &InputEvent| matches!(event, InputEvent::Mouse(mouse) if mouse.kind == MouseKind::Move && mouse.button == 3);
+        if idle_move(&event) && pending.back().is_some_and(idle_move) {
+            pending.pop_back();
+        }
+        pending.push_back(event);
+    }
     let size: usize = pending
         .iter()
         .map(|event| match event {
@@ -872,8 +894,25 @@ fn paint(
     frame: &Frame,
     size: (u16, u16),
     notice: Option<&str>,
+    hover: Option<Rect>,
 ) -> Result<()> {
-    let fit = fitted(frame, size, notice);
+    let mut fit = fitted(frame, size, notice);
+    if let Some(area) = hover {
+        let strength = super::hover::strength(frame, area);
+        for y in 0..fit.rows {
+            for x in 0..fit.cols {
+                if fitted_mouse(frame, size, Point { x, y })
+                    .is_some_and(|point| area.contains(point))
+                {
+                    super::hover::highlight(
+                        &mut fit.cells[usize::from(y * fit.cols + x)],
+                        frame.ui.terminal_theme,
+                        strength,
+                    );
+                }
+            }
+        }
+    }
     let keypad = |frame: &Frame| {
         frame.controller
             && !frame.help
@@ -940,6 +979,10 @@ fn attach(mut socket: UnixStream, takeover: bool) -> Result<()> {
     let mut pending = VecDeque::new();
     let mut revision = 0;
     let mut keyboard_mode = 1;
+    let mut pointer = None;
+    let mut hovered = None;
+    let mut hover_dirty = false;
+    let mut hover_painted_at = Instant::now() - Duration::from_secs(1);
     loop {
         if INTERRUPTED.load(Ordering::Relaxed) {
             return Ok(());
@@ -947,12 +990,22 @@ fn attach(mut socket: UnixStream, takeover: bool) -> Result<()> {
         if RESIZED.swap(false, Ordering::Relaxed) {
             size = tty_size()?;
             painted = None;
+            pointer = None;
+            hovered = None;
+            hover_dirty = false;
             // Server stores observer geometry without resizing the workspace.
             let (cols, rows) = backend_size(size);
             channel.send(&ClientMessage::Resize { cols, rows })?;
             channel.flush()?;
             if let Some(frame) = latest.as_ref() {
-                paint(&mut stdout, &mut painted, frame, size, notice.as_deref())?;
+                paint(
+                    &mut stdout,
+                    &mut painted,
+                    frame,
+                    size,
+                    notice.as_deref(),
+                    None,
+                )?;
             }
         }
         let mut newest = None;
@@ -990,6 +1043,7 @@ fn attach(mut socket: UnixStream, takeover: bool) -> Result<()> {
             }
         }
         if let Some(frame) = newest {
+            hovered = pointer.and_then(|point| super::hover::target(&frame, point));
             let mode = if frame.controller && !frame.help && frame.ui.dialog.is_none() {
                 frame
                     .panes
@@ -1011,7 +1065,15 @@ fn attach(mut socket: UnixStream, takeover: bool) -> Result<()> {
                         !event.read && !old.ui.notifications.iter().any(|seen| seen.id == event.id)
                     })
                 });
-            paint(&mut stdout, &mut painted, &frame, size, notice.as_deref())?;
+            paint(
+                &mut stdout,
+                &mut painted,
+                &frame,
+                size,
+                notice.as_deref(),
+                hovered,
+            )?;
+            hover_dirty = false;
             if sound {
                 stdout.write_all(b"\x07")?;
                 stdout.flush()?;
@@ -1019,7 +1081,14 @@ fn attach(mut socket: UnixStream, takeover: bool) -> Result<()> {
             latest = Some(frame);
         } else if error_changed {
             if let Some(frame) = latest.as_ref() {
-                paint(&mut stdout, &mut painted, frame, size, notice.as_deref())?;
+                paint(
+                    &mut stdout,
+                    &mut painted,
+                    frame,
+                    size,
+                    notice.as_deref(),
+                    hovered,
+                )?;
             }
         }
         if channel.eof {
@@ -1035,17 +1104,45 @@ fn attach(mut socket: UnixStream, takeover: bool) -> Result<()> {
                 // Pane and help-panel coordinates stay in backend geometry.
                 if let InputEvent::Mouse(mouse) = &mut event {
                     let Some(point) = fitted_mouse(frame, size, mouse.position) else {
+                        pointer = None;
+                        hover_dirty |= hovered.take().is_some();
                         continue;
                     };
                     mouse.position = point;
+                    if mouse.kind == MouseKind::Move {
+                        pointer = if mouse.button == 3 { Some(point) } else { None };
+                    } else if pointer.is_some() {
+                        pointer = Some(point);
+                    }
+                    let next = pointer.and_then(|point| super::hover::target(frame, point));
+                    hover_dirty |= next != hovered;
+                    hovered = next;
+                } else if matches!(&event, InputEvent::Bytes(bytes) if bytes == b"\x1b[O") {
+                    pointer = None;
+                    hover_dirty |= hovered.take().is_some();
                 }
                 let messages = router.route(event, frame);
                 if !messages.is_empty() && notice.take().is_some() {
-                    paint(&mut stdout, &mut painted, frame, size, None)?;
+                    paint(&mut stdout, &mut painted, frame, size, None, hovered)?;
                 }
                 for message in messages {
                     channel.send(&message)?;
                 }
+            }
+            for message in router.tick(frame) {
+                channel.send(&message)?;
+            }
+            if hover_dirty && hover_painted_at.elapsed() >= Duration::from_millis(33) {
+                paint(
+                    &mut stdout,
+                    &mut painted,
+                    frame,
+                    size,
+                    notice.as_deref(),
+                    hovered,
+                )?;
+                hover_dirty = false;
+                hover_painted_at = Instant::now();
             }
         }
         channel.flush()?;
@@ -1101,6 +1198,74 @@ fn attach(mut socket: UnixStream, takeover: bool) -> Result<()> {
 mod fit_tests {
     use super::*;
     #[test]
+    fn idle_motion_bursts_coalesce_without_discarding_clicks_or_drags() {
+        let mouse = |kind, button, x| {
+            InputEvent::Mouse(MouseEvent {
+                position: Point { x, y: 1 },
+                kind,
+                button,
+                shift: false,
+                alt: false,
+                ctrl: false,
+            })
+        };
+        let mut pending = VecDeque::new();
+        queue_events(
+            &mut pending,
+            (0..10000)
+                .map(|i| mouse(MouseKind::Move, 3, i % 80))
+                .collect(),
+        )
+        .unwrap();
+        assert_eq!(pending.len(), 1);
+        queue_events(
+            &mut pending,
+            vec![
+                mouse(MouseKind::Press, 0, 2),
+                mouse(MouseKind::Move, 0, 3),
+                mouse(MouseKind::Move, 0, 4),
+            ],
+        )
+        .unwrap();
+        assert_eq!(pending.len(), 4);
+    }
+
+    fn grid_workspace() -> super::super::workspace::Workspace {
+        let mut workspace = super::super::workspace::Workspace::new(120, 40).unwrap();
+        workspace.panes.push(super::super::protocol::PaneInfo {
+            id: 1,
+            number: 1,
+            ..Default::default()
+        });
+        workspace.active = 1;
+        workspace.reading = super::super::protocol::ReadingMode::Grid;
+        workspace
+    }
+
+    #[test]
+    fn hover_paint_maps_footer_controls_on_smaller_frontends() {
+        let mut ws = grid_workspace();
+        ws.ui.config.tab_position = super::super::ui::TabPosition::Left;
+        let frame = super::super::render::compose(&ws, &Default::default(), true, None, 0);
+        let mut output = Vec::new();
+        paint(
+            &mut output,
+            &mut None,
+            &frame,
+            (40, 10),
+            None,
+            Some(frame.controls()[0]),
+        )
+        .unwrap();
+        let mut terminal = super::super::engine::Terminal::new(40, 10);
+        terminal.feed(&output);
+        assert_eq!(
+            terminal.snapshot().cells[9 * 40 + 2].bg,
+            Color::Rgb(24, 119, 159)
+        );
+        assert_eq!(frame.cells[39 * 120 + 2].bg, Color::Indexed(24));
+    }
+    #[test]
     fn fitted_sidebar_keeps_controls_bottom_aligned_and_maps_their_clicks() {
         let mut workspace = super::super::workspace::Workspace::new(120, 40).unwrap();
         workspace.ui.config.tab_position = super::super::ui::TabPosition::Left;
@@ -1134,8 +1299,8 @@ mod fit_tests {
     }
     #[test]
     fn fitted_narrow_observer_preserves_observer_marker() {
-        let mut workspace = super::super::workspace::Workspace::new(120, 40).unwrap();
-        workspace.ui.config.tab_position = super::super::ui::TabPosition::Top;
+        let mut workspace = grid_workspace();
+        workspace.ui.config.tab_position = super::super::ui::TabPosition::Left;
         workspace.ui.vitals = vec![("cpu 51%".into(), 114), ("clock 12:34".into(), 250)];
         let frame = super::super::render::compose(&workspace, &Default::default(), false, None, 0);
         let fit = fitted(&frame, (40, 10), None);
@@ -1147,85 +1312,79 @@ mod fit_tests {
         assert!(footer.contains("Obs"));
     }
     #[test]
-    fn fitted_footer_metrics_open_status_in_both_horizontal_tab_modes() {
+    fn fitted_grid_footer_metrics_open_status() {
         use super::super::{
             input::Router,
             protocol::{Action, ClientMessage, InputEvent, MouseEvent, MouseKind},
             status::Sort,
             ui::TabPosition,
         };
-        for position in [TabPosition::Top, TabPosition::Bottom] {
-            for controller in [true, false] {
-                let mut workspace = super::super::workspace::Workspace::new(120, 40).unwrap();
-                workspace.ui.config.tab_position = position;
-                workspace.ui.vitals = vec![("cpu 51%".into(), 114), ("12:34".into(), 250)];
-                let frame = super::super::render::compose(
-                    &workspace,
-                    &Default::default(),
-                    controller,
-                    None,
-                    0,
-                );
-                for size in [(40, 10), (120, 40), (160, 50)] {
-                    if size.0 <= frame.footer_cols() + if controller { 0 } else { 10 } {
-                        continue;
+        let position = TabPosition::Left;
+        for controller in [true, false] {
+            let mut workspace = grid_workspace();
+            workspace.ui.config.tab_position = position;
+            workspace.ui.vitals = vec![("cpu 51%".into(), 114), ("12:34".into(), 250)];
+            let frame =
+                super::super::render::compose(&workspace, &Default::default(), controller, None, 0);
+            for size in [(40, 10), (120, 40), (160, 50)] {
+                if size.0 <= frame.footer_cols() + if controller { 0 } else { 10 } {
+                    continue;
+                }
+                let point = fitted_mouse(
+                    &frame,
+                    size,
+                    Point {
+                        x: size.0 - 2,
+                        y: size.1 - 1,
+                    },
+                )
+                .unwrap();
+                assert_eq!(
+                    point,
+                    Point {
+                        x: frame.cols - 2,
+                        y: frame.rows - 1
                     }
-                    let point = fitted_mouse(
+                );
+                let messages = Router::default().route(
+                    InputEvent::Mouse(MouseEvent {
+                        position: point,
+                        kind: MouseKind::Press,
+                        button: 0,
+                        shift: false,
+                        alt: false,
+                        ctrl: false,
+                    }),
+                    &frame,
+                );
+                assert_eq!(
+                    messages.iter().any(|message| matches!(
+                        message,
+                        ClientMessage::Action(Action::StatusOpen(Sort::Cpu))
+                    )),
+                    controller
+                );
+                assert_eq!(
+                    fitted_mouse(
                         &frame,
                         size,
                         Point {
-                            x: size.0 - 2,
-                            y: size.1 - 1,
-                        },
-                    )
-                    .unwrap();
-                    assert_eq!(
-                        point,
-                        Point {
-                            x: frame.cols - 2,
-                            y: frame.rows - 1
-                        }
-                    );
-                    let messages = Router::default().route(
-                        InputEvent::Mouse(MouseEvent {
-                            position: point,
-                            kind: MouseKind::Press,
-                            button: 0,
-                            shift: false,
-                            alt: false,
-                            ctrl: false,
-                        }),
-                        &frame,
-                    );
-                    assert_eq!(
-                        messages.iter().any(|message| matches!(
-                            message,
-                            ClientMessage::Action(Action::StatusOpen(Sort::Cpu))
-                        )),
-                        controller
-                    );
-                    assert_eq!(
-                        fitted_mouse(
-                            &frame,
-                            size,
-                            Point {
-                                x: 1,
-                                y: size.1 - 1
-                            }
-                        ),
-                        Some(Point {
                             x: 1,
-                            y: frame.rows - 1
-                        })
-                    );
-                }
+                            y: size.1 - 1
+                        }
+                    ),
+                    Some(Point {
+                        x: 1,
+                        y: frame.rows - 1
+                    })
+                );
             }
         }
     }
     #[test]
     fn fitted_footer_keeps_controls_left_vitals_right_and_notices_separate() {
-        let mut workspace = super::super::workspace::Workspace::new(120, 40).unwrap();
-        workspace.ui.config.tab_position = super::super::ui::TabPosition::Top;
+        let mut workspace = grid_workspace();
+        workspace.ui.config.tab_position = super::super::ui::TabPosition::Left;
         workspace.ui.vitals = vec![("cpu 51%".into(), 114), ("clock 12:34".into(), 250)];
         let frame = super::super::render::compose(&workspace, &Default::default(), true, None, 0);
         for size in [(40, 10), (120, 40), (160, 50)] {

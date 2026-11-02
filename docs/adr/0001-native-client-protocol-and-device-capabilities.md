@@ -4,6 +4,7 @@
 - Date: 2026-10-14 (America/Los_Angeles).
 - Updated: 2026-10-17 (America/Los_Angeles), client-approved SSH execution requests.
 - Scope: Native Kelpmux. tmux compatibility remains an independent optional adapter.
+- Companion: [ADR 0002](0002-four-clients-and-web-ssh.md) defines macOS, iPadOS, iOS and web client targets and the proposed browser SSH transport.
 
 ## Context
 

@@ -1,4 +1,5 @@
 use super::protocol::*;
+use std::time::{Duration, Instant};
 
 /// Incremental terminal framing. Paste payloads are never interpreted as keys.
 #[derive(Default)]
@@ -237,6 +238,7 @@ fn decode_mouse(bytes: &[u8]) -> Option<MouseEvent> {
 
 #[derive(Default)]
 pub struct Router {
+    tab_drag: Option<TabDrag>,
     status_search: bool,
     status_query: Option<String>,
     focus_click: bool,
@@ -244,7 +246,12 @@ pub struct Router {
     search_utf8: Vec<u8>,
     selecting: bool,
     header_drag: Option<PaneId>,
+    header_press: Option<(PaneId, Point)>,
+    header_click: Option<(PaneId, Point, Instant)>,
     boundary_drag: Option<(Option<u8>, Option<u8>)>,
+    sidebar_drag: bool,
+    sidebar_start: Option<Point>,
+    sidebar_moved: bool,
     prefix: bool,
     pending_modal: bool,
     scrolling: bool,
@@ -255,13 +262,87 @@ pub struct Router {
 }
 impl Router {
     pub fn route(&mut self, event: InputEvent, frame: &Frame) -> Vec<ClientMessage> {
+        if matches!(&event, InputEvent::Bytes(bytes) if bytes == b"\x1b") && self.sidebar_drag {
+            self.sidebar_drag = false;
+            self.sidebar_start = None;
+            return vec![];
+        }
+        if matches!(&event, InputEvent::Bytes(bytes) if bytes == b"\x1b")
+            && self.tab_drag.take().is_some()
+        {
+            self.header_press = None;
+            self.header_click = None;
+            return if frame.controller {
+                vec![ClientMessage::Action(Action::TabDrag(None))]
+            } else {
+                vec![]
+            };
+        }
+        if !self.tab_drag_allowed(frame) && self.tab_drag.take().is_some() {
+            return if frame.controller {
+                vec![ClientMessage::Action(Action::TabDrag(None))]
+            } else {
+                vec![]
+            };
+        }
+        if !frame.controller || self.help_override.unwrap_or(frame.help) || frame.ui.scratch_visible
+        {
+            self.header_drag = None;
+            self.header_press = None;
+            self.header_click = None;
+        }
+        if matches!(event, InputEvent::Bytes(_) | InputEvent::Paste(_)) {
+            self.header_press = None;
+            self.header_click = None;
+        }
+        if !frame.controller
+            || self.help_override.unwrap_or(frame.help)
+            || frame.ui.scratch_visible
+            || !frame.sidebar_status()
+        {
+            self.sidebar_drag = false;
+        }
+        if let InputEvent::Mouse(mouse) = &event {
+            if mouse.kind == MouseKind::Move && mouse.button == 3 {
+                let enabled = frame.controller
+                    && !self.focus_click
+                    && !self.selecting
+                    && !self.pending_modal
+                    && !self.help_override.unwrap_or(frame.help)
+                    && frame.ui.dialog.is_none()
+                    && self.selection.is_none()
+                    && self.header_drag.is_none()
+                    && !self.sidebar_drag
+                    && self.boundary_drag.is_none();
+                if enabled
+                    && !mouse.shift
+                    && frame
+                        .panes
+                        .iter()
+                        .rev()
+                        .find(|view| view.rect.contains(mouse.position))
+                        .is_some_and(|view| {
+                            view.body.contains(mouse.position)
+                                && view.modes.mouse_motion
+                                && (!frame.ui.scratch_visible
+                                    || Some(view.pane.id) == frame.ui.scratch)
+                        })
+                {
+                    return vec![ClientMessage::Mouse(*mouse)];
+                }
+                return vec![];
+            }
+        }
         if let InputEvent::ThemeColor { background, rgb } = event {
             return vec![ClientMessage::ThemeColor { background, rgb }];
         }
         if frame.ui.dialog.is_some() {
             self.suppressed_releases.clear();
             self.header_drag = None;
+            self.header_press = None;
+            self.header_click = None;
             self.boundary_drag = None;
+            self.sidebar_drag = false;
             self.selecting = false;
         }
         if frame
@@ -387,9 +468,9 @@ impl Router {
                         b"\x1b[Z" => tab_navigation(frame, -1, false),
                         b"\x1b[5~" => tab_navigation(frame, -1, true),
                         b"\x1b[6~" => tab_navigation(frame, 1, true),
-                        b"v" => Some(Action::TabPosition),
                         b"," => Some(Action::Config),
                         b"o" => Some(Action::Overview),
+                        b"i" => Some(Action::AgentLinkPicker(frame.active)),
                         b"b" => Some(Action::Notifications),
                         b"r" => Some(Action::Recovery),
                         b"/" => Some(Action::SearchOpen),
@@ -437,6 +518,7 @@ impl Router {
                                 | Action::ParkRequest(_)
                                 | Action::Parked
                                 | Action::Overview
+                                | Action::AgentLinkPicker(_)
                                 | Action::Notifications
                                 | Action::Recovery
                                 | Action::SearchOpen
@@ -483,6 +565,25 @@ impl Router {
                 continue;
             }
             if let Some(dialog) = frame.ui.dialog {
+                if dialog.kind == super::ui::DialogKind::Notifications && matches!(key, b"h" | b"a")
+                {
+                    emit(
+                        &mut output,
+                        if key == b"h" {
+                            Action::NotificationHistory
+                        } else {
+                            Action::AcknowledgeAll
+                        },
+                        true,
+                    );
+                    continue;
+                }
+                if key == b"l" && dialog.kind == super::ui::DialogKind::Overview {
+                    if let Some(&pane) = frame_entries(frame).get(dialog.selection) {
+                        emit(&mut output, Action::AgentLinkPicker(pane), true);
+                    }
+                    continue;
+                }
                 if key == b"y" && dialog.kind == super::ui::DialogKind::Recovery {
                     if frame
                         .ui
@@ -638,6 +739,90 @@ impl Router {
         }
         output
     }
+    fn header_action(&mut self, pane: PaneId, event: MouseEvent) -> Action {
+        let previous = self.header_click.take();
+        if event.button == 0 && !event.shift && !event.alt && !event.ctrl {
+            if previous.is_some_and(|(id, position, at)| {
+                id == pane
+                    && position.x.abs_diff(event.position.x) <= 1
+                    && position.y.abs_diff(event.position.y) <= 1
+                    && at.elapsed() <= Duration::from_millis(400)
+            }) {
+                self.header_drag = None;
+                self.header_press = None;
+                self.focus_click = true;
+                return Action::Fullscreen(pane);
+            }
+            self.header_drag = Some(pane);
+            self.header_press = Some((pane, event.position));
+        }
+        Action::Focus(pane)
+    }
+    fn tab_drag_allowed(&self, frame: &Frame) -> bool {
+        frame.controller
+            && !self.pending_modal
+            && frame.sidebar_status()
+            && frame.ui.dialog.is_none()
+            && !frame.ui.scratch_visible
+            && !self.help_override.unwrap_or(frame.help)
+            && self.tab_drag.as_ref().is_none_or(|drag| {
+                frame
+                    .panes
+                    .iter()
+                    .any(|v| v.pane.id == drag.source && !v.pane.parked)
+            })
+    }
+    pub fn tick(&mut self, frame: &Frame) -> Vec<ClientMessage> {
+        self.tick_at(frame, Instant::now())
+    }
+    pub fn tick_at(&mut self, frame: &Frame, now: Instant) -> Vec<ClientMessage> {
+        if !self.tab_drag_allowed(frame) {
+            return self.tab_drag.take().map_or_else(Vec::new, |_| {
+                if frame.controller {
+                    vec![ClientMessage::Action(Action::TabDrag(None))]
+                } else {
+                    vec![]
+                }
+            });
+        }
+        let Some(drag) = self.tab_drag.as_mut().filter(|drag| drag.active) else {
+            return vec![];
+        };
+        let mut output = vec![];
+        let hint = sidebar_drop(frame, drag.point).map(|before| (drag.source, before));
+        if hint != drag.hint {
+            drag.hint = hint;
+            output.push(ClientMessage::Action(Action::TabDrag(hint)));
+        }
+        if hint.is_some()
+            && now.saturating_duration_since(drag.scrolled) >= Duration::from_millis(180)
+        {
+            let slots = sidebar_slots(frame);
+            let count = frame
+                .panes
+                .iter()
+                .filter(|v| !v.pane.parked && Some(v.pane.id) != frame.ui.scratch)
+                .count();
+            let direction = if slots
+                .first()
+                .is_some_and(|(i, _, r)| *i > 0 && drag.point.y <= r.y + 1)
+            {
+                -1
+            } else if slots
+                .last()
+                .is_some_and(|(i, _, r)| *i + 1 < count && drag.point.y + 1 >= r.y + r.rows)
+            {
+                1
+            } else {
+                0
+            };
+            if direction != 0 {
+                output.push(ClientMessage::Action(Action::ScrollTabs(direction)));
+                drag.scrolled = now;
+            }
+        }
+        output
+    }
     fn mouse(&mut self, event: MouseEvent, frame: &Frame) -> Vec<ClientMessage> {
         let mut output = Vec::new();
         if !frame.controller {
@@ -645,6 +830,36 @@ impl Router {
         }
         if self.pending_modal {
             return output;
+        }
+        if let Some(drag) = &mut self.tab_drag {
+            if matches!(event.kind, MouseKind::Move | MouseKind::Release) {
+                drag.point = event.position;
+                if !drag.active
+                    && (drag.start.x.abs_diff(event.position.x) > 1
+                        || drag.start.y.abs_diff(event.position.y) > 1)
+                {
+                    drag.active = true;
+                    self.header_press = None;
+                    self.header_click = None;
+                }
+                if event.kind == MouseKind::Release {
+                    let drag = self.tab_drag.take().unwrap();
+                    if drag.active {
+                        output.push(ClientMessage::Action(
+                            match sidebar_drop(frame, event.position) {
+                                Some(before) => Action::Reorder {
+                                    source: drag.source,
+                                    before,
+                                },
+                                None => Action::TabDrag(None),
+                            },
+                        ));
+                        return output;
+                    }
+                } else {
+                    return self.tick(frame);
+                }
+            }
         }
         if self.focus_click && matches!(event.kind, MouseKind::Move | MouseKind::Release) {
             if event.kind == MouseKind::Release {
@@ -654,6 +869,47 @@ impl Router {
         }
         if event.kind == MouseKind::Press {
             self.focus_click = false;
+            self.sidebar_drag = false;
+        }
+        if self.sidebar_drag && matches!(event.kind, MouseKind::Move | MouseKind::Release) {
+            if self.sidebar_start.is_some_and(|start| {
+                start.x.abs_diff(event.position.x) > 1 || start.y.abs_diff(event.position.y) > 1
+            }) {
+                self.sidebar_moved = true;
+            }
+            if self.sidebar_moved {
+                emit(
+                    &mut output,
+                    Action::ResizeSidebar(event.position.x.saturating_add(1)),
+                    true,
+                );
+            } else if event.kind == MouseKind::Release {
+                emit(&mut output, Action::ToggleSidebarFold, true);
+            }
+            if event.kind == MouseKind::Release {
+                self.sidebar_drag = false;
+            }
+            return output;
+        }
+        if event.kind == MouseKind::Press
+            && event.button == 0
+            && !event.shift
+            && !event.alt
+            && !event.ctrl
+            && frame.sidebar_status()
+            && !frame.ui.scratch_visible
+            && frame.ui.dialog.is_none()
+            && !self.help_override.unwrap_or(frame.help)
+            && event.position.x == frame.sidebar_width() - 1
+        {
+            self.sidebar_drag = true;
+            self.tab_drag = None;
+            self.header_drag = None;
+            self.header_press = None;
+            self.header_click = None;
+            self.sidebar_start = Some(event.position);
+            self.sidebar_moved = false;
+            return output;
         }
         if let Some((column, row)) = self.boundary_drag {
             if matches!(event.kind, MouseKind::Move | MouseKind::Release) {
@@ -682,12 +938,26 @@ impl Router {
                 return output;
             }
         }
+        if let Some((pane, start)) = self.header_press {
+            if matches!(event.kind, MouseKind::Move | MouseKind::Release) {
+                if start.x.abs_diff(event.position.x) > 1 || start.y.abs_diff(event.position.y) > 1
+                {
+                    self.header_press = None;
+                    self.header_click = None;
+                } else if event.kind == MouseKind::Release {
+                    self.header_press = None;
+                    self.header_click = Some((pane, start, Instant::now()));
+                }
+            }
+        }
         if let Some(source) = self.header_drag {
             if matches!(event.kind, MouseKind::Move | MouseKind::Release) {
                 if event.kind == MouseKind::Release {
                     self.header_drag = None;
                     if let Some(view) = frame.panes.iter().find(|v| {
-                        v.rect.contains(event.position) && Some(v.pane.id) != frame.ui.scratch
+                        frame.reading == ReadingMode::Grid
+                            && v.rect.contains(event.position)
+                            && Some(v.pane.id) != frame.ui.scratch
                     }) {
                         if view.pane.id != source {
                             emit(
@@ -706,6 +976,24 @@ impl Router {
         }
         if let Some(dialog) = frame.ui.dialog {
             let bounds = super::workspace::dialog_bounds_for(frame.cols, frame.rows, dialog.kind);
+            if dialog.kind == super::ui::DialogKind::Notifications && event.kind == MouseKind::Press
+            {
+                if let Some(index) = super::ui::notification_buttons(bounds)
+                    .iter()
+                    .position(|rect| rect.contains(event.position))
+                {
+                    emit(
+                        &mut output,
+                        if index == 0 {
+                            Action::NotificationHistory
+                        } else {
+                            Action::AcknowledgeAll
+                        },
+                        true,
+                    );
+                    return output;
+                }
+            }
             if dialog.kind == super::ui::DialogKind::Parked && event.kind == MouseKind::Press {
                 let entries = frame_entries(frame);
                 if let Some((index, _)) =
@@ -729,13 +1017,26 @@ impl Router {
                 return output;
             }
             if dialog.kind == super::ui::DialogKind::Config {
+                if let Some((index, (accent, _))) = super::workspace::accent_targets(bounds)
+                    .into_iter()
+                    .enumerate()
+                    .find(|(_, (_, rect))| rect.contains(event.position))
+                {
+                    if event.kind == MouseKind::Press {
+                        emit(&mut output, Action::AccentSet(accent), true);
+                        emit(&mut output, Action::DialogPick(index + 1), true);
+                    } else if event.kind == MouseKind::Move {
+                        emit(&mut output, Action::DialogPick(index + 1), true);
+                    }
+                    return output;
+                }
                 if let Some((index, value, _)) = super::workspace::config_targets(bounds)
                     .into_iter()
                     .find(|(_, _, rect)| rect.contains(event.position))
                 {
                     if event.kind == MouseKind::Press {
                         let current = match index {
-                            4 => Some(frame.ui.config.notification_sound),
+                            0 => Some(frame.ui.config.notification_sound),
                             _ => None,
                         };
                         if value.is_none() || value != current {
@@ -837,12 +1138,25 @@ impl Router {
             }
         }
         let [config, mode, parked, help] = frame.controls();
-        if event.kind == MouseKind::Press && frame.ui.dialog.is_none() && !frame.help {
-            if let Some(sort) = super::status::metric_target(frame, event.position) {
-                self.pending_modal = true;
-                emit(&mut output, Action::StatusOpen(sort), true);
-                return output;
-            }
+        if event.kind == MouseKind::Press
+            && [config, mode, parked, help]
+                .iter()
+                .any(|rect| rect.contains(event.position))
+        {
+            self.header_click = None;
+        }
+        if event.kind == MouseKind::Press
+            && frame.ui.dialog.is_none()
+            && !frame.help
+            && super::status::metric_target(frame, event.position).is_some()
+        {
+            self.pending_modal = true;
+            emit(
+                &mut output,
+                Action::StatusOpen(super::status::Sort::Cpu),
+                true,
+            );
+            return output;
         }
         if event.kind == MouseKind::Press && config.contains(event.position) {
             self.pending_modal = true;
@@ -863,7 +1177,10 @@ impl Router {
             return output;
         }
         if event.kind == MouseKind::Press && help.contains(event.position) {
-            if frame.ui.notifications.iter().any(|item| !item.read) {
+            if super::ui::has_unread_notifications(
+                &frame.ui,
+                frame.panes.iter().map(|view| &view.pane),
+            ) {
                 self.pending_modal = true;
                 emit(&mut output, Action::Notifications, true);
                 return output;
@@ -890,7 +1207,7 @@ impl Router {
                 return output;
             }
         }
-        if (frame.reading != ReadingMode::Grid || frame.active == 0) && !frame.ui.scratch_visible {
+        if frame.sidebar_status() && !frame.ui.scratch_visible {
             let tabviews: Vec<_> = frame
                 .panes
                 .iter()
@@ -900,12 +1217,32 @@ impl Router {
                 .iter()
                 .position(|view| view.pane.id == frame.active)
                 .unwrap_or(0);
+            if matches!(event.kind, MouseKind::WheelUp | MouseKind::WheelDown)
+                && super::workspace::tab_bar_area(frame.cols, frame.rows, &frame.ui.config)
+                    .contains(event.position)
+            {
+                emit(
+                    &mut output,
+                    Action::ScrollTabs(if event.kind == MouseKind::WheelUp {
+                        -1
+                    } else {
+                        1
+                    }),
+                    true,
+                );
+                return output;
+            }
+            let anchor = frame
+                .ui
+                .tab_scroll_anchor
+                .unwrap_or(active)
+                .min(tabviews.len().saturating_sub(1));
             if let Some((target, _)) = super::workspace::tab_targets(
                 frame.cols,
                 frame.rows,
                 &frame.ui.config,
                 tabviews.len(),
-                active,
+                anchor,
                 frame.panes.iter().filter(|view| view.pane.parked).count(),
             )
             .into_iter()
@@ -917,19 +1254,44 @@ impl Router {
                     return output;
                 }
                 if event.kind == MouseKind::Press && target == super::workspace::TabTarget::New {
+                    let rect = super::workspace::tab_targets(
+                        frame.cols,
+                        frame.rows,
+                        &frame.ui.config,
+                        tabviews.len(),
+                        anchor,
+                        frame.panes.iter().filter(|view| view.pane.parked).count(),
+                    )
+                    .into_iter()
+                    .find(|(kind, _)| *kind == target)
+                    .map(|(_, rect)| rect)
+                    .unwrap();
+                    if !super::workspace::tab_new_line(rect).contains(event.position) {
+                        return output;
+                    }
                     emit(&mut output, Action::NewTab, true);
                     return output;
                 }
-                if matches!(
-                    event.kind,
-                    MouseKind::Press | MouseKind::WheelUp | MouseKind::WheelDown
-                ) {
+                if event.kind == MouseKind::Press
+                    && matches!(
+                        target,
+                        super::workspace::TabTarget::Previous | super::workspace::TabTarget::Next
+                    )
+                {
+                    emit(
+                        &mut output,
+                        Action::ScrollTabs(if target == super::workspace::TabTarget::Previous {
+                            -1
+                        } else {
+                            1
+                        }),
+                        true,
+                    );
+                    return output;
+                }
+                if event.kind == MouseKind::Press {
                     use super::workspace::TabTarget;
                     let index = match target {
-                        _ if event.kind == MouseKind::WheelUp => active.saturating_sub(1),
-                        _ if event.kind == MouseKind::WheelDown => {
-                            (active + 1).min(tabviews.len().saturating_sub(1))
-                        }
                         TabTarget::Pane(index) if event.kind == MouseKind::Press => index,
                         TabTarget::Previous => active.saturating_sub(1),
                         TabTarget::Next => (active + 1).min(tabviews.len().saturating_sub(1)),
@@ -941,7 +1303,7 @@ impl Router {
                             frame.rows,
                             &frame.ui.config,
                             tabviews.len(),
-                            active,
+                            anchor,
                             frame.panes.iter().filter(|view| view.pane.parked).count(),
                         )
                         .into_iter()
@@ -949,9 +1311,11 @@ impl Router {
                         .map(|(_, rect)| rect)
                         .unwrap();
                         let close = matches!(target, TabTarget::Pane(_))
+                            && !frame.ui.config.sidebar_folded
                             && event.kind == MouseKind::Press
                             && super::workspace::tab_close(bounds).contains(event.position);
                         let park = matches!(target, TabTarget::Pane(_))
+                            && !frame.ui.config.sidebar_folded
                             && event.kind == MouseKind::Press
                             && super::workspace::tab_park(bounds).contains(event.position);
                         if park {
@@ -961,7 +1325,22 @@ impl Router {
                             self.pending_modal = true;
                             emit(&mut output, Action::ClosePaneRequest(view.pane.id), true);
                         } else {
-                            emit(&mut output, Action::Focus(view.pane.id), true);
+                            self.header_click = None;
+                            self.header_press = None;
+                            self.header_drag = None;
+                            let action = Action::Focus(view.pane.id);
+                            if event.button == 0 && !event.shift && !event.alt && !event.ctrl {
+                                self.tab_drag = Some(TabDrag {
+                                    source: view.pane.id,
+                                    start: event.position,
+                                    point: event.position,
+                                    active: false,
+                                    hint: None,
+                                    scrolled: Instant::now(),
+                                });
+                                self.header_drag = None;
+                            }
+                            emit(&mut output, action, true);
                         }
                     }
                 }
@@ -980,7 +1359,12 @@ impl Router {
         if view.overlay && Some(id) == frame.ui.scratch && event.position.y == view.rect.y {
             return output;
         }
-        if event.position.y == view.rect.y && frame.reading == ReadingMode::Grid {
+        if event.position.y == view.rect.y
+            && matches!(
+                frame.reading,
+                ReadingMode::Grid | ReadingMode::Fullscreen(_)
+            )
+        {
             if event.kind != MouseKind::Press {
                 return output;
             }
@@ -994,19 +1378,22 @@ impl Router {
             } else if park.contains(event.position) {
                 self.pending_modal = true;
                 Action::ParkRequest(id)
-            } else if super::workspace::tab_number_for(view.rect, view.pane.number)
-                .contains(event.position)
-            {
-                Action::Focus(id)
             } else {
-                self.header_drag = Some(id);
-                Action::Focus(id)
+                match self.header_action(id, event) {
+                    Action::Fullscreen(id) if frame.reading == ReadingMode::Grid => {
+                        Action::Read(id)
+                    }
+                    action => action,
+                }
             };
             emit(&mut output, action, true);
             return output;
         }
         if !view.body.contains(event.position) {
             return output;
+        }
+        if event.kind == MouseKind::Press {
+            self.header_click = None;
         }
         if frame.reading == ReadingMode::Grid
             && frame.active != id
@@ -1062,6 +1449,7 @@ impl Router {
             "tab-position" => Action::TabPosition,
             "config" => Action::Config,
             "overview" => Action::Overview,
+            "agent-link" => Action::AgentLinkPicker(frame.active),
             "notifications" => Action::Notifications,
             "recovery" => Action::Recovery,
             "next-attention" => Action::NextAttention,
@@ -1097,6 +1485,17 @@ impl Router {
         })
     }
     fn pick_dialog(&self, frame: &Frame, index: usize) -> Vec<ClientMessage> {
+        if frame
+            .ui
+            .dialog
+            .is_some_and(|dialog| dialog.kind == super::ui::DialogKind::AgentLink)
+        {
+            return if !frame.ui.agent_link_loading && index <= frame.ui.agent_sessions.len() {
+                vec![ClientMessage::Action(Action::AgentLinkChoose(index))]
+            } else {
+                vec![]
+            };
+        }
         use super::ui::DialogKind;
         let Some(dialog) = frame.ui.dialog else {
             return vec![];
@@ -1130,11 +1529,19 @@ impl Router {
             return vec![];
         }
         if dialog.kind == DialogKind::Notifications {
-            let Some(item) = frame.ui.notifications.get(index) else {
+            let Some(item) = super::ui::visible_notifications(
+                &frame.ui,
+                frame.panes.iter().map(|view| &view.pane),
+            )
+            .nth(index) else {
                 return vec![];
             };
             let mut actions = vec![ClientMessage::Action(Action::Acknowledge(item.id))];
-            if frame.panes.iter().any(|view| view.pane.id == item.pane) {
+            if frame
+                .panes
+                .iter()
+                .any(|view| super::activity::matches(item, &view.pane, &frame.ui.notification_run))
+            {
                 actions.extend(dialog_focus(frame, item.pane));
             } else {
                 actions.push(ClientMessage::Action(Action::DialogClose));
@@ -1164,19 +1571,13 @@ impl Router {
                 .unwrap_or_default();
         }
         if dialog.kind == DialogKind::Config {
-            if index == 4 {
+            if index == 0 {
                 return vec![ClientMessage::Action(Action::NotificationSoundToggle)];
             }
-            let positions = [
-                super::ui::TabPosition::Auto,
-                super::ui::TabPosition::Top,
-                super::ui::TabPosition::Left,
-                super::ui::TabPosition::Bottom,
-            ];
-            let Some(&position) = positions.get(index) else {
-                return vec![];
-            };
-            return vec![ClientMessage::Action(Action::TabPositionSet(position))];
+            return super::ui::Accent::ALL
+                .get(index - 1)
+                .map(|accent| vec![ClientMessage::Action(Action::AccentSet(*accent))])
+                .unwrap_or_default();
         }
         if matches!(
             dialog.kind,
@@ -1357,7 +1758,12 @@ pub fn help_bounds(cols: u16, rows: u16) -> Rect {
 fn frame_entries(frame: &Frame) -> Vec<u64> {
     use super::ui::DialogKind;
     match frame.ui.dialog.map(|dialog| dialog.kind) {
-        Some(DialogKind::Notifications) => frame.ui.notifications.iter().map(|n| n.id).collect(),
+        Some(DialogKind::AgentLink) => (0..=frame.ui.agent_sessions.len() as u64).collect(),
+        Some(DialogKind::Notifications) => {
+            super::ui::visible_notifications(&frame.ui, frame.panes.iter().map(|view| &view.pane))
+                .map(|n| n.id)
+                .collect()
+        }
         Some(DialogKind::Recovery) => (0..frame.ui.recovery.len() as u64).collect(),
         Some(DialogKind::Search) => (0..frame.ui.search_hits.len() as u64).collect(),
         _ => {
@@ -1566,11 +1972,10 @@ impl Router {
                     } else if mouse.position.y
                         == bounds.y + 1 + status::summary_height(bounds, &ui.status)
                     {
-                        Some(Action::StatusView(if mouse.position.x < bounds.x + 10 {
-                            View::Main
-                        } else {
-                            View::Io
-                        }))
+                        status::view_tabs(bounds, &ui.status)
+                            .into_iter()
+                            .find(|(_, rect)| rect.contains(mouse.position))
+                            .map(|(view, _)| Action::StatusView(view))
                     } else if mouse.position.y == status::table_y(bounds, &ui.status) {
                         let mut x = bounds.x + 1;
                         let mut selected = None;
@@ -1674,4 +2079,72 @@ impl Router {
             .map(|action| vec![ClientMessage::Action(action)])
             .unwrap_or_default()
     }
+}
+
+/// Visible sidebar rows and their stable pane identities.
+fn sidebar_slots(frame: &Frame) -> Vec<(usize, PaneId, Rect)> {
+    let panes: Vec<_> = frame
+        .panes
+        .iter()
+        .filter(|v| !v.pane.parked && Some(v.pane.id) != frame.ui.scratch)
+        .collect();
+    let active = panes
+        .iter()
+        .position(|v| v.pane.id == frame.active)
+        .unwrap_or(0);
+    super::workspace::tab_targets(
+        frame.cols,
+        frame.rows,
+        &frame.ui.config,
+        panes.len(),
+        frame
+            .ui
+            .tab_scroll_anchor
+            .unwrap_or(active)
+            .min(panes.len().saturating_sub(1)),
+        frame.panes.iter().filter(|v| v.pane.parked).count(),
+    )
+    .into_iter()
+    .filter_map(|(target, rect)| {
+        if let super::workspace::TabTarget::Pane(index) = target {
+            Some((index, panes[index].pane.id, rect))
+        } else {
+            None
+        }
+    })
+    .collect()
+}
+fn sidebar_drop(frame: &Frame, point: Point) -> Option<Option<PaneId>> {
+    if point.x >= frame.sidebar_width().saturating_sub(1) {
+        return None;
+    }
+    let slots = sidebar_slots(frame);
+    let (_, first, first_rect) = slots.first()?;
+    if point.y <= first_rect.y {
+        return Some(Some(*first));
+    }
+    let panes: Vec<_> = frame
+        .panes
+        .iter()
+        .filter(|v| !v.pane.parked && Some(v.pane.id) != frame.ui.scratch)
+        .collect();
+    for (index, id, rect) in &slots {
+        if point.y < rect.y + rect.rows {
+            return Some(if point.y < rect.y + rect.rows.div_ceil(2) {
+                Some(*id)
+            } else {
+                panes.get(index + 1).map(|v| v.pane.id)
+            });
+        }
+    }
+    let (index, _, rect) = slots.last()?;
+    (point.y <= rect.y + rect.rows + 1).then(|| panes.get(index + 1).map(|v| v.pane.id))
+}
+struct TabDrag {
+    source: PaneId,
+    start: Point,
+    point: Point,
+    active: bool,
+    hint: Option<(PaneId, Option<PaneId>)>,
+    scrolled: Instant,
 }

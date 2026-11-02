@@ -1,5 +1,5 @@
 {
-  "grid": [2, 1],
+  "tab_count": 1,
   "ui": {
     "tab_position": "left",
     "view_modes": [true, true, true]

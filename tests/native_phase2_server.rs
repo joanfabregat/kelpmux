@@ -34,6 +34,9 @@ impl Daemon {
         let state = root.join("kelpmux/workspaces/current");
         let socket = root.join("native.sock");
         let child = Command::new(env!("CARGO_BIN_EXE_kelpmux"))
+            .env("CODEX_HOME", root.join("codex-home"))
+            .env("CLAUDE_CONFIG_DIR", root.join("claude-home"))
+            .env_remove("CODEX_THREAD_ID")
             .args(["server", "--socket"])
             .arg(&socket)
             .arg("--state-dir")
@@ -201,6 +204,7 @@ impl Peer {
             other => other,
         }
     }
+    #[track_caller]
     fn wait(&mut self, predicate: impl Fn(&Frame) -> bool) -> Frame {
         let deadline = Instant::now() + Duration::from_secs(12);
         loop {
@@ -861,4 +865,397 @@ fn search_resets_result_selection_and_reveals_hidden_scratch() {
     let found = peer.wait(|frame| frame.ui.search_query == "MANY_MATCH_11");
     assert_eq!(found.ui.search_hits.len(), 1);
     assert_eq!(found.ui.dialog.unwrap().selection, 0);
+}
+
+#[test]
+fn shared_codex_conversation_picker_drives_live_tab_status_and_drops_links_after_process_exit() {
+    use std::{
+        os::unix::net::UnixListener,
+        sync::{
+            Arc,
+            atomic::{AtomicBool, AtomicUsize},
+        },
+        time::Instant,
+    };
+    let daemon = Daemon::start();
+    let metadata = daemon.root.join("codex-home/app-server-control");
+    fs::create_dir_all(&metadata).unwrap();
+    let listener = UnixListener::bind(metadata.join("app-server-control.sock")).unwrap();
+    listener.set_nonblocking(true).unwrap();
+    let status = Arc::new(AtomicUsize::new(0));
+    let stop = Arc::new(AtomicBool::new(false));
+    let (mode, cancel) = (status.clone(), stop.clone());
+    let metadata_server = thread::spawn(move || {
+        let deadline = Instant::now() + Duration::from_secs(30);
+        while !cancel.load(Ordering::SeqCst) && Instant::now() < deadline {
+            let (stream, _) = match listener.accept() {
+                Ok(value) => value,
+                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                    thread::sleep(Duration::from_millis(5));
+                    continue;
+                }
+                Err(error) => panic!("{error}"),
+            };
+            stream
+                .set_read_timeout(Some(Duration::from_millis(500)))
+                .unwrap();
+            let mut socket = tungstenite::accept(stream).unwrap();
+            loop {
+                let Ok(tungstenite::Message::Text(text)) = socket.read() else {
+                    break;
+                };
+                let message: serde_json::Value = serde_json::from_str(&text).unwrap();
+                let result = match message["method"].as_str().unwrap() {
+                    "initialize" => serde_json::json!({}),
+                    "initialized" => continue,
+                    "thread/loaded/list" => serde_json::json!({"data":["alpha","beta"]}),
+                    "thread/read" => {
+                        assert_eq!(message["params"]["includeTurns"], false);
+                        let id = message["params"]["threadId"].as_str().unwrap();
+                        let status = match mode.load(Ordering::SeqCst) {
+                            0 => serde_json::json!({"type":"active"}),
+                            1 => {
+                                serde_json::json!({"type":"active","activeFlags":["waitingOnUserInput"]})
+                            }
+                            _ => serde_json::json!({"type":"idle"}),
+                        };
+                        serde_json::json!({"thread":{"id":id,"name":format!("Conversation {id}"),"status":status}})
+                    }
+                    method => panic!("unexpected mutating method {method}"),
+                };
+                if socket
+                    .send(tungstenite::Message::Text(
+                        serde_json::json!({"id":message["id"],"result":result})
+                            .to_string()
+                            .into(),
+                    ))
+                    .is_err()
+                {
+                    break;
+                }
+            }
+        }
+    });
+    let executable = daemon.root.join("codex");
+    fs::copy("/bin/bash", &executable).unwrap();
+    let mut peer = daemon.attach();
+    let pane = peer.panes()[0].id;
+    let command = format!(
+        "{} -c {}\n",
+        shell_quote(executable.to_str().unwrap()),
+        shell_quote("while :; do sleep 0.1; done")
+    );
+    peer.input(&command);
+    peer.wait(|frame| {
+        frame.panes.iter().any(|view| {
+            view.pane.id == pane
+                && view.pane.kind == Some(Kind::Codex)
+                && view.pane.session_id.is_none()
+        })
+    });
+    peer.action(Action::AgentLinkPicker(pane));
+    peer.wait(|frame| !frame.ui.agent_link_loading && frame.ui.agent_sessions.len() == 2);
+    peer.action(Action::AgentLinkChoose(1));
+    peer.wait(|frame| {
+        frame.panes.iter().any(|view| {
+            view.pane.id == pane
+                && view.pane.session_id.as_deref() == Some("alpha")
+                && view.pane.status == Status::Working
+        })
+    });
+    status.store(1, Ordering::SeqCst);
+    peer.wait(|frame| {
+        frame
+            .panes
+            .iter()
+            .any(|view| view.pane.id == pane && view.pane.status == Status::InputNeeded)
+    });
+    status.store(2, Ordering::SeqCst);
+    peer.wait(|frame| {
+        frame
+            .panes
+            .iter()
+            .any(|view| view.pane.id == pane && view.pane.status == Status::Idle)
+    });
+    peer.send(ClientMessage::Input(vec![3]));
+    peer.wait(|frame| {
+        frame
+            .panes
+            .iter()
+            .any(|view| view.pane.id == pane && view.pane.kind.is_none())
+    });
+    peer.input(&command);
+    peer.wait(|frame| {
+        frame.panes.iter().any(|view| {
+            view.pane.id == pane
+                && view.pane.kind == Some(Kind::Codex)
+                && view.pane.session_id.is_none()
+        })
+    });
+    drop(peer);
+    drop(daemon);
+    stop.store(true, Ordering::SeqCst);
+    metadata_server.join().unwrap();
+}
+
+#[test]
+fn sidebar_resize_preserves_live_ptys_and_saved_width_and_bulk_alert_reads_survive_reconnect() {
+    let daemon = Daemon::start();
+    let mut peer = daemon.attach();
+    peer.action(Action::NewTab);
+    let before = peer.panes();
+    let pane = before[0].id;
+    peer.action(Action::Read(pane));
+    peer.wait(|frame| frame.reading != ReadingMode::Grid);
+    peer.action(Action::ResizeSidebar(45));
+    let resized = peer.wait(|frame| frame.sidebar_width() == 45);
+    let body = resized
+        .panes
+        .iter()
+        .find(|view| view.pane.id == pane)
+        .unwrap()
+        .body;
+    assert_eq!((body.x, body.cols, body.rows), (45, 75, 40));
+    peer.input("printf 'SIZE='; stty size\n");
+    peer.wait(|frame| {
+        frame
+            .cells
+            .iter()
+            .map(|cell| cell.text.as_str())
+            .collect::<String>()
+            .contains("SIZE=40 75")
+    });
+    let identities = |panes: &[PaneInfo]| {
+        panes
+            .iter()
+            .map(|pane| (pane.id, pane.pid))
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(identities(&before), identities(&peer.panes()));
+    let saved =
+        kelpmux::native::lifecycle::Settings::load(&daemon.state.join("workspace.json")).unwrap();
+    assert_eq!(saved.ui.sidebar_columns, Some(45));
+    peer.action(Action::ToggleSidebarFold);
+    let folded = peer.wait(|frame| frame.ui.config.sidebar_folded);
+    let body = folded
+        .panes
+        .iter()
+        .find(|view| view.pane.id == pane)
+        .unwrap()
+        .body;
+    assert_eq!((body.x, body.cols, body.rows), (4, 116, 40));
+    assert_eq!(identities(&before), identities(&peer.panes()));
+    peer.input("printf 'FOLDED_SIZE='; stty size\n");
+    peer.wait(|frame| {
+        frame
+            .cells
+            .iter()
+            .map(|cell| cell.text.as_str())
+            .collect::<String>()
+            .contains("FOLDED_SIZE=40 116")
+    });
+    peer.action(Action::ToggleSidebarFold);
+    peer.wait(|frame| !frame.ui.config.sidebar_folded && frame.sidebar_width() == 45);
+    let executable = daemon.root.join("codex");
+    fs::copy("/bin/bash", &executable).unwrap();
+    peer.input(&format!(
+        "{} -c 'while :; do sleep 1; done' _ resume {}\n",
+        shell_quote(executable.to_str().unwrap()),
+        SESSION
+    ));
+    peer.wait(|frame| {
+        frame
+            .panes
+            .iter()
+            .any(|view| view.pane.id == pane && view.pane.kind == Some(Kind::Codex))
+    });
+    daemon.hook(pane, "UserPromptSubmit");
+    peer.wait(|frame| {
+        frame
+            .panes
+            .iter()
+            .any(|view| view.pane.id == pane && view.pane.status == Status::Working)
+    });
+    daemon.hook(pane, "PermissionRequest");
+    peer.wait(|frame| frame.ui.notifications.iter().any(|event| !event.read));
+    peer.action(Action::AcknowledgeAll);
+    peer.wait(|frame| {
+        !frame.ui.notifications.is_empty() && frame.ui.notifications.iter().all(|event| event.read)
+    });
+    let history: serde_json::Value =
+        serde_json::from_slice(&fs::read(daemon.state.join("activity.json")).unwrap()).unwrap();
+    assert!(
+        history["events"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|event| event["read"] == true)
+    );
+    drop(peer);
+    let mut reconnected = daemon.attach();
+    let f = reconnected.wait(|frame| frame.controller && frame.sidebar_width() == 45);
+    assert!(f.ui.notifications.iter().all(|event| event.read));
+    assert_eq!(identities(&before), identities(&reconnected.panes()));
+}
+
+#[test]
+fn inactive_grid_cells_are_visual_and_new_tabs_fill_them_without_replacing_shells() {
+    let daemon = Daemon::start();
+    let mut peer = daemon.attach();
+    for _ in 1..5 {
+        peer.action(Action::NewTab);
+    }
+    let before = peer.panes();
+    assert_eq!(before.len(), 5);
+    peer.action(Action::CloseReading);
+    let f = peer.wait(|frame| frame.reading == ReadingMode::Grid && frame.panes.len() == 5);
+    assert_eq!(
+        usize::from(f.ui.grid_shape.0) * usize::from(f.ui.grid_shape.1),
+        6
+    );
+    assert!(
+        f.cells
+            .iter()
+            .map(|cell| cell.text.as_str())
+            .collect::<String>()
+            .contains("Inactive")
+    );
+    let old_layout: Vec<_> = f.panes.iter().map(|view| view.rect).collect();
+    let identities: Vec<_> = before.iter().map(|pane| (pane.id, pane.pid)).collect();
+    peer.action(Action::NewTab);
+    peer.action(Action::CloseReading);
+    let filled = peer.wait(|frame| frame.panes.len() == 6 && frame.reading == ReadingMode::Grid);
+    assert!(
+        !filled
+            .cells
+            .iter()
+            .map(|cell| cell.text.as_str())
+            .collect::<String>()
+            .contains("Inactive")
+    );
+    assert_eq!(
+        old_layout,
+        filled
+            .panes
+            .iter()
+            .take(5)
+            .map(|view| view.rect)
+            .collect::<Vec<_>>()
+    );
+    let after = peer.panes();
+    assert_eq!(
+        identities,
+        after
+            .iter()
+            .take(5)
+            .map(|pane| (pane.id, pane.pid))
+            .collect::<Vec<_>>()
+    );
+}
+
+#[test]
+fn double_click_grid_opens_tabs_and_sidebar_keeps_regular_view_and_live_ptys() {
+    use kelpmux::native::input::Router;
+    let daemon = Daemon::start();
+    let mut peer = daemon.attach();
+    peer.action(Action::NewTab);
+    let before = peer.panes();
+    let pane = before[0].id;
+    for tabs in [false, true] {
+        peer.action(if tabs {
+            Action::Select(1)
+        } else {
+            Action::CloseReading
+        });
+        let mut f = peer.wait(|frame| {
+            if tabs {
+                frame.reading == ReadingMode::Tabs(pane)
+            } else {
+                frame.reading == ReadingMode::Grid
+            }
+        });
+        let point = if tabs {
+            Point { x: 8, y: 1 }
+        } else {
+            let rect = f
+                .panes
+                .iter()
+                .find(|view| view.pane.id == pane)
+                .unwrap()
+                .rect;
+            Point {
+                x: rect.x + 8,
+                y: rect.y,
+            }
+        };
+        let mut router = Router::default();
+        for press in 0..2 {
+            for message in router.route(
+                InputEvent::Mouse(MouseEvent {
+                    position: point,
+                    kind: MouseKind::Press,
+                    button: 0,
+                    shift: false,
+                    alt: false,
+                    ctrl: false,
+                }),
+                &f,
+            ) {
+                assert!(matches!(message, ClientMessage::Action(_)));
+                peer.send(message);
+            }
+            f = peer.wait(|frame| {
+                if press == 0 {
+                    frame.active == pane
+                } else {
+                    frame.reading == ReadingMode::Tabs(pane)
+                }
+            });
+            assert!(
+                router
+                    .route(
+                        InputEvent::Mouse(MouseEvent {
+                            position: point,
+                            kind: MouseKind::Release,
+                            button: 0,
+                            shift: false,
+                            alt: false,
+                            ctrl: false
+                        }),
+                        &f
+                    )
+                    .is_empty()
+            );
+        }
+        let body = f
+            .panes
+            .iter()
+            .find(|view| view.pane.id == pane)
+            .unwrap()
+            .body;
+        assert!(f.sidebar_status());
+        assert!(body.x > 0);
+        let expected_size = format!("ZOOM_SIZE={} {}", body.rows, body.cols);
+        peer.input("printf 'ZOOM_SIZE='; stty size\n");
+        peer.wait(|frame| {
+            frame
+                .cells
+                .iter()
+                .map(|cell| cell.text.as_str())
+                .collect::<String>()
+                .contains(&expected_size)
+        });
+        peer.action(Action::CloseReading);
+        peer.wait(|frame| frame.reading == ReadingMode::Grid);
+        assert_eq!(
+            before
+                .iter()
+                .map(|pane| (pane.id, pane.pid))
+                .collect::<Vec<_>>(),
+            peer.panes()
+                .iter()
+                .map(|pane| (pane.id, pane.pid))
+                .collect::<Vec<_>>()
+        );
+    }
 }

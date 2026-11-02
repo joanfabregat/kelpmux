@@ -21,6 +21,11 @@ while IFS=$'\t' read -r name version manifest; do
       found=1
     fi
   done
+  # r-efi includes its MIT grant and copyright notices in AUTHORS.
+  if [[ $name == r-efi && -f $dir/AUTHORS ]] && grep -q '^AUTHORS-MIT:' "$dir/AUTHORS"; then
+    cp "$dir/AUTHORS" "$dest/"
+    found=1
+  fi
   if [[ "$found" != 1 ]]; then
     printf 'Missing packaged license text for %s %s\n' "$name" "$version" >&2
     exit 1

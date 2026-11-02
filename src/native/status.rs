@@ -462,8 +462,8 @@ pub fn processes<'a>(
 }
 
 pub fn bounds(cols: u16, rows: u16) -> super::protocol::Rect {
-    let width = cols.saturating_sub(4).min(160);
-    let height = rows.saturating_sub(2).min(60);
+    let width = cols.saturating_sub(10).min(160);
+    let height = rows.saturating_sub(4).min(60);
     super::protocol::Rect {
         x: (cols - width) / 2,
         y: (rows - height) / 2,
@@ -483,9 +483,9 @@ pub fn summary_column_width(bounds: super::protocol::Rect) -> u16 {
 }
 pub fn summary_detail_rows(bounds: super::protocol::Rect) -> usize {
     if summary_columns(bounds) == 3 && summary_column_width(bounds) < 38 {
-        6
-    } else {
         5
+    } else {
+        4
     }
 }
 pub fn summary_height(bounds: super::protocol::Rect, data: &Snapshot) -> u16 {
@@ -502,7 +502,33 @@ pub fn summary_height(bounds: super::protocol::Rect, data: &Snapshot) -> u16 {
         .min((bounds.rows / 2).max(1))
 }
 pub fn table_y(bounds: super::protocol::Rect, data: &Snapshot) -> u16 {
-    bounds.y + 3 + summary_height(bounds, data)
+    bounds.y + 2 + summary_height(bounds, data)
+}
+pub fn view_tabs(
+    bounds: super::protocol::Rect,
+    data: &Snapshot,
+) -> [(View, super::protocol::Rect); 2] {
+    let y = bounds.y + 1 + summary_height(bounds, data);
+    [
+        (
+            View::Main,
+            super::protocol::Rect {
+                x: bounds.x + 1,
+                y,
+                cols: 9,
+                rows: 1,
+            },
+        ),
+        (
+            View::Io,
+            super::protocol::Rect {
+                x: bounds.x + 10,
+                y,
+                cols: 6,
+                rows: 1,
+            },
+        ),
+    ]
 }
 pub fn columns(width: u16, view: View, data: &Snapshot) -> Vec<(&'static str, u16, Option<Sort>)> {
     let pid_width = data
@@ -532,41 +558,60 @@ pub fn columns(width: u16, view: View, data: &Snapshot) -> Vec<(&'static str, u1
     cols.push(("COMMAND", 0, None));
     cols
 }
+pub fn metric_region(frame: &super::protocol::Frame) -> Option<super::protocol::Rect> {
+    use super::{protocol::Rect, workspace};
+    if frame.sidebar_status() && frame.ui.config.sidebar_folded {
+        return None;
+    }
+    if frame.ui.vitals.is_empty() || frame.notice.is_some() {
+        return None;
+    }
+    Some(if frame.sidebar_status() {
+        let height = workspace::sidebar_status_rows(frame.rows);
+        Rect {
+            x: 0,
+            y: frame.rows - height,
+            cols: frame.sidebar_width() - 1,
+            rows: height - 2 * workspace::sidebar_button_rows(frame.rows),
+        }
+    } else {
+        Rect {
+            x: frame.footer_cols(),
+            y: frame.rows - 1,
+            cols: frame.cols.saturating_sub(frame.footer_cols()),
+            rows: 1,
+        }
+    })
+}
+
 pub fn metric_target(
     frame: &super::protocol::Frame,
     point: super::protocol::Point,
 ) -> Option<Sort> {
-    if point.x >= frame.cols || point.y >= frame.rows {
-        return None;
-    }
-    if frame.ui.vitals.is_empty() {
+    if !metric_region(frame)?.contains(point) {
         return None;
     }
     if frame.sidebar_status() {
-        let width = super::workspace::sidebar_width(frame.cols) - 1;
-        let top = frame.rows - super::workspace::sidebar_status_rows(frame.rows);
-        let end = if super::workspace::sidebar_status_rows(frame.rows) > 3 {
-            frame.rows - 3
-        } else {
-            frame.rows - 2
-        };
-        if point.x >= width || point.y < top || point.y >= end {
-            return None;
+        if super::render::sidebar_disk_region(frame).is_some_and(|rect| rect.contains(point)) {
+            return Some(Sort::Read);
         }
+        let width = frame.sidebar_width() - 1;
         let start = usize::from(point.y * frame.cols);
         let text: String = frame.cells[start..start + usize::from(width)]
             .iter()
             .map(|cell| cell.text.as_str())
             .collect();
         let text = text.trim_start();
-        if text.starts_with("Memory") || text.starts_with("Swap") {
+        if text.starts_with("Memory")
+            || text.starts_with("Swap")
+            || text.starts_with("RAM")
+            || text.starts_with("SWP")
+        {
             Some(Sort::Memory)
-        } else if text.starts_with("Disks") {
+        } else if text.starts_with("Disks") || text.starts_with("DSK") {
             Some(Sort::Read)
-        } else if text.starts_with("CPU") {
-            Some(Sort::Cpu)
         } else {
-            None
+            Some(Sort::Cpu)
         }
     } else if point.y == frame.rows - 1 && point.x >= frame.footer_cols() {
         let cell = &frame.cells[usize::from(point.y * frame.cols + point.x)];

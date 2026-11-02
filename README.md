@@ -7,7 +7,7 @@
 <p align="center">
   <a href="https://github.com/joanfabregat/kelpmux/actions/workflows/ci.yml"><img src="https://github.com/joanfabregat/kelpmux/actions/workflows/ci.yml/badge.svg?branch=main" alt="CI status"></a>
   <a href="https://github.com/joanfabregat/kelpmux/actions/workflows/release-build.yml"><img src="https://github.com/joanfabregat/kelpmux/actions/workflows/release-build.yml/badge.svg?branch=main" alt="Release build status"></a>
-  <a href="docs/releases.md"><img src="https://img.shields.io/badge/version-0.2.0--beta.3-blue" alt="Version 0.2.0-beta.3"></a>
+  <a href="docs/releases.md"><img src="https://img.shields.io/badge/version-0.2.0--beta.4-blue" alt="Version 0.2.0-beta.4"></a>
   <a href="LICENSE"><img src="https://img.shields.io/github/license/joanfabregat/kelpmux" alt="License: Apache-2.0"></a>
   <a href="#build-and-validate"><img src="https://img.shields.io/badge/Rust-1.85%2B-orange?logo=rust" alt="Rust 1.85 or newer"></a>
   <a href="docs/native.md"><img src="https://img.shields.io/badge/Linux-x86__64%20%7C%20ARM64-blue?logo=linux" alt="Linux x86-64 and ARM64"></a>
@@ -19,13 +19,13 @@ Kelpmux is a persistent terminal workspace for coding agents, inspired by Monter
 
 - Automatic balanced grids computed from unparked tabs and terminal dimensions. Resizing the view preserves processes.
 - Park tabs behind a restore list while their terminals, output and agent status continue running.
-- Grid overview and responsive tabs with top, left or compact bottom navigation; capped or full terminal width while preserving every process.
-- Popup configuration and close-tab confirmations, plus a Vitals-derived CPU, memory, swap, disk and clock footer.
+- Aligned grid overview with inactive cells and resizable left-sidebar tabs, with alternating tab backgrounds and full-width terminals.
+- Popup configuration and close-tab confirmations, plus CPU, memory, swap and disk metrics and a detailed system statistics popup.
 - Stable pane IDs and colors, distinct pane numbers, lifecycle markers and a braille working spinner. Agent selection filters questions and finished sessions; missing session evidence stays unknown.
 - Configurable shortcuts and graphical pane movement, preserving application word-editing keys outside explicit bindings.
 - Named persistent workspaces with explicit start, attach, status and stop commands. One controller, additional observers and explicit takeover.
 - Alacritty application colors, Unicode text, history, alternate screens, terminal query replies, application mouse reporting, local selection and bracketed paste.
-- Claude/Codex discovery without wrappers, optional lifecycle hooks and a seven-day metadata journal. No prompts, responses, credentials or transcripts are stored in the journal.
+- Shared OSC 7501 activity reporting from Claude/Codex, modular passive discovery and read-only daemon metadata, optional lifecycle hooks and a seven-day metadata journal. Codex launches with its original working directory and arguments. No prompts, responses, credentials or transcripts are stored in the journal.
 - Overview, persistent unread notifications with optional sound, and a recovery dashboard grouped by workspace and project with copyable resume commands.
 - A persistent scratch terminal popup, history search across one or all terminals, and keyboard or mouse selection with OSC 52 copy.
 - Startup tab counts, named terminal templates and directories; remembered view widths and automatic equalization.
@@ -76,5 +76,7 @@ Native state uses the XDG state directory or `~/.local/state/kelpmux`; workspace
 Release builds validate the repository and package GNU/Linux x86-64 and ARM64 binaries, documentation, locked dependency licenses and checksums. A version string alone does not publish a release, install a binary or start a service. See the [release procedure](docs/releases.md).
 
 ## Unreleased native-client foundation
+
+The planned graphical clients are macOS, iPadOS, iOS and web. The [four-client architecture proposal](docs/adr/0002-four-clients-and-web-ssh.md) complements the native protocol ADR with a shared client core, browser SSH authentication and terminal text selection requirements.
 
 Development beta.3 adds experimental independent pane streams, per-pane control/size leases, an SSH stdio bridge, read-only reference inspection and matching-client attachment without restarting workspaces. It also fixes a fragmented-Unicode rendering bug and adds conformance and nine-pane stress coverage. Existing beta.2/alpha sessions keep their current behavior until explicitly replaced. See the [implemented stream contract](docs/native-client-protocol.md) and [proposed native/MCP/device ADR](docs/adr/0001-native-client-protocol-and-device-capabilities.md). Native applications and MCP/device access remain future work.

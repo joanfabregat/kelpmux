@@ -40,6 +40,8 @@ jobs:
         run: |
           bash -n scripts/demo.sh scripts/test-demo.sh
           bash scripts/test-demo.sh
+          bash -n scripts/channels.sh scripts/test-channels.sh
+          bash scripts/test-channels.sh
       - run: cargo +1.99.0 clippy --locked --offline --all-targets -- -D warnings
       - name: Unit, metadata, protocol and hook contracts (PTY suites run in the architecture matrix)
         run: cargo +1.99.0 test --locked --offline --lib --test core --test native_protocol --test native_hooks --test native_activity --test native_recovery --test native_delta --test native_templates
@@ -78,7 +80,7 @@ jobs:
       - run: rustup toolchain install 1.99.0 --profile minimal
       - run: cargo +1.99.0 fetch --locked
       - name: Real owned PTYs, terminal engine, and frontend routing
-        run: cargo +1.99.0 test --locked --offline --test native_server --test native_engine --test native_workspace --test native_client --test native_ui --test native_tracking --test native_lifecycle --test native_vitals --test native_history --test native_phase2_ui --test native_phase2_server --test native_stream --test native_upgrades --test native_conformance --test native_stress --test native_bridge --test native_reference -- --test-threads=2
+        run: cargo +1.99.0 test --locked --offline --test native_server --test native_engine --test native_workspace --test native_client --test native_ui --test native_tracking --test native_lifecycle --test native_vitals --test native_history --test native_phase2_ui --test native_phase2_server --test native_stream --test native_upgrades --test native_conformance --test native_stress --test native_bridge --test native_program_status --test native_reference -- --test-threads=2
       - name: Save trusted compiler and dependency cache
         if: success() && contains(fromJSON('["push","workflow_dispatch","release"]'), github.event_name) && steps.rust-cache.outputs.cache-hit != 'true'
         uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
@@ -210,6 +212,7 @@ jobs:
               (["MIT", "Apache-2.0", "MIT OR Apache-2.0", "Apache-2.0 OR MIT", "Unlicense OR MIT"] | index($package.license) != null)
               or ($package.name == "unicode-ident" and $package.license == "(MIT OR Apache-2.0) AND Unicode-3.0")
               or ($package.name == "cursor-icon" and $package.license == "MIT OR Apache-2.0 OR Zlib")
+              or ($package.name == "r-efi" and $package.license == "MIT OR Apache-2.0 OR LGPL-2.1-or-later")
               or ((["linux-raw-sys", "rustix", "rustix-openpty"] | index($package.name) != null)
                  and $package.license == "Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT")
             )
