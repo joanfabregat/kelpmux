@@ -14,42 +14,19 @@ pub const ALERT_ICON: &str = "!";
 pub const WAIT_ICON: &str = "?";
 pub const DONE_ICON: &str = "✓";
 pub const SPINNER_FRAMES: [&str; 8] = ["◐", "◓", "◑", "◒", "◐", "◓", "◑", "◒"];
-pub const SIDEBAR_EQUALIZER_FRAMES: [&str; 16] = [
-    "▂▄▆▄▂",
-    "▄▆█▃▁",
-    "▆█▅▂▃",
-    "█▅▃▅▄",
-    "▅▃▂▇▆",
-    "▃▂▅█▅",
-    "▁▄▇▅▃",
-    "▃▆█▃▂",
-    "▅█▆▂▄",
-    "▇▆▄▅▇",
-    "▄▃▆█▅",
-    "▂▅█▆▃",
-    "▄▇▅▃▁",
-    "▆▅▂▄▃",
-    "▄▂▄▆▅",
-    "▂▃▅▃▄",
+pub const SIDEBAR_BALL_FRAMES: [&str; 10] = [
+    "●·····",
+    "·●····",
+    "··●···",
+    "···●··",
+    "····●·",
+    "·····●",
+    "····●·",
+    "···●··",
+    "··●···",
+    "·●····",
 ];
-pub const GRID_EQUALIZER_FRAMES: [&str; 16] = [
-    "▂▆▂",
-    "▄█▁",
-    "▆▅▃",
-    "█▃▄",
-    "▅▂▆",
-    "▃▅▅",
-    "▁▇▃",
-    "▃█▂",
-    "▅▆▄",
-    "▇▄▇",
-    "▄▆▅",
-    "▂█▃",
-    "▄▅▁",
-    "▆▂▃",
-    "▄▄▅",
-    "▂▅▄",
-];
+pub const GRID_BALL_FRAMES: [&str; 4] = ["●··", "·●·", "··●", "·●·"];
 pub const ACTIVITY_INTERVAL_MS: u64 = 150;
 pub fn status_icon(status: crate::model::Status) -> &'static str {
     match status {
