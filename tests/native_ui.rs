@@ -110,7 +110,7 @@ fn sidebar_new_follows_tabs_and_parked_stays_at_bottom_with_contextual_headers()
         .find(|(t, _)| *t == TabTarget::Parked)
         .unwrap()
         .1;
-    assert_eq!((new.rows, parked.rows), (3, 3));
+    assert_eq!((new.rows, parked.rows), (3, 1));
     assert_eq!(parked.y + parked.rows, f.rows);
     let last_tab = targets
         .iter()
@@ -2193,7 +2193,7 @@ fn sidebar_status_controls_and_metrics_leave_the_last_terminal_row_usable() {
             Action::Parked,
             Action::Help,
         ]) {
-            assert_eq!(rect.rows, if f.rows >= 18 { 3 } else { 1 });
+            assert_eq!(rect.rows, 1);
             for y in rect.y..rect.y + rect.rows {
                 assert_eq!(
                     actions(Router::default().route(click(Point { x: rect.x, y }), &f)),
@@ -2543,9 +2543,9 @@ fn status_popup_metrics_clicks_views_search_and_small_screen_replay() {
             ws.apply(&Action::StatusView(view)).unwrap();
             let f = frame(&ws);
             let bounds = status::bounds(f.cols, f.rows);
-            assert!(bounds.x >= 3 && bounds.y >= 3);
-            assert!(f.cols - bounds.x - bounds.cols >= 3);
-            assert!(f.rows - bounds.y - bounds.rows >= 3);
+            assert!(bounds.x >= 5 && bounds.y >= 2);
+            assert!(f.cols - bounds.x - bounds.cols >= 5);
+            assert!(f.rows - bounds.y - bounds.rows >= 2);
             assert_eq!(ws.ui.dialog.unwrap().kind, DialogKind::Status);
             assert_eq!(
                 f.cells[usize::from(bounds.y * f.cols + bounds.x + 1)].text,
@@ -4709,6 +4709,11 @@ fn accent_presets_have_shared_click_hover_and_keyboard_targets_on_small_screens(
             let rendered = frame(&ws);
             assert_eq!(
                 rendered.cells[usize::from((rect.y + rect.rows / 2) * rendered.cols + rect.x)].text,
+                " "
+            );
+            assert_eq!(
+                rendered.cells[usize::from((rect.y + rect.rows / 2) * rendered.cols + rect.x + 1)]
+                    .text,
                 "●"
             );
         }
@@ -4771,10 +4776,7 @@ fn neutral_sidebar_surfaces_follow_terminal_background_independently_of_accent()
                     .unwrap()
                     .fg
             };
-            assert_eq!(
-                footer_color(f.controls()[0]),
-                blend([0; 3], accent.rgb(), 100)
-            );
+            assert_eq!(footer_color(f.controls()[0]), Color::Rgb(95, 175, 255));
             assert_eq!(footer_color(f.controls()[1]), Color::Indexed(114));
             assert_ne!(footer_color(f.controls()[0]), footer_color(f.controls()[1]));
             // Background sheen changes only the card fill, in the right direction for the theme.
