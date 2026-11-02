@@ -282,6 +282,16 @@ impl Terminal {
         let mut spacer = cell.clone();
         spacer.clear_wide();
         spacer.flags.insert(Flags::WIDE_CHAR_SPACER);
+        // Widening over another wide glyph must clear its old continuation.
+        if grid[point.line][Column(column.0 + 1)]
+            .flags
+            .contains(Flags::WIDE_CHAR)
+            && column.0 + 2 < grid.columns()
+        {
+            let old_spacer = &mut grid[point.line][Column(column.0 + 2)];
+            old_spacer.clear_wide();
+            old_spacer.flags.remove(Flags::WIDE_CHAR_SPACER);
+        }
         grid[point.line][column].flags.insert(Flags::WIDE_CHAR);
         grid[point.line][Column(column.0 + 1)] = spacer;
         if point.column.0 + 1 >= grid.columns() {
