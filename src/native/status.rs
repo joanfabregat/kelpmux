@@ -462,8 +462,8 @@ pub fn processes<'a>(
 }
 
 pub fn bounds(cols: u16, rows: u16) -> super::protocol::Rect {
-    let width = cols.saturating_sub(6).min(160);
-    let height = rows.saturating_sub(6).min(60);
+    let width = cols.saturating_sub(10).min(160);
+    let height = rows.saturating_sub(4).min(60);
     super::protocol::Rect {
         x: (cols - width) / 2,
         y: (rows - height) / 2,

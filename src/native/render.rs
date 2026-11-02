@@ -861,9 +861,9 @@ fn draw_dialog(
             fill(frame, rect, bg);
             write_text(
                 frame,
-                rect.x,
+                rect.x + 1,
                 rect.y + rect.rows / 2,
-                rect.cols,
+                rect.cols.saturating_sub(1),
                 &format!("{} {}", if checked { "●" } else { "○" }, accent.label()),
                 Color::Rgb(r, g, b),
                 bg,
@@ -2602,7 +2602,7 @@ fn draw_sidebar_status(frame: &mut Frame, workspace: &Workspace, notice: Option<
             rect.cols - inset,
             &label,
             if rect == config {
-                accent_color(workspace)
+                Color::Rgb(95, 175, 255)
             } else if rect == mode {
                 Color::Indexed(114)
             } else {
