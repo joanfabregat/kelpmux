@@ -168,11 +168,7 @@ fn sidebar_new_follows_tabs_and_parked_stays_at_bottom_with_contextual_headers()
         (Action::Config, DialogKind::Config, "⚙︎"),
         (Action::GridPicker, DialogKind::Grid, "▦"),
         (Action::Parked, DialogKind::Parked, "⊟"),
-        (
-            Action::Notifications,
-            DialogKind::Notifications,
-            kelpmux::native::ui::ALERT_ICON,
-        ),
+        (Action::Notifications, DialogKind::Notifications, "N"),
     ] {
         ws.apply(&action).unwrap();
         let popup = frame(&ws);
@@ -447,7 +443,7 @@ fn parked_table_animates_status_and_modals_dim_without_altering_terminal_content
     assert_ne!(a.cells, b.cells);
     for (before, after) in a.cells.iter().zip(&b.cells) {
         assert_eq!(before.bg, after.bg);
-        if before.text != "⠋" {
+        if !kelpmux::native::ui::MOON_FRAMES.contains(&before.text.as_str()) {
             assert_eq!(before.text, after.text);
             assert_eq!(before.fg, after.fg);
         }
@@ -902,7 +898,7 @@ fn shaded_grid_headers_meet_previous_rows_without_empty_separators() {
                 if view.pane.id == ws.active {
                     Color::Rgb(50, 79, 109)
                 } else {
-                    Color::Rgb(58, 61, 64)
+                    Color::Rgb(86, 88, 91)
                 }
             );
         }
@@ -1225,7 +1221,7 @@ fn tab_bodies_fill_available_width_despite_legacy_width_settings() {
 }
 
 #[test]
-fn working_tabs_keep_sheen_inside_the_activity_row_and_bells_beside_titles() {
+fn working_tabs_keep_motion_inside_cards_and_notifications_out_of_titles() {
     use kelpmux::native::{
         ui::TabPosition,
         workspace::{TabTarget, tab_close, tab_number, tab_park, tab_targets},
@@ -1294,9 +1290,11 @@ fn working_tabs_keep_sheen_inside_the_activity_row_and_bells_beside_titles() {
                 }
             }
             let bell = usize::from((tab.y + 1) * ws.cols + tab.x + 2);
-            assert_eq!(b.cells[bell].text, kelpmux::native::ui::ALERT_ICON);
+            assert_eq!(
+                b.cells[bell].text,
+                ws.panes[0].title.chars().next().unwrap().to_string()
+            );
             assert_eq!(b.cells[bell].width, 1);
-            assert_eq!(b.cells[bell + 1].text, " ");
             let mut display = Terminal::new(ws.cols, ws.rows);
             display.feed(&terminal_diff(None, &a));
             assert_eq!(display.snapshot().cells, a.cells);
@@ -1654,12 +1652,9 @@ fn automatic_grid_parking_controls_alert_colors_and_three_row_tabs() {
         let alert = start
             + unread.cells[start..start + usize::from(help.cols)]
                 .iter()
-                .position(|cell| cell.text == kelpmux::native::ui::ALERT_ICON)
+                .position(|cell| cell.text == kelpmux::native::ui::WAIT_ICON)
                 .unwrap();
-        assert_eq!(
-            frame(&ws).cells[alert].text,
-            kelpmux::native::ui::ALERT_ICON
-        );
+        assert_eq!(frame(&ws).cells[alert].text, kelpmux::native::ui::WAIT_ICON);
         assert_eq!(frame(&ws).cells[alert].bg, Color::Rgb(58, 61, 64));
         ws.apply(&Action::Acknowledge(1)).unwrap();
         assert_eq!(frame(&ws).cells[at].text, "?");
@@ -1861,103 +1856,40 @@ fn grid_header_numbers_park_close_and_footer_have_distinct_targets_without_zoom(
 }
 
 #[test]
-fn working_spinner_rotates_in_place_in_tabs_grid_and_parked_cards() {
-    for mode in 0..3 {
+fn working_spinner_uses_two_cells_in_grid_tabs_folded_and_parked_views() {
+    use kelpmux::native::ui::{ACTIVITY_INTERVAL_MS, MOON_FRAMES};
+    assert_eq!(ACTIVITY_INTERVAL_MS, 150);
+    for mode in 0..4 {
         let mut ws = workspace((180, 50), (2, 1));
         ws.panes[0].status = Status::Working;
         ws.panes[0].title = "Wide 界 title".into();
-        ws.panes[1].status = Status::Idle;
-        if mode == 1 {
+        if mode == 1 || mode == 3 {
             ws.apply(&Action::Read(1)).unwrap();
         }
         if mode == 2 {
             ws.apply(&Action::Park(1)).unwrap();
             ws.apply(&Action::Parked).unwrap();
         }
-        if mode != 2 {
-            let frames: Vec<_> = [0, 1, 2, 3]
-                .into_iter()
-                .map(|tick| compose(&ws, &BTreeMap::new(), true, None, tick))
-                .collect();
-            let rows: Vec<String> = frames
-                .iter()
-                .map(|f| {
-                    f.cells[..usize::from(ws.cols)]
-                        .iter()
-                        .map(|c| c.text.as_str())
-                        .collect()
-                })
-                .collect();
-            for (row, symbol) in rows.iter().zip(["◐", "◓", "◑", "◒"]) {
-                if mode == 0 {
-                    assert!(row.contains(symbol));
-                    assert!(row.contains(&format!(" {symbol} Wide")));
-                } else {
-                    assert_eq!(row.matches('●').count(), 1);
-                }
-            }
-            for f in &frames {
-                let mut terminal = Terminal::new(f.cols, f.rows);
-                terminal.feed(&terminal_diff(None, f));
-                assert_eq!(terminal.snapshot().cells, f.cells);
-            }
-            if mode == 0 {
-                assert!(
-                    frames[0]
-                        .cells
-                        .iter()
-                        .zip(&frames[2].cells)
-                        .any(|(a, b)| a.text == b.text && a.bg != b.bg)
-                );
-            }
-            continue;
+        if mode == 3 {
+            ws.apply(&Action::ToggleSidebarFold).unwrap();
         }
-        let frames: Vec<_> = [0, 1, 2, 3, 10]
-            .into_iter()
-            .map(|tick| compose(&ws, &BTreeMap::new(), true, None, tick))
-            .collect();
-        let changed: Vec<_> = frames[0]
-            .cells
-            .iter()
-            .zip(&frames[1].cells)
-            .enumerate()
-            .filter_map(|(index, (a, b))| (a != b).then_some(index))
-            .collect();
-        assert_eq!(changed.len(), 1);
-        let index = changed[0];
-        for f in &frames {
-            for (at, (a, b)) in frames[0].cells.iter().zip(&f.cells).enumerate() {
-                if at != index && mode != 1 {
-                    assert_eq!(a, b);
-                }
-                if at != index {
-                    assert_eq!(a.text, b.text);
-                    assert_eq!(a.bg, b.bg);
-                }
-            }
-        }
-        if mode == 1 {
-            let row: String = frames[0].cells[..usize::from(ws.cols)]
+        let mut terminal = Terminal::new(ws.cols, ws.rows);
+        let mut previous = None;
+        let mut position = None;
+        for tick in 0..=8 {
+            let f = compose(&ws, &BTreeMap::new(), true, None, tick);
+            let index = f
+                .cells
                 .iter()
-                .map(|cell| cell.text.as_str())
-                .collect();
-            assert!(row.contains("Working"));
-            assert!(
-                frames[0]
-                    .cells
-                    .iter()
-                    .zip(&frames[4].cells)
-                    .any(|(a, b)| a.text == b.text && a.fg != b.fg)
-            );
+                .position(|c| c.text == MOON_FRAMES[tick % 8])
+                .unwrap();
+            assert_eq!(*position.get_or_insert(index), index);
+            assert_eq!(f.cells[index].width, 2);
+            assert_eq!(f.cells[index + 1].width, 0);
+            terminal.feed(&terminal_diff(previous.as_ref(), &f));
+            assert_eq!(terminal.snapshot().cells, f.cells);
+            previous = Some(f);
         }
-        assert_eq!(
-            frames
-                .iter()
-                .map(|frame| frame.cells[index].text.as_str())
-                .collect::<Vec<_>>(),
-            vec!["⠋", "⠙", "⠹", "⠸", "⠋"]
-        );
-        assert_eq!(frames[0].cells[index], frames[4].cells[index]);
     }
 }
 
@@ -2117,7 +2049,7 @@ fn tab_surfaces_follow_dark_and_light_backgrounds_without_repainting_terminal_de
             f.cells[usize::from(number.y * f.cols + number.x + 1)].fg,
             Color::Rgb(95, 175, 255)
         );
-        let ball = f.cells.iter().find(|cell| cell.text == "●").unwrap();
+        let ball = f.cells.iter().find(|cell| cell.text == "🌑").unwrap();
         let gray: [u8; 3] = background
             .map(|v| ((u16::from(v) * 45 + if light { 0 } else { 255 * 55 }) / 100) as u8);
         assert_eq!(ball.fg, Color::Rgb(gray[0], gray[1], gray[2]));
@@ -2140,7 +2072,7 @@ fn tab_surfaces_follow_dark_and_light_backgrounds_without_repainting_terminal_de
         assert_eq!(title.fg, Color::Indexed(if light { 232 } else { 231 }));
         assert_eq!(
             parked.cells[usize::from((card.y + 1) * parked.cols + card.x + 6)].fg,
-            Color::Indexed(if light { 232 } else { 231 })
+            Color::Rgb(gray[0], gray[1], gray[2])
         );
     }
 }
@@ -4260,37 +4192,7 @@ fn config_has_one_blank_row_on_each_side_and_new_tab_only_uses_its_text_row() {
 }
 
 #[test]
-fn bouncing_ball_has_exact_width_no_repeated_endpoints_and_padded_sidebar_track() {
-    use kelpmux::native::render::bouncing_ball_frame;
-    assert_eq!(bouncing_ball_frame(0, 12), "");
-    for width in [1u16, 2, 10, 20, 75] {
-        let period = if width == 1 {
-            1
-        } else {
-            2 * usize::from(width - 1)
-        };
-        let frames: Vec<_> = (0..=period * 2)
-            .map(|tick| bouncing_ball_frame(width, tick))
-            .collect();
-        for frame in &frames {
-            assert_eq!(frame.chars().count(), usize::from(width));
-            assert_eq!(frame.matches('●').count(), 1);
-            assert!(frame.chars().all(|c| matches!(c, '●' | '·')));
-        }
-        assert_eq!(frames[0], frames[period]);
-        if width > 1 {
-            for pair in frames.windows(2) {
-                let positions: Vec<_> = pair
-                    .iter()
-                    .map(|f| f.chars().position(|c| c == '●').unwrap())
-                    .collect();
-                assert_eq!(positions[0].abs_diff(positions[1]), 1);
-            }
-            assert!(frames[usize::from(width - 1)].ends_with('●'));
-        } else {
-            assert!(frames.iter().all(|f| f == "●"));
-        }
-    }
+fn compact_moon_track_ignores_legacy_width_and_preserves_padding() {
     for width in [1, 10, 20, 50] {
         let mut ws = workspace((180, 50), (2, 1));
         ws.ui.config.activity_width = width;
@@ -4299,28 +4201,14 @@ fn bouncing_ball_has_exact_width_no_repeated_endpoints_and_padded_sidebar_track(
         ws.panes[0].status = Status::Working;
         let rect = sidebar_tab(&ws, 0);
         let number = kelpmux::native::workspace::tab_number_for(rect, 1);
-        let park = kelpmux::native::workspace::tab_park(rect);
         let f = frame(&ws);
-        let row = &f.cells[usize::from(rect.y * f.cols)..usize::from((rect.y + 1) * f.cols)];
-        let start = usize::from(number.x + number.cols + 2);
-        let length = usize::from(width.min(park.x.saturating_sub(number.x + number.cols + 4)));
-        assert_eq!(row[start - 1].text, " ");
-        assert_eq!(row[start - 2].text, " ");
-        assert_eq!(row[start + length].text, " ");
-        assert_eq!(row[start + length + 1].text, " ");
-        assert_eq!(
-            row[start..start + length]
-                .iter()
-                .map(|c| c.text.as_str())
-                .collect::<String>(),
-            bouncing_ball_frame(length as u16, 0)
-        );
+        let start = usize::from(rect.y * f.cols + number.x + number.cols + 1);
+        assert_eq!(f.cells[start - 1].text, " ");
+        assert_eq!(f.cells[start].text, "🌑");
+        assert_eq!(f.cells[start].width, 2);
+        assert_eq!(f.cells[start + 1].width, 0);
+        assert_eq!(f.cells[start + 2].text, " ");
     }
-    let defaults = kelpmux::native::ui::UiConfig::default();
-    assert_eq!(defaults.activity_width, 20);
-    let mut invalid = defaults;
-    invalid.activity_width = 0;
-    assert!(invalid.validate().is_err());
 }
 
 #[test]
@@ -4407,7 +4295,7 @@ fn grid_header_sheen_is_subtle_covers_the_background_and_keeps_text_steady() {
         let expected = if active == 1 {
             Color::Rgb(50, 79, 109)
         } else {
-            Color::Rgb(58, 61, 64)
+            Color::Rgb(86, 88, 91)
         };
         assert_eq!(
             base.cells[usize::from(working.y * base.cols + working.x)].bg,
@@ -4423,7 +4311,7 @@ fn grid_header_sheen_is_subtle_covers_the_background_and_keeps_text_steady() {
                 assert_eq!(before.fg, after.fg);
                 assert_eq!(before.width, after.width);
                 if before.text != after.text {
-                    assert!(["◐", "◓", "◑", "◒"].contains(&after.text.as_str()));
+                    assert!(kelpmux::native::ui::MOON_FRAMES.contains(&after.text.as_str()));
                 }
                 swept[usize::from(x)] |= before.bg != after.bg;
                 let Color::Rgb(r, g, b) = after.bg else {
@@ -4647,7 +4535,7 @@ fn sidebar_card_matches_derived_palette_and_sheen_covers_all_rows_without_blurri
                 assert_eq!(before.fg, after.fg);
                 assert_eq!(before.bold, after.bold);
                 if before.text != after.text {
-                    assert!(["●", "·"].contains(&after.text.as_str()));
+                    assert!(kelpmux::native::ui::MOON_FRAMES.contains(&after.text.as_str()));
                 }
                 swept[usize::from(y * rect.cols + x)] |= before.bg != after.bg;
             }
@@ -4817,6 +4705,89 @@ fn neutral_sidebar_surfaces_follow_terminal_background_independently_of_accent()
             let mut terminal = Terminal::new(folded.cols, folded.rows);
             terminal.feed(&terminal_diff(None, &folded));
             assert_eq!(terminal.snapshot().cells, folded.cells);
+        }
+    }
+}
+
+#[test]
+fn typed_notifications_and_statuses_keep_completion_separate_from_attention() {
+    use kelpmux::native::ui::{self, ALERT_ICON, DONE_ICON, WAIT_ICON};
+    for (status, expected) in [
+        (Status::TurnFinished, DONE_ICON),
+        (Status::InputNeeded, WAIT_ICON),
+        (Status::Failed, ALERT_ICON),
+    ] {
+        for mode in 0..4 {
+            let mut ws = workspace((120, 40), (2, 1));
+            ws.panes[0].kind = Some(Kind::Codex);
+            ws.panes[0].status = status;
+            ws.ui.notifications = vec![
+                Notification {
+                    id: 1,
+                    pane: 1,
+                    title: "Typed state".into(),
+                    status,
+                    at: 10,
+                    read: false,
+                    workspace: "test".into(),
+                    origin: Some(NotificationOrigin {
+                        run: "test-run".into(),
+                        pid: 0,
+                    }),
+                },
+                Notification {
+                    id: 2,
+                    pane: 1,
+                    title: "Bell · agent".into(),
+                    status: Status::Unknown,
+                    at: 11,
+                    read: false,
+                    workspace: "test".into(),
+                    origin: Some(NotificationOrigin {
+                        run: "test-run".into(),
+                        pid: 0,
+                    }),
+                },
+            ];
+            assert_eq!(ui::notification_icon(&ws.ui, &ws.panes), Some(expected));
+            assert_eq!(
+                ui::notification_symbol(&ws.ui, &ws.ui.notifications[1]),
+                expected
+            );
+            ws.ui.notification_history = true;
+            let mut historical = ws.ui.notifications[0].clone();
+            historical.id = 3;
+            historical.status = Status::Failed;
+            historical.origin.as_mut().unwrap().run = "old-run".into();
+            ws.ui.notifications.push(historical);
+            assert_eq!(ui::notification_icon(&ws.ui, &ws.panes), Some(expected));
+            if mode == 1 || mode == 2 {
+                ws.apply(&Action::Read(1)).unwrap();
+            }
+            if mode == 2 {
+                ws.apply(&Action::ToggleSidebarFold).unwrap();
+            }
+            if mode == 3 {
+                ws.apply(&Action::Park(1)).unwrap();
+                ws.apply(&Action::Parked).unwrap();
+            }
+            let f = frame(&ws);
+            let icon = f.cells.iter().find(|c| c.text == expected).unwrap();
+            assert_eq!(icon.width, 2);
+            if status == Status::TurnFinished {
+                assert!(!f.cells.iter().any(|c| c.text == ALERT_ICON));
+            }
+            let mut terminal = Terminal::new(f.cols, f.rows);
+            terminal.feed(&terminal_diff(None, &f));
+            assert_eq!(terminal.snapshot().cells, f.cells);
+            // Returning to idle must not turn an unread completion into a warning.
+            if status == Status::TurnFinished {
+                ws.panes[0].status = Status::Idle;
+                for notification in &mut ws.ui.notifications {
+                    notification.read = false;
+                }
+                assert_eq!(ui::pane_indicator(&ws.ui, &ws.panes[0]), Some(DONE_ICON));
+            }
         }
     }
 }
