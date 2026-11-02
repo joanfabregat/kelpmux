@@ -116,6 +116,8 @@ fn endpoint(config: &ServerConfig) -> Result<(UnixListener, Endpoint)> {
 }
 
 struct NativePane {
+    launch_cwd: PathBuf,
+    launch_shell: PathBuf,
     size: (u16, u16),
     child: Child,
     master: File,
@@ -127,6 +129,7 @@ struct NativePane {
     idle_observations: u8,
     agent_named: bool,
     terminal_title: Option<String>,
+    program: Option<super::program_status::Snapshot>,
 }
 impl NativePane {
     fn spawn(config: &ServerConfig, cols: u16, rows: u16, id: PaneId) -> Result<Self> {
@@ -159,6 +162,7 @@ impl NativePane {
             }
         }
         let mut command = Command::new(&config.shell);
+        super::shell::integrate_shell(&mut command, &config.state_dir, &config.shell)?;
         command
             .arg("-i")
             .current_dir(&config.cwd)
@@ -178,6 +182,7 @@ impl NativePane {
             .env_remove("STY")
             .env_remove("CODEX_THREAD_ID")
             .env_remove("CLAUDECODE")
+            .env_remove("KELPMUX_DEV_BADGE")
             .stdin(Stdio::from(slave.try_clone()?))
             .stdout(Stdio::from(slave.try_clone()?))
             .stderr(Stdio::from(slave));
@@ -196,6 +201,8 @@ impl NativePane {
         }
         let child = command.spawn()?;
         let mut pane = Self {
+            launch_cwd: config.cwd.clone(),
+            launch_shell: config.shell.clone(),
             size: (cols, rows),
             child,
             master,
@@ -207,6 +214,7 @@ impl NativePane {
             idle_observations: 0,
             agent_named: false,
             terminal_title: None,
+            program: None,
         };
         pane.start = process::read(Path::new("/proc"), pane.child.id())?.start;
         let fd = pane.master.as_raw_fd();
@@ -229,6 +237,54 @@ impl NativePane {
             self.idle_observations = 0;
         }
         Ok(())
+    }
+    fn program_event(&mut self, event: super::program_status::Event) {
+        use super::program_status::{Event, Records, Snapshot};
+        if event == Event::Reset {
+            self.program = None;
+            return;
+        }
+        if event == Event::Prompt {
+            if let Some(snapshot) = &mut self.program {
+                snapshot.records.apply(&event);
+            }
+            return;
+        }
+        let group = unsafe { libc::tcgetpgrp(self.master.as_raw_fd()) };
+        let Ok(owner) = u32::try_from(group)
+            .ok()
+            .filter(|id| *id > 0)
+            .ok_or(())
+            .and_then(|id| process::read(Path::new("/proc"), id).map_err(|_| ()))
+        else {
+            self.program = None;
+            return;
+        };
+        let owner = (owner.pid, owner.start);
+        if self.program.as_ref().is_none_or(|p| {
+            p.owner != owner
+                || p.agent.is_some_and(|(pid, birth)| {
+                    !process::read(Path::new("/proc"), pid).is_ok_and(|p| p.start == birth)
+                })
+        }) {
+            self.program = Some(Snapshot {
+                owner,
+                agent: None,
+                records: Records::default(),
+                event_at: crate::now(),
+            });
+        }
+        if let Some(snapshot) = &mut self.program {
+            let before = [crate::model::Kind::Codex, crate::model::Kind::Claude]
+                .map(|kind| snapshot.records.status(kind));
+            snapshot.records.apply(&event);
+            if before
+                != [crate::model::Kind::Codex, crate::model::Kind::Claude]
+                    .map(|kind| snapshot.records.status(kind))
+            {
+                snapshot.event_at = crate::now();
+            }
+        }
     }
     fn resize(&mut self, cols: u16, rows: u16) {
         if self.size == (cols, rows) {
@@ -538,12 +594,18 @@ impl Drop for RecoveryJob {
     }
 }
 struct Server {
+    remember_tab_order: bool,
     focus_click: bool,
     title_animation: BTreeMap<PaneId, (String, u16)>,
     epoch: String,
     leases: BTreeMap<PaneId, PaneLease>,
     initializing: bool,
     recovery_job: Option<RecoveryJob>,
+    recovery_pending: bool,
+    agent_links: Vec<crate::discovery::polling::Link>,
+    discovered_agents: Vec<crate::model::Agent>,
+    poll_revision: u64,
+    agent_link_target: Option<(PaneId, u32, u64)>,
     aliases: BTreeMap<PaneId, String>,
     activity: super::activity::Activity,
     started: Instant,
@@ -911,6 +973,22 @@ impl Server {
             super::lifecycle::Settings::default()
         };
         settings.ui = self.workspace.ui.config.clone();
+        // Older retained builds reject unknown UI keys. Keep the fold preference
+        // separately while continuing to save their understood expanded width.
+        settings.ui.sidebar_folded = false;
+        settings.ui.accent = super::ui::Accent::Blue;
+        let accent_path = self.config.state_dir.join("sidebar-accent.json");
+        if !self.workspace.ui.config.accent.is_default() {
+            journal::atomic(&accent_path, &self.workspace.ui.config.accent)?;
+        } else if accent_path.try_exists()? {
+            fs::remove_file(accent_path)?;
+        }
+        let folded_path = self.config.state_dir.join("sidebar-folded.json");
+        if self.workspace.ui.config.sidebar_folded {
+            journal::atomic(&folded_path, &true)?;
+        } else if folded_path.try_exists()? {
+            fs::remove_file(folded_path)?;
+        }
         settings.shell = Some(self.config.shell.clone());
         settings.cwd = Some(self.config.cwd.clone());
         settings.grid = (self.workspace.grid_cols, self.workspace.grid_rows);
@@ -919,6 +997,34 @@ impl Server {
             self.workspace.ui.row_weights.clone(),
         ];
         settings.template = self.config.template.clone();
+        let layout = self
+            .remember_tab_order
+            .then(|| super::lifecycle::TabLayout {
+                template: self.config.template.clone(),
+                cwd: self.config.cwd.clone(),
+                shell: self.config.shell.clone(),
+                panes: self
+                    .workspace
+                    .panes
+                    .iter()
+                    .filter(|p| Some(p.id) != self.workspace.ui.scratch)
+                    .filter_map(|p| {
+                        self.panes
+                            .get(&p.id)
+                            .map(|pane| super::lifecycle::StartupPane {
+                                name: self.aliases.get(&p.id).cloned(),
+                                cwd: pane.launch_cwd.clone(),
+                                shell: pane.launch_shell.clone(),
+                            })
+                    })
+                    .collect(),
+            });
+        let layout_path = self.config.state_dir.join("tab-layout.json");
+        if let Some(layout) = layout.filter(|layout| !layout.panes.is_empty()) {
+            journal::atomic(&layout_path, &layout)?;
+        } else if layout_path.try_exists()? {
+            fs::remove_file(layout_path)?;
+        }
         settings.tab_count = Some(
             self.workspace
                 .panes
@@ -955,11 +1061,95 @@ impl Server {
     }
     fn feature_action(&mut self, client: u64, action: &Action) -> Result<bool> {
         match action {
+            Action::TabDrag(_) => {
+                self.workspace.apply(action)?;
+                self.dirty = true;
+                return Ok(true);
+            }
+            Action::Reorder { .. } | Action::Swap { .. } => {
+                self.workspace.apply(action)?;
+                self.remember_tab_order = true;
+                self.persist_geometry()?;
+                self.resize();
+                self.dirty = true;
+                return Ok(true);
+            }
+            Action::AgentLinkPicker(pane) => {
+                let agent = self
+                    .discovered_agents
+                    .iter()
+                    .find(|agent| agent.pane == format!("%{pane}") && agent.ended_at.is_none())
+                    .ok_or("no detected agent in this tab yet")?;
+                if agent.kind != crate::model::Kind::Codex {
+                    return Err("this agent adapter does not provide a conversation picker".into());
+                }
+                self.agent_link_target = Some((*pane, agent.pid, agent.process_start));
+                self.workspace.apply(action)?;
+                self.poll_revision = self.poll_revision.wrapping_add(1);
+                self.dirty = true;
+                return Ok(true);
+            }
+            Action::AgentLinkChoose(index) => {
+                let dialog = self
+                    .workspace
+                    .ui
+                    .dialog
+                    .filter(|dialog| dialog.kind == super::ui::DialogKind::AgentLink)
+                    .ok_or("conversation picker is not open")?;
+                if self.workspace.ui.agent_link_loading {
+                    return Err("conversation list is still loading".into());
+                }
+                let pane = dialog.source.ok_or("conversation picker has no tab")?;
+                let agent = self
+                    .discovered_agents
+                    .iter()
+                    .find(|agent| agent.pane == format!("%{pane}") && agent.ended_at.is_none())
+                    .ok_or("agent has exited")?;
+                let tree = process::snapshot(Path::new("/proc"))?;
+                if self.agent_link_target != Some((pane, agent.pid, agent.process_start)) {
+                    return Err("agent process changed; reopen the picker".into());
+                }
+                let native = self.panes.get(&pane).ok_or("tab has closed")?;
+                if !tree
+                    .get(&agent.pid)
+                    .is_some_and(|process| process.start == agent.process_start)
+                    || !process::descendants(&tree, native.child.id()).contains(&agent.pid)
+                {
+                    return Err("agent process changed; reopen the picker".into());
+                }
+                let session = if *index == 0 {
+                    None
+                } else {
+                    Some(
+                        self.workspace
+                            .ui
+                            .agent_sessions
+                            .get(index - 1)
+                            .filter(|session| session.kind == agent.kind)
+                            .ok_or("conversation is no longer listed")?,
+                    )
+                };
+                self.agent_links.retain(|link| link.pane != agent.pane);
+                if let Some(session) = session {
+                    self.agent_links.push(crate::discovery::polling::Link {
+                        pane: agent.pane.clone(),
+                        pid: agent.pid,
+                        birth: agent.process_start,
+                        kind: agent.kind,
+                        session_id: session.id.clone(),
+                    });
+                }
+                self.poll_revision = self.poll_revision.wrapping_add(1);
+                self.workspace.apply(&Action::DialogClose)?;
+                self.dirty = true;
+                return Ok(true);
+            }
             Action::StatusOpen(_)
             | Action::StatusView(_)
             | Action::StatusSort(_)
             | Action::StatusQuery(_)
-            | Action::StatusScroll(_) => {
+            | Action::StatusScroll(_)
+            | Action::ScrollTabs(_) => {
                 self.workspace.apply(action)?;
                 self.dirty = true;
                 return Ok(true);
@@ -970,6 +1160,7 @@ impl Server {
             Action::NewTab => {
                 // Spawn first; failure must leave every existing pane and view intact.
                 self.spawn_pane(None)?;
+                self.workspace.ui.tab_scroll_anchor = None;
                 let id = self.workspace.panes.last().unwrap().id;
                 if self.workspace.ui.scratch_visible {
                     self.workspace.apply(&Action::ScratchClose)?;
@@ -1023,6 +1214,11 @@ impl Server {
             Action::Acknowledge(id) => {
                 self.activity.acknowledge(*id)?;
                 self.workspace.ui.notifications = self.activity.all().to_vec();
+            }
+            Action::AcknowledgeAll => {
+                self.activity.acknowledge_all()?;
+                self.workspace.ui.notifications = self.activity.all().to_vec();
+                self.workspace.apply(action)?;
             }
             Action::Recovery => {
                 if self.recovery_job.is_none() {
@@ -1527,6 +1723,7 @@ impl Server {
                 self.clients.get_mut(&id).unwrap().attached = true;
                 self.clients.get_mut(&id).unwrap().geometry = Some((cols, rows));
                 if self.controller.is_none() || takeover {
+                    self.workspace.ui.tab_drop = None;
                     self.controller = Some(id);
                     self.apply_theme();
                     self.workspace.resize(cols, rows)?;
@@ -1540,6 +1737,10 @@ impl Server {
                         client_id: id,
                         controller: self.controller == Some(id),
                     })?;
+                if self.controller == Some(id) && self.recovery_pending {
+                    self.feature_action(id, &Action::Recovery)?;
+                    self.recovery_pending = false;
+                }
                 self.dirty = true;
             }
             ClientMessage::Action(Action::Detach) => {
@@ -1554,6 +1755,7 @@ impl Server {
                 self.dirty = true;
             }
             ClientMessage::Action(Action::Takeover) if self.clients[&id].attached => {
+                self.workspace.ui.tab_drop = None;
                 let (cols, rows) = self.clients[&id]
                     .geometry
                     .ok_or("attached client has no geometry")?;
@@ -1828,6 +2030,7 @@ impl Server {
     fn poll_ptys(&mut self) {
         let mut clipboard = vec![];
         let mut exited = vec![];
+        let mut programs = std::collections::BTreeSet::new();
         for (id, pane) in &mut self.panes {
             let mut buf = [0; 8192];
             for _ in 0..16 {
@@ -1843,6 +2046,10 @@ impl Server {
                         }
                         for effect in pane.terminal.feed(&buf[..n]) {
                             match effect {
+                                Effect::Program(event) => {
+                                    pane.program_event(event);
+                                    programs.insert(*id);
+                                }
                                 Effect::WritePty(bytes) => {
                                     let _ = pane.queue(&bytes);
                                 }
@@ -1943,9 +2150,58 @@ impl Server {
                 self.notice = Some(format!("Close exited tab: {error}"));
             }
         }
+        self.refresh_programs(programs);
         if let Some(client) = self.controller.and_then(|id| self.clients.get_mut(&id)) {
             for text in clipboard {
                 let _ = client.send(ServerMessage::Clipboard(text));
+            }
+        }
+    }
+    fn refresh_programs(&mut self, ids: impl IntoIterator<Item = PaneId>) {
+        for id in ids {
+            let Some(mut agent) = self
+                .discovered_agents
+                .iter()
+                .find(|a| a.pane == format!("%{id}"))
+                .cloned()
+            else {
+                continue;
+            };
+            let Some(info) = self.workspace.panes.iter_mut().find(|p| p.id == id) else {
+                continue;
+            };
+            let current = self
+                .panes
+                .get_mut(&id)
+                .and_then(|pane| pane.program.as_mut())
+                .is_some_and(|snapshot| {
+                    let tree = [agent.pid, snapshot.owner.0]
+                        .into_iter()
+                        .filter_map(|pid| {
+                            process::read(Path::new("/proc"), pid)
+                                .ok()
+                                .map(|p| (pid, p))
+                        })
+                        .collect();
+                    if snapshot.apply(&mut agent, &tree, crate::now()) {
+                        snapshot.agent = Some((agent.pid, agent.process_start));
+                        true
+                    } else {
+                        false
+                    }
+                });
+            if current {
+                if info.status != agent.status {
+                    info.status_since = crate::now();
+                }
+                self.dirty |= info.status != agent.status || info.observation != agent.observation;
+                info.status = agent.status;
+                info.observation = agent.observation;
+            } else if info.observation.source == crate::model::StatusSource::Terminal {
+                info.status = Status::Unknown;
+                info.observation = Default::default();
+                info.status_since = crate::now();
+                self.dirty = true;
             }
         }
     }
@@ -1965,7 +2221,23 @@ impl Server {
             })
             .collect();
         DiscoveryRequest {
+            programs: self
+                .panes
+                .iter()
+                .filter_map(|(id, pane)| pane.program.clone().map(|p| (*id, p)))
+                .collect(),
             bridge,
+            revision: self.poll_revision,
+            links: self.agent_links.clone(),
+            list_for: self
+                .workspace
+                .ui
+                .dialog
+                .filter(|dialog| {
+                    dialog.kind == super::ui::DialogKind::AgentLink
+                        && self.workspace.ui.agent_link_loading
+                })
+                .and_then(|dialog| dialog.source),
             identities: self
                 .panes
                 .iter()
@@ -1978,7 +2250,43 @@ impl Server {
             identities,
             agents: reconciled,
             tree,
+            revision,
+            sessions,
         } = result;
+        if revision != self.poll_revision {
+            return;
+        }
+        self.agent_links.retain(|link| {
+            reconciled.iter().any(|agent| {
+                agent.pane == link.pane
+                    && agent.pid == link.pid
+                    && agent.process_start == link.birth
+                    && agent.kind == link.kind
+            })
+        });
+        self.discovered_agents = reconciled.clone();
+        if let Some(sessions) = sessions {
+            if self
+                .workspace
+                .ui
+                .dialog
+                .is_some_and(|dialog| dialog.kind == super::ui::DialogKind::AgentLink)
+            {
+                self.workspace.ui.agent_link_loading = false;
+                match sessions {
+                    Ok(sessions) => {
+                        self.workspace.ui.agent_sessions = sessions;
+                        self.workspace.ui.agent_link_error = None;
+                    }
+                    Err(_) => {
+                        self.workspace.ui.agent_sessions.clear();
+                        self.workspace.ui.agent_link_error =
+                            Some("Codex metadata unavailable; close and reopen to retry".into());
+                    }
+                }
+                self.dirty = true;
+            }
+        }
         for info in &mut self.workspace.panes {
             if !self
                 .panes
@@ -2052,12 +2360,31 @@ impl Server {
             }
             self.dirty |= before != *info;
         }
+        self.refresh_programs(
+            self.workspace
+                .panes
+                .iter()
+                .map(|p| p.id)
+                .collect::<Vec<_>>(),
+        );
     }
     fn frames(&mut self, spinner: usize) {
+        if self.controller.is_none() {
+            self.workspace.ui.tab_drop = None;
+        }
         if let Err(error) = self.activity.observe(&self.workspace.panes, crate::now()) {
             self.notice = Some(format!("Notification history: {error}"));
         }
         self.workspace.ui.notifications = self.activity.all().to_vec();
+        let attached = self.clients.values().any(|client| client.attached);
+        let streaming = self.clients.values().any(|client| client.stream.is_some());
+        // Detached shells still drain PTYs and record notifications, but have
+        // no display or metrics consumer. Do not snapshot their screens.
+        if !attached && !streaming {
+            self.status.poll(false);
+            self.dirty = false;
+            return;
+        }
         let vitals = self.vitals.sample();
         let status_open = self
             .workspace
@@ -2072,7 +2399,15 @@ impl Server {
             super::status::Snapshot::default()
         };
         self.stream_frames(vitals.clone());
-        self.workspace.ui.vitals = if self.workspace.cols <= 60 {
+        if !attached {
+            self.dirty = false;
+            return;
+        }
+        self.workspace.ui.disk_readings = self.vitals.disk_readings().to_vec();
+        self.workspace.ui.vitals = if self.workspace.cols <= 60
+            && self.workspace.reading == ReadingMode::Grid
+            && self.workspace.active != 0
+        {
             let mut compact = Vec::new();
             if let Some(cpu) = vitals.cpu {
                 compact.push((format!("C{cpu}"), 114));
@@ -2135,10 +2470,16 @@ impl Server {
 }
 
 struct DiscoveryRequest {
+    programs: BTreeMap<PaneId, super::program_status::Snapshot>,
+    revision: u64,
+    links: Vec<crate::discovery::polling::Link>,
+    list_for: Option<PaneId>,
     bridge: Vec<crate::tmux::Pane>,
     identities: BTreeMap<PaneId, (u32, u64)>,
 }
 struct DiscoveryResult {
+    revision: u64,
+    sessions: Option<Result<Vec<crate::discovery::polling::Session>>>,
     identities: BTreeMap<PaneId, (u32, u64)>,
     agents: Vec<crate::model::Agent>,
     tree: BTreeMap<u32, process::Process>,
@@ -2156,11 +2497,29 @@ fn discovery_worker(
         let home = std::env::var_os("HOME")
             .map(PathBuf::from)
             .unwrap_or_default();
-        let discovery = Discovery::new(&home);
+        let mut poller = crate::discovery::polling::Poller::new(Discovery::new(&home));
         while let Ok(request) = receiver.recv() {
-            let Ok(agents) = discovery.scan(&request.bridge, crate::now()) else {
+            let Ok(cycle) = poller.poll(&request.bridge, &request.links, crate::now()) else {
                 continue;
             };
+            let mut agents = cycle.agents;
+            for agent in &mut agents {
+                if let Some(snapshot) = agent
+                    .pane
+                    .strip_prefix('%')
+                    .and_then(|id| id.parse::<u64>().ok())
+                    .and_then(|id| request.programs.get(&id))
+                {
+                    snapshot.apply(agent, &cycle.tree, crate::now());
+                }
+            }
+            let sessions = request.list_for.map(|pane| {
+                let agent = agents
+                    .iter()
+                    .find(|agent| agent.pane == format!("%{pane}"))
+                    .ok_or("agent has exited")?;
+                poller.sessions(agent.kind)
+            });
             // A registry client may hold the lock. Skip that journal cycle rather than wait forever.
             let root = state.join("native");
             let agents = if journal::private_dir(&root).is_ok() {
@@ -2183,9 +2542,11 @@ fn discovery_worker(
                 agents
             };
             let result = DiscoveryResult {
+                revision: request.revision,
+                sessions,
                 identities: request.identities,
                 agents,
-                tree: process::snapshot(Path::new("/proc")).unwrap_or_default(),
+                tree: cycle.tree,
             };
             if sender.send(result).is_err() {
                 break;
@@ -2195,7 +2556,7 @@ fn discovery_worker(
     (requests, results, handle)
 }
 
-pub fn serve(config: ServerConfig) -> Result<()> {
+pub fn serve(mut config: ServerConfig) -> Result<()> {
     if let Some(template) = &config.template {
         template.validate()?;
     }
@@ -2204,9 +2565,29 @@ pub fn serve(config: ServerConfig) -> Result<()> {
     Workspace::grid_count(config.initial_grid.0, config.initial_grid.1)?;
     let mut workspace = Workspace::new(config.cols, config.rows)?;
     workspace.ui.config = config.ui.clone();
+    if let Some(value) = std::env::var_os("KELPMUX_DEV_BADGE") {
+        workspace.ui.show_dev_badge = match value.to_str() {
+            Some("1") => true,
+            Some("0") => false,
+            _ => return Err("KELPMUX_DEV_BADGE must be 0 or 1".into()),
+        };
+    }
     let (listener, _endpoint) = endpoint(&config)?;
+    if let Ok(folded) =
+        super::lifecycle::sidebar_folded(&config.state_dir.join("sidebar-folded.json"))
+    {
+        workspace.ui.config.sidebar_folded = folded;
+    }
+    config.ui = workspace.ui.config.clone();
+    if let Ok(accent) =
+        super::lifecycle::sidebar_accent(&config.state_dir.join("sidebar-accent.json"))
+    {
+        workspace.ui.config.accent = accent;
+        config.ui.accent = accent;
+    }
     super::lifecycle::save_pid(&config.state_dir)?;
     let mut server = Server {
+        remember_tab_order: false,
         focus_click: false,
         title_animation: BTreeMap::new(),
         epoch: fs::read_to_string("/proc/sys/kernel/random/uuid")?
@@ -2215,6 +2596,11 @@ pub fn serve(config: ServerConfig) -> Result<()> {
         leases: BTreeMap::new(),
         initializing: true,
         recovery_job: None,
+        recovery_pending: false,
+        agent_links: Vec::new(),
+        discovered_agents: Vec::new(),
+        poll_revision: 0,
+        agent_link_target: None,
         aliases: BTreeMap::new(),
         activity: super::activity::Activity::load(
             &config.state_dir,
@@ -2239,16 +2625,49 @@ pub fn serve(config: ServerConfig) -> Result<()> {
         notice: None,
         shutdown: false,
     };
+    server.workspace.ui.notification_run = server.activity.run().into();
     let count = server.config.initial_tabs.unwrap_or(
         usize::from(server.config.initial_grid.0) * usize::from(server.config.initial_grid.1),
     );
-    for _ in 0..count {
-        server.add_pane()?;
+    let layout =
+        super::lifecycle::TabLayout::load(&server.config.state_dir.join("tab-layout.json"))
+            .ok()
+            .filter(|layout| {
+                layout.panes.len() == count
+                    && layout.template == server.config.template
+                    && layout.cwd == server.config.cwd
+                    && layout.shell == server.config.shell
+            });
+    server.remember_tab_order = layout.is_some();
+    for index in 0..count {
+        if let Some(saved) = layout.as_ref().and_then(|layout| layout.panes.get(index)) {
+            let (cwd, shell) = (server.config.cwd.clone(), server.config.shell.clone());
+            server.config.cwd = saved.cwd.clone();
+            server.config.shell = saved.shell.clone();
+            let result =
+                server.spawn_pane(
+                    saved
+                        .name
+                        .as_ref()
+                        .map(|name| super::templates::TemplatePane {
+                            name: name.clone(),
+                            cwd: saved.cwd.clone(),
+                            shell: Some(saved.shell.clone()),
+                        }),
+                );
+            server.config.cwd = cwd;
+            server.config.shell = shell;
+            result?;
+        } else {
+            server.add_pane()?;
+        }
     }
     server.initializing = false;
     server.workspace.reflow();
     server.persist_geometry()?;
     server.resize();
+    let unclean = super::lifecycle::begin_run(&server.config.state_dir)?;
+    server.recovery_pending = unclean;
     let (requests, results, worker) = discovery_worker(server.config.state_dir.clone());
     let mut discovery = Instant::now() - Duration::from_secs(2);
     let mut render_time = Instant::now() - Duration::from_secs(1);
@@ -2256,6 +2675,7 @@ pub fn serve(config: ServerConfig) -> Result<()> {
     let mut animation = Instant::now();
     let mut spinner = 0;
     let mut idle_poll = Instant::now() - Duration::from_millis(100);
+    let mut unused_poll = Instant::now() - Duration::from_secs(1);
     while !server.shutdown {
         for _ in 0..MAX_CLIENTS {
             match listener.accept() {
@@ -2297,12 +2717,27 @@ pub fn serve(config: ServerConfig) -> Result<()> {
         }
         server.poll_ptys();
         server.poll_recovery();
-        if idle_poll.elapsed() >= Duration::from_millis(100) {
+        let attached = server.clients.values().any(|client| client.attached);
+        let streaming = server
+            .clients
+            .values()
+            .any(|client| client.stream.is_some());
+        let idle_interval = if attached {
+            Duration::from_millis(100)
+        } else {
+            Duration::from_secs(1)
+        };
+        if idle_poll.elapsed() >= idle_interval {
             for pane in server.panes.values_mut() {
                 if !pane.dead {
                     pane.observe_idle();
                 }
             }
+            idle_poll = Instant::now();
+        }
+        // This process-table scan only supplies the attached UI's unused-shell
+        // hints. Never scan the whole host ten times a second per workspace.
+        if attached && unused_poll.elapsed() >= Duration::from_millis(500) {
             if let Ok(tree) = process::snapshot(Path::new("/proc")) {
                 let unused: Vec<_> = server
                     .workspace
@@ -2322,7 +2757,7 @@ pub fn serve(config: ServerConfig) -> Result<()> {
                     server.dirty = true;
                 }
             }
-            idle_poll = Instant::now();
+            unused_poll = Instant::now();
         }
         if discovery.elapsed() >= Duration::from_secs(2) {
             let _ = requests.try_send(server.discovery_snapshot());
@@ -2331,7 +2766,7 @@ pub fn serve(config: ServerConfig) -> Result<()> {
         if let Ok(result) = results.try_recv() {
             server.discovery_result(result);
         }
-        if animation.elapsed() >= Duration::from_millis(125) {
+        if attached && animation.elapsed() >= Duration::from_millis(100) {
             spinner += 1;
             animation = Instant::now();
             server
@@ -2363,7 +2798,7 @@ pub fn serve(config: ServerConfig) -> Result<()> {
                 .iter()
                 .any(|p| p.status == Status::Working);
         }
-        if metrics_time.elapsed() >= Duration::from_secs(1) {
+        if (attached || streaming) && metrics_time.elapsed() >= Duration::from_secs(1) {
             server.dirty = true;
             metrics_time = Instant::now();
         }
@@ -2405,7 +2840,11 @@ pub fn serve(config: ServerConfig) -> Result<()> {
             });
         }
         unsafe {
-            libc::poll(fds.as_mut_ptr(), fds.len() as libc::nfds_t, 10);
+            libc::poll(
+                fds.as_mut_ptr(),
+                fds.len() as libc::nfds_t,
+                if attached || streaming { 10 } else { 100 },
+            );
         }
     }
     drop(requests);
@@ -2418,5 +2857,6 @@ pub fn serve(config: ServerConfig) -> Result<()> {
     {
         let _ = store.reconcile(vec![], crate::now());
     }
+    super::lifecycle::finish_run(&server.config.state_dir)?;
     Ok(())
 }

@@ -4,9 +4,62 @@ use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 pub const FOOTER_BG: u8 = 239;
 pub const TAB_BG: u8 = 236;
+/// Label + two-column inset + five meter sections + percentage + divider.
+pub const MIN_SIDEBAR_COLUMNS: u16 = 22;
+/// Three content columns plus the divider.
+pub const FOLDED_SIDEBAR_COLUMNS: u16 = 4;
 pub const PARKED_BG: u8 = 60;
 pub const RESTORE_BG: u8 = 29;
 pub const ALERT_ICON: &str = "⚠︎";
+pub const WAIT_ICON: &str = "⌛︎";
+pub fn status_icon(status: crate::model::Status) -> &'static str {
+    if status == crate::model::Status::InputNeeded {
+        WAIT_ICON
+    } else {
+        status.marker()
+    }
+}
+pub fn visible_notifications<'a>(
+    ui: &'a UiState,
+    panes: impl IntoIterator<Item = &'a super::protocol::PaneInfo>,
+) -> impl Iterator<Item = &'a super::protocol::Notification> {
+    let panes: Vec<_> = panes.into_iter().collect();
+    ui.notifications.iter().rev().filter(move |item| {
+        ui.notification_history
+            || (!item.read
+                && panes
+                    .iter()
+                    .any(|pane| super::activity::matches(item, pane, &ui.notification_run)))
+    })
+}
+pub fn has_unread_notifications<'a>(
+    ui: &UiState,
+    panes: impl IntoIterator<Item = &'a super::protocol::PaneInfo>,
+) -> bool {
+    panes.into_iter().any(|pane| {
+        ui.notifications
+            .iter()
+            .any(|item| !item.read && super::activity::matches(item, pane, &ui.notification_run))
+    })
+}
+pub fn notification_buttons(bounds: super::protocol::Rect) -> [super::protocol::Rect; 2] {
+    use super::protocol::Rect;
+    let width = bounds.cols.saturating_sub(2) / 2;
+    [
+        Rect {
+            x: bounds.x + 1,
+            y: bounds.y + 1,
+            cols: width,
+            rows: 1,
+        },
+        Rect {
+            x: bounds.x + 1 + width,
+            y: bounds.y + 1,
+            cols: bounds.cols - 2 - width,
+            rows: 1,
+        },
+    ]
+}
 pub const CONFIG_BUTTON_LABEL: &str = " ⚙︎ Config ";
 pub const FOOTER_CONFIG_COLS: u16 = 10;
 pub const FOOTER_MODE_COLS: u16 = 8;
@@ -29,20 +82,56 @@ pub const COLOR_NAMES: [&str; 9] = [
 #[serde(rename_all = "snake_case")]
 pub enum TabPosition {
     #[default]
-    Auto,
-    Top,
+    #[serde(alias = "auto", alias = "top", alias = "bottom")]
     Left,
-    Bottom,
+}
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Accent {
+    #[default]
+    Blue,
+    Sage,
+    Glacier,
+    Slate,
+    Sand,
+    Clay,
+}
+impl Accent {
+    pub const ALL: [Self; 6] = [
+        Self::Blue,
+        Self::Sage,
+        Self::Glacier,
+        Self::Slate,
+        Self::Sand,
+        Self::Clay,
+    ];
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Blue => "Blue",
+            Self::Sage => "Sage",
+            Self::Glacier => "Glacier",
+            Self::Slate => "Slate",
+            Self::Sand => "Sand",
+            Self::Clay => "Clay",
+        }
+    }
+    pub fn rgb(self) -> [u8; 3] {
+        match self {
+            Self::Blue => [95, 175, 255],
+            Self::Sage => [131, 185, 170],
+            Self::Glacier => [121, 190, 200],
+            Self::Slate => [163, 171, 200],
+            Self::Sand => [198, 173, 126],
+            Self::Clay => [201, 147, 135],
+        }
+    }
+    pub fn is_default(&self) -> bool {
+        *self == Self::Blue
+    }
 }
 impl TabPosition {
-    pub fn resolve(self, cols: u16, rows: u16) -> Self {
-        match self {
-            Self::Auto if cols <= 60 => Self::Bottom,
-            Self::Auto if cols >= 160 && cols >= rows.saturating_mul(3) => Self::Top,
-            Self::Auto if cols >= 90 => Self::Left,
-            Self::Auto => Self::Top,
-            _ => self,
-        }
+    pub fn resolve(self, _cols: u16, _rows: u16) -> Self {
+        Self::Left
     }
 }
 
@@ -58,6 +147,7 @@ pub enum DialogKind {
     Status,
     Parked,
     Overview,
+    AgentLink,
     Notifications,
     Recovery,
     Search,
@@ -92,6 +182,15 @@ pub struct UiConfig {
     pub read_height_percent: u8,
     pub bindings: BTreeMap<String, String>,
     pub tab_position: TabPosition,
+    /// Preferred sidebar width in terminal columns; None follows the screen.
+    pub sidebar_columns: Option<u16>,
+    #[serde(skip_serializing_if = "expanded_sidebar")]
+    pub sidebar_folded: bool,
+    #[serde(skip_serializing_if = "Accent::is_default")]
+    pub accent: Accent,
+    /// Maximum bouncing-ball track length; rendering clips it to the available space.
+    #[serde(skip_serializing_if = "default_activity_width")]
+    pub activity_width: u16,
     #[serde(rename = "remembered_read_widths", skip_serializing)]
     pub legacy_read_widths: Option<[Option<u16>; 3]>,
 }
@@ -106,12 +205,28 @@ impl Default for UiConfig {
             pane_colors: BTreeMap::new(),
             read_height_percent: 95,
             bindings: BTreeMap::new(),
-            tab_position: TabPosition::Auto,
+            tab_position: TabPosition::Left,
+            sidebar_columns: None,
+            sidebar_folded: false,
+            accent: Accent::Blue,
+            activity_width: 20,
             legacy_read_widths: None,
         }
     }
 }
 impl UiConfig {
+    pub fn sidebar_width(&self, cols: u16) -> u16 {
+        if self.sidebar_folded {
+            return FOLDED_SIDEBAR_COLUMNS
+                .min(cols.saturating_sub(10).max(cols / 2))
+                .max(1);
+        }
+        // Retain room for the terminal on exceptionally narrow windows.
+        let minimum = MIN_SIDEBAR_COLUMNS.min(cols.saturating_sub(10).max(cols / 2));
+        self.sidebar_columns
+            .unwrap_or_else(|| super::workspace::sidebar_width(cols))
+            .clamp(minimum, (cols / 2).max(minimum).max(1))
+    }
     pub fn validate(&self) -> Result<()> {
         if !(1..=26).contains(&self.prefix)
             || self
@@ -119,6 +234,10 @@ impl UiConfig {
                 .iter()
                 .any(|(&pane, &color)| pane == 0 || usize::from(color) >= PALETTE.len())
             || !(20..=100).contains(&self.read_height_percent)
+            || !(1..=4096).contains(&self.activity_width)
+            || self
+                .sidebar_columns
+                .is_some_and(|width| !(18..=4096).contains(&width))
         {
             return Err("invalid prefix or reading dimensions".into());
         }
@@ -147,6 +266,7 @@ impl UiConfig {
             "tab-position",
             "config",
             "overview",
+            "agent-link",
             "notifications",
             "recovery",
             "next-attention",
@@ -167,8 +287,20 @@ impl UiConfig {
         Ok(())
     }
 }
+fn default_activity_width(width: &u16) -> bool {
+    *width == 20
+}
+fn expanded_sidebar(folded: &bool) -> bool {
+    !folded
+}
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct UiState {
+    #[serde(default)]
+    pub show_dev_badge: bool,
+    #[serde(default)]
+    pub tab_scroll_anchor: Option<usize>,
+    #[serde(default)]
+    pub tab_drop: Option<(super::protocol::PaneId, Option<super::protocol::PaneId>)>,
     #[serde(default)]
     pub status: super::status::Snapshot,
     #[serde(default)]
@@ -188,6 +320,16 @@ pub struct UiState {
     pub title_ticks: BTreeMap<u64, u16>,
     pub recovery_loading: bool,
     pub notifications: Vec<super::protocol::Notification>,
+    #[serde(default)]
+    pub notification_run: String,
+    #[serde(default)]
+    pub notification_history: bool,
+    #[serde(default)]
+    pub agent_sessions: Vec<crate::discovery::polling::Session>,
+    #[serde(default)]
+    pub agent_link_loading: bool,
+    #[serde(default)]
+    pub agent_link_error: Option<String>,
     pub recovery: Vec<super::protocol::RecoveryItem>,
     pub search_query: String,
     pub search_all: bool,
@@ -196,6 +338,8 @@ pub struct UiState {
     pub scratch_visible: bool,
     pub scratch_return: Option<u64>,
     pub scratch_reading: Option<super::protocol::ReadingMode>,
+    #[serde(default)]
+    pub zoom_return: Option<super::protocol::ReadingMode>,
     pub column_weights: Vec<u16>,
     pub row_weights: Vec<u16>,
     pub dialog: Option<Dialog>,
@@ -205,6 +349,8 @@ pub struct UiState {
     pub reading_size: Option<(u16, u16)>,
     pub grid_shape: (u8, u8),
     pub vitals: Vec<(String, u8)>,
+    #[serde(default)]
+    pub disk_readings: Vec<(String, u8)>,
 }
 fn status_descending() -> bool {
     true

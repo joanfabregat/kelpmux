@@ -35,6 +35,7 @@ impl Workspace {
     }
     pub fn resize(&mut self, cols: u16, rows: u16) -> Result<()> {
         validate_size(cols, rows)?;
+        self.ui.tab_scroll_anchor = None;
         let old_bucket = super::ui::geometry_bucket(self.cols);
         let prior = self
             .ui
@@ -140,7 +141,15 @@ impl Workspace {
                     }
                     if pane.id == self.active {
                         view.rect = body;
-                        view.body = body;
+                        view.body = if matches!(self.reading, ReadingMode::Fullscreen(_)) {
+                            Rect {
+                                y: body.y + 1,
+                                rows: body.rows.saturating_sub(1),
+                                ..body
+                            }
+                        } else {
+                            body
+                        };
                     } else {
                         view.body = Rect::default();
                     }
@@ -151,11 +160,8 @@ impl Workspace {
         self.grid_layout()
     }
     pub fn grid_layout(&self) -> Vec<PaneView> {
-        let (_, grid_rows) = self.automatic_shape();
-        // Each row's pane header separates it from the preceding terminal.
-        let usable_rows = self.rows.saturating_sub(1);
         let mut views = Vec::new();
-        let y_boundaries = weighted_boundaries(usable_rows, grid_rows, &[]);
+        let slots = self.grid_slots();
         let (page_start, count) = self.grid_page();
         let mut visible = 0;
         for (index, pane) in self
@@ -178,33 +184,28 @@ impl Workspace {
                 views.push(view);
                 continue;
             }
-            let index = ordinal - page_start;
-            let mut row = 0usize;
-            let mut offset = 0usize;
-            let row_count = loop {
-                let length = count / usize::from(grid_rows)
-                    + usize::from(row < count % usize::from(grid_rows));
-                if index < offset + length {
-                    break length;
-                }
-                offset += length;
-                row += 1;
-            };
-            let col = (index - offset) as u16;
-            let row = row as u16;
-            let x_boundaries =
-                weighted_boundaries(self.cols - (row_count as u16 - 1), row_count as u8, &[]);
-            let left = x_boundaries[usize::from(col)];
-            let top = y_boundaries[usize::from(row)];
-            let rect = Rect {
-                x: left + col,
-                y: top,
-                cols: x_boundaries[usize::from(col + 1)] - left,
-                rows: y_boundaries[usize::from(row + 1)] - top,
-            };
+            let rect = slots[ordinal - page_start];
             views.push(Self::view(pane, ordinal, rect, false));
         }
         views
+    }
+    /// Fixed columns across every row, including unused visual slots.
+    pub fn grid_slots(&self) -> Vec<Rect> {
+        let (cols, rows) = self.automatic_shape();
+        let x = weighted_boundaries(self.cols - u16::from(cols - 1), cols, &[]);
+        let y = weighted_boundaries(self.rows - 1, rows, &[]);
+        (0..usize::from(cols) * usize::from(rows))
+            .map(|index| {
+                let col = index % usize::from(cols);
+                let row = index / usize::from(cols);
+                Rect {
+                    x: x[col] + col as u16,
+                    y: y[row],
+                    cols: x[col + 1] - x[col],
+                    rows: y[row + 1] - y[row],
+                }
+            })
+            .collect()
     }
     pub fn automatic_shape(&self) -> (u8, u8) {
         let (_, count) = self.grid_page();
@@ -326,7 +327,135 @@ impl Workspace {
             .ok_or_else(|| "unknown pane".into())
     }
     pub fn apply(&mut self, action: &Action) -> Result<()> {
+        if !matches!(
+            action,
+            Action::TabDrag(_) | Action::Reorder { .. } | Action::ScrollTabs(_)
+        ) {
+            self.ui.tab_drop = None;
+        }
+        let sidebar_anchor = if let Action::Focus(id) = action {
+            if matches!(self.reading, ReadingMode::Tabs(_) | ReadingMode::Capped(_)) {
+                let visible: Vec<_> = self
+                    .panes
+                    .iter()
+                    .filter(|p| !p.parked && Some(p.id) != self.ui.scratch)
+                    .collect();
+                let anchor = self.ui.tab_scroll_anchor.unwrap_or_else(|| {
+                    visible
+                        .iter()
+                        .position(|p| p.id == self.active)
+                        .unwrap_or(0)
+                });
+                tab_targets(self.cols, self.rows, &self.ui.config, visible.len(), anchor, self.panes.iter().filter(|p| p.parked).count())
+                    .iter().any(|(target, _)| matches!(target, TabTarget::Pane(index) if visible[*index].id == *id)).then_some(anchor)
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+        if matches!(
+            action,
+            Action::Focus(_)
+                | Action::Select(_)
+                | Action::Read(_)
+                | Action::Fullscreen(_)
+                | Action::CloseReading
+                | Action::TabPosition
+                | Action::TabPositionSet(_)
+        ) {
+            self.ui.tab_scroll_anchor = None;
+        }
+        if let Some(anchor) = sidebar_anchor {
+            self.ui.tab_scroll_anchor = Some(anchor);
+        }
         match *action {
+            Action::TabDrag(drop) => {
+                if let Some((source, before)) = drop {
+                    for id in std::iter::once(source).chain(before) {
+                        let index = self.require_pane(id)?;
+                        if self.panes[index].parked || Some(id) == self.ui.scratch {
+                            return Err("only visible tabs can be reordered".into());
+                        }
+                    }
+                }
+                self.ui.tab_drop = drop;
+            }
+            Action::Reorder { source, before } => {
+                self.apply(&Action::TabDrag(Some((source, before))))?;
+                if before != Some(source) {
+                    let index = self.require_pane(source)?;
+                    let pane = self.panes.remove(index);
+                    let target = before
+                        .or(self.ui.scratch)
+                        .and_then(|id| self.panes.iter().position(|p| p.id == id))
+                        .unwrap_or(self.panes.len());
+                    self.panes.insert(target, pane);
+                    for (index, pane) in self.panes.iter_mut().enumerate() {
+                        pane.number = index + 1;
+                    }
+                }
+                self.ui.tab_drop = None;
+                self.ui.tab_scroll_anchor = None;
+            }
+            Action::AgentLinkPicker(pane) => {
+                self.require_pane(pane)?;
+                self.help = false;
+                self.ui.agent_sessions.clear();
+                self.ui.agent_link_loading = true;
+                self.ui.agent_link_error = None;
+                self.ui.dialog = Some(Dialog {
+                    kind: DialogKind::AgentLink,
+                    selection: 0,
+                    source: Some(pane),
+                    filter: AgentFilter::All,
+                });
+            }
+            Action::AgentLinkChoose(_) => {
+                return Err("conversation linking requires a live server".into());
+            }
+            Action::ScrollTabs(amount) => {
+                let panes: Vec<_> = self
+                    .panes
+                    .iter()
+                    .filter(|pane| !pane.parked && Some(pane.id) != self.ui.scratch)
+                    .collect();
+                let active = panes
+                    .iter()
+                    .position(|pane| pane.id == self.active)
+                    .unwrap_or(0);
+                let anchor = self
+                    .ui
+                    .tab_scroll_anchor
+                    .unwrap_or(active)
+                    .min(panes.len().saturating_sub(1));
+                let visible: Vec<_> = tab_targets(
+                    self.cols,
+                    self.rows,
+                    &self.ui.config,
+                    panes.len(),
+                    anchor,
+                    self.panes.iter().filter(|pane| pane.parked).count(),
+                )
+                .into_iter()
+                .filter_map(|(target, _)| {
+                    if let TabTarget::Pane(index) = target {
+                        Some(index)
+                    } else {
+                        None
+                    }
+                })
+                .collect();
+                let capacity = visible.len();
+                if capacity >= panes.len() || capacity == 0 {
+                    self.ui.tab_scroll_anchor = None;
+                } else {
+                    let start = visible[0]
+                        .saturating_add_signed(isize::from(amount))
+                        .min(panes.len() - capacity);
+                    self.ui.tab_scroll_anchor = Some(start + capacity - 1);
+                }
+            }
             Action::Parked => {
                 self.help = false;
                 self.ui.dialog = Some(Dialog {
@@ -486,6 +615,9 @@ impl Workspace {
                     _ => DialogKind::Search,
                 };
                 self.help = false;
+                if kind == DialogKind::Notifications {
+                    self.ui.notification_history = false;
+                }
                 self.ui.dialog = Some(Dialog {
                     kind,
                     selection: 0,
@@ -533,9 +665,46 @@ impl Workspace {
                     notification.read = true;
                 }
             }
+            Action::AcknowledgeAll => {
+                for notification in &mut self.ui.notifications {
+                    notification.read = true;
+                }
+                if let Some(dialog) = &mut self.ui.dialog {
+                    dialog.selection = 0;
+                }
+            }
+            Action::NotificationHistory => {
+                self.ui.notification_history = !self.ui.notification_history;
+                if let Some(dialog) = &mut self.ui.dialog {
+                    dialog.selection = 0;
+                }
+            }
+            Action::ResizeSidebar(columns) => {
+                let config = &mut self.ui.config;
+                if config.sidebar_folded {
+                    if columns >= super::ui::FOLDED_SIDEBAR_COLUMNS + 6 {
+                        config.sidebar_folded = false;
+                        config.sidebar_columns =
+                            Some(columns.clamp(super::ui::MIN_SIDEBAR_COLUMNS, 4096));
+                    }
+                } else if columns <= super::ui::FOLDED_SIDEBAR_COLUMNS + 2 {
+                    config.sidebar_columns = Some(config.sidebar_width(self.cols));
+                    config.sidebar_folded = true;
+                } else {
+                    config.sidebar_columns =
+                        Some(columns.clamp(super::ui::MIN_SIDEBAR_COLUMNS, 4096));
+                }
+            }
+            Action::ToggleSidebarFold => {
+                if !self.ui.config.sidebar_folded {
+                    self.ui.config.sidebar_columns = Some(self.ui.config.sidebar_width(self.cols));
+                }
+                self.ui.config.sidebar_folded = !self.ui.config.sidebar_folded;
+            }
             Action::NotificationSoundToggle => {
                 self.ui.config.notification_sound = !self.ui.config.notification_sound
             }
+            Action::AccentSet(accent) => self.ui.config.accent = accent,
             Action::RecoveryCopy(index) => {
                 self.ui
                     .recovery
@@ -658,13 +827,8 @@ impl Workspace {
                 self.require_pane(id)?;
             }
             Action::TabPosition => {
-                use super::ui::TabPosition;
-                self.ui.config.tab_position = match self.ui.config.tab_position {
-                    TabPosition::Auto => TabPosition::Top,
-                    TabPosition::Top => TabPosition::Left,
-                    TabPosition::Left => TabPosition::Bottom,
-                    TabPosition::Bottom => TabPosition::Auto,
-                };
+                // Retained for old custom bindings; tabs always use the sidebar.
+                self.ui.config.tab_position = super::ui::TabPosition::Left;
             }
             Action::GridPicker | Action::MovePicker | Action::Agents(_) => {
                 let (kind, filter) = match *action {
@@ -707,19 +871,9 @@ impl Workspace {
                 let count = self.dialog_entries().len();
                 if let Some(dialog) = self.ui.dialog.as_mut() {
                     if dialog.kind == DialogKind::Config {
-                        dialog.selection = match (dialog.selection, dx, dy) {
-                            (0..=3, _, dy) if dy > 0 => 4,
-                            (4, _, dy) if dy < 0 => match self.ui.config.tab_position {
-                                super::ui::TabPosition::Auto => 0,
-                                super::ui::TabPosition::Top => 1,
-                                super::ui::TabPosition::Left => 2,
-                                super::ui::TabPosition::Bottom => 3,
-                            },
-                            (index @ 0..=3, dx, _) => {
-                                (index as isize + isize::from(dx)).clamp(0, 3) as usize
-                            }
-                            (index, _, _) => index,
-                        };
+                        dialog.selection =
+                            (dialog.selection as isize + isize::from(dx) + isize::from(dy))
+                                .rem_euclid(7) as usize;
                         return Ok(());
                     }
                     let columns = match dialog.kind {
@@ -857,8 +1011,12 @@ impl Workspace {
                 self.require_pane(id)?;
                 self.active = id;
                 self.reading = if self.reading == ReadingMode::Fullscreen(id) {
-                    ReadingMode::Tabs(id)
+                    match self.ui.zoom_return.take().unwrap_or(ReadingMode::Tabs(id)) {
+                        ReadingMode::Grid => ReadingMode::Grid,
+                        _ => ReadingMode::Tabs(id),
+                    }
                 } else {
+                    self.ui.zoom_return = Some(self.reading);
                     ReadingMode::Fullscreen(id)
                 };
             }
@@ -915,7 +1073,14 @@ impl Workspace {
             Action::Focus(_) | Action::Select(_) | Action::Read(_) | Action::Fullscreen(_)
         ) {
             for notification in &mut self.ui.notifications {
-                if notification.pane == self.active {
+                if self
+                    .panes
+                    .iter()
+                    .find(|pane| pane.id == self.active)
+                    .is_some_and(|pane| {
+                        super::activity::matches(notification, pane, &self.ui.notification_run)
+                    })
+                {
                     notification.read = true;
                 }
             }
@@ -944,8 +1109,13 @@ impl Workspace {
     }
     pub fn dialog_entries(&self) -> Vec<PaneId> {
         match self.ui.dialog.map(|dialog| dialog.kind) {
+            Some(DialogKind::AgentLink) => {
+                return (0..=self.ui.agent_sessions.len() as u64).collect();
+            }
             Some(DialogKind::Notifications) => {
-                return self.ui.notifications.iter().map(|item| item.id).collect();
+                return super::ui::visible_notifications(&self.ui, &self.panes)
+                    .map(|item| item.id)
+                    .collect();
             }
             Some(DialogKind::Recovery) => return (0..self.ui.recovery.len() as u64).collect(),
             Some(DialogKind::Search) => return (0..self.ui.search_hits.len() as u64).collect(),
@@ -973,7 +1143,7 @@ pub fn dialog_entries(panes: &[PaneInfo], dialog: Option<Dialog>) -> Vec<PaneId>
         Some(Dialog {
             kind: DialogKind::Config,
             ..
-        }) => (0..5).collect(),
+        }) => (0..7).collect(),
         Some(Dialog {
             kind: DialogKind::CloseConfirm | DialogKind::ParkConfirm | DialogKind::RestoreConfirm,
             ..
@@ -1029,7 +1199,7 @@ pub fn dialog_bounds_for(cols: u16, rows: u16, kind: super::ui::DialogKind) -> R
         return dialog_bounds(cols, rows);
     }
     let (width, height) = if kind == super::ui::DialogKind::Config {
-        (72, 13)
+        (72, 16)
     } else {
         (52, 9)
     };
@@ -1043,40 +1213,23 @@ pub fn dialog_bounds_for(cols: u16, rows: u16, kind: super::ui::DialogKind) -> R
     }
 }
 pub fn config_geometry(bounds: Rect) -> (u16, u16) {
-    if bounds.rows >= 12 {
-        (6, 3)
-    } else if bounds.rows >= 10 {
-        (4, 2)
-    } else if bounds.rows >= 9 {
-        (4, 1)
-    } else {
-        (2, 1)
-    }
+    (
+        u16::from(bounds.rows >= 10),
+        if bounds.rows >= 10 { 3 } else { 1 },
+    )
 }
 /// Logical focus index, optional explicit on/off value, and shared mouse geometry.
 pub fn config_targets(bounds: Rect) -> Vec<(usize, Option<bool>, Rect)> {
-    let (step, height) = config_geometry(bounds);
+    let (offset, height) = config_geometry(bounds);
     let mut choices = Vec::new();
     let inner = bounds.cols - 4;
-    for index in 0..4u16 {
-        choices.push((
-            usize::from(index),
-            None,
-            Rect {
-                x: bounds.x + 2 + (inner - 3) * index / 4 + index,
-                y: bounds.y + 2,
-                cols: (inner - 3) * (index + 1) / 4 - (inner - 3) * index / 4,
-                rows: height,
-            },
-        ));
-    }
     for value in 0..2u16 {
         choices.push((
-            4,
+            0,
             Some(value == 0),
             Rect {
                 x: bounds.x + 2 + inner / 2 + (inner - inner / 2 - 1) * value / 2 + value,
-                y: bounds.y + 2 + step,
+                y: bounds.y + 2 + offset,
                 cols: (inner - inner / 2 - 1) * (value + 1) / 2
                     - (inner - inner / 2 - 1) * value / 2,
                 rows: height,
@@ -1084,6 +1237,28 @@ pub fn config_targets(bounds: Rect) -> Vec<(usize, Option<bool>, Rect)> {
         ));
     }
     choices
+}
+/// Accent choices follow the notification block with one blank row between.
+pub fn accent_targets(bounds: Rect) -> Vec<(super::ui::Accent, Rect)> {
+    let (offset, height) = config_geometry(bounds);
+    let card_height = (bounds.rows.saturating_sub(5 + offset + height) / 2).clamp(1, 3);
+    let inner = bounds.cols.saturating_sub(4);
+    super::ui::Accent::ALL
+        .into_iter()
+        .enumerate()
+        .map(|(index, accent)| {
+            let col = index as u16 % 3;
+            (
+                accent,
+                Rect {
+                    x: bounds.x + 2 + inner * col / 3,
+                    y: bounds.y + 4 + offset + height + index as u16 / 3 * card_height,
+                    cols: inner * (col + 1) / 3 - inner * col / 3,
+                    rows: card_height,
+                },
+            )
+        })
+        .collect()
 }
 pub fn grid_cards(bounds: Rect) -> Vec<Rect> {
     let width = bounds.cols / 3;
@@ -1116,7 +1291,7 @@ pub fn move_cards(bounds: Rect, columns: u8, rows: u8) -> Vec<Rect> {
 }
 /// Grow with the screen while staying within the original width and +20%.
 pub fn sidebar_width(cols: u16) -> u16 {
-    let minimum = (cols / 5).clamp(18, 28);
+    let minimum = (cols / 5).clamp(super::ui::MIN_SIDEBAR_COLUMNS, 28);
     (cols / 4)
         .clamp(minimum, minimum * 6 / 5)
         .saturating_sub(2)
@@ -1127,32 +1302,24 @@ pub fn tab_body(
     cols: u16,
     rows: u16,
     config: &super::ui::UiConfig,
-    _full: bool,
+    full: bool,
     _size: Option<(u16, u16)>,
 ) -> Rect {
-    use super::ui::TabPosition;
-    let position = config.tab_position.resolve(cols, rows);
-    let mut area = Rect {
-        x: 0,
-        y: 0,
-        cols,
-        rows: rows.saturating_sub(1),
-    };
-    match position {
-        TabPosition::Top => {
-            area.y = 2;
-            area.rows = area.rows.saturating_sub(2);
-        }
-        TabPosition::Left => {
-            let sidebar = sidebar_width(cols);
-            area.x = sidebar;
-            area.cols = cols - sidebar;
-            area.rows = rows;
-        }
-        TabPosition::Bottom => area.rows = area.rows.saturating_sub(2),
-        TabPosition::Auto => unreachable!(),
+    if full {
+        return Rect {
+            x: 0,
+            y: 0,
+            cols,
+            rows: rows.saturating_sub(1),
+        };
     }
-    area
+    let sidebar = config.sidebar_width(cols);
+    Rect {
+        x: sidebar,
+        y: 0,
+        cols: cols - sidebar,
+        rows,
+    }
 }
 pub fn scratch_rect(cols: u16, rows: u16) -> Rect {
     let width = cols.saturating_sub(4).min(120);
@@ -1209,6 +1376,19 @@ pub enum TabTarget {
     Previous,
     Next,
     New,
+}
+pub fn tab_bar_area(cols: u16, rows: u16, config: &super::ui::UiConfig) -> Rect {
+    Rect {
+        x: 0,
+        y: 0,
+        cols: config.sidebar_width(cols) - 1,
+        rows: rows
+            - if config.sidebar_folded {
+                3
+            } else {
+                sidebar_status_rows(rows)
+            },
+    }
 }
 pub fn tab_number(rect: Rect) -> Rect {
     Rect {
@@ -1296,28 +1476,34 @@ pub fn help_button(rows: u16, count: usize) -> Rect {
     }
 }
 pub fn sidebar_status_rows(rows: u16) -> u16 {
-    if rows >= 24 {
-        8
-    } else if rows >= 18 {
-        7
-    } else {
-        3
-    }
+    if rows >= 18 { 8 } else { 3 }
 }
-pub fn sidebar_controls(cols: u16, rows: u16, _count: usize) -> [Rect; 4] {
-    let width = sidebar_width(cols) - 1;
+pub fn sidebar_button_rows(_rows: u16) -> u16 {
+    1
+}
+pub fn sidebar_controls(
+    cols: u16,
+    rows: u16,
+    _count: usize,
+    config: &super::ui::UiConfig,
+) -> [Rect; 4] {
+    let width = config.sidebar_width(cols) - 1;
+    let height = sidebar_button_rows(rows);
     let rect = |x, y, cols| Rect {
         x,
         y,
         cols,
-        rows: 1,
+        rows: height,
     };
+    if config.sidebar_folded {
+        return [Rect::default(); 4];
+    }
     let right = width.div_ceil(2);
     [
-        rect(0, rows - 2, right),
-        rect(right, rows - 2, width - right),
-        rect(0, rows - 1, right),
-        rect(right, rows - 1, width - right),
+        rect(0, rows - 2 * height, right),
+        rect(right, rows - 2 * height, width - right),
+        rect(0, rows - height, right),
+        rect(right, rows - height, width - right),
     ]
 }
 pub fn color_cards(bounds: Rect) -> Vec<Rect> {
@@ -1335,15 +1521,20 @@ pub fn color_cards(bounds: Rect) -> Vec<Rect> {
         })
         .collect()
 }
-pub fn sidebar_actions(cols: u16, rows: u16, parked_count: usize) -> [Rect; 2] {
+pub fn sidebar_actions(
+    cols: u16,
+    rows: u16,
+    parked_count: usize,
+    config: &super::ui::UiConfig,
+) -> [Rect; 2] {
     let height = 3;
     let new = Rect {
         x: 0,
         y: rows - sidebar_status_rows(rows) - height,
-        cols: sidebar_width(cols) - 1,
+        cols: config.sidebar_width(cols) - 1,
         rows: height,
     };
-    [new, sidebar_controls(cols, rows, parked_count)[2]]
+    [new, sidebar_controls(cols, rows, parked_count, config)[2]]
 }
 pub fn tab_targets(
     cols: u16,
@@ -1353,157 +1544,111 @@ pub fn tab_targets(
     active: usize,
     parked_count: usize,
 ) -> Vec<(TabTarget, Rect)> {
-    use super::ui::TabPosition;
-    let position = config.tab_position.resolve(cols, rows);
-    if count == 0 {
-        if position == TabPosition::Left {
-            let [mut new, parked] = sidebar_actions(cols, rows, parked_count);
-            new.y = 1;
-            return vec![(TabTarget::New, new), (TabTarget::Parked, parked)];
-        }
-        let y = if position == TabPosition::Bottom {
-            rows - 3
+    if config.sidebar_folded {
+        let width = config.sidebar_width(cols) - 1;
+        let area = rows.saturating_sub(3);
+        let overflow = count > usize::from(area / 2);
+        let capacity = usize::from(area.saturating_sub(if overflow { 2 } else { 0 }) / 2).max(1);
+        let start = if overflow {
+            active.saturating_sub(capacity - 1)
         } else {
             0
         };
-        return vec![
+        let top = u16::from(overflow);
+        let rect = |y| Rect {
+            x: 0,
+            y,
+            cols: width,
+            rows: 1,
+        };
+        let mut targets: Vec<_> = (start..(start + capacity).min(count))
+            .enumerate()
+            .map(|(i, index)| {
+                (
+                    TabTarget::Pane(index),
+                    Rect {
+                        rows: 2,
+                        ..rect(top + i as u16 * 2)
+                    },
+                )
+            })
+            .collect();
+        let end = top + targets.len() as u16 * 2;
+        if overflow {
+            targets.push((TabTarget::Previous, rect(0)));
+            targets.push((TabTarget::Next, rect(end)));
+        }
+        return targets;
+    }
+    if count == 0 {
+        let [mut new, parked] = sidebar_actions(cols, rows, parked_count, config);
+        new.y = 1;
+        return vec![(TabTarget::New, new), (TabTarget::Parked, parked)];
+    }
+    let width = config.sidebar_width(cols) - 1;
+    let [mut new, parked] = sidebar_actions(cols, rows, parked_count, config);
+    let area = new.y;
+    let height = new.rows;
+    let overflow = count > usize::from(area / height);
+    let compact = area < height + 2;
+    let available = area.saturating_sub(if overflow {
+        if compact { 1 } else { 2 }
+    } else {
+        0
+    });
+    let capacity = usize::from(available / height).max(1);
+    let start = if overflow {
+        active.saturating_sub(capacity - 1)
+    } else {
+        0
+    };
+    let top = u16::from(overflow);
+    let mut tabs: Vec<_> = (start..(start + capacity).min(count))
+        .enumerate()
+        .map(|(i, index)| {
             (
-                TabTarget::New,
+                TabTarget::Pane(index),
                 Rect {
                     x: 0,
-                    y,
-                    cols: 5,
-                    rows: 2,
+                    y: top + i as u16 * height,
+                    cols: width,
+                    rows: height,
                 },
-            ),
-            (TabTarget::Parked, parked_button(rows, parked_count)),
-        ];
+            )
+        })
+        .collect();
+    let end = top + tabs.len() as u16 * height;
+    new.y = end + u16::from(overflow && !compact);
+    if overflow {
+        tabs.push((
+            TabTarget::Previous,
+            Rect {
+                x: 0,
+                y: 0,
+                cols: if compact { width / 2 } else { width },
+                rows: 1,
+            },
+        ));
+        tabs.push((
+            TabTarget::Next,
+            Rect {
+                x: if compact { width / 2 } else { 0 },
+                y: if compact { 0 } else { end },
+                cols: if compact { width - width / 2 } else { width },
+                rows: 1,
+            },
+        ));
     }
-    match position {
-        TabPosition::Top | TabPosition::Bottom => {
-            let overflow = count * 18 + 6 > usize::from(cols);
-            let reserve = if overflow { 12 } else { 6 };
-            let capacity = usize::from(cols.saturating_sub(reserve) / 18)
-                .max(1)
-                .min(count);
-            let start = if overflow {
-                active.saturating_sub(capacity - 1)
-            } else {
-                0
-            };
-            let width = ((cols - reserve) / capacity as u16).min(40);
-            let x = if overflow { 3 } else { 0 };
-            let y = if position == TabPosition::Bottom {
-                rows - 3
-            } else {
-                0
-            };
-            let mut tabs: Vec<_> = (start..(start + capacity).min(count))
-                .enumerate()
-                .map(|(i, index)| {
-                    (
-                        TabTarget::Pane(index),
-                        Rect {
-                            x: x + i as u16 * width,
-                            y,
-                            cols: width,
-                            rows: 2,
-                        },
-                    )
-                })
-                .collect();
-            tabs.push((
-                TabTarget::New,
-                Rect {
-                    x: x + tabs.len() as u16 * width,
-                    y,
-                    cols: 5,
-                    rows: 2,
-                },
-            ));
-            tabs.push((TabTarget::Parked, parked_button(rows, parked_count)));
-            if overflow {
-                tabs.push((
-                    TabTarget::Previous,
-                    Rect {
-                        x: 0,
-                        y,
-                        cols: 3,
-                        rows: 2,
-                    },
-                ));
-                tabs.push((
-                    TabTarget::Next,
-                    Rect {
-                        x: cols - 3,
-                        y,
-                        cols: 3,
-                        rows: 2,
-                    },
-                ));
-            }
-            tabs
-        }
-        TabPosition::Left => {
-            let width = sidebar_width(cols) - 1;
-            let [mut new, parked] = sidebar_actions(cols, rows, parked_count);
-            let area = new.y;
-            let height = new.rows;
-            let overflow = count > usize::from(area / height);
-            let compact = area < height + 2;
-            let available = area.saturating_sub(if overflow {
-                if compact { 1 } else { 2 }
-            } else {
-                0
-            });
-            let capacity = usize::from(available / height).max(1);
-            let start = if overflow {
-                active.saturating_sub(capacity - 1)
-            } else {
-                0
-            };
-            let top = u16::from(overflow);
-            let mut tabs: Vec<_> = (start..(start + capacity).min(count))
-                .enumerate()
-                .map(|(i, index)| {
-                    (
-                        TabTarget::Pane(index),
-                        Rect {
-                            x: 0,
-                            y: top + i as u16 * height,
-                            cols: width,
-                            rows: height,
-                        },
-                    )
-                })
-                .collect();
-            let end = top + tabs.len() as u16 * height;
-            new.y = end + u16::from(overflow && !compact);
-            if overflow {
-                tabs.push((
-                    TabTarget::Previous,
-                    Rect {
-                        x: 0,
-                        y: 0,
-                        cols: if compact { width / 2 } else { width },
-                        rows: 1,
-                    },
-                ));
-                tabs.push((
-                    TabTarget::Next,
-                    Rect {
-                        x: if compact { width / 2 } else { 0 },
-                        y: if compact { 0 } else { end },
-                        cols: if compact { width - width / 2 } else { width },
-                        rows: 1,
-                    },
-                ));
-            }
-            tabs.push((TabTarget::New, new));
-            tabs.push((TabTarget::Parked, parked));
-            tabs
-        }
-        TabPosition::Auto => unreachable!(),
+    tabs.push((TabTarget::New, new));
+    tabs.push((TabTarget::Parked, parked));
+    tabs
+}
+
+pub fn tab_new_line(rect: Rect) -> Rect {
+    Rect {
+        y: rect.y + rect.rows / 2,
+        rows: 1,
+        ..rect
     }
 }
 

@@ -4,6 +4,7 @@ use crate::{Result, journal};
 use serde::{Deserialize, Serialize};
 use std::{
     fs::{self, OpenOptions},
+    io::Read,
     os::{
         fd::AsRawFd,
         unix::fs::{MetadataExt, OpenOptionsExt},
@@ -176,6 +177,8 @@ pub struct StartRequest<'a> {
     pub cols: u16,
     pub rows: u16,
     pub settings: &'a Settings,
+    pub replace_running: bool,
+    pub executable: Option<&'a Path>,
 }
 pub fn start(request: StartRequest<'_>) -> Result<()> {
     private_state(request.state)?;
@@ -194,15 +197,39 @@ pub fn start(request: StartRequest<'_>) -> Result<()> {
     if !meta.is_file() || meta.uid() != unsafe { libc::geteuid() } || meta.mode() & 0o077 != 0 {
         return Err("workspace startup lock must be an owned private regular file".into());
     }
-    if unsafe { libc::flock(startup_lock.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } != 0 {
+    let lock_deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        if unsafe { libc::flock(startup_lock.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } == 0 {
+            break;
+        }
         let error = std::io::Error::last_os_error();
         if error.kind() != std::io::ErrorKind::WouldBlock {
             return Err(error.into());
         }
-        return Err("workspace startup is already in progress; retry when ready".into());
+        if !request.replace_running || Instant::now() >= lock_deadline {
+            return Err("workspace startup is already in progress; retry when ready".into());
+        }
+        thread::sleep(Duration::from_millis(20));
     }
+    let executable = request
+        .executable
+        .map(Path::to_path_buf)
+        .unwrap_or(std::env::current_exe()?);
+    let target = fs::metadata(&executable)?;
+    if !target.is_file() || target.mode() & 0o111 == 0 {
+        return Err("selected server binary must be an executable regular file".into());
+    }
+    let mut previous = None;
     if matches!(inspect(request.socket), Ok(ServerMessage::State { .. })) {
-        return Ok(());
+        if !request.replace_running {
+            return Ok(());
+        }
+        let stream = super::cli::connect(request.socket)?;
+        let identity = super::upgrade::identify(&stream, request.state)?;
+        if identity.device == target.dev() && identity.inode == target.ino() {
+            return Ok(());
+        }
+        previous = Some(stream);
     }
     // Fail obvious configuration mistakes before persisting or forking. The
     // server still handles races and relative shell names resolved through PATH.
@@ -215,12 +242,41 @@ pub fn start(request: StartRequest<'_>) -> Result<()> {
             return Err("workspace shell must be an executable file".into());
         }
     }
+    request.settings.ui.validate()?;
+    if let Some(template) = &request.settings.template {
+        template.validate()?;
+    }
+    if let Some(mut stream) = previous {
+        eprintln!("Updating workspace: ending the previous build's shells and jobs.");
+        write_message(&mut stream, &ClientMessage::Command(Action::Shutdown))?;
+        match super::cli::response(&mut stream)? {
+            ServerMessage::State { .. } => (),
+            ServerMessage::Error(error) => return Err(error.into()),
+            _ => return Err("previous server did not acknowledge shutdown".into()),
+        }
+        drop(stream);
+        let deadline = Instant::now() + Duration::from_secs(10);
+        loop {
+            if !request.socket.try_exists()? {
+                // Socket removal precedes release of the endpoint's locks.
+                if let Ok(guard) = journal::Lock::acquire(&request.state.join("native.lock"), false)
+                {
+                    drop(guard);
+                    break;
+                }
+            }
+            if Instant::now() >= deadline {
+                return Err("previous server is still shutting down; reconnect shortly".into());
+            }
+            thread::sleep(Duration::from_millis(20));
+        }
+    }
     let mut persisted = request.settings.clone();
     persisted.shell = Some(request.shell.to_path_buf());
     persisted.cwd = Some(request.cwd.to_path_buf());
     journal::atomic(&request.state.join("workspace.json"), &persisted)?;
     let size = format!("{}x{}", request.cols, request.rows);
-    let mut child = Command::new(std::env::current_exe()?)
+    let mut child = Command::new(&executable)
         .arg("server")
         .arg("--background")
         .arg("--socket")
@@ -269,4 +325,115 @@ pub fn start(request: StartRequest<'_>) -> Result<()> {
 pub fn save_pid(state: &Path) -> Result<()> {
     journal::atomic(&state.join("server.pid"), &std::process::id())?;
     super::upgrade::save(state)
+}
+
+/// Call under the exclusive workspace lock, only after startup succeeds.
+/// A marker is cleared solely on a completed orderly shutdown, never by Drop.
+pub fn begin_run(state: &Path) -> Result<bool> {
+    let path = state.join("server.running.json");
+    let unclean = match fs::symlink_metadata(&path) {
+        Ok(meta) => {
+            if !meta.is_file()
+                || meta.uid() != unsafe { libc::geteuid() }
+                || meta.mode() & 0o077 != 0
+                || meta.len() > 32
+            {
+                return Err("server run marker must be an owned private regular file".into());
+            }
+            if !serde_json::from_slice::<bool>(&fs::read(&path)?)? {
+                return Err("invalid server run marker".into());
+            }
+            true
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => false,
+        Err(error) => return Err(error.into()),
+    };
+    journal::atomic(&path, &true)?;
+    Ok(unclean)
+}
+pub fn finish_run(state: &Path) -> Result<()> {
+    fs::remove_file(state.join("server.running.json"))?;
+    fs::File::open(state)?.sync_all()?;
+    Ok(())
+}
+
+/// Read the private fold preference independently of retained-build settings.
+pub fn sidebar_folded(path: &Path) -> Result<bool> {
+    private_preference(path)
+}
+pub fn sidebar_accent(path: &Path) -> Result<super::ui::Accent> {
+    private_preference(path)
+}
+fn private_preference<T: serde::de::DeserializeOwned>(path: &Path) -> Result<T> {
+    let file = OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
+        .open(path)?;
+    let metadata = file.metadata()?;
+    if !metadata.is_file()
+        || metadata.uid() != unsafe { libc::geteuid() }
+        || metadata.mode() & 0o077 != 0
+        || metadata.len() > 128
+    {
+        return Err("sidebar preference must be an owned private file".into());
+    }
+    let mut text = String::new();
+    file.take(129).read_to_string(&mut text)?;
+    if text.len() > 128 {
+        return Err("sidebar preference is too large".into());
+    }
+    Ok(serde_json::from_str(&text)?)
+}
+
+/// Persist startup definitions in display order, never live process/session state.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TabLayout {
+    pub template: Option<super::templates::Template>,
+    pub cwd: PathBuf,
+    pub shell: PathBuf,
+    pub panes: Vec<StartupPane>,
+}
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct StartupPane {
+    pub name: Option<String>,
+    pub cwd: PathBuf,
+    pub shell: PathBuf,
+}
+impl TabLayout {
+    pub fn load(path: &Path) -> Result<Self> {
+        let meta = fs::symlink_metadata(path)?;
+        if !meta.is_file()
+            || meta.uid() != unsafe { libc::geteuid() }
+            || meta.mode() & 0o077 != 0
+            || meta.len() > 512 * 1024
+        {
+            return Err("tab layout must be an owned private file smaller than 512 KiB".into());
+        }
+        let file = OpenOptions::new()
+            .read(true)
+            .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
+            .open(path)?;
+        let mut bytes = vec![];
+        file.take(512 * 1024 + 1).read_to_end(&mut bytes)?;
+        if bytes.len() > 512 * 1024 {
+            return Err("saved tab layout is too large".into());
+        }
+        let layout: Self = serde_json::from_slice(&bytes)?;
+        if layout.panes.is_empty()
+            || layout.panes.iter().any(|pane| {
+                !pane.cwd.is_absolute()
+                    || pane.shell.as_os_str().is_empty()
+                    || pane.name.as_ref().is_some_and(|name| {
+                        name.trim().is_empty()
+                            || name.len() > 128
+                            || name.chars().any(char::is_control)
+                    })
+            })
+        {
+            return Err("invalid saved tab startup layout".into());
+        }
+        Ok(layout)
+    }
 }

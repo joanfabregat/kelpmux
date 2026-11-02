@@ -3,7 +3,7 @@ use crate::{Result, model::Status};
 use serde::{Deserialize, Serialize};
 use std::io::{Read, Write};
 
-pub const VERSION: u16 = 29;
+pub const VERSION: u16 = 48;
 pub const MAX_MESSAGE: usize = 16 * 1024 * 1024;
 pub const MAX_INPUT: usize = 64 * 1024;
 pub type PaneId = u64;
@@ -26,6 +26,8 @@ pub struct Cell {
     pub italic: bool,
     pub underline: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub underline_color: Option<Color>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub hyperlink: Option<String>,
 }
 impl Default for Cell {
@@ -38,6 +40,7 @@ impl Default for Cell {
             bold: false,
             italic: false,
             underline: false,
+            underline_color: None,
             hyperlink: None,
         }
     }
@@ -161,15 +164,19 @@ pub struct Frame {
     pub ui: super::ui::UiState,
 }
 impl Frame {
+    pub fn sidebar_width(&self) -> u16 {
+        self.ui.config.sidebar_width(self.cols)
+    }
     pub fn sidebar_status(&self) -> bool {
-        (self.reading != ReadingMode::Grid || self.active == 0)
+        !matches!(self.reading, ReadingMode::Fullscreen(_))
+            && (self.reading != ReadingMode::Grid || self.active == 0)
             && self.ui.config.tab_position.resolve(self.cols, self.rows)
                 == super::ui::TabPosition::Left
     }
     pub fn controls(&self) -> [Rect; 4] {
         let count = self.panes.iter().filter(|view| view.pane.parked).count();
         if self.sidebar_status() {
-            super::workspace::sidebar_controls(self.cols, self.rows, count)
+            super::workspace::sidebar_controls(self.cols, self.rows, count, &self.ui.config)
         } else {
             [
                 Rect {
@@ -191,7 +198,7 @@ impl Frame {
     }
     pub fn footer_cols(&self) -> u16 {
         let help = self.controls()[3];
-        help.x + help.cols
+        help.x + help.cols + if self.ui.show_dev_badge { 5 } else { 0 }
     }
 }
 
@@ -235,7 +242,12 @@ pub enum Action {
     RecoveryCopy(usize),
     SearchCopy(usize),
     NotificationSoundToggle,
+    AccentSet(super::ui::Accent),
     Acknowledge(u64),
+    AcknowledgeAll,
+    NotificationHistory,
+    ResizeSidebar(u16),
+    ToggleSidebarFold,
     NextAttention,
     NextFinished,
     Scratch,
@@ -256,8 +268,16 @@ pub enum Action {
         dy: i16,
     },
     Config,
+    AgentLinkPicker(PaneId),
+    AgentLinkChoose(usize),
     WrapToggle,
     NewTab,
+    ScrollTabs(i16),
+    TabDrag(Option<(PaneId, Option<PaneId>)>),
+    Reorder {
+        source: PaneId,
+        before: Option<PaneId>,
+    },
     ParkRequest(PaneId),
     RestoreRequest(PaneId),
     Park(PaneId),
@@ -385,6 +405,8 @@ pub enum ServerMessage {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Notification {
+    #[serde(default)]
+    pub origin: Option<NotificationOrigin>,
     pub id: u64,
     pub pane: PaneId,
     pub title: String,
@@ -392,6 +414,11 @@ pub struct Notification {
     pub at: u64,
     pub read: bool,
     pub workspace: String,
+}
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct NotificationOrigin {
+    pub run: String,
+    pub pid: u32,
 }
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RecoveryItem {

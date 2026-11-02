@@ -20,22 +20,31 @@ const MAX_EVENTS: usize = 256;
 const MAX_BYTES: u64 = 512 * 1024;
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 struct Seen {
+    #[serde(default)]
+    run: String,
     pane: PaneId,
     pid: u32,
     kind: Option<Kind>,
     session_id: Option<String>,
     title: String,
     status: Status,
+    #[serde(default)]
+    started_work: bool,
 }
 impl From<&PaneInfo> for Seen {
     fn from(pane: &PaneInfo) -> Self {
         Self {
+            run: String::new(),
             pane: pane.id,
             pid: pane.pid,
             kind: pane.kind,
             session_id: pane.session_id.clone().filter(|id| crate::session_id(id)),
             title: clean(&pane.title),
             status: pane.status,
+            started_work: matches!(
+                pane.status,
+                Status::Working | Status::TurnFinished | Status::Failed
+            ),
         }
     }
 }
@@ -48,6 +57,7 @@ struct Persisted {
     seen: BTreeMap<PaneId, Seen>,
 }
 pub struct Activity {
+    run: String,
     path: PathBuf,
     workspace: String,
     data: Persisted,
@@ -91,6 +101,10 @@ fn emit(
         .checked_add(1)
         .ok_or("notification identifier exhausted")?;
     data.events.push(Notification {
+        origin: (!pane.run.is_empty()).then(|| super::protocol::NotificationOrigin {
+            run: pane.run.clone(),
+            pid: pane.pid,
+        }),
         id,
         pane: pane.pane,
         title: title.unwrap_or_else(|| pane.title.clone()),
@@ -170,6 +184,9 @@ impl Activity {
             journal::atomic(&path, &data)?;
         }
         Ok(Self {
+            run: fs::read_to_string("/proc/sys/kernel/random/uuid")?
+                .trim()
+                .to_owned(),
             path,
             workspace: workspace.into(),
             data,
@@ -179,7 +196,9 @@ impl Activity {
     pub fn observe(&mut self, panes: &[PaneInfo], time: u64) -> Result<bool> {
         let mut current = BTreeMap::new();
         for pane in panes {
-            if pane.id == 0 || current.insert(pane.id, Seen::from(pane)).is_some() {
+            let mut seen = Seen::from(pane);
+            seen.run = self.run.clone();
+            if pane.id == 0 || current.insert(pane.id, seen).is_some() {
                 return Err("invalid or duplicate pane observation".into());
             }
         }
@@ -188,6 +207,9 @@ impl Activity {
             if let Some(old) = self.data.seen.get(&seen.pane) {
                 if same_identity(old, seen) && seen.session_id.is_none() {
                     seen.session_id = old.session_id.clone();
+                }
+                if same_identity(old, seen) {
+                    seen.started_work |= old.started_work;
                 }
             }
         }
@@ -256,6 +278,16 @@ impl Activity {
         if pane.kind.is_none() {
             return Ok(false);
         }
+        if pane.kind == Some(Kind::Claude)
+            && pane.status == Status::Idle
+            && !self
+                .data
+                .seen
+                .get(&pane.id)
+                .is_some_and(|seen| same_identity(seen, &Seen::from(pane)) && seen.started_work)
+        {
+            return Ok(false);
+        }
         if self.data.events.iter().rev().any(|event| {
             event.pane == pane.id
                 && event.status == Status::Unknown
@@ -265,10 +297,12 @@ impl Activity {
             return Ok(false);
         }
         let mut data = self.data.clone();
+        let mut seen = Seen::from(pane);
+        seen.run = self.run.clone();
         emit(
             &mut data,
             &self.workspace,
-            &Seen::from(pane),
+            &seen,
             Status::Unknown,
             time,
             Some(format!("Bell · {}", clean(&pane.title))),
@@ -295,8 +329,23 @@ impl Activity {
     pub fn snapshots(&self) -> Vec<Notification> {
         self.data.events.iter().rev().take(128).cloned().collect()
     }
+    pub fn acknowledge_all(&mut self) -> Result<()> {
+        if self.data.events.iter().all(|event| event.read) {
+            return Ok(());
+        }
+        let mut data = self.data.clone();
+        for event in &mut data.events {
+            event.read = true;
+        }
+        journal::atomic(&self.path, &data)?;
+        self.data = data;
+        Ok(())
+    }
     pub fn all(&self) -> &[Notification] {
         &self.data.events
+    }
+    pub fn run(&self) -> &str {
+        &self.run
     }
     pub fn unread(&self) -> usize {
         self.data.events.iter().filter(|event| !event.read).count()
@@ -319,4 +368,15 @@ pub fn next(panes: &[PaneInfo], filter: AgentFilter, active: PaneId) -> Option<P
         .position(|pane| pane.id == active)
         .map_or(0, |index| (index + 1) % panes.len());
     Some(panes[index].id)
+}
+
+/// A numeric pane ID alone can point at a different shell after a restart.
+pub fn matches(event: &Notification, pane: &PaneInfo, run: &str) -> bool {
+    event.origin.as_ref().is_some_and(|origin| {
+        !run.is_empty()
+            && origin.run == run
+            && origin.pid == pane.pid
+            && event.pane == pane.id
+            && !pane.dead
+    })
 }

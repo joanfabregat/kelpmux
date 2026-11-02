@@ -171,11 +171,12 @@ impl Store {
             }
             if let Some(hook) = self.registry.hooks.get(&key) {
                 if hook.kind == agent.kind && hook.at >= time.saturating_sub(RETENTION) {
-                    if agent.session_id.is_none() {
+                    if agent.session_id.is_none() && agent.source != "client-bridge" {
                         agent.session_id = Some(hook.id.clone());
                         agent.source = "hook".into();
                     }
                     if agent.session_id.as_deref() == Some(&hook.id)
+                        && agent.observation.source != crate::model::StatusSource::Terminal
                         && (agent.status == Status::Unknown
                             || agent.source == "hook"
                             || hook.at >= time.saturating_sub(5))
@@ -317,17 +318,22 @@ impl Store {
             .find(|a| a.pane == pane && a.kind == kind && a.ended_at.is_none())
             .ok_or("pane is not registered; run scan or daemon first")?;
         // Never overwrite a positively identified different conversation.
+        if agent.source == "client-bridge" && agent.session_id.is_none() {
+            return Err("Codex client is awaiting a verified conversation selection".into());
+        }
         if agent.session_id.as_deref().is_some_and(|s| s != id) {
             return Err("hook session does not match discovered agent".into());
         }
         agent.session_id = Some(id.into());
-        agent.status = status;
         let at = now();
-        agent.observation = crate::model::Observation {
-            source: crate::model::StatusSource::Hook,
-            checked_at: at,
-            event_at: Some(at),
-        };
+        if agent.observation.source != crate::model::StatusSource::Terminal {
+            agent.status = status;
+            agent.observation = crate::model::Observation {
+                source: crate::model::StatusSource::Hook,
+                checked_at: at,
+                event_at: Some(at),
+            };
+        }
         agent.source = "hook".into();
         let agent = agent.clone();
         self.registry.hooks.insert(
@@ -400,12 +406,10 @@ pub fn hook_status(event: &str, value: &Value) -> Option<Status> {
         }
         "PreToolUse" => Some(Status::Working),
         "PermissionRequest" => Some(Status::InputNeeded),
-        "Notification"
-            if ["permission_prompt", "idle_prompt"]
-                .contains(&value["notification_type"].as_str().unwrap_or("")) =>
-        {
+        "Notification" if value["notification_type"] == "permission_prompt" => {
             Some(Status::InputNeeded)
         }
+        "Notification" if value["notification_type"] == "idle_prompt" => Some(Status::Idle),
         "Stop" | "agent-turn-complete" if !value["stop_hook_active"].as_bool().unwrap_or(false) => {
             Some(Status::TurnFinished)
         }

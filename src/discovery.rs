@@ -15,6 +15,11 @@ use std::{
     time::{Duration, Instant},
 };
 
+mod claude;
+mod codex;
+pub mod polling;
+
+#[derive(Clone)]
 pub struct Discovery {
     pub proc_root: PathBuf,
     pub codex_home: PathBuf,
@@ -34,26 +39,39 @@ impl Discovery {
     }
     pub fn scan(&self, panes: &[Pane], time: u64) -> Result<Vec<Agent>> {
         let tree = process::snapshot(&self.proc_root)?;
+        self.scan_tree(panes, time, &tree, &mut polling::builtins(), &[])
+    }
+    pub fn scan_tree(
+        &self,
+        panes: &[Pane],
+        time: u64,
+        tree: &BTreeMap<u32, Process>,
+        adapters: &mut [Box<dyn polling::Adapter>],
+        links: &[polling::Link],
+    ) -> Result<Vec<Agent>> {
         let mut result = Vec::new();
         for pane in panes {
-            let mut candidates: Vec<_> = process::descendants(&tree, pane.pid)
+            let mut candidates: Vec<_> = process::descendants(tree, pane.pid)
                 .into_iter()
                 .filter_map(|pid| {
                     let proc = tree.get(&pid)?;
                     let args = process::args(&self.proc_root, pid);
-                    classify(proc, &args).map(|kind| (proc, kind, args))
+                    adapters
+                        .iter()
+                        .position(|adapter| adapter.matches(proc, &args))
+                        .map(|index| (proc, index, args))
                 })
                 .collect();
             // Parent-most interactive agent wins. Nested tool processes are not new panes.
-            candidates.sort_by_key(|(p, _, _)| depth(&tree, p.pid, pane.pid));
+            candidates.sort_by_key(|(p, _, _)| depth(tree, p.pid, pane.pid));
             // npm's Codex launcher is a node parent; metadata belongs to its native child.
-            candidates.retain(|(p, kind, _)| {
+            candidates.retain(|(p, index, _)| {
                 !(p.command == "node"
-                    && tree
-                        .values()
-                        .any(|child| child.parent == p.pid && child.command == kind.as_str()))
+                    && tree.values().any(|child| {
+                        child.parent == p.pid && child.command == adapters[*index].kind().as_str()
+                    }))
             });
-            let Some((proc, kind, args)) = candidates.first() else {
+            let Some((proc, index, args)) = candidates.first() else {
                 continue;
             };
             let cwd = fs::read_link(self.proc_root.join(proc.pid.to_string()).join("cwd"))
@@ -65,7 +83,7 @@ impl Discovery {
                 window: pane.window.clone(),
                 pid: proc.pid,
                 process_start: proc.start,
-                kind: *kind,
+                kind: adapters[*index].kind(),
                 session_id: None,
                 name: Path::new(&cwd)
                     .file_name()
@@ -83,117 +101,31 @@ impl Discovery {
                 last_seen: time,
                 ended_at: None,
             };
-            match kind {
-                Kind::Claude => self.claude(proc, args, &mut agent),
-                Kind::Codex => self.codex(proc, args, &mut agent),
+            if let Some(link) = links.iter().find(|link| {
+                link.pane == pane.id
+                    && link.pid == proc.pid
+                    && link.birth == proc.start
+                    && link.kind == agent.kind
+                    && session_id(&link.session_id)
+            }) {
+                agent.session_id = Some(link.session_id.clone());
+                agent.source = "explicit-link".into();
+            }
+            let mut enriched = agent.clone();
+            if adapters[*index]
+                .poll(self, proc, args, &mut enriched)
+                .is_ok()
+                && enriched.pid == agent.pid
+                && enriched.process_start == agent.process_start
+                && enriched.pane == agent.pane
+                && enriched.kind == agent.kind
+                && (agent.source != "explicit-link" || enriched.session_id == agent.session_id)
+            {
+                agent = enriched;
             }
             result.push(agent);
         }
         Ok(result)
-    }
-    fn claude(&self, proc: &Process, args: &[String], agent: &mut Agent) {
-        let file = self
-            .claude_home
-            .join("sessions")
-            .join(format!("{}.json", proc.pid));
-        if let Some(value) = read_json(&file) {
-            let start = value.get("procStart").and_then(|v| {
-                v.as_str()
-                    .and_then(|s| s.parse::<u64>().ok())
-                    .or_else(|| v.as_u64())
-            });
-            if value.get("pid").and_then(Value::as_u64) == Some(proc.pid as u64)
-                && start == Some(proc.start)
-            {
-                agent.session_id =
-                    string(&value, &["sessionId", "session_id"]).filter(|s| session_id(s));
-                if let Some(name) = string(&value, &["name"]) {
-                    agent.name = name;
-                }
-                if let Some(status) = string(&value, &["status"]) {
-                    agent.status = Status::from_live(&status);
-                    agent.observation.source = crate::model::StatusSource::LiveRecord;
-                }
-                agent.source = "claude-live-record".into();
-            }
-        }
-        if agent.session_id.is_none() {
-            agent.session_id = resume_id(args, true);
-            if agent.session_id.is_some() {
-                agent.source = "resume-argument".into();
-            }
-        }
-    }
-    fn codex(&self, proc: &Process, args: &[String], agent: &mut Agent) {
-        agent.session_id = process::environment(&self.proc_root, proc.pid, "CODEX_THREAD_ID")
-            .filter(|s| session_id(s))
-            .or_else(|| resume_id(args, false));
-        if agent.session_id.is_some() {
-            agent.source = "process-identity".into();
-        }
-        let mut rollout = None;
-        let mut open_rollouts = BTreeMap::new();
-        for path in process::links(&self.proc_root, proc.pid) {
-            if path.extension().is_some_and(|e| e == "jsonl")
-                && path
-                    .file_name()
-                    .is_some_and(|n| n.to_string_lossy().starts_with("rollout-"))
-            {
-                if let Ok(file) = File::open(&path) {
-                    let mut line = String::new();
-                    let _ = BufReader::new(file).take(128 * 1024).read_line(&mut line);
-                    if let Ok(value) = serde_json::from_str::<Value>(&line) {
-                        if value["type"] == "session_meta" {
-                            if let Some(id) =
-                                value["payload"]["id"].as_str().filter(|s| session_id(s))
-                            {
-                                open_rollouts.insert(id.to_owned(), path);
-                            }
-                        }
-                    }
-                }
-            }
-        }
-        // Several open conversations in a process do not identify the active TUI.
-        // Never let arbitrary descriptor iteration choose an unrelated session.
-        if open_rollouts.len() == 1 {
-            let (id, path) = open_rollouts.into_iter().next().unwrap();
-            agent.session_id = Some(id);
-            agent.source = "open-rollout".into();
-            rollout = Some(path);
-        } else if let Some(id) = &agent.session_id {
-            rollout = open_rollouts.remove(id);
-        }
-        let Some(id) = agent.session_id.clone() else {
-            return;
-        };
-        if let Some(name) = index_name(&self.codex_home.join("session_index.jsonl"), &id) {
-            agent.name = name;
-        }
-        // Connect only to an already-running daemon; never start or resume an agent.
-        if let Ok(value) = read_codex_thread(
-            &self
-                .codex_home
-                .join("app-server-control/app-server-control.sock"),
-            &id,
-        ) {
-            let thread = &value["thread"];
-            if thread["id"].as_str() == Some(&id) {
-                if let Some(name) = thread["name"].as_str().filter(|s| !s.is_empty()) {
-                    agent.name = name.into();
-                }
-                agent.status = codex_status(&thread["status"]);
-                agent.observation.source = crate::model::StatusSource::AppServer;
-                return;
-            }
-        }
-        if rollout.is_none() {
-            rollout = find_rollout(&self.codex_home.join("sessions"), &id, 0);
-        }
-        if let Some(path) = rollout {
-            agent.status = rollout_status(&path);
-            agent.observation.source = crate::model::StatusSource::Transcript;
-        }
     }
 }
 
@@ -212,7 +144,8 @@ fn depth(tree: &BTreeMap<u32, Process>, mut pid: u32, root: u32) -> usize {
 fn classify(proc: &Process, args: &[String]) -> Option<Kind> {
     if args
         .iter()
-        .any(|s| ["app-server", "mcp-server", "exec", "-p", "--print"].contains(&s.as_str()))
+        .any(|s| ["app-server", "mcp-server", "exec"].contains(&s.as_str()))
+        || (proc.command != "codex" && args.iter().any(|s| ["-p", "--print"].contains(&s.as_str())))
     {
         return None;
     }
@@ -355,64 +288,89 @@ pub fn codex_status(v: &Value) -> Status {
         Status::from_live(v["type"].as_str().unwrap_or(""))
     }
 }
-fn read_codex_thread(socket: &Path, id: &str) -> Result<Value> {
-    let mut stream = UnixStream::connect(socket)?;
-    stream.set_read_timeout(Some(Duration::from_millis(300)))?;
-    stream.set_write_timeout(Some(Duration::from_millis(300)))?;
-    let mut reader = BufReader::new(stream.try_clone()?);
-    writeln!(
-        stream,
-        "{}",
-        json!({"id":1,"method":"initialize","params":{"clientInfo":{"name":"kelpmux","version":env!("CARGO_PKG_VERSION")},"capabilities":{"experimentalApi":true}}})
-    )?;
-    rpc_result(&mut reader, 1)?;
-    writeln!(stream, "{}", json!({"method":"initialized"}))?;
-    writeln!(
-        stream,
-        "{}",
-        json!({"id":2,"method":"thread/read","params":{"threadId":id,"includeTurns":false}})
-    )?;
-    rpc_result(&mut reader, 2)
-}
 const RPC_TIMEOUT: Duration = Duration::from_millis(300);
 const MAX_RPC_LINE: usize = 1024 * 1024;
 const MAX_RPC_BYTES: usize = 2 * 1024 * 1024;
 
-fn rpc_result(reader: &mut BufReader<UnixStream>, id: u64) -> Result<Value> {
-    // A per-read timeout alone lets a continuously trickling peer hold this
-    // worker forever. Notifications and partial lines share one fixed deadline.
+// A WebSocket frame can arrive across many reads. Enforce the same absolute
+// deadline on every underlying read/write, including fragmented/trickling peers.
+struct RpcStream {
+    stream: UnixStream,
+    deadline: std::cell::Cell<Instant>,
+}
+impl RpcStream {
+    fn new(stream: UnixStream) -> Self {
+        Self {
+            stream,
+            deadline: std::cell::Cell::new(Instant::now() + RPC_TIMEOUT),
+        }
+    }
+    fn remaining(&self) -> std::io::Result<Duration> {
+        self.deadline
+            .get()
+            .checked_duration_since(Instant::now())
+            .ok_or_else(|| {
+                std::io::Error::new(
+                    std::io::ErrorKind::TimedOut,
+                    "Codex metadata request timed out",
+                )
+            })
+    }
+}
+impl Read for RpcStream {
+    fn read(&mut self, bytes: &mut [u8]) -> std::io::Result<usize> {
+        self.stream.set_read_timeout(Some(self.remaining()?))?;
+        self.stream.read(bytes)
+    }
+}
+impl Write for RpcStream {
+    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+        self.stream.set_write_timeout(Some(self.remaining()?))?;
+        self.stream.write(bytes)
+    }
+    fn flush(&mut self) -> std::io::Result<()> {
+        self.stream.flush()
+    }
+}
+type RpcSocket = tungstenite::WebSocket<RpcStream>;
+fn rpc_socket(stream: UnixStream) -> Result<RpcSocket> {
+    let config = tungstenite::protocol::WebSocketConfig::default()
+        .read_buffer_size(4096)
+        .write_buffer_size(0)
+        .max_write_buffer_size(MAX_RPC_BYTES)
+        .max_message_size(Some(MAX_RPC_LINE))
+        .max_frame_size(Some(MAX_RPC_LINE));
+    let (socket, _) = tungstenite::client::client_with_config(
+        "ws://localhost/",
+        RpcStream::new(stream),
+        Some(config),
+    )
+    .map_err(|_| std::io::Error::other("Codex WebSocket handshake failed"))?;
+    Ok(socket)
+}
+fn rpc_send(socket: &mut RpcSocket, value: Value) -> Result<()> {
+    socket.get_ref().deadline.set(Instant::now() + RPC_TIMEOUT);
+    socket.send(tungstenite::Message::Text(value.to_string().into()))?;
+    Ok(())
+}
+fn rpc_result(socket: &mut RpcSocket, id: u64) -> Result<Value> {
     let deadline = Instant::now() + RPC_TIMEOUT;
+    socket.get_ref().deadline.set(deadline);
     let mut received = 0;
     for _ in 0..32 {
-        let mut line = Vec::new();
-        loop {
-            let remaining = deadline
-                .checked_duration_since(Instant::now())
-                .ok_or("Codex metadata request timed out")?;
-            reader.get_ref().set_read_timeout(Some(remaining))?;
-            let bytes = match reader.fill_buf() {
-                Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
-                result => result?,
-            };
-            if bytes.is_empty() {
-                return Err("Codex closed discovery connection".into());
-            }
-            let newline = bytes.iter().position(|byte| *byte == b'\n');
-            let count = newline.map_or(bytes.len(), |position| position + 1);
-            received += count;
-            if line.len() + count > MAX_RPC_LINE || received > MAX_RPC_BYTES {
-                return Err("Codex metadata reply exceeds its size limit".into());
-            }
-            line.extend_from_slice(&bytes[..count]);
-            reader.consume(count);
-            if newline.is_some() {
-                break;
-            }
+        let text = match socket.read()? {
+            tungstenite::Message::Text(text) => text,
+            tungstenite::Message::Ping(_) | tungstenite::Message::Pong(_) => continue,
+            _ => return Err("Codex closed discovery connection or sent a non-text reply".into()),
+        };
+        received += text.len();
+        if text.len() > MAX_RPC_LINE || received > MAX_RPC_BYTES {
+            return Err("Codex metadata reply exceeds its size limit".into());
         }
         if Instant::now() >= deadline {
             return Err("Codex metadata request timed out".into());
         }
-        let value: Value = serde_json::from_slice(&line)?;
+        let value: Value = serde_json::from_str(&text)?;
         if value["id"].as_u64() == Some(id) {
             if value.get("error").is_some() {
                 return Err("Codex rejected metadata request".into());
@@ -427,116 +385,98 @@ fn rpc_result(reader: &mut BufReader<UnixStream>, id: u64) -> Result<Value> {
 mod rpc_tests {
     use super::*;
     use std::thread;
-
-    #[test]
-    fn fragmented_reply_and_buffered_following_reply_are_preserved() {
-        let (client, mut peer) = UnixStream::pair().unwrap();
-        let worker = thread::spawn(move || {
-            for bytes in [
-                b"{\"id\":1,".as_slice(),
-                b"\"result\":{\"ok\":true}}\n{\"id\":2,\"result\":\"next\"}\n",
-            ] {
-                peer.write_all(bytes).unwrap();
-                thread::sleep(Duration::from_millis(5));
-            }
-        });
-        let mut reader = BufReader::new(client);
-        assert_eq!(rpc_result(&mut reader, 1).unwrap(), json!({"ok": true}));
-        assert_eq!(rpc_result(&mut reader, 2).unwrap(), json!("next"));
-        worker.join().unwrap();
+    use tungstenite::{Message, WebSocket, protocol::Role};
+    fn pair() -> (RpcSocket, WebSocket<UnixStream>) {
+        let (client, peer) = UnixStream::pair().unwrap();
+        let config = tungstenite::protocol::WebSocketConfig::default()
+            .max_message_size(Some(MAX_RPC_LINE))
+            .max_frame_size(Some(MAX_RPC_LINE));
+        (
+            WebSocket::from_raw_socket(RpcStream::new(client), Role::Client, Some(config)),
+            WebSocket::from_raw_socket(peer, Role::Server, None),
+        )
     }
-
     #[test]
-    fn trickling_unterminated_line_cannot_extend_absolute_deadline() {
+    fn independent_websocket_messages_and_pretty_json_are_preserved() {
+        let (mut client, mut peer) = pair();
+        peer.send(Message::Text(
+            "{\n\"id\":1,\n\"result\":{\"ok\":true}\n}".into(),
+        ))
+        .unwrap();
+        peer.send(Message::Text(
+            json!({"id":2,"result":"next"}).to_string().into(),
+        ))
+        .unwrap();
+        assert_eq!(rpc_result(&mut client, 1).unwrap(), json!({"ok":true}));
+        assert_eq!(rpc_result(&mut client, 2).unwrap(), json!("next"));
+    }
+    #[test]
+    fn trickling_partial_websocket_frame_cannot_extend_deadline() {
         let (client, mut peer) = UnixStream::pair().unwrap();
         let worker = thread::spawn(move || {
-            let finish = Instant::now() + Duration::from_secs(2);
-            while Instant::now() < finish {
+            peer.write_all(&[0x81, 126, 0, 200]).unwrap();
+            for _ in 0..100 {
                 if peer.write_all(b" ").is_err() {
                     break;
                 }
                 thread::sleep(Duration::from_millis(20));
             }
         });
+        let mut socket = WebSocket::from_raw_socket(RpcStream::new(client), Role::Client, None);
         let begin = Instant::now();
-        let mut reader = BufReader::new(client);
-        assert!(rpc_result(&mut reader, 1).is_err());
+        assert!(rpc_result(&mut socket, 1).is_err());
         let elapsed = begin.elapsed();
-        drop(reader);
+        drop(socket);
         worker.join().unwrap();
         assert!(
             elapsed >= Duration::from_millis(200),
-            "timeout occurred unexpectedly early: {elapsed:?}"
+            "timeout too early: {elapsed:?}"
         );
         assert!(
             elapsed < Duration::from_secs(1),
-            "trickling reply prolonged timeout: {elapsed:?}"
+            "trickle prolonged timeout: {elapsed:?}"
         );
     }
-
-    #[test]
-    fn irrelevant_notifications_cannot_reset_deadline() {
-        let (client, mut peer) = UnixStream::pair().unwrap();
-        let worker = thread::spawn(move || {
-            for _ in 0..20 {
-                if peer.write_all(b"{\"method\":\"notice\"}\n").is_err() {
-                    break;
-                }
-                thread::sleep(Duration::from_millis(25));
-            }
-        });
-        let begin = Instant::now();
-        let mut reader = BufReader::new(client);
-        assert!(rpc_result(&mut reader, 1).is_err());
-        let elapsed = begin.elapsed();
-        drop(reader);
-        worker.join().unwrap();
-        assert!(elapsed >= Duration::from_millis(200));
-        assert!(elapsed < Duration::from_millis(800));
-    }
-
     #[test]
     fn malformed_error_closed_and_notification_flood_replies_are_rejected() {
-        for reply in [
-            b"not-json\n".as_slice(),
-            b"{\"id\":1,\"error\":{\"code\":1}}\n",
-            b"{\"id\":1",
-        ] {
-            let (client, mut peer) = UnixStream::pair().unwrap();
-            peer.write_all(reply).unwrap();
-            drop(peer);
-            assert!(rpc_result(&mut BufReader::new(client), 1).is_err());
+        for reply in ["not-json", "{\"id\":1,\"error\":{\"code\":1}}"] {
+            let (mut client, mut peer) = pair();
+            peer.send(Message::Text(reply.into())).unwrap();
+            assert!(rpc_result(&mut client, 1).is_err());
         }
-        let (client, mut peer) = UnixStream::pair().unwrap();
-        peer.write_all(b"{\"method\":\"notice\"}\n".repeat(32).as_slice())
-            .unwrap();
+        let (mut client, mut peer) = pair();
+        peer.close(None).unwrap();
+        assert!(rpc_result(&mut client, 1).is_err());
+        let (mut client, mut peer) = pair();
+        for _ in 0..32 {
+            peer.send(Message::Text("{\"method\":\"notice\"}".into()))
+                .unwrap();
+        }
         assert!(
-            rpc_result(&mut BufReader::new(client), 1)
+            rpc_result(&mut client, 1)
                 .unwrap_err()
                 .to_string()
                 .contains("too many")
         );
     }
-
     #[test]
-    fn oversized_line_and_cumulative_reply_bytes_are_bounded() {
-        for reply in [vec![b' '; MAX_RPC_LINE + 1], {
-            // Valid individual JSON notifications together exceed the RPC budget.
-            let notification = format!("{{\"method\":\"{}\"}}\n", "x".repeat(800_000));
-            notification.repeat(3).into_bytes()
-        }] {
-            let (client, mut peer) = UnixStream::pair().unwrap();
+    fn message_and_cumulative_reply_bytes_are_bounded() {
+        for oversized in [true, false] {
+            let (mut client, mut peer) = pair();
             let worker = thread::spawn(move || {
-                let _ = peer.write_all(&reply);
+                let text = if oversized {
+                    " ".repeat(MAX_RPC_LINE + 1)
+                } else {
+                    json!({"method":"notice","body":"x".repeat(800_000)}).to_string()
+                };
+                for _ in 0..3 {
+                    if peer.send(Message::Text(text.clone().into())).is_err() {
+                        break;
+                    }
+                }
             });
-            let mut reader = BufReader::new(client);
-            assert!(
-                rpc_result(&mut reader, 1)
-                    .unwrap_err()
-                    .to_string()
-                    .contains("size limit")
-            );
-            drop(reader);
+            assert!(rpc_result(&mut client, 1).is_err());
+            drop(client);
             worker.join().unwrap();
         }
     }
