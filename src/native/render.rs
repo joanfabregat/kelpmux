@@ -1681,7 +1681,7 @@ fn draw_tab(
             park.x.saturating_sub(count_width).saturating_sub(x),
         )
     };
-    let marker_width = 1;
+    let marker_width = if rect.rows >= 2 { 5 } else { 1 };
     let track = if rect.rows >= 2 {
         Rect {
             x: number.x + number.cols + 1,
@@ -1893,7 +1893,11 @@ fn activity_indicator(
         return;
     }
     let icon = if pane.status == crate::model::Status::Working {
-        Some(super::ui::SPINNER_FRAMES[tick % 8])
+        Some(if track.cols >= 5 {
+            super::ui::SIDEBAR_EQUALIZER_FRAMES[tick % super::ui::SIDEBAR_EQUALIZER_FRAMES.len()]
+        } else {
+            super::ui::SPINNER_FRAMES[tick % super::ui::SPINNER_FRAMES.len()]
+        })
     } else {
         super::ui::pane_indicator(&workspace.ui, pane)
     };
