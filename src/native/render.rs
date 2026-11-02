@@ -2,7 +2,7 @@
 //! share tab styling; navigation and controls use workspace geometry.
 use super::{engine::safe_text, protocol::*, ui::PALETTE, workspace::Workspace};
 use std::{collections::BTreeMap, fmt::Write};
-use unicode_width::UnicodeWidthChar;
+use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 pub fn compose(
     workspace: &Workspace,
@@ -222,24 +222,22 @@ pub fn compose(
             Color::Indexed(67),
             true,
         );
+        let notification_icon = super::ui::notification_icon(&workspace.ui, &workspace.panes);
+        let help_label = notification_icon
+            .map(|icon| format!(" {icon} "))
+            .unwrap_or_else(|| " ? ".into());
         write_text(
             &mut frame,
             help.x,
             help.y,
             help.cols,
-            if super::ui::has_unread_notifications(&workspace.ui, &workspace.panes) {
-                " ⚠︎ "
-            } else {
-                " ? "
-            },
+            &help_label,
             Color::Indexed(231),
-            Color::Indexed(
-                if super::ui::has_unread_notifications(&workspace.ui, &workspace.panes) {
-                    160
-                } else {
-                    94
-                },
-            ),
+            Color::Indexed(match notification_icon {
+                Some(super::ui::DONE_ICON) => 29,
+                Some(super::ui::ALERT_ICON) => 160,
+                _ => 94,
+            }),
             true,
         );
         let parked = super::workspace::parked_button(frame.rows, parked_count);
@@ -548,7 +546,16 @@ fn card_background(workspace: &Workspace, selected: bool, number: usize, grid: b
             34,
         )
     } else {
-        neutral(workspace, if grid || number % 2 == 1 { 14 } else { 5 })
+        neutral(
+            workspace,
+            if grid {
+                26
+            } else if number % 2 == 1 {
+                14
+            } else {
+                5
+            },
+        )
     }
 }
 fn theme_surface(workspace: &Workspace, offset: u8) -> Color {
@@ -614,13 +621,16 @@ fn draw_dialog(
         },
     );
     fill(frame, Rect { rows: 1, ..bounds }, header_bg);
+    let notification_title = super::ui::notification_icon(&workspace.ui, &workspace.panes)
+        .map(|icon| format!(" {icon} Notifications"))
+        .unwrap_or_else(|| " Notifications".into());
     let title = match dialog.kind {
         DialogKind::Status => " System status · live",
         DialogKind::Parked => " ⊟ Parked tabs · select to restore",
         DialogKind::Grid => " ▦ Grid · arrows, Enter or click",
         DialogKind::Overview => " Workspace overview · l links conversation",
         DialogKind::AgentLink => " Link agent conversation · Enter or click",
-        DialogKind::Notifications => " ⚠︎ Notifications",
+        DialogKind::Notifications => &notification_title,
         DialogKind::Recovery => {
             if workspace.ui.recovery_loading {
                 " Recovery · loading…"
@@ -1185,12 +1195,22 @@ pub(super) fn write_text(
 ) {
     let mut offset = 0u16;
     let mut last: Option<usize> = None;
-    for c in safe_text(text).chars() {
-        let cw = char_width(c);
+    let clean = safe_text(text);
+    let mut chars = clean.chars().peekable();
+    while let Some(c) = chars.next() {
+        let mut glyph = c.to_string();
+        while chars.peek().is_some_and(|c| char_width(*c) == 0) {
+            glyph.push(chars.next().unwrap());
+        }
+        let cw = if glyph.contains('\u{fe0f}') {
+            glyph.width() as u16
+        } else {
+            char_width(c)
+        };
         if cw == 0 {
             if let Some(index) = last {
                 if let Some(cell) = frame.cells.get_mut(index) {
-                    cell.text.push(c);
+                    cell.text.push_str(&glyph);
                 }
             }
             continue;
@@ -1201,7 +1221,7 @@ pub(super) fn write_text(
             break;
         }
         let cell = Cell {
-            text: c.to_string(),
+            text: glyph,
             width: cw as u8,
             fg,
             bg,
@@ -1553,12 +1573,7 @@ fn draw_folded_tab(
         bg,
         true,
     );
-    let indicator_width = if pane.status == crate::model::Status::InputNeeded {
-        2
-    } else {
-        1
-    }
-    .min(rect.cols);
+    let indicator_width = if rect.cols >= 2 { 2 } else { 0 };
     let track = Rect {
         x: rect.x + rect.cols.saturating_sub(indicator_width) / 2,
         y: rect.y + 1,
@@ -1566,20 +1581,9 @@ fn draw_folded_tab(
         rows: 1,
     };
     if pane.status == crate::model::Status::Working {
-        write_text(
-            frame,
-            track.x,
-            track.y,
-            track.cols,
-            ["◐", "◓", "◑", "◒"][tick % 4],
-            neutral(workspace, 55),
-            bg,
-            true,
-        );
         activity_sheen(frame, workspace, rect, tick);
-    } else if pane.status == crate::model::Status::InputNeeded {
-        activity_attention(frame, track);
     }
+    activity_indicator(frame, workspace, pane, track, tick);
 }
 
 fn outline(frame: &mut Frame, rect: Rect, fg: Color, bg: Color) {
@@ -1632,9 +1636,6 @@ fn draw_tab(
         bg,
         true,
     );
-    let unread = workspace.ui.notifications.iter().any(|item| {
-        !item.read && super::activity::matches(item, pane, &workspace.ui.notification_run)
-    });
     let close = super::workspace::tab_close(rect);
     let park = super::workspace::tab_park(rect);
     let count_width = count.len() as u16;
@@ -1652,24 +1653,15 @@ fn draw_tab(
             park.x.saturating_sub(count_width).saturating_sub(x),
         )
     };
-    let marker_width = if pane.status == crate::model::Status::InputNeeded {
-        2
-    } else {
-        1
-    };
-    let sidebar_working = !grid && rect.rows >= 2 && pane.status == crate::model::Status::Working;
+    let marker_width = 2;
     let track = if rect.rows >= 2 {
         Rect {
-            x: number.x + number.cols + if sidebar_working { 2 } else { 1 },
+            x: number.x + number.cols + 1,
             y: rect.y,
-            cols: if sidebar_working {
-                park.x
-                    .saturating_sub(number.x + number.cols + 4)
-                    .min(workspace.ui.config.activity_width)
+            cols: if park.x.saturating_sub(number.x + number.cols + 1) >= marker_width {
+                marker_width
             } else {
-                park.x
-                    .saturating_sub(number.x + number.cols + 1)
-                    .min(marker_width)
+                0
             },
             rows: 1,
         }
@@ -1691,12 +1683,6 @@ fn draw_tab(
     } else {
         (title_x, title_width)
     };
-    let bell_width =
-        if unread && !(pane.status == crate::model::Status::InputNeeded && track.cols > 0) {
-            2.min(title_width)
-        } else {
-            0
-        };
     if grid && (title_width > 0 || track.cols > 0) {
         if track.cols > 0 {
             write_text(
@@ -1721,18 +1707,6 @@ fn draw_tab(
             false,
         );
     }
-    if unread {
-        write_text(
-            frame,
-            title_x,
-            title_y,
-            bell_width,
-            &format!("{} ", super::ui::ALERT_ICON),
-            Color::Indexed(226),
-            bg,
-            true,
-        );
-    }
     let empty_shell = pane.kind.is_none() && pane.title.eq_ignore_ascii_case("shell");
     let text_color = if empty_shell {
         neutral(workspace, 55)
@@ -1741,14 +1715,14 @@ fn draw_tab(
     };
     let title = marquee_title(
         if empty_shell { "shell" } else { &pane.title },
-        title_width.saturating_sub(bell_width),
+        title_width,
         workspace.ui.title_ticks.get(&pane.id).copied().unwrap_or(0),
     );
     write_text(
         frame,
-        title_x + bell_width,
+        title_x,
         title_y,
-        title_width.saturating_sub(bell_width),
+        title_width,
         &title,
         text_color,
         bg,
@@ -1756,10 +1730,10 @@ fn draw_tab(
     );
     if grid {
         let width: u16 = title.chars().map(char_width).sum();
-        if width < title_width.saturating_sub(bell_width) {
+        if width < title_width {
             write_text(
                 frame,
-                title_x + bell_width + width,
+                title_x + width,
                 title_y,
                 1,
                 " ",
@@ -1770,12 +1744,8 @@ fn draw_tab(
         }
     }
     if empty_shell {
-        let width = title
-            .chars()
-            .map(char_width)
-            .sum::<u16>()
-            .min(title_width.saturating_sub(bell_width));
-        for x in title_x + bell_width..title_x + bell_width + width {
+        let width = title.chars().map(char_width).sum::<u16>().min(title_width);
+        for x in title_x..title_x + width {
             let index = usize::from(title_y) * usize::from(frame.cols) + usize::from(x);
             if let Some(cell) = frame.cells.get_mut(index) {
                 cell.italic = true;
@@ -1878,106 +1848,44 @@ fn draw_tab(
             false,
         );
     }
-    if pane.status == crate::model::Status::Working {
-        if !grid {
-            activity_ball(frame, track, neutral(workspace, 55), spinner);
-        } else if track.cols > 0 {
-            let bg = frame.cells
-                [usize::from(track.y) * usize::from(frame.cols) + usize::from(track.x)]
-            .bg;
-            write_text(
-                frame,
-                track.x,
-                track.y,
-                track.cols,
-                ["◐", "◓", "◑", "◒"][spinner % 4],
-                neutral(workspace, 55),
-                bg,
-                true,
-            );
-        }
-    } else if pane.status == crate::model::Status::InputNeeded {
-        activity_attention(frame, track);
-    }
+    activity_indicator(frame, workspace, pane, track, spinner);
     if pane.status == crate::model::Status::Working {
         activity_sheen(frame, workspace, rect, spinner);
     }
 }
 
-fn activity_attention(frame: &mut Frame, track: Rect) {
-    if track.cols == 0 {
+fn activity_indicator(
+    frame: &mut Frame,
+    workspace: &Workspace,
+    pane: &PaneInfo,
+    track: Rect,
+    tick: usize,
+) {
+    if track.cols < 2 {
         return;
     }
-    let index = usize::from(track.y) * usize::from(frame.cols) + usize::from(track.x);
-    if let Some(cell) = frame.cells.get(index) {
-        let bg = cell.bg;
-        write_text(
-            frame,
-            track.x,
-            track.y,
-            track.cols,
-            super::ui::WAIT_ICON,
-            Color::Indexed(226),
-            bg,
-            true,
-        );
-    }
-}
-
-fn activity_spinner(frame: &mut Frame, track: Rect, foreground: Color, tick: usize) {
-    if track.cols == 0 {
-        return;
-    }
-    let index = usize::from(track.y) * usize::from(frame.cols) + usize::from(track.x);
-    if let Some(cell) = frame.cells.get_mut(index) {
-        cell.text = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"][tick % 10].into();
-        cell.fg = foreground;
-        cell.width = 1;
-    }
-}
-
-/// A fixed-length ping-pong track without repeating the endpoint frames.
-pub fn bouncing_ball_frame(width: u16, frame_index: usize) -> String {
-    let width = usize::from(width);
-    if width == 0 {
-        return String::new();
-    }
-    let position = if width == 1 {
-        0
+    let icon = if pane.status == crate::model::Status::Working {
+        Some(super::ui::MOON_FRAMES[tick % 8])
     } else {
-        let period = 2 * (width - 1);
-        let phase = frame_index % period;
-        phase.min(period - phase)
+        super::ui::pane_indicator(&workspace.ui, pane)
     };
-    format!(
-        "{}●{}",
-        "·".repeat(position),
-        "·".repeat(width - position - 1)
-    )
-}
-
-fn activity_ball(frame: &mut Frame, track: Rect, foreground: Color, tick: usize) {
-    if track.cols == 0 {
-        return;
+    if let Some(icon) = icon {
+        let bg =
+            frame.cells[usize::from(track.y) * usize::from(frame.cols) + usize::from(track.x)].bg;
+        let fg = match icon {
+            super::ui::WAIT_ICON => Color::Indexed(226),
+            super::ui::DONE_ICON => Color::Indexed(114),
+            super::ui::ALERT_ICON => Color::Indexed(203),
+            _ => neutral(workspace, 55),
+        };
+        write_text(frame, track.x, track.y, track.cols, icon, fg, bg, true);
     }
-    let bg = frame.cells[usize::from(track.y) * usize::from(frame.cols) + usize::from(track.x)].bg;
-    write_text(
-        frame,
-        track.x,
-        track.y,
-        track.cols,
-        &bouncing_ball_frame(track.cols, tick),
-        foreground,
-        bg,
-        true,
-    );
 }
-
 fn activity_sheen(frame: &mut Frame, workspace: &Workspace, rect: Rect, tick: usize) {
     let base = terminal_backdrop(workspace);
     let light = u16::from(base[0]) * 3 + u16::from(base[1]) * 6 + u16::from(base[2]) >= 1280;
     let divisor = if rect.rows > 1 { 3 } else { 6 };
-    let period = if rect.rows > 1 { 30 } else { 28 };
+    let period = if rect.rows > 1 { 20 } else { 19 };
     let band = usize::from(rect.cols).div_ceil(divisor).max(3);
     let head = (tick % period) * (usize::from(rect.cols) + band * 2) / period;
     for y in rect.y..rect.y + rect.rows {
@@ -2540,7 +2448,7 @@ fn draw_sidebar_status(frame: &mut Frame, workspace: &Workspace, notice: Option<
         );
     }
     let [config, mode, parked, help] = frame.controls();
-    let unread = super::ui::has_unread_notifications(&workspace.ui, &workspace.panes);
+    let notification_icon = super::ui::notification_icon(&workspace.ui, &workspace.panes);
     let parked_count = workspace.panes.iter().filter(|pane| pane.parked).count();
     for (rect, label) in [
         (
@@ -2577,21 +2485,21 @@ fn draw_sidebar_status(frame: &mut Frame, workspace: &Workspace, notice: Option<
         }),
         (
             help,
-            if unread {
-                if help.cols >= 8 {
-                    "⚠︎ Alerts"
+            if let Some(icon) = notification_icon {
+                let label = format!("{icon} {}", super::ui::notification_label(icon));
+                if label.width() <= usize::from(help.cols) {
+                    label
                 } else {
-                    " ⚠︎ "
+                    format!(" {icon} ")
                 }
             } else if help.cols >= 8 {
-                " ? Help "
+                " ? Help ".into()
             } else {
-                " ? "
-            }
-            .into(),
+                " ? ".into()
+            },
         ),
     ] {
-        let label_width = label.chars().map(char_width).sum::<u16>().min(rect.cols);
+        let label_width = (label.width() as u16).min(rect.cols);
         let button_bg = neutral(workspace, 14);
         fill(frame, rect, button_bg);
         let inset = (rect.cols - label_width) / 2;
@@ -2608,7 +2516,9 @@ fn draw_sidebar_status(frame: &mut Frame, workspace: &Workspace, notice: Option<
             } else {
                 Color::Indexed(if rect == parked {
                     141
-                } else if unread {
+                } else if notification_icon == Some(super::ui::DONE_ICON) {
+                    114
+                } else if notification_icon == Some(super::ui::ALERT_ICON) {
                     203
                 } else {
                     222
@@ -2799,33 +2709,18 @@ fn draw_parked(
                 true,
             );
         }
-        if pane.status == crate::model::Status::Working {
-            activity_spinner(
-                frame,
-                Rect {
-                    x: rect.x + 6,
-                    y,
-                    cols: 1,
-                    rows: 1,
-                },
-                if selected {
-                    Color::Indexed(226)
-                } else {
-                    tab_text(workspace, false)
-                },
-                spinner,
-            );
-        } else if pane.status == crate::model::Status::InputNeeded {
-            activity_attention(
-                frame,
-                Rect {
-                    x: rect.x + 6,
-                    y,
-                    cols: 2,
-                    rows: 1,
-                },
-            );
-        }
+        activity_indicator(
+            frame,
+            workspace,
+            pane,
+            Rect {
+                x: rect.x + 6,
+                y,
+                cols: 2,
+                rows: 1,
+            },
+            spinner,
+        );
     }
 }
 fn draw_dashboard(
@@ -2956,11 +2851,7 @@ fn draw_dashboard(
                     format!(
                         "{} {} {} · {} · {} · {}s ago",
                         if item.read { "○" } else { "●" },
-                        if item.title.starts_with("Bell · ") {
-                            super::ui::ALERT_ICON
-                        } else {
-                            super::ui::status_icon(item.status)
-                        },
+                        super::ui::notification_symbol(&workspace.ui, item),
                         location,
                         item.title,
                         item.workspace,
@@ -3604,7 +3495,7 @@ mod tests {
                 display.feed(&terminal_diff(None, &frame));
                 assert_eq!(display.snapshot().cells, frame.cells);
                 header(&mut frame, &workspace, &view(cols, overlay), false, 0);
-                assert_eq!(frame.cells[5].bg, Color::Rgb(58, 61, 64));
+                assert_eq!(frame.cells[5].bg, Color::Rgb(86, 88, 91));
             }
         }
     }

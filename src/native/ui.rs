@@ -10,13 +10,100 @@ pub const MIN_SIDEBAR_COLUMNS: u16 = 22;
 pub const FOLDED_SIDEBAR_COLUMNS: u16 = 4;
 pub const PARKED_BG: u8 = 60;
 pub const RESTORE_BG: u8 = 29;
-pub const ALERT_ICON: &str = "⚠︎";
-pub const WAIT_ICON: &str = "⌛︎";
+pub const ALERT_ICON: &str = "⚠️";
+pub const WAIT_ICON: &str = "❓";
+pub const DONE_ICON: &str = "✅";
+pub const MOON_FRAMES: [&str; 8] = ["🌑", "🌒", "🌓", "🌔", "🌕", "🌖", "🌗", "🌘"];
+pub const ACTIVITY_INTERVAL_MS: u64 = 150;
 pub fn status_icon(status: crate::model::Status) -> &'static str {
-    if status == crate::model::Status::InputNeeded {
-        WAIT_ICON
+    match status {
+        crate::model::Status::Working => MOON_FRAMES[0],
+        crate::model::Status::InputNeeded => WAIT_ICON,
+        crate::model::Status::TurnFinished => DONE_ICON,
+        crate::model::Status::Failed => ALERT_ICON,
+        _ => status.marker(),
+    }
+}
+fn notification_priority(status: crate::model::Status) -> u8 {
+    match status {
+        crate::model::Status::Unknown | crate::model::Status::Failed => 3,
+        crate::model::Status::InputNeeded => 2,
+        _ => 1,
+    }
+}
+pub fn notification_icon<'a>(
+    ui: &'a UiState,
+    panes: impl IntoIterator<Item = &'a super::protocol::PaneInfo>,
+) -> Option<&'static str> {
+    let panes: Vec<_> = panes.into_iter().collect();
+    ui.notifications
+        .iter()
+        .filter(|n| {
+            !n.read
+                && panes
+                    .iter()
+                    .any(|pane| super::activity::matches(n, pane, &ui.notification_run))
+        })
+        .map(|n| notification_state(ui, n))
+        .max_by_key(|status| notification_priority(*status))
+        .map(|status| {
+            if status == crate::model::Status::Unknown {
+                ALERT_ICON
+            } else {
+                status_icon(status)
+            }
+        })
+}
+fn notification_state(ui: &UiState, event: &super::protocol::Notification) -> crate::model::Status {
+    if event.status != crate::model::Status::Unknown || !event.title.starts_with("Bell · ") {
+        return event.status;
+    }
+    ui.notifications
+        .iter()
+        .rev()
+        .find(|n| {
+            n.status != crate::model::Status::Unknown
+                && n.pane == event.pane
+                && n.origin == event.origin
+                && n.workspace == event.workspace
+                && n.at.abs_diff(event.at) <= 2
+        })
+        .map_or(event.status, |n| n.status)
+}
+pub fn notification_symbol(ui: &UiState, event: &super::protocol::Notification) -> &'static str {
+    let status = notification_state(ui, event);
+    if status == crate::model::Status::Unknown {
+        ALERT_ICON
     } else {
-        status.marker()
+        status_icon(status)
+    }
+}
+pub fn notification_label(icon: &str) -> &'static str {
+    match icon {
+        DONE_ICON => "Done",
+        WAIT_ICON => "Input",
+        _ => "Alerts",
+    }
+}
+pub fn pane_indicator(ui: &UiState, pane: &super::protocol::PaneInfo) -> Option<&'static str> {
+    use crate::model::Status;
+    match pane.status {
+        Status::InputNeeded | Status::TurnFinished | Status::Failed => {
+            Some(status_icon(pane.status))
+        }
+        Status::Idle | Status::Unknown | Status::Exited => {
+            // Prefer a typed completion/question/error over its accompanying bell.
+            let event = ui
+                .notifications
+                .iter()
+                .rev()
+                .filter(|n| !n.read && super::activity::matches(n, pane, &ui.notification_run))
+                .find(|n| n.status != Status::Unknown);
+            event
+                .map(|n| status_icon(n.status))
+                .or_else(|| notification_icon(ui, [pane]))
+        }
+        Status::Working => None,
     }
 }
 pub fn visible_notifications<'a>(
@@ -188,7 +275,7 @@ pub struct UiConfig {
     pub sidebar_folded: bool,
     #[serde(skip_serializing_if = "Accent::is_default")]
     pub accent: Accent,
-    /// Maximum bouncing-ball track length; rendering clips it to the available space.
+    /// Legacy bouncing-ball width, accepted for saved-configuration compatibility.
     #[serde(skip_serializing_if = "default_activity_width")]
     pub activity_width: u16,
     #[serde(rename = "remembered_read_widths", skip_serializing)]

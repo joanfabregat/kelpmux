@@ -1471,7 +1471,7 @@ pub fn help_button(rows: u16, count: usize) -> Rect {
     Rect {
         x: parked.x + parked.cols,
         y: rows - 1,
-        cols: 3,
+        cols: 4,
         rows: 1,
     }
 }

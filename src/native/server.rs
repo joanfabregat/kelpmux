@@ -2673,6 +2673,7 @@ pub fn serve(mut config: ServerConfig) -> Result<()> {
     let mut render_time = Instant::now() - Duration::from_secs(1);
     let mut metrics_time = Instant::now();
     let mut animation = Instant::now();
+    let mut title_animation_time = Instant::now();
     let mut spinner = 0;
     let mut idle_poll = Instant::now() - Duration::from_millis(100);
     let mut unused_poll = Instant::now() - Duration::from_secs(1);
@@ -2766,9 +2767,18 @@ pub fn serve(mut config: ServerConfig) -> Result<()> {
         if let Ok(result) = results.try_recv() {
             server.discovery_result(result);
         }
-        if attached && animation.elapsed() >= Duration::from_millis(100) {
+        if attached && animation.elapsed() >= Duration::from_millis(super::ui::ACTIVITY_INTERVAL_MS)
+        {
             spinner += 1;
             animation = Instant::now();
+            server.dirty |= server
+                .workspace
+                .panes
+                .iter()
+                .any(|p| p.status == Status::Working);
+        }
+        if attached && title_animation_time.elapsed() >= Duration::from_millis(100) {
+            title_animation_time = Instant::now();
             server
                 .title_animation
                 .retain(|id, _| server.panes.contains_key(id));
@@ -2792,11 +2802,6 @@ pub fn serve(mut config: ServerConfig) -> Result<()> {
                     server.dirty = true;
                 }
             }
-            server.dirty |= server
-                .workspace
-                .panes
-                .iter()
-                .any(|p| p.status == Status::Working);
         }
         if (attached || streaming) && metrics_time.elapsed() >= Duration::from_secs(1) {
             server.dirty = true;
