@@ -707,9 +707,12 @@ impl Workspace {
             Action::AccentSet(accent) => self.ui.config.accent = accent,
             Action::RecoveryCopy(index) => {
                 self.ui
-                    .recovery
+                    .closed_tabs
                     .get(index)
                     .ok_or("invalid recovery entry")?;
+            }
+            Action::ReopenLast | Action::ReopenTab(_) | Action::RerunTab(_) => {
+                return Err("restoring tabs requires the PTY server".into());
             }
             Action::SearchCopy(index) => {
                 self.ui
@@ -1117,7 +1120,7 @@ impl Workspace {
                     .map(|item| item.id)
                     .collect();
             }
-            Some(DialogKind::Recovery) => return (0..self.ui.recovery.len() as u64).collect(),
+            Some(DialogKind::Recovery) => return (0..self.ui.closed_tabs.len() as u64).collect(),
             Some(DialogKind::Search) => return (0..self.ui.search_hits.len() as u64).collect(),
             _ => {}
         }
@@ -1476,7 +1479,7 @@ pub fn help_button(rows: u16, count: usize) -> Rect {
     }
 }
 pub fn sidebar_status_rows(rows: u16) -> u16 {
-    if rows >= 18 { 8 } else { 3 }
+    if rows >= 18 { 9 } else { 4 }
 }
 pub fn sidebar_button_rows(_rows: u16) -> u16 {
     1
@@ -1500,10 +1503,10 @@ pub fn sidebar_controls(
     }
     let right = width.div_ceil(2);
     [
+        rect(0, rows - 3 * height, right),
+        rect(right, rows - 3 * height, width - right),
         rect(0, rows - 2 * height, right),
         rect(right, rows - 2 * height, width - right),
-        rect(0, rows - height, right),
-        rect(right, rows - height, width - right),
     ]
 }
 pub fn color_cards(bounds: Rect) -> Vec<Rect> {
