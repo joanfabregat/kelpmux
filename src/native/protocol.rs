@@ -3,7 +3,7 @@ use crate::{Result, model::Status};
 use serde::{Deserialize, Serialize};
 use std::io::{Read, Write};
 
-pub const VERSION: u16 = 49;
+pub const VERSION: u16 = 50;
 pub const MAX_MESSAGE: usize = 16 * 1024 * 1024;
 pub const MAX_INPUT: usize = 64 * 1024;
 pub type PaneId = u64;
@@ -197,8 +197,53 @@ impl Frame {
         }
     }
     pub fn footer_cols(&self) -> u16 {
-        let help = self.controls()[3];
-        help.x + help.cols + if self.ui.show_dev_badge { 5 } else { 0 }
+        let agents = self.history_controls()[1];
+        (agents.x + agents.cols + if self.ui.show_dev_badge { 5 } else { 0 }).min(self.cols)
+    }
+    pub fn history_controls(&self) -> [Rect; 2] {
+        if self.sidebar_status() {
+            if self.ui.config.sidebar_folded {
+                return [Rect::default(); 2];
+            }
+            let width = self.sidebar_width().saturating_sub(1);
+            let half = width.div_ceil(2);
+            [
+                Rect {
+                    x: 0,
+                    y: self.rows - 1,
+                    cols: half,
+                    rows: 1,
+                },
+                Rect {
+                    x: half,
+                    y: self.rows - 1,
+                    cols: width - half,
+                    rows: 1,
+                },
+            ]
+        } else {
+            let help = self.controls()[3];
+            let x = help.x + help.cols;
+            let available = self
+                .cols
+                .saturating_sub(x + if self.ui.show_dev_badge { 5 } else { 0 });
+            let closed = 10.min(available.div_ceil(2));
+            let agents = 8.min(available.saturating_sub(closed));
+            [
+                Rect {
+                    x,
+                    y: self.rows - 1,
+                    cols: closed,
+                    rows: 1,
+                },
+                Rect {
+                    x: x + closed,
+                    y: self.rows - 1,
+                    cols: agents,
+                    rows: 1,
+                },
+            ]
+        }
     }
 }
 
@@ -240,6 +285,9 @@ pub enum Action {
     Notifications,
     Recovery,
     RecoveryCopy(usize),
+    ReopenLast,
+    ReopenTab(usize),
+    RerunTab(usize),
     SearchCopy(usize),
     NotificationSoundToggle,
     AccentSet(super::ui::Accent),

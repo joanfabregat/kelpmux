@@ -457,7 +457,7 @@ impl Router {
                     match key {
                         b"d" => Some(Action::Detach),
                         b"t" | b"T" => Some(Action::Takeover),
-                        b"z" => Some(Action::Read(frame.active)),
+                        b"z" => Some(Action::ReopenLast),
                         b"f" => Some(Action::Fullscreen(frame.active)),
                         b"?" => Some(Action::Help),
                         b"g" | b"e" => Some(Action::CloseReading),
@@ -521,6 +521,7 @@ impl Router {
                                 | Action::AgentLinkPicker(_)
                                 | Action::Notifications
                                 | Action::Recovery
+                                | Action::ReopenLast
                                 | Action::SearchOpen
                         )
                     {
@@ -587,13 +588,17 @@ impl Router {
                 if key == b"y" && dialog.kind == super::ui::DialogKind::Recovery {
                     if frame
                         .ui
-                        .recovery
+                        .closed_tabs
                         .get(dialog.selection)
-                        .is_none_or(|item| item.entry.resume_command.is_none())
+                        .is_none_or(|item| item.command().is_none())
                     {
                         continue;
                     }
                     emit(&mut output, Action::RecoveryCopy(dialog.selection), true);
+                    continue;
+                }
+                if key == b"x" && dialog.kind == super::ui::DialogKind::Recovery {
+                    emit(&mut output, Action::RerunTab(dialog.selection), true);
                     continue;
                 }
                 let action = match key {
@@ -1138,6 +1143,22 @@ impl Router {
             }
         }
         let [config, mode, parked, help] = frame.controls();
+        let [closed, agents] = frame.history_controls();
+        if event.kind == MouseKind::Press
+            && (closed.contains(event.position) || agents.contains(event.position))
+        {
+            self.pending_modal = true;
+            emit(
+                &mut output,
+                if closed.contains(event.position) {
+                    Action::Recovery
+                } else {
+                    Action::Agents(super::ui::AgentFilter::All)
+                },
+                true,
+            );
+            return output;
+        }
         if event.kind == MouseKind::Press
             && [config, mode, parked, help]
                 .iter()
@@ -1452,6 +1473,7 @@ impl Router {
             "agent-link" => Action::AgentLinkPicker(frame.active),
             "notifications" => Action::Notifications,
             "recovery" => Action::Recovery,
+            "reopen" => Action::ReopenLast,
             "next-attention" => Action::NextAttention,
             "next-finished" => Action::NextFinished,
             "scratch" => Action::Scratch,
@@ -1551,10 +1573,9 @@ impl Router {
         if dialog.kind == DialogKind::Recovery {
             return frame
                 .ui
-                .recovery
+                .closed_tabs
                 .get(index)
-                .filter(|item| item.entry.resume_command.is_some())
-                .map(|_| vec![ClientMessage::Action(Action::RecoveryCopy(index))])
+                .map(|_| vec![ClientMessage::Action(Action::ReopenTab(index))])
                 .unwrap_or_default();
         }
         if dialog.kind == DialogKind::Search {
@@ -1764,7 +1785,7 @@ fn frame_entries(frame: &Frame) -> Vec<u64> {
                 .map(|n| n.id)
                 .collect()
         }
-        Some(DialogKind::Recovery) => (0..frame.ui.recovery.len() as u64).collect(),
+        Some(DialogKind::Recovery) => (0..frame.ui.closed_tabs.len() as u64).collect(),
         Some(DialogKind::Search) => (0..frame.ui.search_hits.len() as u64).collect(),
         _ => {
             let panes = frame

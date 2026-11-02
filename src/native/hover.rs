@@ -110,6 +110,7 @@ pub fn target(frame: &Frame, point: Point) -> Option<Rect> {
             });
         }
         regions.extend(frame.controls());
+        regions.extend(frame.history_controls());
         if let Some(region) = super::status::metric_region(frame) {
             regions.push(region);
         }

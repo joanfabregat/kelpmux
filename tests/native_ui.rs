@@ -53,6 +53,53 @@ fn click(point: Point) -> InputEvent {
     })
 }
 #[test]
+fn history_and_agents_buttons_share_click_geometry_and_restore_shortcut() {
+    for tabs in [false, true] {
+        let mut ws = workspace((120, 40), (2, 1));
+        ws.panes[0].kind = Some(Kind::Codex);
+        ws.panes[1].kind = Some(Kind::Claude);
+        ws.apply(&Action::Park(2)).unwrap();
+        if tabs {
+            ws.apply(&Action::Select(1)).unwrap();
+        }
+        let f = frame(&ws);
+        for (rect, expected) in f
+            .history_controls()
+            .into_iter()
+            .zip([Action::Recovery, Action::Agents(AgentFilter::All)])
+        {
+            assert!(rect.cols > 0 && rect.x + rect.cols <= f.cols);
+            assert_eq!(
+                actions(Router::default().route(
+                    click(Point {
+                        x: rect.x,
+                        y: rect.y
+                    }),
+                    &f
+                )),
+                vec![expected]
+            );
+        }
+        assert_eq!(
+            actions(Router::default().route(InputEvent::Bytes(b"\x02z".to_vec()), &f)),
+            vec![Action::ReopenLast]
+        );
+        assert_eq!(
+            actions(Router::default().route(InputEvent::Bytes(b"\x02g".to_vec()), &f)),
+            vec![Action::CloseReading]
+        );
+        ws.apply(&Action::Agents(AgentFilter::All)).unwrap();
+        assert_eq!(ws.dialog_entries(), vec![1, 2]);
+        let agents = frame(&ws);
+        let text = agents
+            .cells
+            .iter()
+            .map(|c| c.text.as_str())
+            .collect::<String>();
+        assert!(text.contains("parked #2") && text.contains("claude"));
+    }
+}
+#[test]
 fn enhanced_enter_prefix_and_releases_route_without_leaking_mux_commands() {
     let mut ws = workspace((120, 40), (1, 1));
     ws.apply(&Action::Select(1)).unwrap();
@@ -111,7 +158,7 @@ fn sidebar_new_follows_tabs_and_parked_stays_at_bottom_with_contextual_headers()
         .unwrap()
         .1;
     assert_eq!((new.rows, parked.rows), (3, 1));
-    assert_eq!(parked.y + parked.rows, f.rows);
+    assert_eq!(parked.y + parked.rows, f.rows - 1);
     let last_tab = targets
         .iter()
         .filter_map(|(target, rect)| {
@@ -443,7 +490,7 @@ fn parked_table_animates_status_and_modals_dim_without_altering_terminal_content
     assert_ne!(a.cells, b.cells);
     for (before, after) in a.cells.iter().zip(&b.cells) {
         assert_eq!(before.bg, after.bg);
-        if !kelpmux::native::ui::MOON_FRAMES.contains(&before.text.as_str()) {
+        if !kelpmux::native::ui::SPINNER_FRAMES.contains(&before.text.as_str()) {
             assert_eq!(before.text, after.text);
             assert_eq!(before.fg, after.fg);
         }
@@ -841,7 +888,7 @@ fn footer_buttons_and_compact_vitals_have_disjoint_hit_targets() {
     assert_eq!(
         actions(Router::default().route(
             click(Point {
-                x: f.footer_cols() - 2,
+                x: f.controls()[3].x,
                 y: f.rows - 1
             }),
             &f
@@ -1856,8 +1903,8 @@ fn grid_header_numbers_park_close_and_footer_have_distinct_targets_without_zoom(
 }
 
 #[test]
-fn working_spinner_uses_two_cells_in_grid_tabs_folded_and_parked_views() {
-    use kelpmux::native::ui::{ACTIVITY_INTERVAL_MS, MOON_FRAMES};
+fn working_spinner_uses_one_cell_in_grid_tabs_folded_and_parked_views() {
+    use kelpmux::native::ui::{ACTIVITY_INTERVAL_MS, SPINNER_FRAMES};
     assert_eq!(ACTIVITY_INTERVAL_MS, 150);
     for mode in 0..4 {
         let mut ws = workspace((180, 50), (2, 1));
@@ -1881,11 +1928,11 @@ fn working_spinner_uses_two_cells_in_grid_tabs_folded_and_parked_views() {
             let index = f
                 .cells
                 .iter()
-                .position(|c| c.text == MOON_FRAMES[tick % 8])
+                .position(|c| c.text == SPINNER_FRAMES[tick % 8])
                 .unwrap();
             assert_eq!(*position.get_or_insert(index), index);
-            assert_eq!(f.cells[index].width, 2);
-            assert_eq!(f.cells[index + 1].width, 0);
+            assert_eq!(f.cells[index].width, 1);
+            assert_ne!(f.cells[index + 1].width, 0);
             terminal.feed(&terminal_diff(previous.as_ref(), &f));
             assert_eq!(terminal.snapshot().cells, f.cells);
             previous = Some(f);
@@ -2049,10 +2096,8 @@ fn tab_surfaces_follow_dark_and_light_backgrounds_without_repainting_terminal_de
             f.cells[usize::from(number.y * f.cols + number.x + 1)].fg,
             Color::Rgb(95, 175, 255)
         );
-        let ball = f.cells.iter().find(|cell| cell.text == "🌑").unwrap();
-        let gray: [u8; 3] = background
-            .map(|v| ((u16::from(v) * 45 + if light { 0 } else { 255 * 55 }) / 100) as u8);
-        assert_eq!(ball.fg, Color::Rgb(gray[0], gray[1], gray[2]));
+        let ball = f.cells.iter().find(|cell| cell.text == "◐").unwrap();
+        assert_eq!(ball.fg, Color::Rgb(155, 205, 185));
         let body = f.panes.iter().find(|view| view.pane.id == 1).unwrap().body;
         assert_eq!(
             f.cells[usize::from(body.y * f.cols + body.x)].bg,
@@ -2072,7 +2117,7 @@ fn tab_surfaces_follow_dark_and_light_backgrounds_without_repainting_terminal_de
         assert_eq!(title.fg, Color::Indexed(if light { 232 } else { 231 }));
         assert_eq!(
             parked.cells[usize::from((card.y + 1) * parked.cols + card.x + 6)].fg,
-            Color::Rgb(gray[0], gray[1], gray[2])
+            Color::Rgb(155, 205, 185)
         );
     }
 }
@@ -2315,7 +2360,10 @@ fn footer_parked_help_order_has_no_new_tab_button() {
                 .iter()
                 .map(|cell| cell.text.as_str())
                 .collect();
-            assert_eq!(footer.contains('+'), ws.active == 0 && !f.sidebar_status());
+            assert_eq!(
+                footer.contains("+ New"),
+                ws.active == 0 && !f.sidebar_status()
+            );
             assert!(!footer.contains("(0)"));
             let label_y = parked.y + parked.rows / 2;
             let label: String = f.cells[usize::from(label_y * f.cols + parked.x)
@@ -2442,7 +2490,7 @@ fn status_popup_metrics_clicks_views_search_and_small_screen_replay() {
             let reserved = sidebar_status_rows(f.rows);
             Point {
                 x: 1,
-                y: f.rows - reserved + u16::from(reserved > 3),
+                y: f.rows - reserved + u16::from(reserved >= 9),
             }
         } else {
             Point {
@@ -2959,7 +3007,7 @@ fn dev_badge_is_visible_in_grid_horizontal_tabs_and_compact_sidebars() {
                 assert_eq!(plain.panes, f.panes);
                 continue;
             }
-            let start = usize::from((f.rows - 1) * f.cols + plain.footer_cols());
+            let start = usize::from((f.rows - 1) * f.cols + f.footer_cols() - 5);
             let cells: Vec<_> = f.cells.iter().enumerate().skip(start).take(5).collect();
             assert_eq!(cells.len(), 5);
             assert_eq!(
@@ -2979,7 +3027,7 @@ fn dev_badge_is_visible_in_grid_horizontal_tabs_and_compact_sidebars() {
                 if sidebar {
                     x < kelpmux::native::workspace::sidebar_width(f.cols) - 1
                 } else {
-                    y == f.rows - 1 && x >= plain.footer_cols()
+                    y == f.rows - 1 && x >= f.footer_cols() - 5
                 }
             }));
             assert_eq!(plain.controls(), f.controls());
@@ -3954,7 +4002,7 @@ fn input_requests_use_a_graphical_attention_symbol_in_tabs_grid_parked_and_overv
         assert!(
             f.cells
                 .iter()
-                .any(|c| c.text == kelpmux::native::ui::WAIT_ICON && c.fg == Color::Indexed(226))
+                .any(|c| c.text == kelpmux::native::ui::WAIT_ICON && c.fg == Color::Indexed(110))
         );
         assert_eq!(
             kelpmux::native::ui::status_icon(Status::InputNeeded),
@@ -3979,7 +4027,7 @@ fn input_requests_use_a_graphical_attention_symbol_in_tabs_grid_parked_and_overv
             parked
                 .cells
                 .iter()
-                .any(|c| c.text == kelpmux::native::ui::WAIT_ICON && c.fg == Color::Indexed(226))
+                .any(|c| c.text == kelpmux::native::ui::WAIT_ICON && c.fg == Color::Indexed(110))
         );
     }
 }
@@ -4204,9 +4252,9 @@ fn compact_moon_track_ignores_legacy_width_and_preserves_padding() {
         let f = frame(&ws);
         let start = usize::from(rect.y * f.cols + number.x + number.cols + 1);
         assert_eq!(f.cells[start - 1].text, " ");
-        assert_eq!(f.cells[start].text, "🌑");
-        assert_eq!(f.cells[start].width, 2);
-        assert_eq!(f.cells[start + 1].width, 0);
+        assert_eq!(f.cells[start].text, "◐");
+        assert_eq!(f.cells[start].width, 1);
+        assert_eq!(f.cells[start + 1].text, " ");
         assert_eq!(f.cells[start + 2].text, " ");
     }
 }
@@ -4311,7 +4359,7 @@ fn grid_header_sheen_is_subtle_covers_the_background_and_keeps_text_steady() {
                 assert_eq!(before.fg, after.fg);
                 assert_eq!(before.width, after.width);
                 if before.text != after.text {
-                    assert!(kelpmux::native::ui::MOON_FRAMES.contains(&after.text.as_str()));
+                    assert!(kelpmux::native::ui::SPINNER_FRAMES.contains(&after.text.as_str()));
                 }
                 swept[usize::from(x)] |= before.bg != after.bg;
                 let Color::Rgb(r, g, b) = after.bg else {
@@ -4535,7 +4583,7 @@ fn sidebar_card_matches_derived_palette_and_sheen_covers_all_rows_without_blurri
                 assert_eq!(before.fg, after.fg);
                 assert_eq!(before.bold, after.bold);
                 if before.text != after.text {
-                    assert!(kelpmux::native::ui::MOON_FRAMES.contains(&after.text.as_str()));
+                    assert!(kelpmux::native::ui::SPINNER_FRAMES.contains(&after.text.as_str()));
                 }
                 swept[usize::from(y * rect.cols + x)] |= before.bg != after.bg;
             }
@@ -4773,7 +4821,7 @@ fn typed_notifications_and_statuses_keep_completion_separate_from_attention() {
             }
             let f = frame(&ws);
             let icon = f.cells.iter().find(|c| c.text == expected).unwrap();
-            assert_eq!(icon.width, 2);
+            assert_eq!(icon.width, 1);
             if status == Status::TurnFinished {
                 assert!(!f.cells.iter().any(|c| c.text == ALERT_ICON));
             }

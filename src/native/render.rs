@@ -162,7 +162,7 @@ pub fn compose(
             format!(
                 "^{}: {} tabs/grid · Enter new · p park · {} detach",
                 char::from(b'A' + workspace.ui.config.prefix - 1),
-                binding_label(&workspace.ui.config, "z", "read"),
+                "Alt+Tab",
                 binding_label(&workspace.ui.config, "d", "detach")
             )
         } else {
@@ -182,7 +182,8 @@ pub fn compose(
         let [config, mode, _, _] = frame.controls();
         let footer_cols = frame.footer_cols();
         if workspace.ui.show_dev_badge {
-            draw_dev_badge(&mut frame, help.x + help.cols, y);
+            let agents = frame.history_controls()[1];
+            draw_dev_badge(&mut frame, agents.x + agents.cols, y);
         }
         let width = frame.cols.saturating_sub(footer_cols);
         write_text(
@@ -258,6 +259,27 @@ pub fn compose(
     } else if !workspace.ui.vitals.is_empty() && notice.is_none() {
         draw_vitals(&mut frame, &workspace.ui.vitals);
     }
+    if !matches!(frame.reading, ReadingMode::Fullscreen(_)) {
+        let [closed, agents] = frame.history_controls();
+        for (rect, label, color) in [(closed, " Recently ", 110), (agents, " Agents ", 115)] {
+            let label = if rect.cols < 8 {
+                if rect == closed { "R" } else { "A" }
+            } else {
+                label
+            };
+            fill(&mut frame, rect, neutral(workspace, 14));
+            write_text(
+                &mut frame,
+                rect.x,
+                rect.y,
+                rect.cols,
+                label,
+                Color::Indexed(color),
+                neutral(workspace, 14),
+                false,
+            );
+        }
+    }
     if workspace.help || workspace.ui.dialog.is_some() || workspace.ui.scratch_visible {
         let keep =
             if workspace.ui.scratch_visible && !workspace.help && workspace.ui.dialog.is_none() {
@@ -281,7 +303,7 @@ fn help_entries(config: &super::ui::UiConfig) -> Vec<(String, &'static str)> {
     let key = |default, action| binding_label(config, default, action);
     vec![
         ("1–9".into(), "Select tab (also Alt+1–9)"),
-        (key("z", "read"), "Tabs / grid (also Alt+Tab)"),
+        ("Alt+Tab".into(), "Tabs / grid"),
         (key("g/e", "grid"), "Automatic grid view"),
         (key("f", "fullscreen"), "Focus tab / return to grid"),
         ("Enter".into(), "New tab"),
@@ -316,7 +338,8 @@ fn help_entries(config: &super::ui::UiConfig) -> Vec<(String, &'static str)> {
         ("Tab number".into(), "Choose tab color (click)"),
         (key("o", "overview"), "Workspace overview"),
         (key("b", "notifications"), "Notifications"),
-        (key("r", "recovery"), "Recovery journal"),
+        (key("r", "recovery"), "Recently closed / previous run"),
+        (key("z", "reopen"), "Reopen most recently closed tab"),
         (
             format!(
                 "{} / {}",
@@ -633,9 +656,9 @@ fn draw_dialog(
         DialogKind::Notifications => &notification_title,
         DialogKind::Recovery => {
             if workspace.ui.recovery_loading {
-                " Recovery · loading…"
+                " Recently closed · loading…"
             } else {
-                " Recovery"
+                " Recently closed · Enter reopen · x rerun application"
             }
         }
         DialogKind::Search => " Search history",
@@ -1058,12 +1081,17 @@ fn draw_dialog(
                 let bg = Color::Indexed(if index == dialog.selection { 24 } else { 236 });
                 fill(frame, rect, bg);
                 let label = format!(
-                    " {} {} {} · {} · session {}",
-                    pane.number,
+                    " {} {} · {} · {} · {} · {}",
+                    if pane.parked {
+                        format!("parked #{}", pane.id)
+                    } else {
+                        format!("tab {}", pane.number)
+                    },
                     super::ui::status_icon(pane.status),
+                    pane.kind.map_or("shell", |kind| kind.as_str()),
                     pane.title,
-                    pane.status.text(),
-                    pane.session_id.as_deref().unwrap_or("unknown")
+                    pane.cwd,
+                    pane.status.text()
                 );
                 write_text(
                     frame,
@@ -1573,7 +1601,7 @@ fn draw_folded_tab(
         bg,
         true,
     );
-    let indicator_width = if rect.cols >= 2 { 2 } else { 0 };
+    let indicator_width = u16::from(rect.cols > 0);
     let track = Rect {
         x: rect.x + rect.cols.saturating_sub(indicator_width) / 2,
         y: rect.y + 1,
@@ -1653,7 +1681,7 @@ fn draw_tab(
             park.x.saturating_sub(count_width).saturating_sub(x),
         )
     };
-    let marker_width = 2;
+    let marker_width = 1;
     let track = if rect.rows >= 2 {
         Rect {
             x: number.x + number.cols + 1,
@@ -1861,11 +1889,11 @@ fn activity_indicator(
     track: Rect,
     tick: usize,
 ) {
-    if track.cols < 2 {
+    if track.cols == 0 {
         return;
     }
     let icon = if pane.status == crate::model::Status::Working {
-        Some(super::ui::MOON_FRAMES[tick % 8])
+        Some(super::ui::SPINNER_FRAMES[tick % 8])
     } else {
         super::ui::pane_indicator(&workspace.ui, pane)
     };
@@ -1873,10 +1901,10 @@ fn activity_indicator(
         let bg =
             frame.cells[usize::from(track.y) * usize::from(frame.cols) + usize::from(track.x)].bg;
         let fg = match icon {
-            super::ui::WAIT_ICON => Color::Indexed(226),
+            super::ui::WAIT_ICON => Color::Indexed(110),
             super::ui::DONE_ICON => Color::Indexed(114),
             super::ui::ALERT_ICON => Color::Indexed(203),
-            _ => neutral(workspace, 55),
+            _ => Color::Rgb(155, 205, 185),
         };
         write_text(frame, track.x, track.y, track.cols, icon, fg, bg, true);
     }
@@ -2039,7 +2067,7 @@ fn sidebar_dev_watermark(frame: &Frame) -> Rect {
     let width = frame.sidebar_width() - 1;
     let free = top - occupied;
     if free == 0 {
-        let cols = if sidebar_status_rows(frame.rows) == 3 {
+        let cols = if sidebar_status_rows(frame.rows) == 4 {
             3
         } else {
             7
@@ -2207,15 +2235,15 @@ fn draw_sidebar_status(frame: &mut Frame, workspace: &Workspace, notice: Option<
     let foreground = tab_text(workspace, false);
     let muted = neutral(workspace, 55);
     let value_color = neutral(workspace, 85);
-    let metric_top = if rows > 3 { top + 1 } else { top };
-    let controls_top = frame.rows - 2 * super::workspace::sidebar_button_rows(frame.rows);
-    let metric_end = if rows > 3 {
+    let metric_top = if rows >= 9 { top + 1 } else { top };
+    let controls_top = frame.rows - 3 * super::workspace::sidebar_button_rows(frame.rows);
+    let metric_end = if rows >= 9 {
         controls_top - 1
     } else {
         controls_top
     };
-    let compact_dev = workspace.ui.show_dev_badge && rows == 3 && watermark.y == top;
-    if rows > 3 {
+    let compact_dev = workspace.ui.show_dev_badge && rows == 4 && watermark.y == top;
+    if rows >= 9 {
         for y in [top, controls_top - 1] {
             write_text(
                 frame,
@@ -2229,7 +2257,7 @@ fn draw_sidebar_status(frame: &mut Frame, workspace: &Workspace, notice: Option<
             );
         }
     }
-    if !frame.controller && rows > 3 {
+    if !frame.controller && rows >= 9 {
         write_text(
             frame,
             2,
@@ -2268,7 +2296,7 @@ fn draw_sidebar_status(frame: &mut Frame, workspace: &Workspace, notice: Option<
         if y < metric_end {
             write_text(frame, 1, y, width - 2, &line, value_color, bg, false);
         }
-    } else if !frame.controller && rows == 3 {
+    } else if !frame.controller && rows == 4 {
         write_text(
             frame,
             1,
@@ -2294,7 +2322,7 @@ fn draw_sidebar_status(frame: &mut Frame, workspace: &Workspace, notice: Option<
                 values: vec![],
             });
         }
-        let capacity = usize::from(metric_end - metric_top);
+        let capacity = usize::from(metric_end.saturating_sub(metric_top));
         let visible: Vec<_> = metrics.iter().take(capacity).collect();
         let mut y = metric_top;
         for metric in visible {
@@ -2716,7 +2744,7 @@ fn draw_parked(
             Rect {
                 x: rect.x + 6,
                 y,
-                cols: 2,
+                cols: 1,
                 rows: 1,
             },
             spinner,
@@ -2862,15 +2890,17 @@ fn draw_dashboard(
         }
         DialogKind::Recovery => workspace
             .ui
-            .recovery
+            .closed_tabs
             .iter()
             .map(|item| {
                 format!(
-                    "{} · {} · {} · session {} · Enter/y copies resume",
+                    "{} · {} · {} · {} · {} · {}s ago",
                     item.workspace,
-                    item.entry.cwd,
-                    item.entry.name,
-                    item.entry.session_id.as_deref().unwrap_or("unknown")
+                    item.kind.map_or("app", |kind| kind.as_str()),
+                    item.name,
+                    item.cwd,
+                    item.reason,
+                    crate::now().saturating_sub(item.closed_at.unwrap_or(0))
                 )
             })
             .collect(),

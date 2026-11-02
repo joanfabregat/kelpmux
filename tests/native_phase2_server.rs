@@ -795,13 +795,95 @@ fn recovery_skips_busy_workspace_without_stalling_pty_and_copies_grouped_resume_
     });
     let index = found
         .ui
-        .recovery
+        .closed_tabs
         .iter()
         .position(|item| item.workspace == "other")
         .unwrap();
-    assert_eq!(found.ui.recovery[index].entry.cwd, "/fixture-project");
+    assert_eq!(found.ui.closed_tabs[index].cwd, "/fixture-project");
     peer.action(Action::RecoveryCopy(index));
     assert_eq!(peer.clipboard(), "claude --resume 'known-recovery-id'");
+}
+
+#[test]
+fn closed_application_reopens_folder_and_explicit_rerun_restarts_argv() {
+    let daemon = Daemon::start();
+    let mut peer = daemon.attach();
+    peer.input("sleep 60\n");
+    peer.wait(|frame| frame.panes.iter().any(|p| p.pane.status == Status::Working));
+    // Wait for the metadata file rather than timing the discovery cycle.
+    let deadline = Instant::now() + Duration::from_secs(8);
+    loop {
+        if kelpmux::native::history::History::load(&daemon.state.join("tab-history.json"))
+            .unwrap()
+            .entries
+            .iter()
+            .any(|e| e.argv.first().is_some_and(|s| s.ends_with("sleep")))
+        {
+            break;
+        }
+        assert!(Instant::now() < deadline, "application was not recorded");
+        thread::sleep(Duration::from_millis(25));
+    }
+    let old = peer.panes()[0].pid;
+    peer.action(Action::ClosePaneRequest(1));
+    peer.action(Action::ClosePaneConfirm(1));
+    peer.wait(|f| f.panes.iter().all(|p| p.pane.pid != old));
+    peer.action(Action::Recovery);
+    let listed = peer.wait(|f| {
+        !f.ui.recovery_loading
+            && f.ui
+                .closed_tabs
+                .iter()
+                .any(|e| e.argv.first().is_some_and(|s| s.ends_with("sleep")))
+    });
+    let index = listed
+        .ui
+        .closed_tabs
+        .iter()
+        .position(|e| e.argv.first().is_some_and(|s| s.ends_with("sleep")))
+        .unwrap();
+    assert_eq!(
+        listed.ui.closed_tabs[index].cwd,
+        daemon.root.to_string_lossy()
+    );
+    peer.action(Action::RerunTab(index));
+    peer.wait(|f| {
+        f.ui.dialog.is_none()
+            && f.panes
+                .iter()
+                .any(|p| p.pane.id != 1 && p.pane.status == Status::Working)
+    });
+    peer.action(Action::Recovery);
+    let empty = peer.wait(|f| {
+        !f.ui.recovery_loading && f.ui.dialog.is_some_and(|d| d.kind == DialogKind::Recovery)
+    });
+    assert!(
+        empty.ui.closed_tabs.is_empty(),
+        "restored entry must not reappear"
+    );
+    peer.action(Action::DialogClose);
+    let active = empty.active;
+    peer.action(Action::ClosePaneRequest(active));
+    peer.action(Action::ClosePaneConfirm(active));
+    peer.wait(|f| f.panes.iter().all(|p| p.pane.id != active));
+    peer.action(Action::ReopenLast);
+    let reopened = peer.wait(|f| {
+        f.ui.dialog.is_none()
+            && f.active > active
+            && f.panes
+                .iter()
+                .any(|p| p.pane.id == f.active && p.pane.status == Status::Idle)
+    });
+    assert_eq!(
+        reopened
+            .panes
+            .iter()
+            .find(|p| p.pane.id == reopened.active)
+            .unwrap()
+            .pane
+            .cwd,
+        daemon.root.to_string_lossy()
+    );
 }
 
 #[test]
