@@ -508,3 +508,40 @@ fn parenthesized_oauth_urls_survive_tui_hard_wraps_and_indent_without_linking_pr
         );
     }
 }
+
+#[test]
+fn emoji_presentation_warning_reserves_two_cells_across_fragmented_input() {
+    let mut terminal = Terminal::new(20, 3);
+    for byte in "⚠️✅❓🌑X".as_bytes() {
+        terminal.feed(&[*byte]);
+    }
+    let screen = terminal.snapshot();
+    for (index, text) in [(0, "⚠️"), (2, "✅"), (4, "❓"), (6, "🌑")] {
+        assert_eq!(screen.cells[index].text, text);
+        assert_eq!(screen.cells[index].width, 2);
+        assert_eq!(screen.cells[index + 1].width, 0);
+    }
+    assert_eq!(screen.cells[8].text, "X");
+    let mut replay = Terminal::new(20, 3);
+    let mut workspace = Workspace::new(40, 10).unwrap();
+    workspace.panes.clear();
+    let mut frame = compose(&workspace, &BTreeMap::new(), true, None, 0);
+    frame.cols = 20;
+    frame.rows = 3;
+    frame.cells = screen.cells.clone();
+    frame.panes.clear();
+    frame.cursor = None;
+    replay.feed(&terminal_diff(None, &frame));
+    assert_eq!(replay.snapshot().cells, screen.cells);
+    let mut linked = Terminal::new(20, 3);
+    linked.feed("\x1b]8;;https://example.com\x1b\\⚠️\x1b]8;;\x1b\\X".as_bytes());
+    let screen = linked.snapshot();
+    for index in [0, 1] {
+        assert_eq!(
+            screen.cells[index].hyperlink.as_deref(),
+            Some("https://example.com")
+        );
+    }
+    assert_eq!(screen.cells[2].text, "X");
+    assert!(screen.cells[2].hyperlink.is_none());
+}

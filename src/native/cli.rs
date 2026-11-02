@@ -689,7 +689,11 @@ fn validate_frame(frame: &Frame) -> Result<()> {
                 return Err("invalid native continuation".into());
             }
         } else if let Some(first) = chars.next() {
-            if unicode_width::UnicodeWidthChar::width(first).unwrap_or(0) != usize::from(cell.width)
+            if (unicode_width::UnicodeWidthChar::width(first).unwrap_or(0)
+                != usize::from(cell.width)
+                && !(cell.text.contains('\u{fe0f}')
+                    && unicode_width::UnicodeWidthStr::width(cell.text.as_str())
+                        == usize::from(cell.width)))
                 || chars.any(|c| unicode_width::UnicodeWidthChar::width(c).unwrap_or(0) != 0)
             {
                 return Err("invalid native glyph width".into());
