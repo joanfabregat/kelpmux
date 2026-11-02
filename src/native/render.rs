@@ -3,6 +3,7 @@
 use super::{engine::safe_text, protocol::*, ui::PALETTE, workspace::Workspace};
 use std::{collections::BTreeMap, fmt::Write};
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
+const GRID_BORDER: Color = Color::Rgb(71, 113, 153);
 
 pub fn compose(
     workspace: &Workspace,
@@ -35,6 +36,7 @@ pub fn compose(
         for rect in workspace.grid_slots().into_iter().skip(count) {
             let bg = theme_surface(workspace, 8);
             fill(&mut frame, rect, bg);
+            grid_header_rule(&mut frame, rect);
             write_text(
                 &mut frame,
                 rect.x + rect.cols.saturating_sub(8) / 2,
@@ -482,17 +484,39 @@ fn draw_grid_separators(frame: &mut Frame, workspace: &Workspace) {
         let right = rect.x + rect.cols;
         if right < frame.cols {
             for y in rect.y..rect.y + rect.rows {
-                write_text(
-                    frame,
-                    right,
-                    y,
-                    1,
-                    "┃",
-                    Color::Rgb(69, 76, 86),
-                    Color::Default,
-                    false,
-                );
+                // Continue the neighboring header surface behind the line;
+                // a default background here leaves a dark gap in the header.
+                let bg = if y == rect.y {
+                    theme_surface(workspace, 8)
+                } else {
+                    Color::Default
+                };
+                write_text(frame, right, y, 1, "┃", GRID_BORDER, bg, false);
+                if y == rect.y {
+                    grid_header_rule(
+                        frame,
+                        Rect {
+                            x: right,
+                            y,
+                            cols: 1,
+                            rows: 1,
+                        },
+                    );
+                }
             }
+        }
+    }
+}
+/// A colored underline draws a horizontal rule inside the existing header row.
+/// No screen row or application cell is taken away from a terminal body.
+fn grid_header_rule(frame: &mut Frame, rect: Rect) {
+    for x in rect.x..rect.x.saturating_add(rect.cols).min(frame.cols) {
+        if let Some(cell) = frame
+            .cells
+            .get_mut(usize::from(rect.y) * usize::from(frame.cols) + usize::from(x))
+        {
+            cell.underline = true;
+            cell.underline_color = Some(GRID_BORDER);
         }
     }
 }
@@ -518,6 +542,15 @@ fn header(
         "",
         spinner,
     );
+    if workspace.reading == ReadingMode::Grid {
+        grid_header_rule(frame, view.rect);
+        if view.rect.x > 0 {
+            let start =
+                usize::from(view.rect.y) * usize::from(frame.cols) + usize::from(view.rect.x);
+            // Continue the neighboring header surface through the divider cell.
+            frame.cells[start - 1].bg = frame.cells[start].bg;
+        }
+    }
 }
 
 fn inactive_color(color: Color, foreground: bool, theme: [Option<[u8; 3]>; 2]) -> Color {
@@ -1608,9 +1641,6 @@ fn draw_folded_tab(
         cols: indicator_width,
         rows: 1,
     };
-    if pane.status == crate::model::Status::Working {
-        activity_sheen(frame, workspace, rect, tick);
-    }
     activity_indicator(frame, workspace, pane, track, tick);
 }
 
@@ -1682,7 +1712,7 @@ fn draw_tab(
         )
     };
     let marker_width = if rect.rows >= 2 {
-        5
+        6
     } else if grid {
         3
     } else {
@@ -1885,9 +1915,6 @@ fn draw_tab(
         );
     }
     activity_indicator(frame, workspace, pane, track, spinner);
-    if pane.status == crate::model::Status::Working {
-        activity_sheen(frame, workspace, rect, spinner);
-    }
 }
 
 fn activity_indicator(
@@ -1901,10 +1928,10 @@ fn activity_indicator(
         return;
     }
     let icon = if pane.status == crate::model::Status::Working {
-        Some(if track.cols >= 5 {
-            super::ui::SIDEBAR_EQUALIZER_FRAMES[tick % super::ui::SIDEBAR_EQUALIZER_FRAMES.len()]
+        Some(if track.cols >= 6 {
+            super::ui::SIDEBAR_BALL_FRAMES[tick % super::ui::SIDEBAR_BALL_FRAMES.len()]
         } else if track.cols >= 3 {
-            super::ui::GRID_EQUALIZER_FRAMES[tick % super::ui::GRID_EQUALIZER_FRAMES.len()]
+            super::ui::GRID_BALL_FRAMES[tick % super::ui::GRID_BALL_FRAMES.len()]
         } else {
             super::ui::SPINNER_FRAMES[tick % super::ui::SPINNER_FRAMES.len()]
         })
@@ -1923,35 +1950,6 @@ fn activity_indicator(
         write_text(frame, track.x, track.y, track.cols, icon, fg, bg, true);
     }
 }
-fn activity_sheen(frame: &mut Frame, workspace: &Workspace, rect: Rect, tick: usize) {
-    let base = terminal_backdrop(workspace);
-    let light = u16::from(base[0]) * 3 + u16::from(base[1]) * 6 + u16::from(base[2]) >= 1280;
-    let divisor = if rect.rows > 1 { 3 } else { 6 };
-    let period = if rect.rows > 1 { 20 } else { 19 };
-    let band = usize::from(rect.cols).div_ceil(divisor).max(3);
-    let head = (tick % period) * (usize::from(rect.cols) + band * 2) / period;
-    for y in rect.y..rect.y + rect.rows {
-        for x in 0..rect.cols {
-            let index = usize::from(y) * usize::from(frame.cols) + usize::from(rect.x + x);
-            if frame.cells[index].width == 0 && x > 0 {
-                frame.cells[index].bg = frame.cells[index - 1].bg;
-                continue;
-            }
-            let alpha = band.saturating_sub((usize::from(x) + band).abs_diff(head)) * 16 / band;
-            if let Color::Rgb(r, g, b) = frame.cells[index].bg {
-                let lift = |c: u8| {
-                    if light {
-                        c - (usize::from(c) * alpha / 255) as u8
-                    } else {
-                        c + ((255 - usize::from(c)) * alpha / 255) as u8
-                    }
-                };
-                frame.cells[index].bg = Color::Rgb(lift(r), lift(g), lift(b));
-            }
-        }
-    }
-}
-
 fn marquee_title(title: &str, width: u16, ticks: u16) -> String {
     let title = safe_text(title);
     let chars: Vec<_> = title.chars().take(512).collect();
