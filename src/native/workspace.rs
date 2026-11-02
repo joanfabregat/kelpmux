@@ -1199,7 +1199,7 @@ pub fn dialog_bounds_for(cols: u16, rows: u16, kind: super::ui::DialogKind) -> R
         return dialog_bounds(cols, rows);
     }
     let (width, height) = if kind == super::ui::DialogKind::Config {
-        (72, 12)
+        (72, 16)
     } else {
         (52, 9)
     };
@@ -1241,6 +1241,7 @@ pub fn config_targets(bounds: Rect) -> Vec<(usize, Option<bool>, Rect)> {
 /// Accent choices follow the notification block with one blank row between.
 pub fn accent_targets(bounds: Rect) -> Vec<(super::ui::Accent, Rect)> {
     let (offset, height) = config_geometry(bounds);
+    let card_height = (bounds.rows.saturating_sub(5 + offset + height) / 2).clamp(1, 3);
     let inner = bounds.cols.saturating_sub(4);
     super::ui::Accent::ALL
         .into_iter()
@@ -1251,9 +1252,9 @@ pub fn accent_targets(bounds: Rect) -> Vec<(super::ui::Accent, Rect)> {
                 accent,
                 Rect {
                     x: bounds.x + 2 + inner * col / 3,
-                    y: bounds.y + 4 + offset + height + index as u16 / 3,
+                    y: bounds.y + 4 + offset + height + index as u16 / 3 * card_height,
                     cols: inner * (col + 1) / 3 - inner * col / 3,
-                    rows: 1,
+                    rows: card_height,
                 },
             )
         })
@@ -1475,7 +1476,10 @@ pub fn help_button(rows: u16, count: usize) -> Rect {
     }
 }
 pub fn sidebar_status_rows(rows: u16) -> u16 {
-    if rows >= 18 { 8 } else { 3 }
+    if rows >= 18 { 12 } else { 3 }
+}
+pub fn sidebar_button_rows(rows: u16) -> u16 {
+    if rows >= 18 { 3 } else { 1 }
 }
 pub fn sidebar_controls(
     cols: u16,
@@ -1484,21 +1488,22 @@ pub fn sidebar_controls(
     config: &super::ui::UiConfig,
 ) -> [Rect; 4] {
     let width = config.sidebar_width(cols) - 1;
+    let height = sidebar_button_rows(rows);
     let rect = |x, y, cols| Rect {
         x,
         y,
         cols,
-        rows: 1,
+        rows: height,
     };
     if config.sidebar_folded {
         return [Rect::default(); 4];
     }
     let right = width.div_ceil(2);
     [
-        rect(0, rows - 2, right),
-        rect(right, rows - 2, width - right),
-        rect(0, rows - 1, right),
-        rect(right, rows - 1, width - right),
+        rect(0, rows - 2 * height, right),
+        rect(right, rows - 2 * height, width - right),
+        rect(0, rows - height, right),
+        rect(right, rows - height, width - right),
     ]
 }
 pub fn color_cards(bounds: Rect) -> Vec<Rect> {

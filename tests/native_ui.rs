@@ -110,7 +110,7 @@ fn sidebar_new_follows_tabs_and_parked_stays_at_bottom_with_contextual_headers()
         .find(|(t, _)| *t == TabTarget::Parked)
         .unwrap()
         .1;
-    assert_eq!((new.rows, parked.rows), (3, 1));
+    assert_eq!((new.rows, parked.rows), (3, 3));
     assert_eq!(parked.y + parked.rows, f.rows);
     let last_tab = targets
         .iter()
@@ -1629,7 +1629,7 @@ fn automatic_grid_parking_controls_alert_colors_and_three_row_tabs() {
             vec![Action::ParkRequest(1)]
         );
         let help = f.controls()[3];
-        let start = usize::from(help.y * f.cols + help.x);
+        let start = usize::from((help.y + help.rows / 2) * f.cols + help.x);
         let at = start
             + f.cells[start..start + usize::from(help.cols)]
                 .iter()
@@ -2193,6 +2193,13 @@ fn sidebar_status_controls_and_metrics_leave_the_last_terminal_row_usable() {
             Action::Parked,
             Action::Help,
         ]) {
+            assert_eq!(rect.rows, if f.rows >= 18 { 3 } else { 1 });
+            for y in rect.y..rect.y + rect.rows {
+                assert_eq!(
+                    actions(Router::default().route(click(Point { x: rect.x, y }), &f)),
+                    vec![expected.clone()]
+                );
+            }
             assert!(!body.contains(Point {
                 x: rect.x,
                 y: rect.y
@@ -2378,8 +2385,9 @@ fn footer_parked_help_order_has_no_new_tab_button() {
                 .collect();
             assert_eq!(footer.contains('+'), ws.active == 0 && !f.sidebar_status());
             assert!(!footer.contains("(0)"));
-            let label: String = f.cells[usize::from(parked.y * f.cols + parked.x)
-                ..usize::from(parked.y * f.cols + parked.x + parked.cols)]
+            let label_y = parked.y + parked.rows / 2;
+            let label: String = f.cells[usize::from(label_y * f.cols + parked.x)
+                ..usize::from(label_y * f.cols + parked.x + parked.cols)]
                 .iter()
                 .map(|cell| cell.text.as_str())
                 .collect();
@@ -2535,6 +2543,9 @@ fn status_popup_metrics_clicks_views_search_and_small_screen_replay() {
             ws.apply(&Action::StatusView(view)).unwrap();
             let f = frame(&ws);
             let bounds = status::bounds(f.cols, f.rows);
+            assert!(bounds.x >= 3 && bounds.y >= 3);
+            assert!(f.cols - bounds.x - bounds.cols >= 3);
+            assert!(f.rows - bounds.y - bounds.rows >= 3);
             assert_eq!(ws.ui.dialog.unwrap().kind, DialogKind::Status);
             assert_eq!(
                 f.cells[usize::from(bounds.y * f.cols + bounds.x + 1)].text,
@@ -4665,6 +4676,7 @@ fn accent_presets_have_shared_click_hover_and_keyboard_targets_on_small_screens(
         ws.apply(&Action::Config).unwrap();
         let bounds = dialog_bounds_for(ws.cols, ws.rows, DialogKind::Config);
         for (index, (accent, rect)) in accent_targets(bounds).into_iter().enumerate() {
+            assert_eq!(rect.rows, if size.1 >= 18 { 3 } else { 1 });
             assert!(rect.y > bounds.y && rect.y + rect.rows < bounds.y + bounds.rows);
             assert!(rect.x >= bounds.x && rect.x + rect.cols <= bounds.x + bounds.cols);
             let f = frame(&ws);
@@ -4673,6 +4685,14 @@ fn accent_presets_have_shared_click_hover_and_keyboard_targets_on_small_screens(
                 y: rect.y,
             };
             assert_eq!(hover::target(&f, point), Some(rect));
+            for y in rect.y..rect.y + rect.rows {
+                let point = Point { x: rect.x, y };
+                assert_eq!(hover::target(&f, point), Some(rect));
+                assert!(
+                    actions(Router::default().route(click(point), &f))
+                        .contains(&Action::AccentSet(accent))
+                );
+            }
             for action in actions(Router::default().route(click(point), &f)) {
                 ws.apply(&action).unwrap();
             }
@@ -4688,7 +4708,7 @@ fn accent_presets_have_shared_click_hover_and_keyboard_targets_on_small_screens(
             assert_eq!(ws.ui.config.accent, accent);
             let rendered = frame(&ws);
             assert_eq!(
-                rendered.cells[usize::from(rect.y * rendered.cols + rect.x)].text,
+                rendered.cells[usize::from((rect.y + rect.rows / 2) * rendered.cols + rect.x)].text,
                 "●"
             );
         }
@@ -4743,6 +4763,20 @@ fn neutral_sidebar_surfaces_follow_terminal_background_independently_of_accent()
                     .iter()
                     .all(|r| at(r.x, r.y).bg == blend(background, ink, 14))
             );
+            let footer_color = |rect: Rect| {
+                let start = usize::from((rect.y + rect.rows / 2) * f.cols + rect.x);
+                f.cells[start..start + usize::from(rect.cols)]
+                    .iter()
+                    .find(|c| c.text != " ")
+                    .unwrap()
+                    .fg
+            };
+            assert_eq!(
+                footer_color(f.controls()[0]),
+                blend([0; 3], accent.rgb(), 100)
+            );
+            assert_eq!(footer_color(f.controls()[1]), Color::Indexed(114));
+            assert_ne!(footer_color(f.controls()[0]), footer_color(f.controls()[1]));
             // Background sheen changes only the card fill, in the right direction for the theme.
             ws.panes[0].status = Status::Working;
             for tick in 0..30 {

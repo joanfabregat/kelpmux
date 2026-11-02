@@ -862,7 +862,7 @@ fn draw_dialog(
             write_text(
                 frame,
                 rect.x,
-                rect.y,
+                rect.y + rect.rows / 2,
                 rect.cols,
                 &format!("{} {}", if checked { "●" } else { "○" }, accent.label()),
                 Color::Rgb(r, g, b),
@@ -2228,7 +2228,8 @@ pub(super) fn sidebar_disk_region(frame: &Frame) -> Option<Rect> {
     }
     let height = super::workspace::sidebar_status_rows(frame.rows);
     let top = frame.rows - height + u16::from(height > 3);
-    let end = frame.rows - if height > 3 { 3 } else { 2 };
+    let end =
+        frame.rows - 2 * super::workspace::sidebar_button_rows(frame.rows) - u16::from(height > 3);
     let y = top + index.unwrap_or(metrics.len()) as u16;
     (y < end).then(|| Rect {
         x: 0,
@@ -2299,14 +2300,15 @@ fn draw_sidebar_status(frame: &mut Frame, workspace: &Workspace, notice: Option<
     let muted = neutral(workspace, 55);
     let value_color = neutral(workspace, 85);
     let metric_top = if rows > 3 { top + 1 } else { top };
+    let controls_top = frame.rows - 2 * super::workspace::sidebar_button_rows(frame.rows);
     let metric_end = if rows > 3 {
-        frame.rows - 3
+        controls_top - 1
     } else {
-        frame.rows - 2
+        controls_top
     };
     let compact_dev = workspace.ui.show_dev_badge && rows == 3 && watermark.y == top;
     if rows > 3 {
-        for y in [top, frame.rows - 3] {
+        for y in [top, controls_top - 1] {
             write_text(
                 frame,
                 1,
@@ -2596,11 +2598,13 @@ fn draw_sidebar_status(frame: &mut Frame, workspace: &Workspace, notice: Option<
         write_text(
             frame,
             rect.x + inset,
-            rect.y,
+            rect.y + rect.rows / 2,
             rect.cols - inset,
             &label,
-            if rect == config || rect == mode {
+            if rect == config {
                 accent_color(workspace)
+            } else if rect == mode {
+                Color::Indexed(114)
             } else {
                 Color::Indexed(if rect == parked {
                     141

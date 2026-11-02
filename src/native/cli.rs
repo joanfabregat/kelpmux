@@ -777,7 +777,9 @@ fn fitted(frame: &Frame, size: (u16, u16), notice: Option<&str>) -> Frame {
             }
         }
         if let Some(notice) = notice {
-            let y = size.1.saturating_sub(3);
+            let y = size
+                .1
+                .saturating_sub(2 * super::workspace::sidebar_button_rows(frame.rows) + 1);
             for x in 0..width {
                 fit.cells[usize::from(y * size.0 + x)] = Cell {
                     fg: Color::Indexed(231),
