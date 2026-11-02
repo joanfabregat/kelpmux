@@ -1903,8 +1903,10 @@ fn grid_header_numbers_park_close_and_footer_have_distinct_targets_without_zoom(
 }
 
 #[test]
-fn working_spinner_uses_one_cell_in_grid_tabs_folded_and_parked_views() {
-    use kelpmux::native::ui::{ACTIVITY_INTERVAL_MS, SIDEBAR_EQUALIZER_FRAMES, SPINNER_FRAMES};
+fn working_indicators_replay_in_grid_sidebar_folded_and_parked_views() {
+    use kelpmux::native::ui::{
+        ACTIVITY_INTERVAL_MS, GRID_EQUALIZER_FRAMES, SIDEBAR_EQUALIZER_FRAMES, SPINNER_FRAMES,
+    };
     assert_eq!(ACTIVITY_INTERVAL_MS, 150);
     for mode in 0..4 {
         let mut ws = workspace((180, 50), (2, 1));
@@ -1925,7 +1927,13 @@ fn working_spinner_uses_one_cell_in_grid_tabs_folded_and_parked_views() {
         let mut position = None;
         for tick in 0..=8 {
             let f = compose(&ws, &BTreeMap::new(), true, None, tick);
-            let glyph = if mode == 1 {
+            let glyph = if mode == 0 {
+                GRID_EQUALIZER_FRAMES[tick % GRID_EQUALIZER_FRAMES.len()]
+                    .chars()
+                    .next()
+                    .unwrap()
+                    .to_string()
+            } else if mode == 1 {
                 SIDEBAR_EQUALIZER_FRAMES[tick % SIDEBAR_EQUALIZER_FRAMES.len()]
                     .chars()
                     .next()
@@ -4267,6 +4275,33 @@ fn sidebar_equalizer_keeps_five_bands_and_padding_despite_legacy_width() {
         assert!(f.cells[start..start + 5].iter().all(|c| c.width == 1));
         assert_eq!(f.cells[start + 5].text, " ");
     }
+}
+
+#[test]
+fn grid_equalizer_keeps_three_bands_with_one_space_on_either_side() {
+    let mut ws = workspace((180, 50), (2, 1));
+    ws.panes[0].status = Status::Working;
+    let f = frame(&ws);
+    let rect = Rect {
+        rows: 1,
+        ..f.panes[0].rect
+    };
+    let number = kelpmux::native::workspace::tab_number_for(rect, 1);
+    let start = usize::from(rect.y * f.cols + number.x + number.cols + 2);
+    assert_eq!(f.cells[start - 1].text, " ");
+    assert_eq!(
+        f.cells[start..start + 3]
+            .iter()
+            .map(|c| c.text.as_str())
+            .collect::<String>(),
+        "▂▆▂"
+    );
+    assert_eq!(f.cells[start + 3].text, " ");
+    assert!(
+        f.cells[start..start + 3]
+            .iter()
+            .all(|c| c.width == 1 && c.fg == Color::Rgb(155, 205, 185))
+    );
 }
 
 #[test]
