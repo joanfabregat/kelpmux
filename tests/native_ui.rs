@@ -1904,7 +1904,7 @@ fn grid_header_numbers_park_close_and_footer_have_distinct_targets_without_zoom(
 
 #[test]
 fn working_spinner_uses_one_cell_in_grid_tabs_folded_and_parked_views() {
-    use kelpmux::native::ui::{ACTIVITY_INTERVAL_MS, SPINNER_FRAMES};
+    use kelpmux::native::ui::{ACTIVITY_INTERVAL_MS, SIDEBAR_EQUALIZER_FRAMES, SPINNER_FRAMES};
     assert_eq!(ACTIVITY_INTERVAL_MS, 150);
     for mode in 0..4 {
         let mut ws = workspace((180, 50), (2, 1));
@@ -1925,11 +1925,16 @@ fn working_spinner_uses_one_cell_in_grid_tabs_folded_and_parked_views() {
         let mut position = None;
         for tick in 0..=8 {
             let f = compose(&ws, &BTreeMap::new(), true, None, tick);
-            let index = f
-                .cells
-                .iter()
-                .position(|c| c.text == SPINNER_FRAMES[tick % 8])
-                .unwrap();
+            let glyph = if mode == 1 {
+                SIDEBAR_EQUALIZER_FRAMES[tick % SIDEBAR_EQUALIZER_FRAMES.len()]
+                    .chars()
+                    .next()
+                    .unwrap()
+                    .to_string()
+            } else {
+                SPINNER_FRAMES[tick % SPINNER_FRAMES.len()].into()
+            };
+            let index = f.cells.iter().position(|c| c.text == glyph).unwrap();
             assert_eq!(*position.get_or_insert(index), index);
             assert_eq!(f.cells[index].width, 1);
             assert_ne!(f.cells[index + 1].width, 0);
@@ -2096,7 +2101,7 @@ fn tab_surfaces_follow_dark_and_light_backgrounds_without_repainting_terminal_de
             f.cells[usize::from(number.y * f.cols + number.x + 1)].fg,
             Color::Rgb(95, 175, 255)
         );
-        let ball = f.cells.iter().find(|cell| cell.text == "◐").unwrap();
+        let ball = f.cells.iter().find(|cell| cell.text == "▂").unwrap();
         assert_eq!(ball.fg, Color::Rgb(155, 205, 185));
         let body = f.panes.iter().find(|view| view.pane.id == 1).unwrap().body;
         assert_eq!(
@@ -4240,7 +4245,7 @@ fn config_has_one_blank_row_on_each_side_and_new_tab_only_uses_its_text_row() {
 }
 
 #[test]
-fn compact_moon_track_ignores_legacy_width_and_preserves_padding() {
+fn sidebar_equalizer_keeps_five_bands_and_padding_despite_legacy_width() {
     for width in [1, 10, 20, 50] {
         let mut ws = workspace((180, 50), (2, 1));
         ws.ui.config.activity_width = width;
@@ -4252,10 +4257,15 @@ fn compact_moon_track_ignores_legacy_width_and_preserves_padding() {
         let f = frame(&ws);
         let start = usize::from(rect.y * f.cols + number.x + number.cols + 1);
         assert_eq!(f.cells[start - 1].text, " ");
-        assert_eq!(f.cells[start].text, "◐");
-        assert_eq!(f.cells[start].width, 1);
-        assert_eq!(f.cells[start + 1].text, " ");
-        assert_eq!(f.cells[start + 2].text, " ");
+        assert_eq!(
+            f.cells[start..start + 5]
+                .iter()
+                .map(|c| c.text.as_str())
+                .collect::<String>(),
+            "▂▄▆▄▂"
+        );
+        assert!(f.cells[start..start + 5].iter().all(|c| c.width == 1));
+        assert_eq!(f.cells[start + 5].text, " ");
     }
 }
 
@@ -4359,7 +4369,10 @@ fn grid_header_sheen_is_subtle_covers_the_background_and_keeps_text_steady() {
                 assert_eq!(before.fg, after.fg);
                 assert_eq!(before.width, after.width);
                 if before.text != after.text {
-                    assert!(kelpmux::native::ui::SPINNER_FRAMES.contains(&after.text.as_str()));
+                    assert!(
+                        kelpmux::native::ui::SPINNER_FRAMES.contains(&after.text.as_str())
+                            || "▁▂▃▄▅▆▇█".contains(after.text.as_str())
+                    );
                 }
                 swept[usize::from(x)] |= before.bg != after.bg;
                 let Color::Rgb(r, g, b) = after.bg else {
@@ -4583,7 +4596,10 @@ fn sidebar_card_matches_derived_palette_and_sheen_covers_all_rows_without_blurri
                 assert_eq!(before.fg, after.fg);
                 assert_eq!(before.bold, after.bold);
                 if before.text != after.text {
-                    assert!(kelpmux::native::ui::SPINNER_FRAMES.contains(&after.text.as_str()));
+                    assert!(
+                        kelpmux::native::ui::SPINNER_FRAMES.contains(&after.text.as_str())
+                            || "▁▂▃▄▅▆▇█".contains(after.text.as_str())
+                    );
                 }
                 swept[usize::from(y * rect.cols + x)] |= before.bg != after.bg;
             }
