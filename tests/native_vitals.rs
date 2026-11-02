@@ -127,24 +127,35 @@ fn disk_refresh_has_an_independent_five_second_cache() {
     // Match a real filesystem only if the runner root meets the minimum size.
     fs::write(
         fixture.0.join("self/mounts"),
-        "/dev/fixture / ext4 rw 0 0\n",
+        "/dev/missing /nonexistent-kelpmux-mount ext4 rw 0 0\n/dev/fixture / ext4 rw 0 0\n",
     )
     .unwrap();
     let begin = Instant::now();
     let mut sampler = Sampler::with_proc_root(&fixture.0);
     let first = sampler.sample_at(begin);
     assert_eq!(first.disks.len(), usize::from(space.size >= 10 << 30));
+    let labeled = sampler.disk_readings().to_vec();
+    assert_eq!(
+        labeled,
+        first
+            .disks
+            .iter()
+            .map(|percent| ("/".into(), *percent))
+            .collect::<Vec<_>>()
+    );
     fs::write(fixture.0.join("self/mounts"), "").unwrap();
     assert_eq!(
         sampler.sample_at(begin + Duration::from_secs(4)).disks,
         first.disks
     );
+    assert_eq!(sampler.disk_readings(), labeled);
     assert!(
         sampler
             .sample_at(begin + Duration::from_secs(5))
             .disks
             .is_empty()
     );
+    assert!(sampler.disk_readings().is_empty());
 }
 #[test]
 fn unavailable_metrics_disappear_instead_of_reporting_invented_zero() {

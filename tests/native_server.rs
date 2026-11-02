@@ -182,6 +182,40 @@ fn reconnect_keeps_shell_pid_and_pane_identity() {
     assert!(!after[0].dead);
 }
 #[test]
+fn detached_server_drains_more_than_a_pty_buffer_and_repaints_on_reattach() {
+    let daemon = Daemon::start();
+    let (mut first, _, _) = daemon.attach();
+    let original = state(&mut first).0[0].clone();
+    write_message(
+        &mut first,
+        &ClientMessage::Input(b"while [ ! -f resume ]; do sleep 0.05; done; i=0; while [ \"$i\" -lt 5000 ]; do printf 'detached output %s abcdefghijklmnopqrstuvwxyz\\n' \"$i\"; i=$((i+1)); done; printf 'DETACHED_DRAINED\\n'; : > drained\n".to_vec()),
+    )
+    .unwrap();
+    drop(first);
+    let mut inspector = daemon.connect();
+    wait_controller(&mut inspector, None);
+    fs::write(daemon.root.join("resume"), b"").unwrap();
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while !daemon.root.join("drained").exists() {
+        assert!(Instant::now() < deadline, "detached PTY output stalled");
+        thread::sleep(Duration::from_millis(20));
+    }
+    let (mut reattached, _, controller) = daemon.attach();
+    assert!(controller);
+    let frame = wait_frame(&mut reattached, |frame| {
+        frame
+            .cells
+            .iter()
+            .map(|cell| cell.text.as_str())
+            .collect::<String>()
+            .contains("DETACHED_DRAINED")
+    });
+    assert_eq!(frame.active, original.id);
+    assert_eq!(frame.panes[0].pane.pid, original.pid);
+    assert!(!frame.panes[0].pane.dead);
+}
+
+#[test]
 fn observers_need_explicit_takeover_and_inspect_never_owns_control() {
     let daemon = Daemon::start();
     let mut inspector = daemon.connect();
@@ -442,6 +476,7 @@ fn create_tabs(stream: &mut UnixStream, cols: u8, rows: u8) -> Vec<PaneInfo> {
     }
     panes
 }
+#[track_caller]
 fn wait_frame(stream: &mut UnixStream, predicate: impl Fn(&Frame) -> bool) -> Frame {
     let deadline = Instant::now() + Duration::from_secs(5);
     loop {
@@ -919,29 +954,6 @@ fn configuration_tab_position_persists_for_the_named_workspace() {
             .collect::<String>()
             .contains(&output)
     });
-    for position in [
-        kelpmux::native::ui::TabPosition::Top,
-        kelpmux::native::ui::TabPosition::Bottom,
-    ] {
-        command(&mut stream, Action::TabPositionSet(position)).unwrap();
-        let horizontal = wait_frame(&mut stream, |frame| {
-            frame.ui.config.tab_position == position && frame.panes[0].body.rows == 37
-        });
-        assert_eq!(
-            (horizontal.panes[0].pane.id, horizontal.panes[0].pane.pid),
-            identity
-        );
-        assert_eq!(horizontal.panes[0].body.cols, 240);
-        write_message(&mut stream, &ClientMessage::Input(b"stty size\n".to_vec())).unwrap();
-        wait_frame(&mut stream, |frame| {
-            frame
-                .cells
-                .iter()
-                .map(|cell| cell.text.as_str())
-                .collect::<String>()
-                .contains("37 240")
-        });
-    }
 }
 
 #[test]
@@ -1043,6 +1055,87 @@ fn new_tabs_create_more_than_nine_ptys_and_preserve_existing_jobs() {
 }
 
 #[test]
+fn scrolling_tab_bars_preserves_active_shell_and_real_pty_size() {
+    use kelpmux::native::{ui::TabPosition, workspace::tab_bar_area};
+    let daemon = Daemon::start();
+    let (mut controller, _, _) = daemon.attach();
+    let panes = create_tabs(&mut controller, 4, 3);
+    let identities: Vec<_> = panes.iter().map(|pane| (pane.id, pane.pid)).collect();
+    let position = TabPosition::Left;
+    command(&mut controller, Action::TabPositionSet(position)).unwrap();
+    command(&mut controller, Action::Select(1)).unwrap();
+    let before = wait_frame(&mut controller, |frame| {
+        frame.active == panes[0].id
+            && frame.ui.config.tab_position == position
+            && frame.ui.tab_scroll_anchor.is_none()
+    });
+    let body = before
+        .panes
+        .iter()
+        .find(|view| view.pane.id == before.active)
+        .unwrap()
+        .body;
+    let bar = tab_bar_area(before.cols, before.rows, &before.ui.config);
+    let messages = kelpmux::native::input::Router::default().route(
+        InputEvent::Mouse(MouseEvent {
+            position: Point {
+                x: bar.x + 1,
+                y: bar.y,
+            },
+            kind: MouseKind::WheelDown,
+            button: 0,
+            shift: false,
+            alt: false,
+            ctrl: false,
+        }),
+        &before,
+    );
+    assert!(matches!(
+        messages.as_slice(),
+        [ClientMessage::Action(Action::ScrollTabs(1))]
+    ));
+    for message in messages {
+        write_message(&mut controller, &message).unwrap();
+    }
+    let after = wait_frame(&mut controller, |frame| {
+        frame.ui.tab_scroll_anchor.is_some()
+    });
+    assert_eq!(after.active, before.active);
+    assert_eq!(after.reading, before.reading);
+    assert_eq!(
+        after
+            .panes
+            .iter()
+            .map(|view| (view.pane.id, view.pane.pid))
+            .collect::<Vec<_>>(),
+        identities
+    );
+    assert_eq!(
+        after
+            .panes
+            .iter()
+            .find(|view| view.pane.id == after.active)
+            .unwrap()
+            .body,
+        body
+    );
+    write_message(
+        &mut controller,
+        &ClientMessage::Input(b"printf 'SCROLLED_'; stty size\n".to_vec()),
+    )
+    .unwrap();
+    let expected = format!("SCROLLED_{} {}", body.rows, body.cols);
+    wait_frame(&mut controller, |frame| {
+        frame
+            .cells
+            .iter()
+            .map(|cell| cell.text.as_str())
+            .collect::<String>()
+            .contains(&expected)
+    });
+}
+
+#[test]
 fn controller_and_observer_sidebar_surfaces_use_their_own_reported_themes() {
     let daemon = Daemon::start();
     let (mut controller, _, _) = daemon.attach();
@@ -1057,8 +1150,8 @@ fn controller_and_observer_sidebar_surfaces_use_their_own_reported_themes() {
     });
     let (mut observer, _, _) = daemon.attach();
     for (client, background, expected) in [
-        (&mut controller, [12, 18, 24], Color::Rgb(26, 32, 38)),
-        (&mut observer, [246, 244, 240], Color::Rgb(232, 230, 226)),
+        (&mut controller, [12, 18, 24], Color::Rgb(21, 27, 33)),
+        (&mut observer, [246, 244, 240], Color::Rgb(236, 234, 230)),
     ] {
         write_message(
             client,
@@ -1081,7 +1174,7 @@ fn controller_and_observer_sidebar_surfaces_use_their_own_reported_themes() {
     assert_eq!(frame.ui.terminal_theme[1], Some([12, 18, 24]));
     assert_eq!(
         frame.cells[usize::from(frame.rows / 2 * frame.cols)].bg,
-        Color::Rgb(26, 32, 38)
+        Color::Rgb(21, 27, 33)
     );
 }
 

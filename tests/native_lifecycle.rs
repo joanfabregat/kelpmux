@@ -233,6 +233,50 @@ fn named_workspaces_reject_path_traversal_and_preserve_effective_restart_setting
     fixture.stop();
 }
 #[test]
+fn dev_example_starts_exactly_one_shell() {
+    let config = Path::new(env!("CARGO_MANIFEST_DIR")).join("examples/native-tabs.json");
+    let settings = kelpmux::native::lifecycle::Settings::load(&config).unwrap();
+    assert_eq!(settings.tab_count, Some(1));
+    let fixture = Fixture::new();
+    assert_eq!(
+        fixture.start(&["--config", config.to_str().unwrap()]).len(),
+        1
+    );
+    fixture.stop();
+}
+
+#[test]
+fn legacy_tab_placements_start_and_save_as_left_tabs() {
+    for placement in ["auto", "top", "bottom", "left"] {
+        let fixture = Fixture::new();
+        let config = fixture.root.join("legacy-tabs.json");
+        fs::write(
+            &config,
+            serde_json::to_vec(&serde_json::json!({
+                "tab_count": 1,
+                "ui": {"tab_position": placement, "notification_sound": true}
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        let first = fixture.start(&["--config", config.to_str().unwrap()]);
+        assert_eq!(first.len(), 1);
+        let settings = fs::read(fixture.state.join("workspace.json")).unwrap();
+        let saved: serde_json::Value = serde_json::from_slice(&settings).unwrap();
+        assert_eq!(saved["ui"]["tab_position"], "left");
+        assert_eq!(saved["ui"]["notification_sound"], true);
+        let attached = fixture.start(&[]);
+        assert_eq!(
+            (attached[0].id, attached[0].pid),
+            (first[0].id, first[0].pid)
+        );
+        fixture.stop();
+        assert_eq!(fixture.start(&[]).len(), 1);
+        fixture.stop();
+    }
+}
+
+#[test]
 fn configured_large_startup_and_invalid_config_are_checked() {
     let fixture = Fixture::new();
     let config = fixture.root.join("config.json");
@@ -691,5 +735,381 @@ fn explicit_template_override_rebalances_saved_grid_weights() {
     let saved = Settings::load(&path).unwrap();
     assert_eq!(saved.tab_count, Some(6));
     assert!(saved.grid_weights.iter().all(Vec::is_empty));
+    fixture.stop();
+}
+
+// Use the real composed-client handshake so this checks startup presentation,
+// rather than just the existence of an on-disk crash marker.
+fn attach_frame(fixture: &Fixture) -> (std::os::unix::net::UnixStream, Frame) {
+    use std::os::unix::net::UnixStream;
+    let mut stream = UnixStream::connect(&fixture.socket).unwrap();
+    stream
+        .set_read_timeout(Some(Duration::from_secs(5)))
+        .unwrap();
+    write_message(
+        &mut stream,
+        &ClientMessage::Attach {
+            version: VERSION,
+            cols: 80,
+            rows: 24,
+            takeover: false,
+        },
+    )
+    .unwrap();
+    loop {
+        if let ServerMessage::Frame(frame) =
+            read_message::<ServerMessage>(&mut stream).unwrap().unwrap()
+        {
+            return (stream, frame);
+        }
+    }
+}
+#[test]
+fn recovery_opens_after_real_server_crash_once_but_not_after_clean_stop() {
+    use kelpmux::native::ui::DialogKind;
+    let fixture = Fixture::new();
+    let mut crashed = fixture
+        .command("server")
+        .args(["--shell", "/bin/sh", "--cwd"])
+        .arg(&fixture.root)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap();
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let original = loop {
+        if let Ok(ServerMessage::State { panes, .. }) =
+            kelpmux::native::lifecycle::inspect(&fixture.socket)
+        {
+            break panes;
+        }
+        assert!(Instant::now() < deadline);
+        assert!(crashed.try_wait().unwrap().is_none());
+        thread::sleep(Duration::from_millis(10));
+    };
+    let marker = fixture.state.join("server.running.json");
+    assert!(marker.is_file());
+    let (first, frame) = attach_frame(&fixture);
+    assert!(frame.ui.dialog.is_none());
+    drop(first);
+    crashed.kill().unwrap();
+    crashed.wait().unwrap();
+    assert!(marker.is_file());
+    let restarted = fixture.start(&[]);
+    assert_ne!(original[0].pid, restarted[0].pid);
+    let (mut controller, frame) = attach_frame(&fixture);
+    assert_eq!(frame.ui.dialog.unwrap().kind, DialogKind::Recovery);
+    write_message(
+        &mut controller,
+        &ClientMessage::Command(Action::DialogClose),
+    )
+    .unwrap();
+    loop {
+        if matches!(
+            read_message::<ServerMessage>(&mut controller)
+                .unwrap()
+                .unwrap(),
+            ServerMessage::State { .. }
+        ) {
+            break;
+        }
+    }
+    drop(controller);
+    let (reconnected, frame) = attach_frame(&fixture);
+    assert!(frame.ui.dialog.is_none());
+    drop(reconnected);
+    fixture.stop();
+    assert!(!marker.exists());
+    fixture.start(&[]);
+    let (_controller, frame) = attach_frame(&fixture);
+    assert!(frame.ui.dialog.is_none());
+    fixture.stop();
+}
+
+#[test]
+fn dev_feature_flag_reaches_frames_without_changing_saved_settings_or_child_environment() {
+    for flag in ["1", "0"] {
+        let fixture = Fixture::new();
+        let out = bounded_output(
+            fixture
+                .command("start")
+                .env("KELPMUX_DEV_BADGE", flag)
+                .args(["--shell", "/bin/sh", "--cwd"])
+                .arg(&fixture.root),
+        );
+        let pane = panes(&out)[0].clone();
+        let (_controller, frame) = attach_frame(&fixture);
+        assert_eq!(frame.ui.show_dev_badge, flag == "1");
+        let config: serde_json::Value =
+            serde_json::from_slice(&fs::read(fixture.state.join("workspace.json")).unwrap())
+                .unwrap();
+        assert!(config["ui"].get("show_dev_badge").is_none());
+        let environment = fs::read(format!("/proc/{}/environ", pane.pid)).unwrap();
+        assert!(
+            !environment
+                .split(|byte| *byte == 0)
+                .any(|entry| entry.starts_with(b"KELPMUX_DEV_BADGE="))
+        );
+        fixture.stop();
+    }
+}
+
+#[test]
+fn replacing_outdated_dev_ends_old_jobs_reuses_current_build_and_supports_rollback() {
+    let dev = Fixture::new();
+    let preprod = Fixture::new();
+    let preserved = preprod.start(&[])[0].pid;
+    let old_binary = dev.root.join("old-kelpmux");
+    // A separate copy process cannot leak a temporary writable executable FD
+    // into a concurrent fixture's fork/exec path (ETXTBSY).
+    assert!(
+        Command::new("cp")
+            .arg(env!("CARGO_BIN_EXE_kelpmux"))
+            .arg(&old_binary)
+            .status()
+            .unwrap()
+            .success()
+    );
+    let old_path = old_binary.to_str().unwrap();
+    let old = dev.start(&["--server-binary", old_path])[0].pid;
+    let (mut controller, _) = attach_frame(&dev);
+    write_message(
+        &mut controller,
+        &ClientMessage::Input(b"sleep 60 & echo $! > old-job.pid\n".to_vec()),
+    )
+    .unwrap();
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let job: u32 = loop {
+        if let Ok(text) = fs::read_to_string(dev.root.join("old-job.pid")) {
+            if let Ok(pid) = text.trim().parse() {
+                break pid;
+            }
+        }
+        assert!(Instant::now() < deadline);
+        thread::sleep(Duration::from_millis(10));
+    };
+    assert_eq!(
+        dev.start(&[])[0].pid,
+        old,
+        "ordinary startup preserves its server"
+    );
+    let bad = dev.cmd(
+        "start",
+        &["--replace-running", "--server-binary", "/no-such-server"],
+    );
+    assert!(!bad.status.success());
+    assert_eq!(dev.status()[0].pid, old);
+    let bad = dev.cmd(
+        "start",
+        &["--replace-running", "--cwd", "/no-such-workspace-directory"],
+    );
+    assert!(!bad.status.success());
+    assert_eq!(dev.status()[0].pid, old);
+    let updated = dev.start(&["--replace-running"])[0].pid;
+    assert_ne!(updated, old);
+    wait_absent(Path::new(&format!("/proc/{old}")));
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while kelpmux::process::read(Path::new("/proc"), job).is_ok_and(|p| p.state != 'Z') {
+        assert!(
+            Instant::now() < deadline,
+            "old dev job survived replacement"
+        );
+        thread::sleep(Duration::from_millis(10));
+    }
+    assert_eq!(
+        dev.start(&["--replace-running"])[0].pid,
+        updated,
+        "reconnect must preserve jobs on the selected build"
+    );
+    let (_new_controller, frame) = attach_frame(&dev);
+    assert!(
+        frame.ui.dialog.is_none(),
+        "an intentional update is not a crash"
+    );
+    let rollback = dev.start(&["--replace-running", "--server-binary", old_path])[0].pid;
+    assert_ne!(rollback, updated);
+    let identities = thread::scope(|scope| {
+        let first = scope.spawn(|| dev.start(&["--replace-running"])[0].pid);
+        let second = scope.spawn(|| dev.start(&["--replace-running"])[0].pid);
+        (first.join().unwrap(), second.join().unwrap())
+    });
+    assert_eq!(
+        identities.0, identities.1,
+        "concurrent connections must converge on one server"
+    );
+    assert_ne!(identities.0, rollback);
+    assert_eq!(preprod.status()[0].pid, preserved);
+    dev.stop();
+    preprod.stop();
+}
+
+#[test]
+fn reordered_tabs_keep_live_pids_and_restart_in_saved_startup_order() {
+    use kelpmux::native::templates::{Template, TemplatePane};
+    let fixture = Fixture::new();
+    let mut template = Template {
+        grid: (3, 1),
+        panes: vec![],
+    };
+    for name in ["first", "second", "third"] {
+        let cwd = fixture.root.join(name);
+        fs::create_dir(&cwd).unwrap();
+        template.panes.push(TemplatePane {
+            name: name.into(),
+            cwd,
+            shell: Some("/bin/sh".into()),
+        });
+    }
+    let file = fixture.root.join("template.json");
+    fs::write(&file, serde_json::to_vec(&template).unwrap()).unwrap();
+    let original = fixture.start(&["--template", file.to_str().unwrap()]);
+    let mut socket = std::os::unix::net::UnixStream::connect(&fixture.socket).unwrap();
+    write_message(
+        &mut socket,
+        &ClientMessage::Command(Action::Reorder {
+            source: original[0].id,
+            before: Some(original[2].id),
+        }),
+    )
+    .unwrap();
+    let response = read_message::<ServerMessage>(&mut socket).unwrap().unwrap();
+    let ServerMessage::State {
+        panes: reordered, ..
+    } = response
+    else {
+        panic!("{response:?}");
+    };
+    assert_eq!(
+        reordered.iter().map(|p| p.pid).collect::<Vec<_>>(),
+        [original[1].pid, original[0].pid, original[2].pid]
+    );
+    assert!(fixture.state.join("tab-layout.json").is_file());
+    fixture.stop();
+    let restarted = fixture.start(&[]);
+    assert_eq!(
+        restarted
+            .iter()
+            .map(|p| p.title.as_str())
+            .collect::<Vec<_>>(),
+        ["second", "first", "third"]
+    );
+    assert_eq!(
+        restarted.iter().map(|p| p.cwd.clone()).collect::<Vec<_>>(),
+        [
+            original[1].cwd.clone(),
+            original[0].cwd.clone(),
+            original[2].cwd.clone()
+        ]
+    );
+}
+
+#[test]
+fn permissive_caller_umask_reaches_shell_but_state_stays_private() {
+    let fixture = Fixture::new();
+    let mut command = fixture.command("start");
+    command
+        .args(["--shell", "/bin/sh", "--cwd"])
+        .arg(&fixture.root);
+    // Change only this child; parallel tests keep their own process umask.
+    unsafe {
+        command.pre_exec(|| {
+            libc::umask(0o002);
+            Ok(())
+        });
+    }
+    let started = panes(&bounded_output(&mut command));
+    let shell = fs::read_to_string(format!("/proc/{}/status", started[0].pid)).unwrap();
+    assert!(shell.lines().any(|line| line == "Umask:\t0002"));
+    for (path, mode) in [
+        (fixture.state.clone(), 0o700),
+        (fixture.socket.clone(), 0o600),
+        (fixture.state.join("workspace.json"), 0o600),
+        (fixture.state.join("server.pid"), 0o600),
+    ] {
+        assert_eq!(
+            fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+            mode,
+            "{}",
+            path.display()
+        );
+    }
+    fixture.stop();
+}
+
+#[test]
+fn folded_sidebar_survives_restart_and_keeps_retained_build_settings_compatible() {
+    fn wait_fold(stream: &mut std::os::unix::net::UnixStream, folded: bool) -> Frame {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            assert!(Instant::now() < deadline, "fold state update timed out");
+            let metadata = match read_message::<ServerMessage>(stream).unwrap().unwrap() {
+                ServerMessage::Frame(frame) => Some(frame),
+                ServerMessage::Patch(patch) => Some(patch.frame),
+                _ => None,
+            };
+            if let Some(frame) = metadata {
+                if frame.ui.config.sidebar_folded == folded {
+                    return frame;
+                }
+            }
+        }
+    }
+    let fixture = Fixture::new();
+    let original = fixture.start(&[]);
+    let (mut stream, first) = attach_frame(&fixture);
+    write_message(
+        &mut stream,
+        &ClientMessage::Action(Action::AccentSet(kelpmux::native::ui::Accent::Sage)),
+    )
+    .unwrap();
+    write_message(
+        &mut stream,
+        &ClientMessage::Action(Action::ResizeSidebar(38)),
+    )
+    .unwrap();
+    write_message(
+        &mut stream,
+        &ClientMessage::Action(Action::ToggleSidebarFold),
+    )
+    .unwrap();
+    let folded = wait_fold(&mut stream, true);
+    assert_eq!(folded.panes[0].pane.pid, original[0].pid);
+    assert_eq!(folded.active, first.active);
+    let saved: serde_json::Value =
+        serde_json::from_slice(&fs::read(fixture.state.join("workspace.json")).unwrap()).unwrap();
+    assert!(saved["ui"].get("sidebar_folded").is_none());
+    assert!(saved["ui"].get("accent").is_none());
+    assert_eq!(
+        kelpmux::native::lifecycle::sidebar_accent(&fixture.state.join("sidebar-accent.json"))
+            .unwrap(),
+        kelpmux::native::ui::Accent::Sage
+    );
+    assert_eq!(saved["ui"]["sidebar_columns"], 38);
+    assert!(
+        kelpmux::native::lifecycle::sidebar_folded(&fixture.state.join("sidebar-folded.json"))
+            .unwrap()
+    );
+    drop(stream);
+    fixture.stop();
+    fixture.start(&[]);
+    let (mut stream, restored) = attach_frame(&fixture);
+    assert!(restored.ui.config.sidebar_folded);
+    assert_eq!(restored.ui.config.accent, kelpmux::native::ui::Accent::Sage);
+    assert_eq!(restored.ui.config.sidebar_columns, Some(38));
+    write_message(
+        &mut stream,
+        &ClientMessage::Action(Action::AccentSet(kelpmux::native::ui::Accent::Blue)),
+    )
+    .unwrap();
+    write_message(
+        &mut stream,
+        &ClientMessage::Action(Action::ToggleSidebarFold),
+    )
+    .unwrap();
+    assert_eq!(wait_fold(&mut stream, false).sidebar_width(), 38);
+    assert!(!fixture.state.join("sidebar-folded.json").exists());
+    assert!(!fixture.state.join("sidebar-accent.json").exists());
+    drop(stream);
     fixture.stop();
 }

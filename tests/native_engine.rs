@@ -196,8 +196,16 @@ fn callbacks_query_osc_colors_title_clipboard_bell() {
 #[test]
 fn diff_replays_styles_wide_shrink_resize_and_unchanged() {
     let mut source = Terminal::new(20, 4);
-    source.feed("\x1b[1;3;4;38;2;40;50;60;48;5;17m界e\u{301} hello\x1b[2;1Hsecond".as_bytes());
+    source.feed(
+        "\x1b[1;3;4;58;5;238;38;2;40;50;60;48;5;17m界e\u{301} hello\x1b[2;1Hsecond".as_bytes(),
+    );
+    source.feed(b"\x1b[2;1H\x1b[58;2;70;80;90msecond");
     let first = frame(source.snapshot());
+    assert_eq!(first.cells[0].underline_color, Some(Color::Indexed(238)));
+    assert_eq!(
+        first.cells[20].underline_color,
+        Some(Color::Rgb(70, 80, 90))
+    );
     let mut display = Terminal::new(20, 4);
     display.feed(&terminal_diff(None, &first));
     assert_eq!(display.snapshot().cells, first.cells);
@@ -228,9 +236,13 @@ fn compositor_footer_help_and_control_sanitization() {
             .iter()
             .all(|c| !c.text.chars().any(char::is_control))
     );
-    assert_eq!(
-        frame.cells[23 * 80 + usize::from(frame.footer_cols() - 2)].text,
-        "?"
+    let help = frame.controls()[3];
+    let label_y = help.y + help.rows / 2;
+    assert!(
+        frame.cells[usize::from(label_y * frame.cols + help.x)
+            ..usize::from(label_y * frame.cols + help.x + help.cols)]
+            .iter()
+            .any(|cell| cell.text == "?")
     );
     workspace.help = true;
     let frame = compose(&workspace, &BTreeMap::new(), true, None, 0);
@@ -402,4 +414,97 @@ fn plain_urls_span_soft_wraps_but_not_separate_lines_and_keep_explicit_targets()
         source.snapshot().cells[0].hyperlink.as_deref(),
         Some("https://target.test")
     );
+}
+
+#[test]
+fn plain_url_targets_exclude_surrounding_parentheses_quotes_and_adjacent_prose() {
+    for (text, expected) in [
+        ("(http://example.test)", "http://example.test"),
+        ("[(https://example.test)]", "https://example.test"),
+        ("(https://example.test),next", "https://example.test"),
+        (
+            "(https://example.test/a(b))next",
+            "https://example.test/a(b)",
+        ),
+        ("[label](https://example.test).", "https://example.test"),
+        ("'http://example.test'", "http://example.test"),
+        ("`https://example.test`", "https://example.test"),
+        ("http://[::1]/a(b)?q=(x)", "http://[::1]/a(b)?q=(x)"),
+    ] {
+        for cols in [18, 80] {
+            let mut source = Terminal::new(cols, 10);
+            source.feed(text.as_bytes());
+            let screen = source.snapshot();
+            let links: Vec<_> = screen
+                .cells
+                .iter()
+                .filter_map(|cell| cell.hyperlink.as_deref())
+                .collect();
+            assert_eq!(
+                links.len(),
+                expected.len(),
+                "wrong clickable range for {text:?} at {cols} columns: {links:?}"
+            );
+            assert!(
+                links.iter().all(|link| *link == expected),
+                "wrong target for {text:?}: {links:?}"
+            );
+        }
+    }
+}
+
+#[test]
+fn parenthesized_oauth_urls_survive_tui_hard_wraps_and_indent_without_linking_prose() {
+    let uri = format!(
+        "https://accounts.google.com/o/oauth2/auth?response_type=code&client_id=example.apps.googleusercontent.com&redirect_uri=https%3A%2F%2Fsdk.cloud.google.com%2Fauthcode.html&scope={}&state=example&code_challenge=example&code_challenge_method=S256",
+        "openid+cloud-platform+".repeat(16)
+    );
+    for cols in [40usize, 80, 120] {
+        let prefix = "3. Sign in with user@example.test (";
+        let mut physical = String::from(prefix);
+        let mut column = prefix.len();
+        for c in uri.chars() {
+            if column >= cols - 2 {
+                physical.push_str("\r\n   ");
+                column = 3;
+            }
+            physical.push(c);
+            column += 1;
+        }
+        physical.push_str(") and paste the code shown.\r\nThis prose must not be linked.");
+        let mut terminal = Terminal::new(cols as u16, 40);
+        terminal.feed(physical.as_bytes());
+        let screen = terminal.snapshot();
+        let linked: Vec<_> = screen
+            .cells
+            .iter()
+            .filter(|cell| cell.hyperlink.is_some())
+            .collect();
+        assert_eq!(linked.len(), uri.len(), "at {cols} columns");
+        assert!(
+            linked
+                .iter()
+                .all(|cell| cell.hyperlink.as_deref() == Some(uri.as_str()))
+        );
+        assert_eq!(
+            linked
+                .iter()
+                .map(|cell| cell.text.as_str())
+                .collect::<String>(),
+            uri
+        );
+    }
+    for text in [
+        "(https://a.test/?x=y\r\nnext)",
+        "(https://a.test/?x=y\r\nnext",
+    ] {
+        let mut terminal = Terminal::new(80, 4);
+        terminal.feed(text.as_bytes());
+        let screen = terminal.snapshot();
+        assert!(
+            screen.cells[80..160]
+                .iter()
+                .all(|cell| cell.hyperlink.is_none())
+        );
+    }
 }

@@ -817,8 +817,8 @@ fn live_server_attach_layout_read_fullscreen_detach_reconnect_preserves_shell() 
         let mut display = kelpmux::native::engine::Terminal::new(80, 24);
         display.feed(&tty.output);
         let snapshot = display.snapshot();
-        if snapshot.cells[2].fg == Color::Indexed(232)
-            && snapshot.cells[2].bg == Color::Indexed(250)
+        if snapshot.cells[2].fg == Color::Rgb(220, 221, 221)
+            && snapshot.cells[2].bg == Color::Rgb(50, 79, 109)
         {
             break;
         }
@@ -843,8 +843,8 @@ fn live_server_attach_layout_read_fullscreen_detach_reconnect_preserves_shell() 
         reading == ReadingMode::Fullscreen(original.id)
     });
     // Exercise the real frontend footer translation, not just router helpers.
-    tty.input(b"\x1b[<0;2;24M");
-    wait_text(&mut tty, "Tab placement");
+    tty.input(b"\x02,");
+    wait_text(&mut tty, "Notifications");
     let bounds = kelpmux::native::workspace::dialog_bounds_for(
         80,
         24,
@@ -852,7 +852,7 @@ fn live_server_attach_layout_read_fullscreen_detach_reconnect_preserves_shell() 
     );
     let choice = kelpmux::native::workspace::config_targets(bounds)
         .into_iter()
-        .find(|(index, _, _)| *index == 2)
+        .find(|(_, value, _)| *value == Some(true))
         .unwrap()
         .2;
     tty.input(format!("\x1b[<0;{};{}M", choice.x + 1, choice.y + 1).as_bytes());
@@ -860,15 +860,13 @@ fn live_server_attach_layout_read_fullscreen_detach_reconnect_preserves_shell() 
     loop {
         tty.drain();
         if kelpmux::native::lifecycle::Settings::load(&server.root.join("state/workspace.json"))
-            .is_ok_and(|settings| {
-                settings.ui.tab_position == kelpmux::native::ui::TabPosition::Left
-            })
+            .is_ok_and(|settings| settings.ui.notification_sound)
         {
             break;
         }
         assert!(
             Instant::now() < deadline,
-            "click did not save tab placement"
+            "click did not save notification sound"
         );
         thread::sleep(Duration::from_millis(10));
     }
@@ -1104,5 +1102,71 @@ fn maximum_literal_paste_fits_the_wire_queue_and_keeps_client_attached() {
     received.recv_timeout(Duration::from_secs(5)).unwrap();
     tty.input(b"\x02d");
     tty.finish(true);
+    backend.join().unwrap();
+}
+
+#[test]
+fn hover_highlights_locally_without_backend_motion_or_redrawing_within_a_control() {
+    let fixture = Fixture::new();
+    let path = fixture.socket.clone();
+    let (sender, receiver) = mpsc::channel();
+    let backend = thread::spawn(move || {
+        let mut socket = fixture.accept();
+        welcome(&mut socket, true);
+        while let Some(message) = read_message::<ClientMessage>(&mut socket).unwrap() {
+            let detach = matches!(message, ClientMessage::Action(Action::Detach));
+            sender.send(message).unwrap();
+            if detach {
+                write_message(&mut socket, &ServerMessage::Detached).unwrap();
+                break;
+            }
+        }
+    });
+    let mut tty = Pty::spawn(&path, 80, 24);
+    tty.ready();
+    assert!(String::from_utf8_lossy(&tty.output).contains("\x1b[?1003h"));
+    tty.input(b"\x1b[<35;2;24M");
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        tty.drain();
+        let mut terminal = kelpmux::native::engine::Terminal::new(80, 24);
+        terminal.feed(&tty.output);
+        if terminal.snapshot().cells[23 * 80 + 1].bg == Color::Rgb(40, 40, 40) {
+            break;
+        }
+        assert!(Instant::now() < deadline, "hover highlight never painted");
+        thread::sleep(Duration::from_millis(5));
+    }
+    assert!(receiver.try_recv().is_err(), "hover sent a backend action");
+    let unchanged = tty.output.len();
+    tty.input(b"\x1b[<35;3;24MX");
+    assert!(
+        matches!(receiver.recv_timeout(Duration::from_secs(2)).unwrap(), ClientMessage::Input(bytes) if bytes == b"X")
+    );
+    tty.drain();
+    assert_eq!(
+        tty.output.len(),
+        unchanged,
+        "moving within one control repainted it"
+    );
+    tty.input(b"\x1b[<35;21;3M");
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        tty.drain();
+        let mut terminal = kelpmux::native::engine::Terminal::new(80, 24);
+        terminal.feed(&tty.output);
+        if terminal.snapshot().cells[23 * 80 + 1].bg == Color::Default {
+            break;
+        }
+        assert!(Instant::now() < deadline, "hover highlight did not clear");
+        thread::sleep(Duration::from_millis(5));
+    }
+    assert!(
+        receiver.try_recv().is_err(),
+        "click-only application received idle motion"
+    );
+    tty.input(b"\x02d");
+    tty.finish(true);
+    assert!(String::from_utf8_lossy(&tty.output).contains("\x1b[?1003l"));
     backend.join().unwrap();
 }

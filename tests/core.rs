@@ -382,7 +382,6 @@ fn interrupted_journal_append_preserves_completed_records_and_accepts_new_events
 
 #[test]
 fn codex_native_child_reads_existing_daemon_metadata_without_starting_a_thread() {
-    use std::io::{BufRead, BufReader, Write};
     use std::os::unix::net::UnixListener;
     let temp = Temp::new();
     let root = temp.0.join("proc");
@@ -403,28 +402,29 @@ fn codex_native_child_reads_existing_daemon_metadata_without_starting_a_thread()
     fs::create_dir_all(&socket_dir).unwrap();
     let listener = UnixListener::bind(socket_dir.join("app-server-control.sock")).unwrap();
     let responder = std::thread::spawn(move || {
-        let (mut stream, _) = listener.accept().unwrap();
-        let mut reader = BufReader::new(stream.try_clone().unwrap());
-        let mut line = String::new();
-        reader.read_line(&mut line).unwrap();
+        let (stream, _) = listener.accept().unwrap();
+        let mut socket = tungstenite::accept(stream).unwrap();
+        let message = socket.read().unwrap().into_text().unwrap();
         assert_eq!(
-            serde_json::from_str::<serde_json::Value>(&line).unwrap()["method"],
+            serde_json::from_str::<serde_json::Value>(&message).unwrap()["method"],
             "initialize"
         );
-        writeln!(stream, "{}", json!({"id":1,"result":{}})).unwrap();
-        line.clear();
-        reader.read_line(&mut line).unwrap();
+        socket
+            .send(tungstenite::Message::Text(
+                json!({"id":1,"result":{}}).to_string().into(),
+            ))
+            .unwrap();
+        let message = socket.read().unwrap().into_text().unwrap();
         assert_eq!(
-            serde_json::from_str::<serde_json::Value>(&line).unwrap()["method"],
+            serde_json::from_str::<serde_json::Value>(&message).unwrap()["method"],
             "initialized"
         );
-        line.clear();
-        reader.read_line(&mut line).unwrap();
-        let request: serde_json::Value = serde_json::from_str(&line).unwrap();
+        let message = socket.read().unwrap().into_text().unwrap();
+        let request: serde_json::Value = serde_json::from_str(&message).unwrap();
         assert_eq!(request["method"], "thread/read");
         assert_eq!(request["params"]["includeTurns"], false);
         assert_eq!(request["params"]["threadId"], "thread-test");
-        writeln!(stream, "{}", json!({"id":2,"result":{"thread":{"id":"thread-test","name":"Review","status":{"type":"active","activeFlags":["waitingOnApproval"]}}}})).unwrap();
+        socket.send(tungstenite::Message::Text(json!({"id":2,"result":{"thread":{"id":"thread-test","name":"Review","status":{"type":"active","activeFlags":["waitingOnApproval"]}}}}).to_string().into())).unwrap();
     });
     let found = Discovery {
         proc_root: root,
@@ -479,4 +479,316 @@ fn idle_is_not_completion_and_status_evidence_preserves_hook_event_time() {
     old_json.as_object_mut().unwrap().remove("observation");
     let old: Agent = serde_json::from_value(old_json).unwrap();
     assert_eq!(old.observation.source, StatusSource::Unknown);
+}
+
+#[test]
+fn registered_polling_adapters_share_process_discovery_and_isolate_failed_observations() {
+    use kelpmux::discovery::polling::{Adapter, Poller};
+    use std::sync::{Arc, atomic::AtomicUsize};
+    struct Custom(Arc<AtomicUsize>);
+    impl Adapter for Custom {
+        fn kind(&self) -> Kind {
+            Kind::Claude
+        }
+        fn matches(&self, process: &process::Process, _: &[String]) -> bool {
+            process.command == "custom-agent"
+        }
+        fn begin_cycle(&mut self) {
+            self.0.fetch_add(1, Ordering::SeqCst);
+        }
+        fn poll(
+            &mut self,
+            _: &Discovery,
+            process: &process::Process,
+            _: &[String],
+            agent: &mut Agent,
+        ) -> kelpmux::Result<()> {
+            agent.status = Status::Working;
+            if process.pid == 100 {
+                return Err("unsupported metadata".into());
+            }
+            agent.session_id = Some("custom-session".into());
+            Ok(())
+        }
+    }
+    let temp = Temp::new();
+    fixture_proc(&temp.0, 100, 1, "custom-agent", &["custom-agent"], 10);
+    fixture_proc(&temp.0, 200, 1, "custom-agent", &["custom-agent"], 20);
+    let cycles = Arc::new(AtomicUsize::new(0));
+    let context = Discovery {
+        proc_root: temp.0.clone(),
+        codex_home: temp.0.join("codex"),
+        claude_home: temp.0.join("claude"),
+    };
+    let mut poller = Poller::with_adapters(context, vec![Box::new(Custom(cycles.clone()))]);
+    let result = poller.poll(&[pane(1, 100), pane(2, 200)], &[], 42).unwrap();
+    assert_eq!(cycles.load(Ordering::SeqCst), 1);
+    assert_eq!(result.tree.len(), 2);
+    assert_eq!(result.agents[0].status, Status::Unknown);
+    assert!(result.agents[0].session_id.is_none());
+    assert_eq!(result.agents[1].status, Status::Working);
+    assert_eq!(
+        result.agents[1].session_id.as_deref(),
+        Some("custom-session")
+    );
+}
+
+#[test]
+fn codex_shared_daemon_polling_caches_metadata_and_links_only_the_exact_client_identity() {
+    use kelpmux::discovery::polling::{Link, Poller};
+    use std::{
+        os::unix::net::UnixListener,
+        sync::{Arc, Mutex, atomic::AtomicBool},
+        thread,
+        time::{Duration, Instant},
+    };
+    let temp = Temp::new();
+    let proc_root = temp.0.join("proc");
+    fs::create_dir(&proc_root).unwrap();
+    fixture_proc(
+        &proc_root,
+        100,
+        1,
+        "codex",
+        &["codex", "resume", "alpha"],
+        10,
+    );
+    fixture_proc(
+        &proc_root,
+        200,
+        1,
+        "codex",
+        &["codex", "resume", "alpha"],
+        20,
+    );
+    fixture_proc(&proc_root, 300, 1, "codex", &["codex"], 30);
+    for pid in [100, 200] {
+        fs::write(
+            proc_root.join(pid.to_string()).join("environ"),
+            "CODEX_THREAD_ID=alpha\0",
+        )
+        .unwrap();
+    }
+    let codex_home = temp.0.join("codex");
+    fs::create_dir_all(codex_home.join("app-server-control")).unwrap();
+    let listener =
+        UnixListener::bind(codex_home.join("app-server-control/app-server-control.sock")).unwrap();
+    listener.set_nonblocking(true).unwrap();
+    let requests = Arc::new(Mutex::new(Vec::<(usize, String, String)>::new()));
+    let stop = Arc::new(AtomicBool::new(false));
+    let (record, cancel) = (requests.clone(), stop.clone());
+    let server = thread::spawn(move || {
+        let deadline = Instant::now() + Duration::from_secs(10);
+        let mut connection = 0;
+        while !cancel.load(Ordering::SeqCst) && Instant::now() < deadline {
+            let (stream, _) = match listener.accept() {
+                Ok(value) => value,
+                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                    thread::sleep(Duration::from_millis(2));
+                    continue;
+                }
+                Err(error) => panic!("{error}"),
+            };
+            connection += 1;
+            stream
+                .set_read_timeout(Some(Duration::from_secs(1)))
+                .unwrap();
+            let mut socket = tungstenite::accept(stream).unwrap();
+            loop {
+                let Ok(tungstenite::Message::Text(text)) = socket.read() else {
+                    break;
+                };
+                let message: serde_json::Value = serde_json::from_str(&text).unwrap();
+                let method = message["method"].as_str().unwrap();
+                let id = message["params"]["threadId"].as_str().unwrap_or("");
+                record
+                    .lock()
+                    .unwrap()
+                    .push((connection, method.into(), id.into()));
+                if method == "initialized" {
+                    continue;
+                }
+                let result = match method {
+                    "initialize" => json!({}),
+                    "thread/loaded/list" => json!({"data":["alpha","beta","bad/id"]}),
+                    "thread/read" => {
+                        assert_eq!(message["params"]["includeTurns"], false);
+                        json!({"thread":{"id":id,"name":format!("Conversation {id}"),"status":{"type":if id=="alpha" {"active"} else {"idle"}},"turns":[{"content":"never retained"}]}})
+                    }
+                    other => panic!("poller attempted side-effectful method {other}"),
+                };
+                socket
+                    .send(tungstenite::Message::Text(
+                        json!({"id":message["id"],"result":result})
+                            .to_string()
+                            .into(),
+                    ))
+                    .unwrap();
+            }
+        }
+    });
+    let context = Discovery {
+        proc_root,
+        codex_home,
+        claude_home: temp.0.join("claude"),
+    };
+    let mut poller = Poller::new(context);
+    let panes = [pane(1, 100), pane(2, 200), pane(3, 300)];
+    let first = poller.poll(&panes, &[], 1).unwrap();
+    assert_eq!(first.agents[0].status, Status::Working);
+    assert_eq!(first.agents[1].status, Status::Working);
+    assert!(
+        first.agents[2].session_id.is_none(),
+        "shared daemon alone must not identify an unbound TUI"
+    );
+    let sessions = poller.sessions(Kind::Codex).unwrap();
+    assert_eq!(sessions.len(), 2);
+    assert!(
+        sessions
+            .iter()
+            .any(|session| session.id == "beta" && session.status == Status::Idle)
+    );
+    let link = Link {
+        pane: "%3".into(),
+        pid: 300,
+        birth: 30,
+        kind: Kind::Codex,
+        session_id: "beta".into(),
+    };
+    let linked = poller.poll(&panes, std::slice::from_ref(&link), 2).unwrap();
+    assert_eq!(linked.agents[2].session_id.as_deref(), Some("beta"));
+    assert_eq!(linked.agents[2].status, Status::Idle);
+    assert_eq!(linked.agents[2].source, "explicit-link");
+    let stale = Link { birth: 31, ..link };
+    let unlinked = poller.poll(&panes, &[stale], 3).unwrap();
+    assert!(
+        unlinked.agents[2].session_id.is_none(),
+        "reused PID must not inherit a link"
+    );
+    drop(poller);
+    stop.store(true, Ordering::SeqCst);
+    server.join().unwrap();
+    let requests = requests.lock().unwrap();
+    assert_eq!(
+        requests
+            .iter()
+            .filter(|(connection, method, _)| *connection == 1 && method == "initialize")
+            .count(),
+        1
+    );
+    assert_eq!(
+        requests
+            .iter()
+            .filter(|(connection, method, id)| *connection == 1
+                && method == "thread/read"
+                && id == "alpha")
+            .count(),
+        1
+    );
+}
+
+#[test]
+fn idle_prompt_is_idle_while_permission_notifications_request_attention() {
+    assert_eq!(
+        kelpmux::journal::hook_status(
+            "Notification",
+            &serde_json::json!({"notification_type":"idle_prompt"})
+        ),
+        Some(Status::Idle)
+    );
+    assert_eq!(
+        kelpmux::journal::hook_status(
+            "Notification",
+            &serde_json::json!({"notification_type":"permission_prompt"})
+        ),
+        Some(Status::InputNeeded)
+    );
+    assert_eq!(
+        kelpmux::journal::hook_status("PermissionRequest", &serde_json::json!({})),
+        Some(Status::InputNeeded)
+    );
+}
+
+#[test]
+fn pending_automatic_client_selection_does_not_reuse_an_old_hook_identity() {
+    let temp = Temp::new();
+    let mut store = Store::open(&temp.0).unwrap();
+    let mut observed = agent();
+    observed.kind = Kind::Codex;
+    store.reconcile(vec![observed.clone()], 10).unwrap();
+    store
+        .hook(
+            "%1",
+            Kind::Codex,
+            &json!({"session_id":"session-test", "hook_event_name":"Stop"}),
+        )
+        .unwrap();
+    observed.source = "client-bridge".into();
+    observed.session_id = None;
+    observed.status = Status::Unknown;
+    store.reconcile(vec![observed], 11).unwrap();
+    let current = store.registry.agents.values().next().unwrap();
+    assert!(current.session_id.is_none());
+    assert_eq!(current.status, Status::Unknown);
+    assert!(
+        store
+            .hook(
+                "%1",
+                Kind::Codex,
+                &json!({"session_id":"session-test", "hook_event_name":"Stop"})
+            )
+            .is_err()
+    );
+}
+
+#[test]
+fn codex_profiles_are_interactive_while_claude_print_mode_is_excluded() {
+    let temp = Temp::new();
+    fixture_proc(&temp.0, 100, 1, "zsh", &["zsh"], 10);
+    fixture_proc(&temp.0, 101, 100, "codex", &["codex", "-p", "work"], 11);
+    let discovery = Discovery {
+        proc_root: temp.0.clone(),
+        codex_home: temp.0.join("codex-home"),
+        claude_home: temp.0.join("claude-home"),
+    };
+    assert_eq!(discovery.scan(&[pane(1, 100)], 20).unwrap().len(), 1);
+    fs::write(temp.0.join("101/stat"), stat(101, 100, "claude", 'S', 11)).unwrap();
+    fs::write(temp.0.join("101/cmdline"), b"claude\0-p\0prompt").unwrap();
+    assert!(discovery.scan(&[pane(1, 100)], 21).unwrap().is_empty());
+}
+
+#[test]
+fn terminal_program_evidence_wins_over_late_hooks_and_metadata_reconciliation() {
+    use kelpmux::model::{Observation, StatusSource};
+    let dir = Temp::new();
+    let mut store = Store::open(&dir.0).unwrap();
+    let mut observed = agent();
+    observed.observation = Observation {
+        source: StatusSource::Terminal,
+        checked_at: kelpmux::now(),
+        event_at: Some(kelpmux::now()),
+    };
+    store
+        .reconcile(vec![observed.clone()], kelpmux::now())
+        .unwrap();
+    store
+        .hook(
+            "%1",
+            Kind::Claude,
+            &json!({"session_id":"session-test", "hook_event_name":"Stop"}),
+        )
+        .unwrap();
+    assert_eq!(
+        store.registry.agents[&observed.key()].status,
+        Status::Working
+    );
+    assert_eq!(
+        store.registry.agents[&observed.key()].observation.source,
+        StatusSource::Terminal
+    );
+    observed.status = Status::Idle;
+    store
+        .reconcile(vec![observed.clone()], kelpmux::now())
+        .unwrap();
+    assert_eq!(store.registry.agents[&observed.key()].status, Status::Idle);
 }
