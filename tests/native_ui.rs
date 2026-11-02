@@ -918,11 +918,11 @@ fn shaded_grid_headers_meet_previous_rows_without_empty_separators() {
                 );
                 assert_eq!(
                     f.cells[usize::from(view.body.y * f.cols + x)].fg,
-                    Color::Rgb(69, 76, 86)
+                    Color::Rgb(71, 113, 153)
                 );
                 assert_eq!(
                     f.cells[usize::from(view.rect.y * f.cols + x)].bg,
-                    Color::Default
+                    f.cells[usize::from(view.rect.y * f.cols + view.rect.x)].bg
                 );
                 assert!(
                     views
@@ -940,6 +940,8 @@ fn shaded_grid_headers_meet_previous_rows_without_empty_separators() {
             }
             let line = &f.cells[usize::from(view.rect.y * f.cols + view.rect.x)];
             assert_eq!(line.text, " ");
+            assert!(line.underline);
+            assert_eq!(line.underline_color, Some(Color::Rgb(71, 113, 153)));
             assert_eq!(
                 line.bg,
                 if view.pane.id == ws.active {
@@ -1905,7 +1907,7 @@ fn grid_header_numbers_park_close_and_footer_have_distinct_targets_without_zoom(
 #[test]
 fn working_indicators_replay_in_grid_sidebar_folded_and_parked_views() {
     use kelpmux::native::ui::{
-        ACTIVITY_INTERVAL_MS, GRID_EQUALIZER_FRAMES, SIDEBAR_EQUALIZER_FRAMES, SPINNER_FRAMES,
+        ACTIVITY_INTERVAL_MS, GRID_BALL_FRAMES, SIDEBAR_BALL_FRAMES, SPINNER_FRAMES,
     };
     assert_eq!(ACTIVITY_INTERVAL_MS, 150);
     for mode in 0..4 {
@@ -1928,13 +1930,13 @@ fn working_indicators_replay_in_grid_sidebar_folded_and_parked_views() {
         for tick in 0..=8 {
             let f = compose(&ws, &BTreeMap::new(), true, None, tick);
             let glyph = if mode == 0 {
-                GRID_EQUALIZER_FRAMES[tick % GRID_EQUALIZER_FRAMES.len()]
+                GRID_BALL_FRAMES[tick % GRID_BALL_FRAMES.len()]
                     .chars()
                     .next()
                     .unwrap()
                     .to_string()
             } else if mode == 1 {
-                SIDEBAR_EQUALIZER_FRAMES[tick % SIDEBAR_EQUALIZER_FRAMES.len()]
+                SIDEBAR_BALL_FRAMES[tick % SIDEBAR_BALL_FRAMES.len()]
                     .chars()
                     .next()
                     .unwrap()
@@ -2109,7 +2111,7 @@ fn tab_surfaces_follow_dark_and_light_backgrounds_without_repainting_terminal_de
             f.cells[usize::from(number.y * f.cols + number.x + 1)].fg,
             Color::Rgb(95, 175, 255)
         );
-        let ball = f.cells.iter().find(|cell| cell.text == "▂").unwrap();
+        let ball = f.cells.iter().find(|cell| cell.text == "●").unwrap();
         assert_eq!(ball.fg, Color::Rgb(155, 205, 185));
         let body = f.panes.iter().find(|view| view.pane.id == 1).unwrap().body;
         assert_eq!(
@@ -4253,7 +4255,7 @@ fn config_has_one_blank_row_on_each_side_and_new_tab_only_uses_its_text_row() {
 }
 
 #[test]
-fn sidebar_equalizer_keeps_five_bands_and_padding_despite_legacy_width() {
+fn sidebar_ball_keeps_six_positions_and_padding_despite_legacy_width() {
     for width in [1, 10, 20, 50] {
         let mut ws = workspace((180, 50), (2, 1));
         ws.ui.config.activity_width = width;
@@ -4266,19 +4268,19 @@ fn sidebar_equalizer_keeps_five_bands_and_padding_despite_legacy_width() {
         let start = usize::from(rect.y * f.cols + number.x + number.cols + 1);
         assert_eq!(f.cells[start - 1].text, " ");
         assert_eq!(
-            f.cells[start..start + 5]
+            f.cells[start..start + 6]
                 .iter()
                 .map(|c| c.text.as_str())
                 .collect::<String>(),
-            "▂▄▆▄▂"
+            "●·····"
         );
-        assert!(f.cells[start..start + 5].iter().all(|c| c.width == 1));
-        assert_eq!(f.cells[start + 5].text, " ");
+        assert!(f.cells[start..start + 6].iter().all(|c| c.width == 1));
+        assert_eq!(f.cells[start + 6].text, " ");
     }
 }
 
 #[test]
-fn grid_equalizer_keeps_three_bands_with_one_space_on_either_side() {
+fn grid_ball_keeps_three_positions_with_one_space_on_either_side() {
     let mut ws = workspace((180, 50), (2, 1));
     ws.panes[0].status = Status::Working;
     let f = frame(&ws);
@@ -4294,7 +4296,7 @@ fn grid_equalizer_keeps_three_bands_with_one_space_on_either_side() {
             .iter()
             .map(|c| c.text.as_str())
             .collect::<String>(),
-        "▂▆▂"
+        "●··"
     );
     assert_eq!(f.cells[start + 3].text, " ");
     assert!(
@@ -4375,7 +4377,7 @@ fn every_metrics_entry_opens_cpu_descending_even_after_changing_sort() {
 }
 
 #[test]
-fn grid_header_sheen_is_subtle_covers_the_background_and_keeps_text_steady() {
+fn grid_header_background_stays_static_while_the_indicator_animates() {
     let mut ws = workspace((180, 40), (2, 1));
     ws.panes[0].status = Status::Working;
     ws.panes[0].title = "Steady 界 title".into();
@@ -4406,7 +4408,7 @@ fn grid_header_sheen_is_subtle_covers_the_background_and_keeps_text_steady() {
                 if before.text != after.text {
                     assert!(
                         kelpmux::native::ui::SPINNER_FRAMES.contains(&after.text.as_str())
-                            || "▁▂▃▄▅▆▇█".contains(after.text.as_str())
+                            || "▁▂▃▄▅▆▇█●·".contains(after.text.as_str())
                     );
                 }
                 swept[usize::from(x)] |= before.bg != after.bg;
@@ -4428,7 +4430,7 @@ fn grid_header_sheen_is_subtle_covers_the_background_and_keeps_text_steady() {
             terminal.feed(&terminal_diff(None, &f));
             assert_eq!(terminal.snapshot().cells, f.cells);
         }
-        assert!(swept.iter().all(|changed| *changed));
+        assert!(swept.iter().all(|changed| !*changed));
     }
 }
 
@@ -4606,7 +4608,7 @@ fn folded_sidebar_targets_fit_small_screens_and_scroll_without_overlapping_contr
 }
 
 #[test]
-fn sidebar_card_matches_derived_palette_and_sheen_covers_all_rows_without_blurring_text() {
+fn sidebar_card_matches_derived_palette_and_only_the_indicator_animates() {
     let mut ws = workspace((180, 40), (2, 1));
     ws.apply(&Action::Read(1)).unwrap();
     ws.panes[0].status = Status::Working;
@@ -4633,7 +4635,7 @@ fn sidebar_card_matches_derived_palette_and_sheen_covers_all_rows_without_blurri
                 if before.text != after.text {
                     assert!(
                         kelpmux::native::ui::SPINNER_FRAMES.contains(&after.text.as_str())
-                            || "▁▂▃▄▅▆▇█".contains(after.text.as_str())
+                            || "▁▂▃▄▅▆▇█●·".contains(after.text.as_str())
                     );
                 }
                 swept[usize::from(y * rect.cols + x)] |= before.bg != after.bg;
@@ -4643,7 +4645,7 @@ fn sidebar_card_matches_derived_palette_and_sheen_covers_all_rows_without_blurri
         terminal.feed(&terminal_diff(None, &f));
         assert_eq!(terminal.snapshot().cells, f.cells);
     }
-    assert!(swept.iter().all(|changed| *changed));
+    assert!(swept.iter().all(|changed| !*changed));
 }
 
 #[test]
