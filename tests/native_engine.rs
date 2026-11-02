@@ -544,4 +544,13 @@ fn emoji_presentation_warning_reserves_two_cells_across_fragmented_input() {
     }
     assert_eq!(screen.cells[2].text, "X");
     assert!(screen.cells[2].hyperlink.is_none());
+    let mut overwritten = Terminal::new(20, 3);
+    overwritten.feed("A界Z\x1b[1;1H⚠️".as_bytes());
+    let screen = overwritten.snapshot();
+    assert_eq!(screen.cells[0].text, "⚠️");
+    assert_eq!(screen.cells[0].width, 2);
+    assert_eq!(screen.cells[1].width, 0);
+    assert_eq!(screen.cells[2].text, " ");
+    assert_eq!(screen.cells[2].width, 1);
+    assert_eq!(screen.cells[3].text, "Z");
 }
