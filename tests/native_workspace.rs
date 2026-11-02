@@ -437,8 +437,8 @@ fn help_close_button_and_footer_toggle_close_without_application_input() {
             y: bounds.y,
         },
         Point {
-            x: f.footer_cols() - 2,
-            y: f.rows - 1,
+            x: f.controls()[3].x,
+            y: f.controls()[3].y,
         },
     ] {
         let messages = router.route(mouse(point, MouseKind::Press), &f);
@@ -597,8 +597,8 @@ fn grid_headers_and_tab_footer_have_distinct_hit_targets() {
         action(&router.route(
             mouse(
                 Point {
-                    x: f.footer_cols() - 2,
-                    y: f.rows - 1
+                    x: f.controls()[3].x,
+                    y: f.controls()[3].y
                 },
                 MouseKind::Press
             ),
