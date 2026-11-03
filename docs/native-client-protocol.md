@@ -54,7 +54,7 @@ Leases last for the connection; release/disconnect restores the current base wor
 
 ## State, notifications and Vitals
 
-The `program-status` capability adds `terminal` observation evidence from pane-local OSC 7501 reports. Current dev clients must recognize this status-source value; the experimental stream remains v1 and is not a frozen compatibility contract. The composed frontend/server pair uses v42. Terminal activity takes precedence over metadata polling without implying that a conversation ID is known.
+The `program-status` capability adds `terminal` observation evidence from pane-local OSC 7501 reports. Current dev clients must recognize this status-source value; the experimental stream remains v1 and is not a frozen compatibility contract. The composed frontend/server pair uses v55. Terminal activity takes precedence over metadata polling without implying that a conversation ID is known.
 
 Pane metadata carries identity, agent kind, session ID if known, status, activity times and status observation evidence. Evidence distinguishes process, lifecycle hook, live record, agent-server and transcript observations. `checked_at` records a check; optional `event_at` records an actual known event time. Reading an old transcript again does not invent a new lifecycle event. Unknown or stale evidence remains visible in the overview, and an idle observation does not become a completed turn automatically.
 

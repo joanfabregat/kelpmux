@@ -7,7 +7,7 @@
 <p align="center">
   <a href="https://github.com/joanfabregat/kelpmux/actions/workflows/ci.yml"><img src="https://github.com/joanfabregat/kelpmux/actions/workflows/ci.yml/badge.svg?branch=main" alt="CI status"></a>
   <a href="https://github.com/joanfabregat/kelpmux/actions/workflows/release-build.yml"><img src="https://github.com/joanfabregat/kelpmux/actions/workflows/release-build.yml/badge.svg?branch=main" alt="Release build status"></a>
-  <a href="docs/releases.md"><img src="https://img.shields.io/badge/version-0.2.0--beta.5-blue" alt="Version 0.2.0-beta.5"></a>
+  <a href="docs/releases.md"><img src="https://img.shields.io/badge/version-0.2.0--beta.6-blue" alt="Version 0.2.0-beta.6"></a>
   <a href="LICENSE"><img src="https://img.shields.io/github/license/joanfabregat/kelpmux" alt="License: Apache-2.0"></a>
   <a href="#build-and-validate"><img src="https://img.shields.io/badge/Rust-1.85%2B-orange?logo=rust" alt="Rust 1.85 or newer"></a>
   <a href="docs/native.md"><img src="https://img.shields.io/badge/Linux-x86__64%20%7C%20ARM64-blue?logo=linux" alt="Linux x86-64 and ARM64"></a>
@@ -19,9 +19,10 @@ Kelpmux is a persistent terminal workspace for coding agents, inspired by Monter
 
 - Automatic balanced grids computed from unparked tabs and terminal dimensions. Resizing the view preserves processes.
 - Park tabs behind a restore list while their terminals, output and agent status continue running.
+- Reopen useful closed tabs and previous-run sessions through explicit resume, picker, program-restart or folder choices; navigate running and parked agents in a separate table.
 - Aligned grid overview with inactive cells and resizable left-sidebar tabs, with alternating tab backgrounds and full-width terminals.
 - Popup configuration and close-tab confirmations, plus CPU, memory, swap and disk metrics and a detailed system statistics popup.
-- Stable pane IDs and colors, distinct pane numbers, lifecycle markers and a braille working spinner. Agent selection filters questions and finished sessions; missing session evidence stays unknown.
+- Stable pane IDs and colors, distinct pane numbers, lifecycle markers and bouncing-ball working indicators. Agent selection filters questions and finished sessions; missing session evidence stays unknown.
 - Configurable shortcuts and graphical pane movement, preserving application word-editing keys outside explicit bindings.
 - Named persistent workspaces with explicit start, attach, status and stop commands. One controller, additional observers and explicit takeover.
 - Alacritty application colors, Unicode text, history, alternate screens, terminal query replies, application mouse reporting, local selection and bracketed paste.
