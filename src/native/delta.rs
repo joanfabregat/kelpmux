@@ -74,7 +74,10 @@ pub(crate) fn cell_valid(cell: &Cell) -> bool {
         return cell.text.is_empty();
     }
     if let Some(first) = chars.next() {
-        unicode_width::UnicodeWidthChar::width(first).unwrap_or(0) == usize::from(cell.width)
+        (unicode_width::UnicodeWidthChar::width(first).unwrap_or(0) == usize::from(cell.width)
+            || (cell.text.contains('\u{fe0f}')
+                && unicode_width::UnicodeWidthStr::width(cell.text.as_str())
+                    == usize::from(cell.width)))
             && chars.all(|ch| unicode_width::UnicodeWidthChar::width(ch).unwrap_or(0) == 0)
     } else {
         true

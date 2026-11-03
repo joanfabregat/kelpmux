@@ -302,7 +302,12 @@ fn every_grid_balances_cells_keeps_header_footer_and_all_panes() {
                 assert!(view.rect.y + view.rect.rows < rows);
             }
             if views.len() > 1 && views[0].rect.y == views[1].rect.y {
-                assert_eq!(views[0].rect.x + views[0].rect.cols + 1, views[1].rect.x);
+                assert_eq!(
+                    views[0].rect.x
+                        + views[0].rect.cols
+                        + kelpmux::native::workspace::GRID_DIVIDER_COLS,
+                    views[1].rect.x
+                );
                 assert!(views[0].rect.cols.abs_diff(views[1].rect.cols) <= 1);
             }
             ws.resize(40, 10).unwrap();
@@ -437,8 +442,8 @@ fn help_close_button_and_footer_toggle_close_without_application_input() {
             y: bounds.y,
         },
         Point {
-            x: f.footer_cols() - 2,
-            y: f.rows - 1,
+            x: f.controls()[3].x,
+            y: f.controls()[3].y,
         },
     ] {
         let messages = router.route(mouse(point, MouseKind::Press), &f);
@@ -597,8 +602,8 @@ fn grid_headers_and_tab_footer_have_distinct_hit_targets() {
         action(&router.route(
             mouse(
                 Point {
-                    x: f.footer_cols() - 2,
-                    y: f.rows - 1
+                    x: f.controls()[3].x,
+                    y: f.controls()[3].y
                 },
                 MouseKind::Press
             ),
@@ -835,4 +840,35 @@ fn decoder_preserves_utf8_and_fragmented_word_navigation() {
         }
     }
     assert_eq!(result, original);
+}
+
+#[test]
+fn cancel_unparking_returns_to_the_source_agent_list_with_its_filter_and_row() {
+    use kelpmux::{
+        model::{Kind, Status},
+        native::ui::{AgentFilter, DialogKind},
+    };
+    for filter in [AgentFilter::All, AgentFilter::Attention] {
+        let mut ws = workspace(120, 40, (2, 2));
+        for pane in &mut ws.panes {
+            pane.kind = Some(Kind::Codex);
+            pane.status = Status::InputNeeded;
+        }
+        ws.apply(&Action::Park(4)).unwrap();
+        ws.apply(&Action::Agents(filter)).unwrap();
+        let original = ws.ui.dialog.unwrap();
+        ws.apply(&Action::RestoreRequest(4)).unwrap();
+        assert_eq!(ws.ui.dialog.unwrap().kind, DialogKind::RestoreConfirm);
+        ws.apply(&Action::DialogClose).unwrap();
+        let returned = ws.ui.dialog.unwrap();
+        assert_eq!(returned.kind, original.kind);
+        assert_eq!(returned.filter, original.filter);
+        assert_eq!(returned.source, original.source);
+        assert_eq!(returned.selection, 3);
+        assert!(ws.panes.iter().find(|p| p.id == 4).unwrap().parked);
+        ws.apply(&Action::RestoreRequest(4)).unwrap();
+        ws.apply(&Action::Restore(4)).unwrap();
+        ws.apply(&Action::DialogClose).unwrap();
+        assert!(ws.ui.dialog.is_none());
+    }
 }

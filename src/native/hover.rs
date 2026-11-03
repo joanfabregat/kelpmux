@@ -3,6 +3,9 @@
 use super::{input::Router, protocol::*, ui::DialogKind, workspace as ws};
 
 pub fn target(frame: &Frame, point: Point) -> Option<Rect> {
+    if frame.ui.tab_drop.is_some() || frame.ui.grid_drop.is_some() {
+        return None;
+    }
     if !frame.controller || point.x >= frame.cols || point.y >= frame.rows {
         return None;
     }
@@ -39,6 +42,13 @@ pub fn target(frame: &Frame, point: Point) -> Option<Rect> {
             DialogKind::CloseConfirm | DialogKind::ParkConfirm | DialogKind::RestoreConfirm => {
                 regions.extend(ws::close_buttons(bounds))
             }
+            DialogKind::ReopenConfirm => {
+                let count = dialog
+                    .source
+                    .and_then(|id| frame.ui.closed_tabs.get(id as usize))
+                    .map_or(0, |entry| entry.restore_choices().len());
+                regions.extend(ws::reopen_buttons(bounds, count));
+            }
             DialogKind::Color => regions.extend(ws::color_cards(bounds)),
             DialogKind::Grid => regions.extend(ws::grid_cards(bounds)),
             DialogKind::Move => regions.extend(ws::move_cards(
@@ -49,9 +59,21 @@ pub fn target(frame: &Frame, point: Point) -> Option<Rect> {
             DialogKind::Parked => {
                 let count = frame.panes.iter().filter(|view| view.pane.parked).count();
                 for (_, rect) in ws::parked_cards(bounds, dialog.selection, count) {
-                    regions.extend(ws::parked_controls(rect));
                     regions.push(rect);
                 }
+            }
+            DialogKind::Recovery | DialogKind::Agents => {
+                let count = if dialog.kind == DialogKind::Recovery {
+                    frame.ui.closed_tabs.len()
+                } else {
+                    let panes: Vec<_> = frame.panes.iter().map(|v| v.pane.clone()).collect();
+                    ws::dialog_entries(&panes, Some(dialog)).len()
+                };
+                regions.extend(
+                    ws::parked_cards(bounds, dialog.selection, count)
+                        .into_iter()
+                        .map(|(_, rect)| rect),
+                );
             }
             DialogKind::Status => {
                 regions.extend(
@@ -110,6 +132,7 @@ pub fn target(frame: &Frame, point: Point) -> Option<Rect> {
             });
         }
         regions.extend(frame.controls());
+        regions.extend(frame.history_controls());
         if let Some(region) = super::status::metric_region(frame) {
             regions.push(region);
         }

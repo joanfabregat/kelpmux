@@ -163,3 +163,31 @@ fn many_sequential_updates_replay_and_geometry_reordering_requires_full() {
     moved.panes[0].body.rows = 7;
     assert!(delta::diff(&changed, &moved, revision).is_none());
 }
+
+#[test]
+fn emoji_markers_roundtrip_through_checked_incremental_frames() {
+    let mut old = frame(40, 10);
+    for icon in [
+        "🌑", "🌒", "🌓", "🌔", "🌕", "🌖", "🌗", "🌘", "✅", "❓", "⚠️",
+    ] {
+        let mut new = old.clone();
+        new.cells[0] = Cell {
+            text: icon.into(),
+            width: 2,
+            ..Default::default()
+        };
+        new.cells[1] = Cell {
+            text: String::new(),
+            width: 0,
+            ..Default::default()
+        };
+        let patch = delta::diff(&old, &new, 1).unwrap();
+        assert_eq!(delta::apply(&old, 1, &patch).unwrap(), new);
+        let mut corrupt = patch.clone();
+        if let Some(change) = corrupt.changes.first_mut() {
+            change.1.text.push('X');
+        }
+        assert!(delta::apply(&old, 1, &corrupt).is_err());
+        old = new;
+    }
+}

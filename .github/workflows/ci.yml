@@ -44,7 +44,7 @@ jobs:
           bash scripts/test-channels.sh
       - run: cargo +1.99.0 clippy --locked --offline --all-targets -- -D warnings
       - name: Unit, metadata, protocol and hook contracts (PTY suites run in the architecture matrix)
-        run: cargo +1.99.0 test --locked --offline --lib --test core --test native_protocol --test native_hooks --test native_activity --test native_recovery --test native_delta --test native_templates
+        run: cargo +1.99.0 test --locked --offline --lib --test core --test native_protocol --test native_hooks --test native_activity --test native_recovery --test native_tab_history --test native_delta --test native_templates
       - name: Validate distribution license texts
         run: bash scripts/package-licenses.sh target/dependency-licenses
       - name: Save trusted compiler and dependency cache
