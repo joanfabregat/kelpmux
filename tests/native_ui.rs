@@ -4955,6 +4955,14 @@ fn grid_drag_previews_landing_without_changing_order_or_terminal_geometry() {
     assert_eq!(preview.panes, original.panes);
     let at = usize::from(target.body.y * preview.cols + target.body.x);
     assert_eq!(preview.cells[at].text, "A");
+    let header = usize::from(target.rect.y * preview.cols + target.rect.x);
+    assert!(
+        preview.cells[header..header + usize::from(target.rect.cols)]
+            .iter()
+            .map(|cell| cell.text.as_str())
+            .collect::<String>()
+            .contains("Drop here")
+    );
     assert_ne!(preview.cells[at].bg, original.cells[at].bg);
     assert!(
         router
