@@ -77,10 +77,32 @@ pub fn compose(
                                 [r, g, b]
                             }
                         };
-                        cell.bg = mix(base, [220, 174, 90], 25);
+                        cell.bg = mix(base, [150, 150, 150], 25);
                     }
                 }
                 if workspace.reading == ReadingMode::Grid && rect.cols > 0 {
+                    let bg = neutral(workspace, 28);
+                    let label = " Drop here ";
+                    write_text(
+                        &mut frame,
+                        rect.x,
+                        rect.y,
+                        rect.cols,
+                        &" ".repeat(usize::from(rect.cols)),
+                        tab_text(workspace, false),
+                        bg,
+                        false,
+                    );
+                    write_text(
+                        &mut frame,
+                        rect.x + rect.cols.saturating_sub(label.width() as u16) / 2,
+                        rect.y,
+                        rect.cols,
+                        label,
+                        tab_text(workspace, false),
+                        bg,
+                        true,
+                    );
                     let start = usize::from(rect.y) * usize::from(frame.cols) + usize::from(rect.x);
                     if rect.x > 0 {
                         frame.cells[start - 1].bg = frame.cells[start].bg;
@@ -365,18 +387,19 @@ fn compose_scene(
     }
     if !matches!(frame.reading, ReadingMode::Fullscreen(_)) {
         let [closed, agents] = frame.history_controls();
-        for (rect, label, color) in [(closed, "↺ Recently", 110), (agents, "◇ Agents", 115)] {
+        for (rect, label, color) in [(closed, "↺ Closed", 110), (agents, "◇ Agents", 115)] {
             let label = if rect.cols < 8 {
                 if rect == closed { "↺" } else { "◇" }
             } else {
                 label
             };
+            let inset = u16::from(frame.sidebar_status() && rect.cols > 1);
             fill(&mut frame, rect, neutral(workspace, 14));
             write_text(
                 &mut frame,
-                rect.x,
+                rect.x + inset,
                 rect.y,
-                rect.cols,
+                rect.cols.saturating_sub(inset),
                 label,
                 Color::Indexed(color),
                 neutral(workspace, 14),
@@ -2631,16 +2654,15 @@ fn draw_sidebar_status(frame: &mut Frame, workspace: &Workspace, notice: Option<
             },
         ),
     ] {
-        let label_width = (label.width() as u16).min(rect.cols);
         let button_bg = neutral(workspace, 14);
         fill(frame, rect, button_bg);
-        let inset = (rect.cols - label_width) / 2;
+        let inset = u16::from(rect.cols > 1);
         write_text(
             frame,
             rect.x + inset,
             rect.y + rect.rows / 2,
             rect.cols - inset,
-            &label,
+            label.trim(),
             if rect == config {
                 Color::Rgb(95, 175, 255)
             } else if rect == mode {
@@ -2793,6 +2815,7 @@ fn draw_parked(
         let accent = tab_accent(workspace, selected);
         let bg = tab_background(workspace, selected);
         fill(frame, rect, bg);
+        draw_entry_separator(frame, workspace, rect, index);
         for row in rect.y..rect.y + rect.rows {
             write_text(frame, bounds.x, row, 1, "▌", accent, bg, false);
         }
@@ -2855,6 +2878,40 @@ fn draw_parked(
         );
     }
 }
+fn relative_age(seconds: u64) -> String {
+    let (value, unit) = [
+        (31_536_000, "y"),
+        (2_592_000, "mo"),
+        (604_800, "w"),
+        (86_400, "d"),
+        (3_600, "h"),
+        (60, "m"),
+        (1, "s"),
+    ]
+    .into_iter()
+    .find(|(size, _)| seconds >= *size)
+    .map_or((0, "s"), |(size, unit)| (seconds / size, unit));
+    format!("{value}{unit} ago")
+}
+
+fn draw_entry_separator(frame: &mut Frame, workspace: &Workspace, rect: Rect, index: usize) {
+    if index > 0 {
+        write_text(
+            frame,
+            rect.x + 1,
+            rect.y,
+            rect.cols.saturating_sub(2),
+            &"─".repeat(usize::from(rect.cols.saturating_sub(2))),
+            neutral(workspace, 38),
+            tab_background(
+                workspace,
+                index == workspace.ui.dialog.map_or(0, |d| d.selection),
+            ),
+            false,
+        );
+    }
+}
+
 fn draw_session_table(
     frame: &mut Frame,
     workspace: &Workspace,
@@ -2879,10 +2936,7 @@ fn draw_session_table(
                     } else {
                         "—".into()
                     },
-                    format!(
-                        "{}s ago",
-                        crate::now().saturating_sub(entry.closed_at.unwrap_or(0))
-                    ),
+                    relative_age(crate::now().saturating_sub(entry.closed_at.unwrap_or(0))),
                     format!("{} · {}", entry.cwd, entry.reason),
                 )
             })
@@ -2959,6 +3013,7 @@ fn draw_session_table(
         let selected = index == dialog.selection;
         let bg = tab_background(workspace, selected);
         fill(frame, rect, bg);
+        draw_entry_separator(frame, workspace, rect, index);
         for y in rect.y..rect.y + rect.rows {
             write_text(
                 frame,
@@ -3709,6 +3764,21 @@ fn draw_status_summary(frame: &mut Frame, workspace: &Workspace, bounds: Rect, h
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn closed_age_uses_the_largest_readable_unit() {
+        for (seconds, expected) in [
+            (0, "0s ago"),
+            (59, "59s ago"),
+            (60, "1m ago"),
+            (3_600, "1h ago"),
+            (86_400, "1d ago"),
+            (604_800, "1w ago"),
+            (2_592_000, "1mo ago"),
+            (31_536_000, "1y ago"),
+        ] {
+            assert_eq!(super::relative_age(seconds), expected);
+        }
+    }
     use super::*;
     use crate::{model::Status, native::engine::Terminal};
     fn view(cols: u16, overlay: bool) -> PaneView {
