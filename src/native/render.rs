@@ -2813,6 +2813,36 @@ fn draw_vitals(frame: &mut Frame, segments: &[(String, u8)]) {
         Color::Indexed(244),
     );
 }
+fn draw_empty_table(
+    frame: &mut Frame,
+    bounds: Rect,
+    icon: &str,
+    title: &str,
+    explanation: &str,
+    color: u8,
+) {
+    let middle = bounds.y + bounds.rows / 2;
+    for (y, label, color, bold) in [
+        (middle.saturating_sub(2), icon, color, true),
+        (middle, title, 231, true),
+        (middle + 1, explanation, 250, false),
+        (bounds.y + bounds.rows - 2, "Esc to close", 245, false),
+    ] {
+        let width = bounds.cols.saturating_sub(4);
+        let text_width: u16 = label.chars().map(char_width).sum();
+        write_text(
+            frame,
+            bounds.x + 2 + width.saturating_sub(text_width) / 2,
+            y,
+            width,
+            label,
+            Color::Indexed(color),
+            TABLE_BG,
+            bold,
+        );
+    }
+}
+
 fn draw_parked(
     frame: &mut Frame,
     workspace: &Workspace,
@@ -2823,26 +2853,14 @@ fn draw_parked(
     let [restore, close] = super::workspace::parked_controls(bounds);
     let panes: Vec<_> = workspace.panes.iter().filter(|p| p.parked).collect();
     if panes.is_empty() {
-        let middle = bounds.y + bounds.rows / 2;
-        for (y, label, color, bold) in [
-            (middle.saturating_sub(2), "⊟", super::ui::PARKED_BG, true),
-            (middle, "No parked tabs", 231, true),
-            (middle + 1, "Park tabs to keep jobs running.", 250, false),
-            (bounds.y + bounds.rows - 2, "Esc to close", 245, false),
-        ] {
-            let width = bounds.cols.saturating_sub(4);
-            let text_width: u16 = label.chars().map(char_width).sum();
-            write_text(
-                frame,
-                bounds.x + 2 + width.saturating_sub(text_width) / 2,
-                y,
-                width,
-                label,
-                Color::Indexed(color),
-                TABLE_BG,
-                bold,
-            );
-        }
+        draw_empty_table(
+            frame,
+            bounds,
+            "⊟",
+            "No parked tabs",
+            "Park tabs to keep jobs running.",
+            super::ui::PARKED_BG,
+        );
         return;
     }
     let title_x = bounds.x + 8;
@@ -3043,6 +3061,40 @@ fn draw_session_table(
             })
             .collect()
     };
+    if rows.is_empty() {
+        let (icon, title, explanation, color) = if recovery {
+            if workspace.ui.recovery_loading {
+                (
+                    "↺",
+                    "Loading closed tabs…",
+                    "Earlier tabs are being checked.",
+                    110,
+                )
+            } else {
+                ("↺", "No closed tabs", "Closed tabs appear here.", 110)
+            }
+        } else {
+            match dialog.filter {
+                super::ui::AgentFilter::All => {
+                    ("◇", "No running agents", "Start an agent in a tab.", 115)
+                }
+                super::ui::AgentFilter::Attention => (
+                    "◇",
+                    "No agents need attention",
+                    "Questions and errors appear here.",
+                    115,
+                ),
+                super::ui::AgentFilter::Finished => (
+                    "◇",
+                    "No finished agents",
+                    "Completed agents appear here.",
+                    115,
+                ),
+            }
+        };
+        draw_empty_table(frame, bounds, icon, title, explanation, color);
+        return;
+    }
     let action = super::workspace::session_control(bounds);
     let width = action.x.saturating_sub(bounds.x + 3);
     let location = (width / 6).clamp(5, 14);
@@ -3082,22 +3134,6 @@ fn draw_session_table(
         TABLE_BG,
         true,
     );
-    if rows.is_empty() {
-        write_text(
-            frame,
-            bounds.x + 2,
-            bounds.y + 3,
-            bounds.cols.saturating_sub(4),
-            if recovery {
-                "No recently closed tabs"
-            } else {
-                "No running agents"
-            },
-            Color::Indexed(245),
-            TABLE_BG,
-            false,
-        );
-    }
     for (index, rect) in super::workspace::parked_cards(bounds, dialog.selection, rows.len()) {
         let selected = index == dialog.selection;
         let bg = if selected { TABLE_SELECTED } else { TABLE_BG };
