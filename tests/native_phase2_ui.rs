@@ -5,7 +5,6 @@ use kelpmux::{
         input::Router,
         protocol::*,
         render::{compose, terminal_diff},
-        tracking::RecoveryEntry,
         ui::DialogKind,
         workspace::{Workspace, config_targets, dialog_bounds_for},
     },
@@ -183,7 +182,7 @@ fn notification_history_acknowledges_and_jumps_and_next_agent_navigation_wraps()
         actions(Router::default().route(
             mouse(
                 Point {
-                    x: f.footer_cols() - 2,
+                    x: f.controls()[3].x,
                     y: f.rows - 1
                 },
                 MouseKind::Press
@@ -326,23 +325,17 @@ fn header_drag_swap_and_keyboard_selection_are_owned_by_the_multiplexer() {
 #[test]
 fn recovery_and_sound_settings_are_actionable_and_small_screen_help_scrolls() {
     let mut ws = workspace(80, 30);
-    ws.ui.recovery.push(RecoveryItem {
+    ws.ui.closed_tabs.push(kelpmux::native::history::Entry {
+        key: "test:1".into(),
         workspace: "main".into(),
-        entry: RecoveryEntry {
-            kind: Kind::Codex,
-            name: "task".into(),
-            cwd: "/project".into(),
-            session_id: Some("abc".into()),
-            pane: "%1".into(),
-            pid: 1,
-            process_start: 1,
-            source: "test".into(),
-            first_seen: 1,
-            last_seen: 2,
-            ended_at: None,
-            status: Status::Working,
-            resume_command: Some("codex resume abc".into()),
-        },
+        kind: Some(Kind::Codex),
+        name: "task".into(),
+        cwd: "/project".into(),
+        session_id: Some("abc".into()),
+        pane: 1,
+        argv: vec![],
+        closed_at: Some(2),
+        reason: "Closed".into(),
     });
     ws.apply(&Action::Recovery).unwrap();
     assert_eq!(

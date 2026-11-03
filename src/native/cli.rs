@@ -783,7 +783,7 @@ fn fitted(frame: &Frame, size: (u16, u16), notice: Option<&str>) -> Frame {
         if let Some(notice) = notice {
             let y = size
                 .1
-                .saturating_sub(2 * super::workspace::sidebar_button_rows(frame.rows) + 1);
+                .saturating_sub(3 * super::workspace::sidebar_button_rows(frame.rows) + 1);
             for x in 0..width {
                 fit.cells[usize::from(y * size.0 + x)] = Cell {
                     fg: Color::Indexed(231),
@@ -869,6 +869,20 @@ fn fitted(frame: &Frame, size: (u16, u16), notice: Option<&str>) -> Frame {
         .filter(|c| c.position.x < size.0 && c.position.y < size.1.saturating_sub(1));
     if !frame.controller {
         fit.cursor = None;
+        // A clipped observer may have no room after the expanded controls.
+        // Always retain an explicit read-only marker in its own viewport.
+        if size.0 < frame.footer_cols() + 3 {
+            super::render::write_text(
+                &mut fit,
+                size.0.saturating_sub(3),
+                size.1 - 1,
+                3,
+                "Obs",
+                Color::Indexed(250),
+                Color::Indexed(super::ui::FOOTER_BG),
+                true,
+            );
+        }
     }
     fit
 }
@@ -1397,12 +1411,14 @@ mod fit_tests {
                 let row = usize::from((size.1 - 1) * size.0);
                 let source = usize::from((frame.rows - 1) * frame.cols);
                 assert_eq!(
-                    &fit.cells[row..row + usize::from(frame.footer_cols())],
-                    &frame.cells[source..source + usize::from(frame.footer_cols())]
+                    &fit.cells[row..row + usize::from(frame.footer_cols().min(size.0))],
+                    &frame.cells[source..source + usize::from(frame.footer_cols().min(size.0))]
                 );
                 let text: String = fit.cells[row..].iter().map(|c| c.text.as_str()).collect();
                 assert!(text.starts_with(" ⚙︎ Config"));
-                assert!(text.contains(if notice.is_some() { "conn" } else { "51%" }));
+                if size.0 >= frame.footer_cols() + 5 {
+                    assert!(text.contains(if notice.is_some() { "conn" } else { "51%" }));
+                }
                 assert!(!text.contains("12:34"));
                 let mut terminal = super::super::engine::Terminal::new(size.0, size.1);
                 terminal.feed(&super::super::render::terminal_diff(None, &fit));

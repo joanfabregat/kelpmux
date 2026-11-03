@@ -572,7 +572,7 @@ pub fn metric_region(frame: &super::protocol::Frame) -> Option<super::protocol::
             x: 0,
             y: frame.rows - height,
             cols: frame.sidebar_width() - 1,
-            rows: height - 2 * workspace::sidebar_button_rows(frame.rows),
+            rows: height - 3 * workspace::sidebar_button_rows(frame.rows),
         }
     } else {
         Rect {

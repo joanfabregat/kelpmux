@@ -10,14 +10,37 @@ pub const MIN_SIDEBAR_COLUMNS: u16 = 22;
 pub const FOLDED_SIDEBAR_COLUMNS: u16 = 4;
 pub const PARKED_BG: u8 = 60;
 pub const RESTORE_BG: u8 = 29;
-pub const ALERT_ICON: &str = "⚠️";
-pub const WAIT_ICON: &str = "❓";
-pub const DONE_ICON: &str = "✅";
-pub const MOON_FRAMES: [&str; 8] = ["🌑", "🌒", "🌓", "🌔", "🌕", "🌖", "🌗", "🌘"];
+pub const ALERT_ICON: &str = "!";
+pub const WAIT_ICON: &str = "?";
+pub const DONE_ICON: &str = "✓";
+pub const SPINNER_FRAMES: [&str; 8] = ["◐", "◓", "◑", "◒", "◐", "◓", "◑", "◒"];
+pub const SIDEBAR_BALL_FRAMES: [&str; 10] = [
+    "●·····",
+    "·●····",
+    "··●···",
+    "···●··",
+    "····●·",
+    "·····●",
+    "····●·",
+    "···●··",
+    "··●···",
+    "·●····",
+];
+pub const GRID_BALL_FRAMES: [&str; 4] = ["●··", "·●·", "··●", "·●·"];
 pub const ACTIVITY_INTERVAL_MS: u64 = 150;
+pub const GRID_ACTIVITY_INTERVAL_MS: u64 = 200;
+pub const ANIMATION_TICK_MS: u64 = 50;
+pub fn activity_phase(tick: usize, columns: u16) -> usize {
+    tick.saturating_mul(ANIMATION_TICK_MS as usize)
+        / if columns == 3 {
+            GRID_ACTIVITY_INTERVAL_MS as usize
+        } else {
+            ACTIVITY_INTERVAL_MS as usize
+        }
+}
 pub fn status_icon(status: crate::model::Status) -> &'static str {
     match status {
-        crate::model::Status::Working => MOON_FRAMES[0],
+        crate::model::Status::Working => SPINNER_FRAMES[0],
         crate::model::Status::InputNeeded => WAIT_ICON,
         crate::model::Status::TurnFinished => DONE_ICON,
         crate::model::Status::Failed => ALERT_ICON,
@@ -150,7 +173,7 @@ pub fn notification_buttons(bounds: super::protocol::Rect) -> [super::protocol::
 pub const CONFIG_BUTTON_LABEL: &str = " ⚙︎ Config ";
 pub const FOOTER_CONFIG_COLS: u16 = 10;
 pub const FOOTER_MODE_COLS: u16 = 8;
-pub const HELP_ROWS: u16 = 30;
+pub const HELP_ROWS: u16 = 31;
 pub const PALETTE: [(u8, u8); 9] = [
     (39, 24),
     (42, 29),
@@ -245,6 +268,7 @@ pub enum DialogKind {
     CloseConfirm,
     ParkConfirm,
     RestoreConfirm,
+    ReopenConfirm,
     Color,
 }
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -356,6 +380,7 @@ impl UiConfig {
             "agent-link",
             "notifications",
             "recovery",
+            "reopen",
             "next-attention",
             "next-finished",
             "scratch",
@@ -389,6 +414,8 @@ pub struct UiState {
     #[serde(default)]
     pub tab_drop: Option<(super::protocol::PaneId, Option<super::protocol::PaneId>)>,
     #[serde(default)]
+    pub grid_drop: Option<(super::protocol::PaneId, super::protocol::PaneId)>,
+    #[serde(default)]
     pub status: super::status::Snapshot,
     #[serde(default)]
     pub status_view: super::status::View,
@@ -418,6 +445,8 @@ pub struct UiState {
     #[serde(default)]
     pub agent_link_error: Option<String>,
     pub recovery: Vec<super::protocol::RecoveryItem>,
+    #[serde(default)]
+    pub closed_tabs: Vec<super::history::Entry>,
     pub search_query: String,
     pub search_all: bool,
     pub search_hits: Vec<super::protocol::SearchHit>,
