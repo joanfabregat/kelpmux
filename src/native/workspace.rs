@@ -2,6 +2,7 @@ use super::protocol::*;
 use super::ui::{AgentFilter, Dialog, DialogKind, UiState};
 use crate::Result;
 pub const GRIDS: [(u8, u8); 6] = [(1, 1), (2, 1), (2, 2), (3, 2), (2, 3), (3, 3)];
+pub const GRID_DIVIDER_COLS: u16 = 2;
 
 #[derive(Debug, Clone)]
 pub struct Workspace {
@@ -192,14 +193,18 @@ impl Workspace {
     /// Fixed columns across every row, including unused visual slots.
     pub fn grid_slots(&self) -> Vec<Rect> {
         let (cols, rows) = self.automatic_shape();
-        let x = weighted_boundaries(self.cols - u16::from(cols - 1), cols, &[]);
+        let x = weighted_boundaries(
+            self.cols - GRID_DIVIDER_COLS * u16::from(cols - 1),
+            cols,
+            &[],
+        );
         let y = weighted_boundaries(self.rows - 1, rows, &[]);
         (0..usize::from(cols) * usize::from(rows))
             .map(|index| {
                 let col = index % usize::from(cols);
                 let row = index / usize::from(cols);
                 Rect {
-                    x: x[col] + col as u16,
+                    x: x[col] + col as u16 * GRID_DIVIDER_COLS,
                     y: y[row],
                     cols: x[col + 1] - x[col],
                     rows: y[row + 1] - y[row],
@@ -242,7 +247,7 @@ impl Workspace {
     }
     fn grid_capacity(&self) -> (u8, u8) {
         (
-            ((self.cols + 1) / 13).max(1) as u8,
+            ((self.cols + GRID_DIVIDER_COLS) / (12 + GRID_DIVIDER_COLS)).max(1) as u8,
             ((self.rows - 1) / 3).max(1) as u8,
         )
     }
@@ -327,6 +332,9 @@ impl Workspace {
             .ok_or_else(|| "unknown pane".into())
     }
     pub fn apply(&mut self, action: &Action) -> Result<()> {
+        if !matches!(action, Action::GridDrag(_)) {
+            self.ui.grid_drop = None;
+        }
         if !matches!(
             action,
             Action::TabDrag(_) | Action::Reorder { .. } | Action::ScrollTabs(_)
@@ -370,6 +378,20 @@ impl Workspace {
             self.ui.tab_scroll_anchor = Some(anchor);
         }
         match *action {
+            Action::GridDrag(drop) => {
+                if let Some((source, target)) = drop {
+                    if self.reading != ReadingMode::Grid {
+                        return Err("grid drag requires grid view".into());
+                    }
+                    for id in [source, target] {
+                        let index = self.require_pane(id)?;
+                        if self.panes[index].parked || Some(id) == self.ui.scratch {
+                            return Err("only visible grid panes can be dragged".into());
+                        }
+                    }
+                }
+                self.ui.grid_drop = drop;
+            }
             Action::TabDrag(drop) => {
                 if let Some((source, before)) = drop {
                     for id in std::iter::once(source).chain(before) {

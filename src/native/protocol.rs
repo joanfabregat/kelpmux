@@ -3,7 +3,7 @@ use crate::{Result, model::Status};
 use serde::{Deserialize, Serialize};
 use std::io::{Read, Write};
 
-pub const VERSION: u16 = 50;
+pub const VERSION: u16 = 51;
 pub const MAX_MESSAGE: usize = 16 * 1024 * 1024;
 pub const MAX_INPUT: usize = 64 * 1024;
 pub type PaneId = u64;
@@ -322,6 +322,7 @@ pub enum Action {
     NewTab,
     ScrollTabs(i16),
     TabDrag(Option<(PaneId, Option<PaneId>)>),
+    GridDrag(Option<(PaneId, PaneId)>),
     Reorder {
         source: PaneId,
         before: Option<PaneId>,

@@ -1146,7 +1146,7 @@ impl Server {
     }
     fn feature_action(&mut self, client: u64, action: &Action) -> Result<bool> {
         match action {
-            Action::TabDrag(_) => {
+            Action::TabDrag(_) | Action::GridDrag(_) => {
                 self.workspace.apply(action)?;
                 self.dirty = true;
                 return Ok(true);
@@ -2634,6 +2634,7 @@ impl Server {
     fn frames(&mut self, spinner: usize) {
         if self.controller.is_none() {
             self.workspace.ui.tab_drop = None;
+            self.workspace.ui.grid_drop = None;
         }
         if let Err(error) = self.activity.observe(&self.workspace.panes, crate::now()) {
             self.notice = Some(format!("Notification history: {error}"));
@@ -3036,15 +3037,20 @@ pub fn serve(mut config: ServerConfig) -> Result<()> {
         if let Ok(result) = results.try_recv() {
             server.discovery_result(result);
         }
-        if attached && animation.elapsed() >= Duration::from_millis(super::ui::ACTIVITY_INTERVAL_MS)
-        {
+        if attached && animation.elapsed() >= Duration::from_millis(super::ui::ANIMATION_TICK_MS) {
+            let previous = spinner;
             spinner += 1;
             animation = Instant::now();
-            server.dirty |= server
-                .workspace
-                .panes
-                .iter()
-                .any(|p| p.status == Status::Working);
+            let changed = [1, 3].into_iter().any(|width| {
+                super::ui::activity_phase(previous, width)
+                    != super::ui::activity_phase(spinner, width)
+            });
+            server.dirty |= changed
+                && server
+                    .workspace
+                    .panes
+                    .iter()
+                    .any(|p| p.status == Status::Working);
         }
         if attached && title_animation_time.elapsed() >= Duration::from_millis(100) {
             title_animation_time = Instant::now();

@@ -246,6 +246,7 @@ pub struct Router {
     search_utf8: Vec<u8>,
     selecting: bool,
     header_drag: Option<PaneId>,
+    grid_hint: Option<PaneId>,
     header_press: Option<(PaneId, Point)>,
     header_click: Option<(PaneId, Point, Instant)>,
     boundary_drag: Option<(Option<u8>, Option<u8>)>,
@@ -262,6 +263,34 @@ pub struct Router {
 }
 impl Router {
     pub fn route(&mut self, event: InputEvent, frame: &Frame) -> Vec<ClientMessage> {
+        if matches!(&event, InputEvent::Bytes(bytes) if bytes == b"\x1b")
+            && self.header_drag.take().is_some()
+        {
+            self.grid_hint = None;
+            self.focus_click = true;
+            self.header_press = None;
+            self.header_click = None;
+            return if frame.controller {
+                vec![ClientMessage::Action(Action::GridDrag(None))]
+            } else {
+                vec![]
+            };
+        }
+        if self.header_drag.is_some_and(|id| {
+            !frame
+                .panes
+                .iter()
+                .any(|v| v.pane.id == id && !v.pane.parked)
+        }) {
+            self.header_drag = None;
+            self.grid_hint = None;
+            self.focus_click = true;
+            return if frame.controller {
+                vec![ClientMessage::Action(Action::GridDrag(None))]
+            } else {
+                vec![]
+            };
+        }
         if matches!(&event, InputEvent::Bytes(bytes) if bytes == b"\x1b") && self.sidebar_drag {
             self.sidebar_drag = false;
             self.sidebar_start = None;
@@ -270,6 +299,7 @@ impl Router {
         if matches!(&event, InputEvent::Bytes(bytes) if bytes == b"\x1b")
             && self.tab_drag.take().is_some()
         {
+            self.focus_click = true;
             self.header_press = None;
             self.header_click = None;
             return if frame.controller {
@@ -759,6 +789,7 @@ impl Router {
                 return Action::Fullscreen(pane);
             }
             self.header_drag = Some(pane);
+            self.grid_hint = None;
             self.header_press = Some((pane, event.position));
         }
         Action::Focus(pane)
@@ -957,24 +988,32 @@ impl Router {
         }
         if let Some(source) = self.header_drag {
             if matches!(event.kind, MouseKind::Move | MouseKind::Release) {
-                if event.kind == MouseKind::Release {
-                    self.header_drag = None;
-                    if let Some(view) = frame.panes.iter().find(|v| {
+                let target = frame
+                    .panes
+                    .iter()
+                    .find(|v| {
                         frame.reading == ReadingMode::Grid
                             && v.rect.contains(event.position)
                             && Some(v.pane.id) != frame.ui.scratch
-                    }) {
-                        if view.pane.id != source {
-                            emit(
-                                &mut output,
-                                Action::Swap {
-                                    source,
-                                    target: view.pane.id,
-                                },
-                                true,
-                            );
-                        }
+                            && v.pane.id != source
+                    })
+                    .map(|v| v.pane.id);
+                if event.kind == MouseKind::Release {
+                    let had_hint = self.grid_hint.is_some() || frame.ui.grid_drop.is_some();
+                    self.header_drag = None;
+                    self.grid_hint = None;
+                    if let Some(target) = target {
+                        emit(&mut output, Action::Swap { source, target }, true);
+                    } else if had_hint {
+                        emit(&mut output, Action::GridDrag(None), true);
                     }
+                } else if target != self.grid_hint {
+                    self.grid_hint = target;
+                    emit(
+                        &mut output,
+                        Action::GridDrag(target.map(|target| (source, target))),
+                        true,
+                    );
                 }
                 return output;
             }
@@ -1075,7 +1114,12 @@ impl Router {
                 super::workspace::close_buttons(bounds)
                     .iter()
                     .position(|rect| rect.contains(event.position))
-            } else if dialog.kind == super::ui::DialogKind::Parked {
+            } else if matches!(
+                dialog.kind,
+                super::ui::DialogKind::Parked
+                    | super::ui::DialogKind::Recovery
+                    | super::ui::DialogKind::Agents
+            ) {
                 super::workspace::parked_cards(bounds, dialog.selection, frame_entries(frame).len())
                     .into_iter()
                     .find(|(_, rect)| rect.contains(event.position))

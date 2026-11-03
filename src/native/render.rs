@@ -12,6 +12,108 @@ pub fn compose(
     notice: Option<&str>,
     spinner: usize,
 ) -> Frame {
+    let action = workspace
+        .ui
+        .tab_drop
+        .map(|(source, before)| (source, Action::Reorder { source, before }))
+        .or_else(|| {
+            workspace
+                .ui
+                .grid_drop
+                .map(|(source, target)| (source, Action::Swap { source, target }))
+        });
+    if let Some((source, action)) = action {
+        let mut preview = workspace.clone();
+        let visible: Vec<_> = workspace
+            .panes
+            .iter()
+            .filter(|p| !p.parked && Some(p.id) != workspace.ui.scratch)
+            .collect();
+        let anchor = workspace.ui.tab_scroll_anchor.unwrap_or_else(|| {
+            visible
+                .iter()
+                .position(|p| p.id == workspace.active)
+                .unwrap_or(0)
+        });
+        if preview.apply(&action).is_ok() {
+            preview.ui.tab_scroll_anchor = Some(anchor);
+            let mut frame = compose_scene(&preview, screens, controller, notice, spinner);
+            let landing = if workspace.reading == ReadingMode::Grid {
+                frame
+                    .panes
+                    .iter()
+                    .find(|v| v.pane.id == source)
+                    .map(|v| v.rect)
+            } else {
+                let panes: Vec<_> = preview
+                    .panes
+                    .iter()
+                    .filter(|p| !p.parked && Some(p.id) != preview.ui.scratch)
+                    .collect();
+                let index = panes.iter().position(|p| p.id == source);
+                super::workspace::tab_targets(
+                    preview.cols,
+                    preview.rows,
+                    &preview.ui.config,
+                    panes.len(),
+                    anchor,
+                    preview.panes.iter().filter(|p| p.parked).count(),
+                )
+                .into_iter()
+                .find_map(|(target, rect)| {
+                    (Some(target) == index.map(super::workspace::TabTarget::Pane)).then_some(rect)
+                })
+            };
+            if let Some(rect) = landing {
+                for y in rect.y..(rect.y + rect.rows).min(frame.rows) {
+                    for x in rect.x..(rect.x + rect.cols).min(frame.cols) {
+                        let cell = &mut frame.cells
+                            [usize::from(y) * usize::from(frame.cols) + usize::from(x)];
+                        let base = match cell.bg {
+                            Color::Rgb(r, g, b) => [r, g, b],
+                            Color::Default => terminal_backdrop(workspace),
+                            other => {
+                                let (r, g, b) = color_rgb(other, false);
+                                [r, g, b]
+                            }
+                        };
+                        cell.bg = mix(base, [220, 174, 90], 25);
+                    }
+                }
+                if workspace.reading == ReadingMode::Grid && rect.cols > 0 {
+                    let start = usize::from(rect.y) * usize::from(frame.cols) + usize::from(rect.x);
+                    if rect.x > 0 {
+                        frame.cells[start - 1].bg = frame.cells[start].bg;
+                    }
+                    if rect.x + rect.cols < frame.cols {
+                        let right = start + usize::from(rect.cols);
+                        frame.cells[right].bg = frame.cells[right - 1].bg;
+                    }
+                }
+            }
+            // Keep authoritative hit targets while dragging so moving cards do
+            // not make the same pointer position oscillate between destinations.
+            frame.panes = workspace.layout();
+            for view in &mut frame.panes {
+                if let Some(screen) = screens.get(&view.pane.id) {
+                    view.modes = screen.modes;
+                }
+            }
+            frame.ui = workspace.ui.clone();
+            frame.cursor = None;
+            return frame;
+        }
+    }
+    compose_scene(workspace, screens, controller, notice, spinner)
+}
+
+fn compose_scene(
+    workspace: &Workspace,
+    screens: &BTreeMap<PaneId, Screen>,
+    controller: bool,
+    notice: Option<&str>,
+    spinner: usize,
+) -> Frame {
     let mut frame = Frame {
         cols: workspace.cols,
         rows: workspace.rows,
@@ -263,9 +365,9 @@ pub fn compose(
     }
     if !matches!(frame.reading, ReadingMode::Fullscreen(_)) {
         let [closed, agents] = frame.history_controls();
-        for (rect, label, color) in [(closed, " Recently ", 110), (agents, " Agents ", 115)] {
+        for (rect, label, color) in [(closed, "↺ Recently", 110), (agents, "◇ Agents", 115)] {
             let label = if rect.cols < 8 {
-                if rect == closed { "R" } else { "A" }
+                if rect == closed { "↺" } else { "◇" }
             } else {
                 label
             };
@@ -491,17 +593,28 @@ fn draw_grid_separators(frame: &mut Frame, workspace: &Workspace) {
                 } else {
                     Color::Default
                 };
-                write_text(frame, right, y, 1, "┃", GRID_BORDER, bg, false);
-                if y == rect.y {
-                    grid_header_rule(
+                for (offset, glyph) in ["▕", "▎"].into_iter().enumerate() {
+                    write_text(
                         frame,
-                        Rect {
-                            x: right,
-                            y,
-                            cols: 1,
-                            rows: 1,
-                        },
+                        right + offset as u16,
+                        y,
+                        1,
+                        glyph,
+                        GRID_BORDER,
+                        bg,
+                        false,
                     );
+                    if y == rect.y {
+                        grid_header_rule(
+                            frame,
+                            Rect {
+                                x: right + offset as u16,
+                                y,
+                                cols: 1,
+                                rows: 1,
+                            },
+                        );
+                    }
                 }
             }
         }
@@ -549,6 +662,11 @@ fn header(
                 usize::from(view.rect.y) * usize::from(frame.cols) + usize::from(view.rect.x);
             // Continue the neighboring header surface through the divider cell.
             frame.cells[start - 1].bg = frame.cells[start].bg;
+        }
+        let right = view.rect.x + view.rect.cols;
+        if right < frame.cols {
+            let end = usize::from(view.rect.y) * usize::from(frame.cols) + usize::from(right);
+            frame.cells[end].bg = frame.cells[end - 1].bg;
         }
     }
 }
@@ -689,9 +807,9 @@ fn draw_dialog(
         DialogKind::Notifications => &notification_title,
         DialogKind::Recovery => {
             if workspace.ui.recovery_loading {
-                " Recently closed · loading…"
+                " ↺ Recently closed · loading…"
             } else {
-                " Recently closed · Enter reopen · x rerun application"
+                " ↺ Recently closed · Enter reopen · x rerun application"
             }
         }
         DialogKind::Search => " Search history",
@@ -702,9 +820,9 @@ fn draw_dialog(
         DialogKind::RestoreConfirm => " ↥ Restore this tab?",
         DialogKind::Color => " Tab color · arrows, Enter or click",
         DialogKind::Agents => match dialog.filter {
-            AgentFilter::All => " Agents",
-            AgentFilter::Attention => " Agents needing attention",
-            AgentFilter::Finished => " Finished agents",
+            AgentFilter::All => " ◇ Agents",
+            AgentFilter::Attention => " ◇ Agents needing attention",
+            AgentFilter::Finished => " ◇ Finished agents",
         },
     };
     write_text(
@@ -936,6 +1054,8 @@ fn draw_dialog(
                 dialog.selection == index + 1,
             );
         }
+    } else if matches!(dialog.kind, DialogKind::Recovery | DialogKind::Agents) {
+        draw_session_table(frame, workspace, dialog, bounds);
     } else if dialog.kind == DialogKind::Parked {
         draw_parked(frame, workspace, dialog, bounds, spinner);
     } else if matches!(
@@ -1559,35 +1679,6 @@ fn draw_tabs(frame: &mut Frame, workspace: &Workspace, spinner: usize) {
             }
         }
     }
-    if let Some((_, before)) = workspace.ui.tab_drop {
-        let index = before
-            .and_then(|id| panes.iter().position(|p| p.id == id))
-            .unwrap_or(panes.len());
-        let marker = targets
-            .iter()
-            .find_map(|(target, rect)| match target {
-                TabTarget::Pane(i) if *i == index => Some(rect.y.saturating_sub(1)),
-                _ => None,
-            })
-            .or_else(|| {
-                targets
-                    .iter()
-                    .rev()
-                    .find_map(|(target, rect)| match target {
-                        TabTarget::Pane(i) if *i + 1 == index => Some(rect.y + rect.rows - 1),
-                        _ => None,
-                    })
-            });
-        if let Some(y) = marker {
-            let width = frame.sidebar_width() - 1;
-            for x in 0..width {
-                let cell =
-                    &mut frame.cells[usize::from(y) * usize::from(frame.cols) + usize::from(x)];
-                cell.underline = true;
-                cell.underline_color = Some(Color::Indexed(75));
-            }
-        }
-    }
     let x = frame.sidebar_width() - 1;
     let accent = neutral(workspace, 23);
     for y in 0..frame.rows {
@@ -1928,6 +2019,7 @@ fn activity_indicator(
         return;
     }
     let icon = if pane.status == crate::model::Status::Working {
+        let tick = super::ui::activity_phase(tick, track.cols);
         Some(if track.cols >= 6 {
             super::ui::SIDEBAR_BALL_FRAMES[tick % super::ui::SIDEBAR_BALL_FRAMES.len()]
         } else if track.cols >= 3 {
@@ -2763,6 +2855,148 @@ fn draw_parked(
         );
     }
 }
+fn draw_session_table(
+    frame: &mut Frame,
+    workspace: &Workspace,
+    dialog: super::ui::Dialog,
+    bounds: Rect,
+) {
+    use super::ui::DialogKind;
+    let recovery = dialog.kind == DialogKind::Recovery;
+    let rows: Vec<(String, String, String, String, String)> = if recovery {
+        workspace
+            .ui
+            .closed_tabs
+            .iter()
+            .map(|entry| {
+                (
+                    entry.workspace.clone(),
+                    entry
+                        .kind
+                        .map_or_else(|| entry.name.clone(), |kind| kind.as_str().into()),
+                    if entry.kind.is_some() {
+                        entry.name.clone()
+                    } else {
+                        "—".into()
+                    },
+                    format!(
+                        "{}s ago",
+                        crate::now().saturating_sub(entry.closed_at.unwrap_or(0))
+                    ),
+                    format!("{} · {}", entry.cwd, entry.reason),
+                )
+            })
+            .collect()
+    } else {
+        workspace
+            .dialog_entries()
+            .iter()
+            .filter_map(|id| workspace.panes.iter().find(|p| p.id == *id))
+            .map(|pane| {
+                (
+                    if pane.parked {
+                        format!("Parked #{}", pane.id)
+                    } else {
+                        format!("Tab {}", pane.number)
+                    },
+                    pane.kind.map_or("shell", |kind| kind.as_str()).into(),
+                    pane.title.clone(),
+                    format!(
+                        "{} {}",
+                        super::ui::status_icon(pane.status),
+                        pane.status.text()
+                    ),
+                    pane.cwd.clone(),
+                )
+            })
+            .collect()
+    };
+    let width = bounds.cols.saturating_sub(4);
+    let location = (width / 6).clamp(5, 14);
+    let kind = (width / 8).clamp(5, 8);
+    let state = (width / 5).clamp(7, 20);
+    let name = width.saturating_sub(location + kind + state + 3);
+    let x = bounds.x + 2;
+    let columns = [
+        (x, location, "Location"),
+        (x + location + 1, kind, "Agent/App"),
+        (x + location + kind + 2, name, "Conversation"),
+        (
+            x + location + kind + name + 3,
+            state,
+            if recovery { "Closed" } else { "Status" },
+        ),
+    ];
+    for (x, size, label) in columns {
+        write_text(
+            frame,
+            x,
+            bounds.y + 1,
+            size,
+            label,
+            Color::Indexed(250),
+            Color::Indexed(236),
+            true,
+        );
+    }
+    if rows.is_empty() {
+        write_text(
+            frame,
+            bounds.x + 2,
+            bounds.y + 3,
+            bounds.cols.saturating_sub(4),
+            if recovery {
+                "No recently closed tabs"
+            } else {
+                "No running agents"
+            },
+            Color::Indexed(245),
+            Color::Indexed(236),
+            false,
+        );
+    }
+    for (index, rect) in super::workspace::parked_cards(bounds, dialog.selection, rows.len()) {
+        let selected = index == dialog.selection;
+        let bg = tab_background(workspace, selected);
+        fill(frame, rect, bg);
+        for y in rect.y..rect.y + rect.rows {
+            write_text(
+                frame,
+                rect.x,
+                y,
+                1,
+                "▌",
+                tab_accent(workspace, selected),
+                bg,
+                false,
+            );
+        }
+        let row = &rows[index];
+        for ((x, size, _), value) in columns.into_iter().zip([&row.0, &row.1, &row.2, &row.3]) {
+            write_text(
+                frame,
+                x,
+                rect.y + 1,
+                size,
+                value,
+                tab_text(workspace, selected),
+                bg,
+                selected,
+            );
+        }
+        write_text(
+            frame,
+            rect.x + 2,
+            rect.y + 2,
+            rect.cols.saturating_sub(4),
+            &row.4,
+            neutral(workspace, 55),
+            bg,
+            false,
+        );
+    }
+}
+
 fn draw_dashboard(
     frame: &mut Frame,
     workspace: &Workspace,

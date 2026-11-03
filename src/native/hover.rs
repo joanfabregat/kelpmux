@@ -3,6 +3,9 @@
 use super::{input::Router, protocol::*, ui::DialogKind, workspace as ws};
 
 pub fn target(frame: &Frame, point: Point) -> Option<Rect> {
+    if frame.ui.tab_drop.is_some() || frame.ui.grid_drop.is_some() {
+        return None;
+    }
     if !frame.controller || point.x >= frame.cols || point.y >= frame.rows {
         return None;
     }
@@ -52,6 +55,19 @@ pub fn target(frame: &Frame, point: Point) -> Option<Rect> {
                     regions.extend(ws::parked_controls(rect));
                     regions.push(rect);
                 }
+            }
+            DialogKind::Recovery | DialogKind::Agents => {
+                let count = if dialog.kind == DialogKind::Recovery {
+                    frame.ui.closed_tabs.len()
+                } else {
+                    let panes: Vec<_> = frame.panes.iter().map(|v| v.pane.clone()).collect();
+                    ws::dialog_entries(&panes, Some(dialog)).len()
+                };
+                regions.extend(
+                    ws::parked_cards(bounds, dialog.selection, count)
+                        .into_iter()
+                        .map(|(_, rect)| rect),
+                );
             }
             DialogKind::Status => {
                 regions.extend(
