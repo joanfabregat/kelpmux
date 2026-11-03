@@ -5058,7 +5058,7 @@ fn recent_and_agents_tables_share_three_row_click_and_hover_targets() {
                 assert_eq!(
                     picked,
                     if kind == DialogKind::Recovery {
-                        vec![Action::ReopenTab(index)]
+                        vec![Action::ReopenRequest(index)]
                     } else {
                         vec![Action::Focus(index as u64 + 1), Action::DialogClose]
                     }
@@ -5071,4 +5071,108 @@ fn recent_and_agents_tables_share_three_row_click_and_hover_targets() {
     assert_eq!(kelpmux::native::ui::activity_phase(3, 3), 0);
     assert_eq!(kelpmux::native::ui::activity_phase(3, 6), 1);
     assert_eq!(kelpmux::native::ui::activity_phase(4, 3), 1);
+}
+
+#[test]
+fn closed_restore_popup_offers_only_relevant_actions_and_cancel_preserves_history() {
+    use kelpmux::native::{
+        history::Entry,
+        hover,
+        ui::DialogKind,
+        workspace::{dialog_bounds_for, reopen_buttons},
+    };
+    for (kind, session_id, argv, labels, expected) in [
+        (
+            Some(Kind::Codex),
+            Some("session-safe"),
+            vec![],
+            vec!["Resume conversation", "Cancel"],
+            vec![Action::ReopenTab(0), Action::DialogClose],
+        ),
+        (
+            Some(Kind::Claude),
+            None,
+            vec![],
+            vec!["Open conversation picker", "Cancel"],
+            vec![Action::ReopenTab(0), Action::DialogClose],
+        ),
+        (
+            None,
+            None,
+            vec!["sleep".to_string(), "60".to_string()],
+            vec!["Restart program", "Open folder", "Cancel"],
+            vec![
+                Action::RerunTab(0),
+                Action::ReopenTab(0),
+                Action::DialogClose,
+            ],
+        ),
+        (
+            None,
+            None,
+            vec![],
+            vec!["Open folder", "Cancel"],
+            vec![Action::ReopenTab(0), Action::DialogClose],
+        ),
+    ] {
+        for size in [(40, 10), (120, 40)] {
+            let mut ws = workspace(size, (1, 1));
+            ws.ui.closed_tabs.push(Entry {
+                key: "closed:1".into(),
+                workspace: "dev".into(),
+                pane: 1,
+                name: "My conversation".into(),
+                cwd: "/project".into(),
+                kind,
+                session_id: session_id.map(str::to_owned),
+                argv: argv.clone(),
+                closed_at: Some(kelpmux::now()),
+                reason: "Closed".into(),
+            });
+            ws.apply(&Action::Recovery).unwrap();
+            let list = frame(&ws);
+            assert!(
+                Router::default()
+                    .route(InputEvent::Bytes(b"x".to_vec()), &list)
+                    .is_empty()
+            );
+            assert_eq!(
+                actions(Router::default().route(InputEvent::Bytes(b"\r".to_vec()), &list)),
+                vec![Action::ReopenRequest(0)]
+            );
+            ws.apply(&Action::ReopenRequest(0)).unwrap();
+            let popup = frame(&ws);
+            let text = popup
+                .cells
+                .iter()
+                .map(|cell| cell.text.as_str())
+                .collect::<String>();
+            for label in &labels {
+                assert!(text.contains(label), "missing {label}");
+            }
+            assert!(text.contains("My conversation") && text.contains("/project"));
+            let bounds = dialog_bounds_for(popup.cols, popup.rows, DialogKind::ReopenConfirm);
+            for (index, rect) in reopen_buttons(bounds, labels.len()).into_iter().enumerate() {
+                let point = Point {
+                    x: rect.x + 1,
+                    y: rect.y,
+                };
+                assert_eq!(hover::target(&popup, point), Some(rect));
+                assert_eq!(
+                    actions(Router::default().route(click(point), &popup)),
+                    vec![expected[index].clone()]
+                );
+                ws.apply(&Action::DialogPick(index)).unwrap();
+                assert_eq!(
+                    actions(
+                        Router::default().route(InputEvent::Bytes(b"\r".to_vec()), &frame(&ws))
+                    ),
+                    vec![expected[index].clone()]
+                );
+            }
+            ws.apply(&Action::DialogClose).unwrap();
+            assert_eq!(ws.ui.dialog.unwrap().kind, DialogKind::Recovery);
+            assert_eq!(ws.ui.closed_tabs.len(), 1);
+        }
+    }
 }
