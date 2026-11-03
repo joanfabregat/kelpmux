@@ -17,6 +17,57 @@ use std::{
     sync::atomic::{AtomicU64, Ordering},
 };
 static NEXT: AtomicU64 = AtomicU64::new(0);
+#[test]
+fn terminal_title_matches_deleted_cwd_without_truncating_conversation_names() {
+    use kelpmux::native::tracking::{agent_terminal_title, tab_name};
+    for (title, cwd, expected) in [
+        (
+            "VPN new device | vpn-config",
+            "/repos/vpn-config (deleted)",
+            "VPN new device",
+        ),
+        (
+            "⠋ VPN new device | vpn-config",
+            "/repos/vpn-config (deleted)",
+            "VPN new device",
+        ),
+        (
+            "VPN | new device | vpn-config",
+            "/repos/vpn-config (deleted)",
+            "VPN | new device",
+        ),
+        (
+            "VPN | other-repo",
+            "/repos/vpn-config (deleted)",
+            "VPN | other-repo",
+        ),
+        (
+            "VPN | vpn-config (deleted)",
+            "/repos/vpn-config (deleted)",
+            "VPN",
+        ),
+        (
+            " | vpn-config",
+            "/repos/vpn-config (deleted)",
+            "| vpn-config",
+        ),
+    ] {
+        assert_eq!(agent_terminal_title(title, cwd), expected);
+    }
+    let mut entry = agent(0);
+    entry.cwd = "/repos/vpn-config (deleted)".into();
+    entry.name = "vpn-config (deleted)".into();
+    assert_eq!(
+        tab_name(&entry, Some("VPN new device | vpn-config"), None).0,
+        "VPN new device"
+    );
+    entry.name = "Explicit | vpn-config".into();
+    assert_eq!(tab_name(&entry, None, None).0, "Explicit | vpn-config");
+    assert_eq!(
+        tab_name(&entry, None, Some("Alias | vpn-config")).0,
+        "Alias | vpn-config"
+    );
+}
 struct Temp(PathBuf);
 impl Temp {
     fn new() -> Self {

@@ -5,6 +5,7 @@ pub mod cli;
 pub mod delta;
 pub mod diagnostics;
 pub mod engine;
+pub mod history;
 pub mod hooks;
 pub mod hover;
 pub mod input;

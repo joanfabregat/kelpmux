@@ -132,7 +132,13 @@ struct NativePane {
     program: Option<super::program_status::Snapshot>,
 }
 impl NativePane {
-    fn spawn(config: &ServerConfig, cols: u16, rows: u16, id: PaneId) -> Result<Self> {
+    fn spawn(
+        config: &ServerConfig,
+        cols: u16,
+        rows: u16,
+        id: PaneId,
+        startup: Option<&str>,
+    ) -> Result<Self> {
         let mut master = -1;
         let mut slave = -1;
         let size = libc::winsize {
@@ -163,8 +169,14 @@ impl NativePane {
         }
         let mut command = Command::new(&config.shell);
         super::shell::integrate_shell(&mut command, &config.state_dir, &config.shell)?;
+        command.arg("-i");
+        if let Some(startup) = startup {
+            command.arg("-c").arg(format!(
+                "{startup}; exec {} -i",
+                crate::shell_quote(&config.shell.to_string_lossy())
+            ));
+        }
         command
-            .arg("-i")
             .current_dir(&config.cwd)
             .env("TERM", "xterm-256color")
             .env("COLORTERM", "truecolor")
@@ -580,7 +592,7 @@ impl Client {
 }
 
 struct RecoveryJob {
-    receiver: std::sync::mpsc::Receiver<Result<Vec<RecoveryItem>>>,
+    receiver: std::sync::mpsc::Receiver<Result<(Vec<RecoveryItem>, Vec<super::history::Entry>)>>,
     cancel: std::sync::Arc<std::sync::atomic::AtomicBool>,
     worker: Option<std::thread::JoinHandle<()>>,
 }
@@ -594,6 +606,8 @@ impl Drop for RecoveryJob {
     }
 }
 struct Server {
+    history: super::history::History,
+    reopen_pending: Option<u64>,
     remember_tab_order: bool,
     focus_click: bool,
     title_animation: BTreeMap<PaneId, (String, u16)>,
@@ -1048,20 +1062,91 @@ impl Server {
             });
         if let Some(result) = result {
             match result {
-                Ok(mut entries) => {
+                Ok((mut entries, mut closed)) => {
                     entries.truncate(256);
+                    for item in &entries {
+                        let e = &item.entry;
+                        if let Some(at) = e.ended_at.or_else(|| {
+                            (!process::read(Path::new("/proc"), e.pid)
+                                .is_ok_and(|p| p.start == e.process_start))
+                            .then_some(e.last_seen)
+                        }) {
+                            if closed.iter().any(|h| {
+                                h.workspace == item.workspace
+                                    && (h.session_id.is_some() && h.session_id == e.session_id
+                                        || !h.key.starts_with("legacy:")
+                                            && h.cwd == e.cwd
+                                            && h.kind == Some(e.kind)
+                                            && h.closed_at.is_some_and(|t| t.abs_diff(at) < 5))
+                            }) {
+                                continue;
+                            }
+                            closed.push(super::history::Entry {
+                                key: format!(
+                                    "legacy:{}:{}:{}",
+                                    item.workspace, e.pid, e.process_start
+                                ),
+                                workspace: item.workspace.clone(),
+                                pane: 0,
+                                cwd: e.cwd.clone(),
+                                name: e.name.clone(),
+                                kind: Some(e.kind),
+                                session_id: e.session_id.clone(),
+                                argv: vec![],
+                                closed_at: Some(at),
+                                reason: "Previous run".into(),
+                            });
+                        }
+                    }
+                    closed.retain(|e| !self.history.restored.contains(&e.key));
+                    if self.reopen_pending.is_some() {
+                        let current = self
+                            .config
+                            .state_dir
+                            .file_name()
+                            .unwrap_or_default()
+                            .to_string_lossy();
+                        closed.sort_by_key(|e| {
+                            (
+                                e.workspace != current,
+                                e.reason != "Closed",
+                                std::cmp::Reverse(e.closed_at),
+                            )
+                        });
+                    } else {
+                        closed.sort_by_key(|e| std::cmp::Reverse(e.closed_at));
+                    }
+                    closed.truncate(256);
+                    self.workspace.ui.closed_tabs = closed;
                     self.workspace.ui.recovery = entries;
                 }
-                Err(error) => self.notice = Some(format!("Recovery: {error}")),
+                Err(error) => {
+                    self.reopen_pending = None;
+                    self.notice = Some(format!("Recovery: {error}"));
+                }
             }
             self.workspace.ui.recovery_loading = false;
             self.recovery_job = None;
             self.dirty = true;
+            if let Some(client) = self.reopen_pending.take() {
+                if self.controller == Some(client)
+                    && self
+                        .workspace
+                        .ui
+                        .dialog
+                        .is_some_and(|d| d.kind == super::ui::DialogKind::Recovery)
+                    && !self.workspace.ui.closed_tabs.is_empty()
+                {
+                    if let Err(error) = self.feature_action(client, &Action::ReopenRequest(0)) {
+                        self.notice = Some(format!("Restore: {error}"));
+                    }
+                }
+            }
         }
     }
     fn feature_action(&mut self, client: u64, action: &Action) -> Result<bool> {
         match action {
-            Action::TabDrag(_) => {
+            Action::TabDrag(_) | Action::GridDrag(_) => {
                 self.workspace.apply(action)?;
                 self.dirty = true;
                 return Ok(true);
@@ -1222,12 +1307,14 @@ impl Server {
             }
             Action::Recovery => {
                 if self.recovery_job.is_none() {
+                    self.workspace.ui.closed_tabs.clear();
                     let state = self.config.state_dir.clone();
                     let (sender, receiver) = std::sync::mpsc::sync_channel(1);
                     let cancel = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
                     let worker_cancel = cancel.clone();
                     let worker = std::thread::spawn(move || {
-                        let result = super::recovery::collect_cancellable(&state, &worker_cancel);
+                        let result = super::recovery::collect_cancellable(&state, &worker_cancel)
+                            .map(|agents| (agents, super::history::collect(&state)));
                         let _ = sender.send(result);
                     });
                     self.recovery_job = Some(RecoveryJob {
@@ -1243,14 +1330,38 @@ impl Server {
                 let command = self
                     .workspace
                     .ui
-                    .recovery
+                    .closed_tabs
                     .get(*index)
-                    .and_then(|item| item.entry.resume_command.clone())
+                    .and_then(|item| item.command())
                     .ok_or("this session has no known resume command")?;
                 self.clients
                     .get_mut(&client)
                     .ok_or("unknown client")?
                     .send(ServerMessage::Clipboard(command))?;
+            }
+            Action::ReopenLast => {
+                self.reopen_pending = Some(client);
+                return self.feature_action(client, &Action::Recovery);
+            }
+            Action::ReopenRequest(_) => {
+                self.workspace.apply(action)?;
+            }
+            Action::ReopenTab(index) | Action::RerunTab(index) => {
+                if !self.workspace.ui.dialog.is_some_and(|d| {
+                    d.kind == super::ui::DialogKind::Recovery
+                        || (d.kind == super::ui::DialogKind::ReopenConfirm
+                            && d.source == Some(*index as u64))
+                }) {
+                    return Err("select a Closed entry before restoring a tab".into());
+                }
+                let entry = self
+                    .workspace
+                    .ui
+                    .closed_tabs
+                    .get(*index)
+                    .cloned()
+                    .ok_or("unknown closed tab")?;
+                self.reopen_tab(entry, matches!(action, Action::RerunTab(_)))?;
             }
             Action::SearchCopy(index) => {
                 let text = self
@@ -1375,6 +1486,11 @@ impl Server {
         if is_scratch && self.workspace.ui.scratch_visible {
             self.workspace.apply(&Action::ScratchClose)?;
         }
+        if !is_scratch {
+            self.history.close(&self.epoch, id, crate::now());
+            self.history
+                .save(&self.config.state_dir.join("tab-history.json"))?;
+        }
         self.panes.remove(&id);
         self.workspace.panes.retain(|pane| pane.id != id);
         self.aliases.remove(&id);
@@ -1455,6 +1571,108 @@ impl Server {
         self.spawn_pane(specification)
     }
     fn spawn_pane(&mut self, specification: Option<super::templates::TemplatePane>) -> Result<()> {
+        self.spawn_pane_command(specification, None)
+    }
+    fn reopen_tab(&mut self, entry: super::history::Entry, rerun: bool) -> Result<()> {
+        let cwd = PathBuf::from(&entry.cwd);
+        if !cwd.is_absolute() || !cwd.is_dir() {
+            return Err("the original folder no longer exists".into());
+        }
+        if entry.kind.is_some() && entry.session_id.is_some() {
+            if let Ok(records) = super::recovery::collect(&self.config.state_dir) {
+                if let Some(live) = records.iter().find(|r| {
+                    r.entry.ended_at.is_none()
+                        && Some(r.entry.kind) == entry.kind
+                        && r.entry.session_id == entry.session_id
+                        && process::read(Path::new("/proc"), r.entry.pid)
+                            .is_ok_and(|p| p.start == r.entry.process_start)
+                }) {
+                    let current = self
+                        .config
+                        .state_dir
+                        .file_name()
+                        .unwrap_or_default()
+                        .to_string_lossy();
+                    if live.workspace != current {
+                        return Err(format!(
+                            "This conversation is already running in {} · {}",
+                            live.workspace, live.entry.pane
+                        )
+                        .into());
+                    }
+                }
+            }
+        }
+        if let Some(existing) = self.workspace.panes.iter().find(|pane| {
+            entry.session_id.is_some()
+                && pane.kind == entry.kind
+                && pane.session_id == entry.session_id
+        }) {
+            let id = existing.id;
+            if existing.parked {
+                self.workspace.apply(&Action::Restore(id))?;
+            }
+            if self.workspace.ui.scratch_visible {
+                self.workspace.apply(&Action::ScratchClose)?;
+            }
+            self.workspace.active = id;
+            self.workspace.reading = ReadingMode::Tabs(id);
+            self.workspace.ui.tab_scroll_anchor = None;
+            self.workspace.ui.dialog = None;
+            self.history.consume(&entry.key);
+            self.history
+                .save(&self.config.state_dir.join("tab-history.json"))?;
+            self.workspace.ui.closed_tabs.retain(|e| e.key != entry.key);
+            return Ok(());
+        }
+        let command = entry
+            .command()
+            .or_else(|| rerun.then(|| entry.previous_command()).flatten());
+        self.spawn_pane_command(
+            Some(super::templates::TemplatePane {
+                name: "shell".into(),
+                cwd,
+                shell: None,
+            }),
+            command.as_deref(),
+        )?;
+        let id = self.workspace.panes.last().unwrap().id;
+        self.aliases.remove(&id);
+        if let Some(pane) = self.workspace.panes.last_mut() {
+            pane.kind = entry.kind;
+            pane.session_id = entry.session_id.clone();
+            if entry.kind.is_some() {
+                pane.title = entry.name.clone();
+            }
+        }
+        if self.workspace.ui.scratch_visible {
+            self.workspace.apply(&Action::ScratchClose)?;
+        }
+        self.workspace.active = id;
+        self.workspace.reading = ReadingMode::Tabs(id);
+        self.workspace.ui.tab_scroll_anchor = None;
+        self.workspace.ui.config.view_modes[super::ui::geometry_bucket(self.workspace.cols)] =
+            Some(true);
+        self.workspace.ui.dialog = None;
+        self.history.consume(&entry.key);
+        self.history
+            .save(&self.config.state_dir.join("tab-history.json"))?;
+        self.workspace.ui.closed_tabs.retain(|e| e.key != entry.key);
+        self.persist_geometry()?;
+        if entry.kind.is_none() && !rerun {
+            self.notice = Some(format!(
+                "Reopened folder. Previous application: {}",
+                entry.name
+            ));
+        }
+        self.dirty = true;
+        Ok(())
+    }
+    fn spawn_pane_command(
+        &mut self,
+        specification: Option<super::templates::TemplatePane>,
+        startup: Option<&str>,
+    ) -> Result<()> {
         let id = self.next_pane;
         let original_cwd = self.config.cwd.clone();
         let original_shell = self.config.shell.clone();
@@ -1469,6 +1687,7 @@ impl Server {
             self.workspace.cols,
             self.workspace.rows.saturating_sub(2),
             id,
+            startup,
         );
         self.config.cwd = original_cwd;
         self.config.shell = original_shell;
@@ -2367,10 +2586,57 @@ impl Server {
                 .map(|p| p.id)
                 .collect::<Vec<_>>(),
         );
+        let mut commands = BTreeMap::new();
+        for info in &self.workspace.panes {
+            if Some(info.id) == self.workspace.ui.scratch || info.kind.is_some() {
+                continue;
+            }
+            if let Some(shell) = tree.get(&info.pid) {
+                if let Some(app) = tree.values().find(|p| {
+                    p.group == shell.foreground
+                        && p.pid != info.pid
+                        && p.tty == shell.tty
+                        && process::descendants(&tree, info.pid).contains(&p.pid)
+                }) {
+                    let argv = process::args(Path::new("/proc"), app.pid);
+                    if argv.len() <= 128 && argv.iter().map(String::len).sum::<usize>() <= 8192 {
+                        commands.insert(info.id, argv);
+                    }
+                }
+            }
+        }
+        let old = self.history.clone();
+        let workspace = self
+            .config
+            .state_dir
+            .file_name()
+            .unwrap_or_default()
+            .to_string_lossy();
+        self.history.observe(
+            &self.epoch,
+            &workspace,
+            &self
+                .workspace
+                .panes
+                .iter()
+                .filter(|p| Some(p.id) != self.workspace.ui.scratch)
+                .cloned()
+                .collect::<Vec<_>>(),
+            &commands,
+        );
+        if self.history != old {
+            if let Err(error) = self
+                .history
+                .save(&self.config.state_dir.join("tab-history.json"))
+            {
+                self.notice = Some(format!("Tab history: {error}"));
+            }
+        }
     }
     fn frames(&mut self, spinner: usize) {
         if self.controller.is_none() {
             self.workspace.ui.tab_drop = None;
+            self.workspace.ui.grid_drop = None;
         }
         if let Err(error) = self.activity.observe(&self.workspace.panes, crate::now()) {
             self.notice = Some(format!("Notification history: {error}"));
@@ -2587,6 +2853,8 @@ pub fn serve(mut config: ServerConfig) -> Result<()> {
     }
     super::lifecycle::save_pid(&config.state_dir)?;
     let mut server = Server {
+        history: super::history::History::load(&config.state_dir.join("tab-history.json"))?,
+        reopen_pending: None,
         remember_tab_order: false,
         focus_click: false,
         title_animation: BTreeMap::new(),
@@ -2625,6 +2893,10 @@ pub fn serve(mut config: ServerConfig) -> Result<()> {
         notice: None,
         shutdown: false,
     };
+    server.history.begin_run(crate::now());
+    server
+        .history
+        .save(&server.config.state_dir.join("tab-history.json"))?;
     server.workspace.ui.notification_run = server.activity.run().into();
     let count = server.config.initial_tabs.unwrap_or(
         usize::from(server.config.initial_grid.0) * usize::from(server.config.initial_grid.1),
@@ -2673,6 +2945,7 @@ pub fn serve(mut config: ServerConfig) -> Result<()> {
     let mut render_time = Instant::now() - Duration::from_secs(1);
     let mut metrics_time = Instant::now();
     let mut animation = Instant::now();
+    let mut title_animation_time = Instant::now();
     let mut spinner = 0;
     let mut idle_poll = Instant::now() - Duration::from_millis(100);
     let mut unused_poll = Instant::now() - Duration::from_secs(1);
@@ -2766,9 +3039,23 @@ pub fn serve(mut config: ServerConfig) -> Result<()> {
         if let Ok(result) = results.try_recv() {
             server.discovery_result(result);
         }
-        if attached && animation.elapsed() >= Duration::from_millis(100) {
+        if attached && animation.elapsed() >= Duration::from_millis(super::ui::ANIMATION_TICK_MS) {
+            let previous = spinner;
             spinner += 1;
             animation = Instant::now();
+            let changed = [1, 3].into_iter().any(|width| {
+                super::ui::activity_phase(previous, width)
+                    != super::ui::activity_phase(spinner, width)
+            });
+            server.dirty |= changed
+                && server
+                    .workspace
+                    .panes
+                    .iter()
+                    .any(|p| p.status == Status::Working);
+        }
+        if attached && title_animation_time.elapsed() >= Duration::from_millis(100) {
+            title_animation_time = Instant::now();
             server
                 .title_animation
                 .retain(|id, _| server.panes.contains_key(id));
@@ -2792,11 +3079,6 @@ pub fn serve(mut config: ServerConfig) -> Result<()> {
                     server.dirty = true;
                 }
             }
-            server.dirty |= server
-                .workspace
-                .panes
-                .iter()
-                .any(|p| p.status == Status::Working);
         }
         if (attached || streaming) && metrics_time.elapsed() >= Duration::from_secs(1) {
             server.dirty = true;

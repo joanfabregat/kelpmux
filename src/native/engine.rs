@@ -241,6 +241,9 @@ impl Terminal {
             if let Some((byte, rest)) = bytes.split_first() {
                 self.parser
                     .advance(&mut self.term, std::slice::from_ref(byte));
+                if *byte == 0x8f {
+                    self.expand_emoji_presentation();
+                }
                 bytes = rest;
             }
         }
@@ -252,6 +255,50 @@ impl Terminal {
             cols: usize::from(cols.max(2)),
             rows: usize::from(rows.max(1)),
         });
+    }
+    fn expand_emoji_presentation(&mut self) {
+        // Alacritty 0.26 treats VS16 as zero-width, without widening its base.
+        // Keep the two-column presentation used by the composed emoji cells.
+        let grid = self.term.grid_mut();
+        let point = grid.cursor.point;
+        if grid.cursor.input_needs_wrap || point.column.0 == 0 {
+            return;
+        }
+        let column = Column(point.column.0 - 1);
+        let cell = &grid[point.line][column];
+        if cell
+            .flags
+            .intersects(Flags::WIDE_CHAR_SPACER | Flags::WIDE_CHAR)
+            || cell.zerowidth().and_then(|v| v.last()) != Some(&'\u{fe0f}')
+            || column.0 + 1 >= grid.columns()
+        {
+            return;
+        }
+        let mut glyph = cell.c.to_string();
+        glyph.extend(cell.zerowidth().into_iter().flatten().copied());
+        if unicode_width::UnicodeWidthStr::width(glyph.as_str()) != 2 {
+            return;
+        }
+        let mut spacer = cell.clone();
+        spacer.clear_wide();
+        spacer.flags.insert(Flags::WIDE_CHAR_SPACER);
+        // Widening over another wide glyph must clear its old continuation.
+        if grid[point.line][Column(column.0 + 1)]
+            .flags
+            .contains(Flags::WIDE_CHAR)
+            && column.0 + 2 < grid.columns()
+        {
+            let old_spacer = &mut grid[point.line][Column(column.0 + 2)];
+            old_spacer.clear_wide();
+            old_spacer.flags.remove(Flags::WIDE_CHAR_SPACER);
+        }
+        grid[point.line][column].flags.insert(Flags::WIDE_CHAR);
+        grid[point.line][Column(column.0 + 1)] = spacer;
+        if point.column.0 + 1 >= grid.columns() {
+            grid.cursor.input_needs_wrap = true;
+        } else {
+            grid.cursor.point.column.0 += 1;
+        }
     }
     pub fn snapshot(&self) -> Screen {
         let cols = self.term.columns() as u16;
