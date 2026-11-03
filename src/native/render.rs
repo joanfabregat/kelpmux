@@ -949,19 +949,84 @@ fn draw_dialog(
                 }
             }
             for (index, (rect, choice)) in controls.into_iter().zip(choices).enumerate() {
+                use super::history::RestoreChoice;
                 let selected = index == dialog.selection;
-                let bg = Color::Indexed(if selected { 24 } else { 238 });
+                let bg = Color::Indexed(match choice {
+                    RestoreChoice::Cancel => {
+                        if selected {
+                            240
+                        } else {
+                            238
+                        }
+                    }
+                    RestoreChoice::Folder => {
+                        if selected {
+                            27
+                        } else {
+                            24
+                        }
+                    }
+                    _ => {
+                        if selected {
+                            35
+                        } else {
+                            super::ui::RESTORE_BG
+                        }
+                    }
+                });
                 fill(frame, rect, bg);
-                write_text(
-                    frame,
-                    rect.x,
-                    rect.y,
-                    rect.cols,
-                    &format!("{} {}", if selected { "›" } else { " " }, choice.label()),
-                    Color::Indexed(231),
-                    bg,
-                    selected,
-                );
+                let width = rect.cols.saturating_sub(2);
+                let wrap = |label: &str| {
+                    let mut lines = vec![String::new()];
+                    for word in label.split_whitespace() {
+                        let last = lines.last_mut().unwrap();
+                        if !last.is_empty() && last.width() + 1 + word.width() > usize::from(width)
+                        {
+                            lines.push(word.to_string());
+                        } else {
+                            if !last.is_empty() {
+                                last.push(' ');
+                            }
+                            last.push_str(word);
+                        }
+                    }
+                    lines
+                };
+                let mut lines = wrap(choice.label());
+                if lines.len() > usize::from(rect.rows) {
+                    lines = wrap(match choice {
+                        RestoreChoice::Resume => "Resume",
+                        RestoreChoice::Picker => "Pick session",
+                        RestoreChoice::Restart => "Restart",
+                        RestoreChoice::Folder => "Open folder",
+                        RestoreChoice::Cancel => "Cancel",
+                    });
+                }
+                let y = rect.y + rect.rows.saturating_sub(lines.len() as u16) / 2;
+                for (row, label) in lines.iter().enumerate() {
+                    write_text(
+                        frame,
+                        rect.x + 1 + width.saturating_sub(label.width() as u16) / 2,
+                        y + row as u16,
+                        width,
+                        label,
+                        Color::Indexed(231),
+                        bg,
+                        true,
+                    );
+                }
+                if selected {
+                    write_text(
+                        frame,
+                        rect.x,
+                        rect.y + rect.rows / 2,
+                        1,
+                        "›",
+                        Color::Indexed(231),
+                        bg,
+                        true,
+                    );
+                }
             }
         }
     } else if matches!(
