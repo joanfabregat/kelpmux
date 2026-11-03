@@ -1521,13 +1521,23 @@ pub fn tab_close(rect: Rect) -> Rect {
 }
 
 pub fn reopen_buttons(bounds: Rect, count: usize) -> Vec<Rect> {
-    let count = count.min(usize::from(bounds.rows.saturating_sub(2)));
+    if count == 0 {
+        return vec![];
+    }
+    let count = count.min(3) as u16;
+    let gap = 2;
+    let available = bounds.cols.saturating_sub(4 + gap * (count - 1));
+    let height = if bounds.rows >= 9 { 3 } else { 2 };
     (0..count)
-        .map(|index| Rect {
-            x: bounds.x + 2,
-            y: bounds.y + bounds.rows.saturating_sub(count as u16 + 1) + index as u16,
-            cols: bounds.cols.saturating_sub(4),
-            rows: 1,
+        .map(|index| {
+            let start = available * index / count;
+            let end = available * (index + 1) / count;
+            Rect {
+                x: bounds.x + 2 + start + index * gap,
+                y: bounds.y + bounds.rows.saturating_sub(height + 1),
+                cols: end - start,
+                rows: height,
+            }
         })
         .collect()
 }

@@ -5203,12 +5203,35 @@ fn closed_restore_popup_offers_only_relevant_actions_and_cancel_preserves_histor
                 .iter()
                 .map(|cell| cell.text.as_str())
                 .collect::<String>();
-            for label in &labels {
-                assert!(text.contains(label), "missing {label}");
-            }
             assert!(text.contains("My conversation") && text.contains("/project"));
             let bounds = dialog_bounds_for(popup.cols, popup.rows, DialogKind::ReopenConfirm);
-            for (index, rect) in reopen_buttons(bounds, labels.len()).into_iter().enumerate() {
+            let controls = reopen_buttons(bounds, labels.len());
+            for pair in controls.windows(2) {
+                assert_eq!(pair[0].y, pair[1].y);
+                assert!(pair[0].x + pair[0].cols < pair[1].x);
+                assert_ne!(
+                    popup.cells[usize::from(pair[0].y * popup.cols + pair[0].x)].bg,
+                    popup.cells[usize::from(pair[1].y * popup.cols + pair[1].x)].bg
+                );
+            }
+            for (index, rect) in controls.into_iter().enumerate() {
+                let label = (rect.y..rect.y + rect.rows)
+                    .map(|y| {
+                        popup.cells[usize::from(y * popup.cols + rect.x)
+                            ..usize::from(y * popup.cols + rect.x + rect.cols)]
+                            .iter()
+                            .map(|cell| cell.text.as_str())
+                            .collect::<String>()
+                    })
+                    .collect::<Vec<_>>()
+                    .join(" ")
+                    .replace('›', "");
+                let label = label.split_whitespace().collect::<Vec<_>>().join(" ");
+                assert!(
+                    label == labels[index]
+                        || (labels[index] == "Open conversation picker" && label == "Pick session"),
+                    "unexpected label: {label}"
+                );
                 let point = Point {
                     x: rect.x + 1,
                     y: rect.y,
