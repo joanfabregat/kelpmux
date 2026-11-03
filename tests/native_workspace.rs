@@ -841,3 +841,34 @@ fn decoder_preserves_utf8_and_fragmented_word_navigation() {
     }
     assert_eq!(result, original);
 }
+
+#[test]
+fn cancel_unparking_returns_to_the_source_agent_list_with_its_filter_and_row() {
+    use kelpmux::{
+        model::{Kind, Status},
+        native::ui::{AgentFilter, DialogKind},
+    };
+    for filter in [AgentFilter::All, AgentFilter::Attention] {
+        let mut ws = workspace(120, 40, (2, 2));
+        for pane in &mut ws.panes {
+            pane.kind = Some(Kind::Codex);
+            pane.status = Status::InputNeeded;
+        }
+        ws.apply(&Action::Park(4)).unwrap();
+        ws.apply(&Action::Agents(filter)).unwrap();
+        let original = ws.ui.dialog.unwrap();
+        ws.apply(&Action::RestoreRequest(4)).unwrap();
+        assert_eq!(ws.ui.dialog.unwrap().kind, DialogKind::RestoreConfirm);
+        ws.apply(&Action::DialogClose).unwrap();
+        let returned = ws.ui.dialog.unwrap();
+        assert_eq!(returned.kind, original.kind);
+        assert_eq!(returned.filter, original.filter);
+        assert_eq!(returned.source, original.source);
+        assert_eq!(returned.selection, 3);
+        assert!(ws.panes.iter().find(|p| p.id == 4).unwrap().parked);
+        ws.apply(&Action::RestoreRequest(4)).unwrap();
+        ws.apply(&Action::Restore(4)).unwrap();
+        ws.apply(&Action::DialogClose).unwrap();
+        assert!(ws.ui.dialog.is_none());
+    }
+}
