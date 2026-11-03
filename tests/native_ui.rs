@@ -2507,6 +2507,23 @@ fn empty_parked_list_has_a_centered_explanation_and_matching_header_without_tabl
             actions(Router::default().route(InputEvent::Bytes(vec![27]), &f)),
             vec![Action::DialogClose]
         );
+        for (action, title) in [
+            (Action::Recovery, "No closed tabs"),
+            (Action::Agents(AgentFilter::All), "No running agents"),
+            (
+                Action::Agents(AgentFilter::Attention),
+                "No agents need attention",
+            ),
+            (Action::Agents(AgentFilter::Finished), "No finished agents"),
+        ] {
+            ws.apply(&action).unwrap();
+            let f = frame(&ws);
+            let text: String = f.cells.iter().map(|cell| cell.text.as_str()).collect();
+            assert!(text.contains(title) && text.contains("Esc to close"));
+            assert!(!text.contains("Agent/App") && !text.contains("Location"));
+            let x = bounds.x + 2 + (bounds.cols - 4 - title.len() as u16) / 2;
+            assert_eq!(f.cells[usize::from(row * f.cols + x)].text, "N");
+        }
     }
 }
 
