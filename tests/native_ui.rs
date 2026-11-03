@@ -53,6 +53,53 @@ fn click(point: Point) -> InputEvent {
     })
 }
 #[test]
+fn history_and_agents_buttons_share_click_geometry_and_restore_shortcut() {
+    for tabs in [false, true] {
+        let mut ws = workspace((120, 40), (2, 1));
+        ws.panes[0].kind = Some(Kind::Codex);
+        ws.panes[1].kind = Some(Kind::Claude);
+        ws.apply(&Action::Park(2)).unwrap();
+        if tabs {
+            ws.apply(&Action::Select(1)).unwrap();
+        }
+        let f = frame(&ws);
+        for (rect, expected) in f
+            .history_controls()
+            .into_iter()
+            .zip([Action::Recovery, Action::Agents(AgentFilter::All)])
+        {
+            assert!(rect.cols > 0 && rect.x + rect.cols <= f.cols);
+            assert_eq!(
+                actions(Router::default().route(
+                    click(Point {
+                        x: rect.x,
+                        y: rect.y
+                    }),
+                    &f
+                )),
+                vec![expected]
+            );
+        }
+        assert_eq!(
+            actions(Router::default().route(InputEvent::Bytes(b"\x02z".to_vec()), &f)),
+            vec![Action::ReopenLast]
+        );
+        assert_eq!(
+            actions(Router::default().route(InputEvent::Bytes(b"\x02g".to_vec()), &f)),
+            vec![Action::CloseReading]
+        );
+        ws.apply(&Action::Agents(AgentFilter::All)).unwrap();
+        assert_eq!(ws.dialog_entries(), vec![1, 2]);
+        let agents = frame(&ws);
+        let text = agents
+            .cells
+            .iter()
+            .map(|c| c.text.as_str())
+            .collect::<String>();
+        assert!(text.contains("Parked #2") && text.contains("claude"));
+    }
+}
+#[test]
 fn enhanced_enter_prefix_and_releases_route_without_leaking_mux_commands() {
     let mut ws = workspace((120, 40), (1, 1));
     ws.apply(&Action::Select(1)).unwrap();
@@ -111,7 +158,7 @@ fn sidebar_new_follows_tabs_and_parked_stays_at_bottom_with_contextual_headers()
         .unwrap()
         .1;
     assert_eq!((new.rows, parked.rows), (3, 1));
-    assert_eq!(parked.y + parked.rows, f.rows);
+    assert_eq!(parked.y + parked.rows, f.rows - 1);
     let last_tab = targets
         .iter()
         .filter_map(|(target, rect)| {
@@ -168,11 +215,7 @@ fn sidebar_new_follows_tabs_and_parked_stays_at_bottom_with_contextual_headers()
         (Action::Config, DialogKind::Config, "⚙︎"),
         (Action::GridPicker, DialogKind::Grid, "▦"),
         (Action::Parked, DialogKind::Parked, "⊟"),
-        (
-            Action::Notifications,
-            DialogKind::Notifications,
-            kelpmux::native::ui::ALERT_ICON,
-        ),
+        (Action::Notifications, DialogKind::Notifications, "N"),
     ] {
         ws.apply(&action).unwrap();
         let popup = frame(&ws);
@@ -443,18 +486,18 @@ fn parked_table_animates_status_and_modals_dim_without_altering_terminal_content
     ws.apply(&Action::Parked).unwrap();
     let bounds = dialog_bounds_for(ws.cols, ws.rows, DialogKind::Parked);
     let a = compose(&ws, &screens, true, None, 0);
-    let b = compose(&ws, &screens, true, None, 2);
+    let b = compose(&ws, &screens, true, None, 4);
     assert_ne!(a.cells, b.cells);
     for (before, after) in a.cells.iter().zip(&b.cells) {
         assert_eq!(before.bg, after.bg);
-        if before.text != "⠋" {
+        if !kelpmux::native::ui::SPINNER_FRAMES.contains(&before.text.as_str()) {
             assert_eq!(before.text, after.text);
             assert_eq!(before.fg, after.fg);
         }
     }
-    let accent = usize::from((bounds.y + 2) * ws.cols + bounds.x);
+    let accent = usize::from((bounds.y + 3) * ws.cols + bounds.x);
     assert_eq!(a.cells[accent].text, "▌");
-    assert_eq!(a.cells[accent].fg, Color::Indexed(250));
+    assert_eq!(a.cells[accent].fg, Color::Rgb(109, 174, 240));
 }
 
 #[test]
@@ -643,7 +686,12 @@ fn agent_picker_scrolls_to_selection_on_small_tablet() {
     ws.apply(&Action::DialogPick(8)).unwrap();
     let f = frame(&ws);
     let bounds = dialog_bounds(f.cols, f.rows);
-    let row = bounds.y + bounds.rows - 1;
+    let row = kelpmux::native::workspace::parked_cards(bounds, 8, 9)
+        .last()
+        .unwrap()
+        .1
+        .y
+        + 1;
     let text = f.cells
         [usize::from(row) * usize::from(f.cols)..usize::from(row + 1) * usize::from(f.cols)]
         .iter()
@@ -651,13 +699,21 @@ fn agent_picker_scrolls_to_selection_on_small_tablet() {
         .collect::<String>();
     assert!(text.contains('9'));
     assert_eq!(
-        actions(Router::default().route(
-            click(Point {
-                x: bounds.x + 1,
-                y: row
-            }),
-            &f
-        )),
+        actions(
+            Router::default().route(
+                click(Point {
+                    x: kelpmux::native::workspace::session_control(
+                        *kelpmux::native::workspace::parked_cards(bounds, 8, 9)
+                            .last()
+                            .map(|(_, rect)| rect)
+                            .unwrap()
+                    )
+                    .x,
+                    y: row
+                }),
+                &f
+            )
+        ),
         vec![Action::Focus(9), Action::DialogClose]
     );
 }
@@ -845,7 +901,7 @@ fn footer_buttons_and_compact_vitals_have_disjoint_hit_targets() {
     assert_eq!(
         actions(Router::default().route(
             click(Point {
-                x: f.footer_cols() - 2,
+                x: f.controls()[3].x,
                 y: f.rows - 1
             }),
             &f
@@ -863,10 +919,13 @@ fn shaded_grid_headers_meet_previous_rows_without_empty_separators() {
         for view in &views {
             if view.rect.x > 0 {
                 let x = view.rect.x - 1;
-                assert_eq!(f.cells[usize::from(view.body.y * f.cols + x)].text, "┃");
+                assert_eq!(f.cells[usize::from(view.body.y * f.cols + x)].text, "▎");
+                assert_eq!(f.cells[usize::from(view.body.y * f.cols + x - 1)].text, "▕");
                 let left = views
                     .iter()
-                    .find(|left| left.rect.y == view.rect.y && left.rect.x + left.rect.cols == x)
+                    .find(|left| {
+                        left.rect.y == view.rect.y && left.rect.x + left.rect.cols == x - 1
+                    })
                     .unwrap();
                 assert_eq!(
                     f.cells[usize::from(view.rect.y * f.cols + left.rect.x + left.rect.cols - 1)]
@@ -875,11 +934,15 @@ fn shaded_grid_headers_meet_previous_rows_without_empty_separators() {
                 );
                 assert_eq!(
                     f.cells[usize::from(view.body.y * f.cols + x)].fg,
-                    Color::Rgb(69, 76, 86)
+                    Color::Rgb(71, 113, 153)
                 );
                 assert_eq!(
                     f.cells[usize::from(view.rect.y * f.cols + x)].bg,
-                    Color::Default
+                    f.cells[usize::from(view.rect.y * f.cols + view.rect.x)].bg
+                );
+                assert_eq!(
+                    f.cells[usize::from(view.rect.y * f.cols + x - 1)].bg,
+                    f.cells[usize::from(view.rect.y * f.cols + left.rect.x)].bg
                 );
                 assert!(
                     views
@@ -897,12 +960,14 @@ fn shaded_grid_headers_meet_previous_rows_without_empty_separators() {
             }
             let line = &f.cells[usize::from(view.rect.y * f.cols + view.rect.x)];
             assert_eq!(line.text, " ");
+            assert!(line.underline);
+            assert_eq!(line.underline_color, Some(Color::Rgb(71, 113, 153)));
             assert_eq!(
                 line.bg,
                 if view.pane.id == ws.active {
                     Color::Rgb(50, 79, 109)
                 } else {
-                    Color::Rgb(58, 61, 64)
+                    Color::Rgb(86, 88, 91)
                 }
             );
         }
@@ -1225,7 +1290,7 @@ fn tab_bodies_fill_available_width_despite_legacy_width_settings() {
 }
 
 #[test]
-fn working_tabs_keep_sheen_inside_the_activity_row_and_bells_beside_titles() {
+fn working_tabs_keep_motion_inside_cards_and_notifications_out_of_titles() {
     use kelpmux::native::{
         ui::TabPosition,
         workspace::{TabTarget, tab_close, tab_number, tab_park, tab_targets},
@@ -1294,9 +1359,11 @@ fn working_tabs_keep_sheen_inside_the_activity_row_and_bells_beside_titles() {
                 }
             }
             let bell = usize::from((tab.y + 1) * ws.cols + tab.x + 2);
-            assert_eq!(b.cells[bell].text, kelpmux::native::ui::ALERT_ICON);
+            assert_eq!(
+                b.cells[bell].text,
+                ws.panes[0].title.chars().next().unwrap().to_string()
+            );
             assert_eq!(b.cells[bell].width, 1);
-            assert_eq!(b.cells[bell + 1].text, " ");
             let mut display = Terminal::new(ws.cols, ws.rows);
             display.feed(&terminal_diff(None, &a));
             assert_eq!(display.snapshot().cells, a.cells);
@@ -1383,7 +1450,7 @@ fn tab_folder_subtitles_and_horizontal_bars_touch_terminal_content() {
 }
 
 #[test]
-fn parked_three_row_entries_scroll_and_every_row_restores_the_correct_tab() {
+fn parked_entries_scroll_and_only_buttons_restore_or_close() {
     use kelpmux::native::{
         ui::DialogKind,
         workspace::{dialog_bounds_for, parked_cards, parked_controls},
@@ -1401,9 +1468,9 @@ fn parked_three_row_entries_scroll_and_every_row_restores_the_correct_tab() {
             let cards = parked_cards(bounds, selection, 9);
             assert!(cards.iter().any(|(index, _)| *index == selection));
             for (index, rect) in cards {
-                assert_eq!(rect.rows, 3);
+                assert_eq!(rect.rows, 4);
                 assert!(rect.y + rect.rows <= bounds.y + bounds.rows);
-                for row in 0..3 {
+                for row in 0..rect.rows {
                     assert_eq!(
                         f.cells[usize::from((rect.y + row) * f.cols + rect.x)].text,
                         "▌"
@@ -1416,7 +1483,7 @@ fn parked_three_row_entries_scroll_and_every_row_restores_the_correct_tab() {
                             }),
                             &f
                         )),
-                        vec![Action::RestoreRequest(index as u64 + 1)]
+                        vec![Action::DialogPick(index)]
                     );
                     let [restore, close] = parked_controls(rect);
                     assert_eq!(
@@ -1427,7 +1494,11 @@ fn parked_three_row_entries_scroll_and_every_row_restores_the_correct_tab() {
                             }),
                             &f
                         )),
-                        vec![Action::RestoreRequest(index as u64 + 1)]
+                        if (1..=2).contains(&row) {
+                            vec![Action::RestoreRequest(index as u64 + 1)]
+                        } else {
+                            vec![Action::DialogPick(index)]
+                        }
                     );
                     assert_eq!(
                         actions(Router::default().route(
@@ -1437,7 +1508,11 @@ fn parked_three_row_entries_scroll_and_every_row_restores_the_correct_tab() {
                             }),
                             &f
                         )),
-                        vec![Action::ClosePaneRequest(index as u64 + 1)]
+                        if (1..=2).contains(&row) {
+                            vec![Action::ClosePaneRequest(index as u64 + 1)]
+                        } else {
+                            vec![Action::DialogPick(index)]
+                        }
                     );
                 }
             }
@@ -1654,12 +1729,9 @@ fn automatic_grid_parking_controls_alert_colors_and_three_row_tabs() {
         let alert = start
             + unread.cells[start..start + usize::from(help.cols)]
                 .iter()
-                .position(|cell| cell.text == kelpmux::native::ui::ALERT_ICON)
+                .position(|cell| cell.text == kelpmux::native::ui::WAIT_ICON)
                 .unwrap();
-        assert_eq!(
-            frame(&ws).cells[alert].text,
-            kelpmux::native::ui::ALERT_ICON
-        );
+        assert_eq!(frame(&ws).cells[alert].text, kelpmux::native::ui::WAIT_ICON);
         assert_eq!(frame(&ws).cells[alert].bg, Color::Rgb(58, 61, 64));
         ws.apply(&Action::Acknowledge(1)).unwrap();
         assert_eq!(frame(&ws).cells[at].text, "?");
@@ -1861,103 +1933,54 @@ fn grid_header_numbers_park_close_and_footer_have_distinct_targets_without_zoom(
 }
 
 #[test]
-fn working_spinner_rotates_in_place_in_tabs_grid_and_parked_cards() {
-    for mode in 0..3 {
+fn working_indicators_replay_in_grid_sidebar_folded_and_parked_views() {
+    use kelpmux::native::ui::{
+        ACTIVITY_INTERVAL_MS, GRID_BALL_FRAMES, SIDEBAR_BALL_FRAMES, SPINNER_FRAMES,
+    };
+    assert_eq!(ACTIVITY_INTERVAL_MS, 150);
+    for mode in 0..4 {
         let mut ws = workspace((180, 50), (2, 1));
         ws.panes[0].status = Status::Working;
         ws.panes[0].title = "Wide 界 title".into();
-        ws.panes[1].status = Status::Idle;
-        if mode == 1 {
+        if mode == 1 || mode == 3 {
             ws.apply(&Action::Read(1)).unwrap();
         }
         if mode == 2 {
             ws.apply(&Action::Park(1)).unwrap();
             ws.apply(&Action::Parked).unwrap();
         }
-        if mode != 2 {
-            let frames: Vec<_> = [0, 1, 2, 3]
-                .into_iter()
-                .map(|tick| compose(&ws, &BTreeMap::new(), true, None, tick))
-                .collect();
-            let rows: Vec<String> = frames
-                .iter()
-                .map(|f| {
-                    f.cells[..usize::from(ws.cols)]
-                        .iter()
-                        .map(|c| c.text.as_str())
-                        .collect()
-                })
-                .collect();
-            for (row, symbol) in rows.iter().zip(["◐", "◓", "◑", "◒"]) {
-                if mode == 0 {
-                    assert!(row.contains(symbol));
-                    assert!(row.contains(&format!(" {symbol} Wide")));
-                } else {
-                    assert_eq!(row.matches('●').count(), 1);
-                }
-            }
-            for f in &frames {
-                let mut terminal = Terminal::new(f.cols, f.rows);
-                terminal.feed(&terminal_diff(None, f));
-                assert_eq!(terminal.snapshot().cells, f.cells);
-            }
-            if mode == 0 {
-                assert!(
-                    frames[0]
-                        .cells
-                        .iter()
-                        .zip(&frames[2].cells)
-                        .any(|(a, b)| a.text == b.text && a.bg != b.bg)
-                );
-            }
-            continue;
+        if mode == 3 {
+            ws.apply(&Action::ToggleSidebarFold).unwrap();
         }
-        let frames: Vec<_> = [0, 1, 2, 3, 10]
-            .into_iter()
-            .map(|tick| compose(&ws, &BTreeMap::new(), true, None, tick))
-            .collect();
-        let changed: Vec<_> = frames[0]
-            .cells
-            .iter()
-            .zip(&frames[1].cells)
-            .enumerate()
-            .filter_map(|(index, (a, b))| (a != b).then_some(index))
-            .collect();
-        assert_eq!(changed.len(), 1);
-        let index = changed[0];
-        for f in &frames {
-            for (at, (a, b)) in frames[0].cells.iter().zip(&f.cells).enumerate() {
-                if at != index && mode != 1 {
-                    assert_eq!(a, b);
-                }
-                if at != index {
-                    assert_eq!(a.text, b.text);
-                    assert_eq!(a.bg, b.bg);
-                }
-            }
+        let mut terminal = Terminal::new(ws.cols, ws.rows);
+        let mut previous = None;
+        let mut position = None;
+        for tick in 0..=8 {
+            let f = compose(&ws, &BTreeMap::new(), true, None, tick);
+            let phase = kelpmux::native::ui::activity_phase(tick, if mode == 0 { 3 } else { 1 });
+            let glyph = if mode == 0 {
+                GRID_BALL_FRAMES[phase % GRID_BALL_FRAMES.len()]
+                    .chars()
+                    .next()
+                    .unwrap()
+                    .to_string()
+            } else if mode == 1 {
+                SIDEBAR_BALL_FRAMES[phase % SIDEBAR_BALL_FRAMES.len()]
+                    .chars()
+                    .next()
+                    .unwrap()
+                    .to_string()
+            } else {
+                SPINNER_FRAMES[phase % SPINNER_FRAMES.len()].into()
+            };
+            let index = f.cells.iter().position(|c| c.text == glyph).unwrap();
+            assert_eq!(*position.get_or_insert(index), index);
+            assert_eq!(f.cells[index].width, 1);
+            assert_ne!(f.cells[index + 1].width, 0);
+            terminal.feed(&terminal_diff(previous.as_ref(), &f));
+            assert_eq!(terminal.snapshot().cells, f.cells);
+            previous = Some(f);
         }
-        if mode == 1 {
-            let row: String = frames[0].cells[..usize::from(ws.cols)]
-                .iter()
-                .map(|cell| cell.text.as_str())
-                .collect();
-            assert!(row.contains("Working"));
-            assert!(
-                frames[0]
-                    .cells
-                    .iter()
-                    .zip(&frames[4].cells)
-                    .any(|(a, b)| a.text == b.text && a.fg != b.fg)
-            );
-        }
-        assert_eq!(
-            frames
-                .iter()
-                .map(|frame| frame.cells[index].text.as_str())
-                .collect::<Vec<_>>(),
-            vec!["⠋", "⠙", "⠹", "⠸", "⠋"]
-        );
-        assert_eq!(frames[0].cells[index], frames[4].cells[index]);
     }
 }
 
@@ -2118,9 +2141,7 @@ fn tab_surfaces_follow_dark_and_light_backgrounds_without_repainting_terminal_de
             Color::Rgb(95, 175, 255)
         );
         let ball = f.cells.iter().find(|cell| cell.text == "●").unwrap();
-        let gray: [u8; 3] = background
-            .map(|v| ((u16::from(v) * 45 + if light { 0 } else { 255 * 55 }) / 100) as u8);
-        assert_eq!(ball.fg, Color::Rgb(gray[0], gray[1], gray[2]));
+        assert_eq!(ball.fg, Color::Rgb(155, 205, 185));
         let body = f.panes.iter().find(|view| view.pane.id == 1).unwrap().body;
         assert_eq!(
             f.cells[usize::from(body.y * f.cols + body.x)].bg,
@@ -2137,10 +2158,10 @@ fn tab_surfaces_follow_dark_and_light_backgrounds_without_repainting_terminal_de
         );
         let card = kelpmux::native::workspace::parked_cards(bounds, 0, 2)[1].1;
         let title = &parked.cells[usize::from((card.y + 1) * parked.cols + card.x + 8)];
-        assert_eq!(title.fg, Color::Indexed(if light { 232 } else { 231 }));
+        assert_eq!(title.fg, Color::Indexed(231));
         assert_eq!(
             parked.cells[usize::from((card.y + 1) * parked.cols + card.x + 6)].fg,
-            Color::Indexed(if light { 232 } else { 231 })
+            Color::Rgb(155, 205, 185)
         );
     }
 }
@@ -2383,7 +2404,10 @@ fn footer_parked_help_order_has_no_new_tab_button() {
                 .iter()
                 .map(|cell| cell.text.as_str())
                 .collect();
-            assert_eq!(footer.contains('+'), ws.active == 0 && !f.sidebar_status());
+            assert_eq!(
+                footer.contains("+ New"),
+                ws.active == 0 && !f.sidebar_status()
+            );
             assert!(!footer.contains("(0)"));
             let label_y = parked.y + parked.rows / 2;
             let label: String = f.cells[usize::from(label_y * f.cols + parked.x)
@@ -2467,7 +2491,7 @@ fn empty_parked_list_has_a_centered_explanation_and_matching_header_without_tabl
         let footer = parked_button(f.rows, 0);
         assert_eq!(
             f.cells[usize::from(bounds.y * f.cols + bounds.x)].bg,
-            Color::Indexed(PARKED_BG)
+            Color::Indexed(24)
         );
         assert_eq!(
             original.cells[usize::from(footer.y * f.cols + footer.x)].bg,
@@ -2483,6 +2507,23 @@ fn empty_parked_list_has_a_centered_explanation_and_matching_header_without_tabl
             actions(Router::default().route(InputEvent::Bytes(vec![27]), &f)),
             vec![Action::DialogClose]
         );
+        for (action, title) in [
+            (Action::Recovery, "No closed tabs"),
+            (Action::Agents(AgentFilter::All), "No running agents"),
+            (
+                Action::Agents(AgentFilter::Attention),
+                "No agents need attention",
+            ),
+            (Action::Agents(AgentFilter::Finished), "No finished agents"),
+        ] {
+            ws.apply(&action).unwrap();
+            let f = frame(&ws);
+            let text: String = f.cells.iter().map(|cell| cell.text.as_str()).collect();
+            assert!(text.contains(title) && text.contains("Esc to close"));
+            assert!(!text.contains("Agent/App") && !text.contains("Location"));
+            let x = bounds.x + 2 + (bounds.cols - 4 - title.len() as u16) / 2;
+            assert_eq!(f.cells[usize::from(row * f.cols + x)].text, "N");
+        }
     }
 }
 
@@ -2510,7 +2551,7 @@ fn status_popup_metrics_clicks_views_search_and_small_screen_replay() {
             let reserved = sidebar_status_rows(f.rows);
             Point {
                 x: 1,
-                y: f.rows - reserved + u16::from(reserved > 3),
+                y: f.rows - reserved + u16::from(reserved >= 9),
             }
         } else {
             Point {
@@ -3027,7 +3068,7 @@ fn dev_badge_is_visible_in_grid_horizontal_tabs_and_compact_sidebars() {
                 assert_eq!(plain.panes, f.panes);
                 continue;
             }
-            let start = usize::from((f.rows - 1) * f.cols + plain.footer_cols());
+            let start = usize::from((f.rows - 1) * f.cols + f.footer_cols() - 5);
             let cells: Vec<_> = f.cells.iter().enumerate().skip(start).take(5).collect();
             assert_eq!(cells.len(), 5);
             assert_eq!(
@@ -3047,7 +3088,7 @@ fn dev_badge_is_visible_in_grid_horizontal_tabs_and_compact_sidebars() {
                 if sidebar {
                     x < kelpmux::native::workspace::sidebar_width(f.cols) - 1
                 } else {
-                    y == f.rows - 1 && x >= plain.footer_cols()
+                    y == f.rows - 1 && x >= f.footer_cols() - 5
                 }
             }));
             assert_eq!(plain.controls(), f.controls());
@@ -4022,7 +4063,7 @@ fn input_requests_use_a_graphical_attention_symbol_in_tabs_grid_parked_and_overv
         assert!(
             f.cells
                 .iter()
-                .any(|c| c.text == kelpmux::native::ui::WAIT_ICON && c.fg == Color::Indexed(226))
+                .any(|c| c.text == kelpmux::native::ui::WAIT_ICON && c.fg == Color::Indexed(110))
         );
         assert_eq!(
             kelpmux::native::ui::status_icon(Status::InputNeeded),
@@ -4047,7 +4088,7 @@ fn input_requests_use_a_graphical_attention_symbol_in_tabs_grid_parked_and_overv
             parked
                 .cells
                 .iter()
-                .any(|c| c.text == kelpmux::native::ui::WAIT_ICON && c.fg == Color::Indexed(226))
+                .any(|c| c.text == kelpmux::native::ui::WAIT_ICON && c.fg == Color::Indexed(110))
         );
     }
 }
@@ -4103,18 +4144,25 @@ fn sidebar_drag_inserts_without_swapping_and_keeps_active_pane_and_controls() {
         ws.apply(&action).unwrap();
     }
     let marked = frame(&ws);
-    assert!(
-        marked
-            .cells
-            .iter()
-            .any(|cell| cell.underline && cell.underline_color == Some(Color::Indexed(75)))
+    assert_eq!(
+        ws.panes.iter().map(|p| p.id).collect::<Vec<_>>(),
+        [1, 2, 3, 4]
     );
-    for (before, after) in before_marker.cells.iter().zip(&marked.cells) {
-        assert_eq!(
-            (&before.text, before.width, before.fg, before.bg),
-            (&after.text, after.width, after.fg, after.bg)
-        );
-    }
+    assert_eq!(marked.panes, before_marker.panes);
+    let landing = sidebar_tab(&ws, 2);
+    let text = marked.cells[usize::from((landing.y + 1) * marked.cols + landing.x)
+        ..usize::from((landing.y + 1) * marked.cols + landing.x + landing.cols)]
+        .iter()
+        .map(|c| c.text.as_str())
+        .collect::<String>();
+    assert!(
+        text.contains("agent 界 1"),
+        "missing source at landing position: {text}"
+    );
+    assert_ne!(
+        marked.cells[usize::from(landing.y * marked.cols + landing.x)].bg,
+        before_marker.cells[usize::from(landing.y * marked.cols + landing.x)].bg
+    );
     let mut terminal = Terminal::new(marked.cols, marked.rows);
     terminal.feed(&terminal_diff(None, &marked));
     assert_eq!(terminal.snapshot().cells, marked.cells);
@@ -4260,37 +4308,7 @@ fn config_has_one_blank_row_on_each_side_and_new_tab_only_uses_its_text_row() {
 }
 
 #[test]
-fn bouncing_ball_has_exact_width_no_repeated_endpoints_and_padded_sidebar_track() {
-    use kelpmux::native::render::bouncing_ball_frame;
-    assert_eq!(bouncing_ball_frame(0, 12), "");
-    for width in [1u16, 2, 10, 20, 75] {
-        let period = if width == 1 {
-            1
-        } else {
-            2 * usize::from(width - 1)
-        };
-        let frames: Vec<_> = (0..=period * 2)
-            .map(|tick| bouncing_ball_frame(width, tick))
-            .collect();
-        for frame in &frames {
-            assert_eq!(frame.chars().count(), usize::from(width));
-            assert_eq!(frame.matches('●').count(), 1);
-            assert!(frame.chars().all(|c| matches!(c, '●' | '·')));
-        }
-        assert_eq!(frames[0], frames[period]);
-        if width > 1 {
-            for pair in frames.windows(2) {
-                let positions: Vec<_> = pair
-                    .iter()
-                    .map(|f| f.chars().position(|c| c == '●').unwrap())
-                    .collect();
-                assert_eq!(positions[0].abs_diff(positions[1]), 1);
-            }
-            assert!(frames[usize::from(width - 1)].ends_with('●'));
-        } else {
-            assert!(frames.iter().all(|f| f == "●"));
-        }
-    }
+fn sidebar_ball_keeps_six_positions_and_padding_despite_legacy_width() {
     for width in [1, 10, 20, 50] {
         let mut ws = workspace((180, 50), (2, 1));
         ws.ui.config.activity_width = width;
@@ -4299,28 +4317,46 @@ fn bouncing_ball_has_exact_width_no_repeated_endpoints_and_padded_sidebar_track(
         ws.panes[0].status = Status::Working;
         let rect = sidebar_tab(&ws, 0);
         let number = kelpmux::native::workspace::tab_number_for(rect, 1);
-        let park = kelpmux::native::workspace::tab_park(rect);
         let f = frame(&ws);
-        let row = &f.cells[usize::from(rect.y * f.cols)..usize::from((rect.y + 1) * f.cols)];
-        let start = usize::from(number.x + number.cols + 2);
-        let length = usize::from(width.min(park.x.saturating_sub(number.x + number.cols + 4)));
-        assert_eq!(row[start - 1].text, " ");
-        assert_eq!(row[start - 2].text, " ");
-        assert_eq!(row[start + length].text, " ");
-        assert_eq!(row[start + length + 1].text, " ");
+        let start = usize::from(rect.y * f.cols + number.x + number.cols + 1);
+        assert_eq!(f.cells[start - 1].text, " ");
         assert_eq!(
-            row[start..start + length]
+            f.cells[start..start + 6]
                 .iter()
                 .map(|c| c.text.as_str())
                 .collect::<String>(),
-            bouncing_ball_frame(length as u16, 0)
+            "●·····"
         );
+        assert!(f.cells[start..start + 6].iter().all(|c| c.width == 1));
+        assert_eq!(f.cells[start + 6].text, " ");
     }
-    let defaults = kelpmux::native::ui::UiConfig::default();
-    assert_eq!(defaults.activity_width, 20);
-    let mut invalid = defaults;
-    invalid.activity_width = 0;
-    assert!(invalid.validate().is_err());
+}
+
+#[test]
+fn grid_ball_keeps_three_positions_with_one_space_on_either_side() {
+    let mut ws = workspace((180, 50), (2, 1));
+    ws.panes[0].status = Status::Working;
+    let f = frame(&ws);
+    let rect = Rect {
+        rows: 1,
+        ..f.panes[0].rect
+    };
+    let number = kelpmux::native::workspace::tab_number_for(rect, 1);
+    let start = usize::from(rect.y * f.cols + number.x + number.cols + 2);
+    assert_eq!(f.cells[start - 1].text, " ");
+    assert_eq!(
+        f.cells[start..start + 3]
+            .iter()
+            .map(|c| c.text.as_str())
+            .collect::<String>(),
+        "●··"
+    );
+    assert_eq!(f.cells[start + 3].text, " ");
+    assert!(
+        f.cells[start..start + 3]
+            .iter()
+            .all(|c| c.width == 1 && c.fg == Color::Rgb(155, 205, 185))
+    );
 }
 
 #[test]
@@ -4394,7 +4430,7 @@ fn every_metrics_entry_opens_cpu_descending_even_after_changing_sort() {
 }
 
 #[test]
-fn grid_header_sheen_is_subtle_covers_the_background_and_keeps_text_steady() {
+fn grid_header_background_stays_static_while_the_indicator_animates() {
     let mut ws = workspace((180, 40), (2, 1));
     ws.panes[0].status = Status::Working;
     ws.panes[0].title = "Steady 界 title".into();
@@ -4407,7 +4443,7 @@ fn grid_header_sheen_is_subtle_covers_the_background_and_keeps_text_steady() {
         let expected = if active == 1 {
             Color::Rgb(50, 79, 109)
         } else {
-            Color::Rgb(58, 61, 64)
+            Color::Rgb(86, 88, 91)
         };
         assert_eq!(
             base.cells[usize::from(working.y * base.cols + working.x)].bg,
@@ -4423,7 +4459,10 @@ fn grid_header_sheen_is_subtle_covers_the_background_and_keeps_text_steady() {
                 assert_eq!(before.fg, after.fg);
                 assert_eq!(before.width, after.width);
                 if before.text != after.text {
-                    assert!(["◐", "◓", "◑", "◒"].contains(&after.text.as_str()));
+                    assert!(
+                        kelpmux::native::ui::SPINNER_FRAMES.contains(&after.text.as_str())
+                            || "▁▂▃▄▅▆▇█●·".contains(after.text.as_str())
+                    );
                 }
                 swept[usize::from(x)] |= before.bg != after.bg;
                 let Color::Rgb(r, g, b) = after.bg else {
@@ -4444,7 +4483,7 @@ fn grid_header_sheen_is_subtle_covers_the_background_and_keeps_text_steady() {
             terminal.feed(&terminal_diff(None, &f));
             assert_eq!(terminal.snapshot().cells, f.cells);
         }
-        assert!(swept.iter().all(|changed| *changed));
+        assert!(swept.iter().all(|changed| !*changed));
     }
 }
 
@@ -4622,7 +4661,7 @@ fn folded_sidebar_targets_fit_small_screens_and_scroll_without_overlapping_contr
 }
 
 #[test]
-fn sidebar_card_matches_derived_palette_and_sheen_covers_all_rows_without_blurring_text() {
+fn sidebar_card_matches_derived_palette_and_only_the_indicator_animates() {
     let mut ws = workspace((180, 40), (2, 1));
     ws.apply(&Action::Read(1)).unwrap();
     ws.panes[0].status = Status::Working;
@@ -4647,7 +4686,10 @@ fn sidebar_card_matches_derived_palette_and_sheen_covers_all_rows_without_blurri
                 assert_eq!(before.fg, after.fg);
                 assert_eq!(before.bold, after.bold);
                 if before.text != after.text {
-                    assert!(["●", "·"].contains(&after.text.as_str()));
+                    assert!(
+                        kelpmux::native::ui::SPINNER_FRAMES.contains(&after.text.as_str())
+                            || "▁▂▃▄▅▆▇█●·".contains(after.text.as_str())
+                    );
                 }
                 swept[usize::from(y * rect.cols + x)] |= before.bg != after.bg;
             }
@@ -4656,7 +4698,7 @@ fn sidebar_card_matches_derived_palette_and_sheen_covers_all_rows_without_blurri
         terminal.feed(&terminal_diff(None, &f));
         assert_eq!(terminal.snapshot().cells, f.cells);
     }
-    assert!(swept.iter().all(|changed| *changed));
+    assert!(swept.iter().all(|changed| !*changed));
 }
 
 #[test]
@@ -4819,4 +4861,448 @@ fn neutral_sidebar_surfaces_follow_terminal_background_independently_of_accent()
             assert_eq!(terminal.snapshot().cells, folded.cells);
         }
     }
+}
+
+#[test]
+fn typed_notifications_and_statuses_keep_completion_separate_from_attention() {
+    use kelpmux::native::ui::{self, ALERT_ICON, DONE_ICON, WAIT_ICON};
+    for (status, expected) in [
+        (Status::TurnFinished, DONE_ICON),
+        (Status::InputNeeded, WAIT_ICON),
+        (Status::Failed, ALERT_ICON),
+    ] {
+        for mode in 0..4 {
+            let mut ws = workspace((120, 40), (2, 1));
+            ws.panes[0].kind = Some(Kind::Codex);
+            ws.panes[0].status = status;
+            ws.ui.notifications = vec![
+                Notification {
+                    id: 1,
+                    pane: 1,
+                    title: "Typed state".into(),
+                    status,
+                    at: 10,
+                    read: false,
+                    workspace: "test".into(),
+                    origin: Some(NotificationOrigin {
+                        run: "test-run".into(),
+                        pid: 0,
+                    }),
+                },
+                Notification {
+                    id: 2,
+                    pane: 1,
+                    title: "Bell · agent".into(),
+                    status: Status::Unknown,
+                    at: 11,
+                    read: false,
+                    workspace: "test".into(),
+                    origin: Some(NotificationOrigin {
+                        run: "test-run".into(),
+                        pid: 0,
+                    }),
+                },
+            ];
+            assert_eq!(ui::notification_icon(&ws.ui, &ws.panes), Some(expected));
+            assert_eq!(
+                ui::notification_symbol(&ws.ui, &ws.ui.notifications[1]),
+                expected
+            );
+            ws.ui.notification_history = true;
+            let mut historical = ws.ui.notifications[0].clone();
+            historical.id = 3;
+            historical.status = Status::Failed;
+            historical.origin.as_mut().unwrap().run = "old-run".into();
+            ws.ui.notifications.push(historical);
+            assert_eq!(ui::notification_icon(&ws.ui, &ws.panes), Some(expected));
+            if mode == 1 || mode == 2 {
+                ws.apply(&Action::Read(1)).unwrap();
+            }
+            if mode == 2 {
+                ws.apply(&Action::ToggleSidebarFold).unwrap();
+            }
+            if mode == 3 {
+                ws.apply(&Action::Park(1)).unwrap();
+                ws.apply(&Action::Parked).unwrap();
+            }
+            let f = frame(&ws);
+            let icon = f.cells.iter().find(|c| c.text == expected).unwrap();
+            assert_eq!(icon.width, 1);
+            if status == Status::TurnFinished {
+                assert!(!f.cells.iter().any(|c| c.text == ALERT_ICON));
+            }
+            let mut terminal = Terminal::new(f.cols, f.rows);
+            terminal.feed(&terminal_diff(None, &f));
+            assert_eq!(terminal.snapshot().cells, f.cells);
+            // Returning to idle must not turn an unread completion into a warning.
+            if status == Status::TurnFinished {
+                ws.panes[0].status = Status::Idle;
+                for notification in &mut ws.ui.notifications {
+                    notification.read = false;
+                }
+                assert_eq!(ui::pane_indicator(&ws.ui, &ws.panes[0]), Some(DONE_ICON));
+            }
+        }
+    }
+}
+
+#[test]
+fn grid_drag_previews_landing_without_changing_order_or_terminal_geometry() {
+    let mut ws = workspace((120, 40), (2, 2));
+    let sizes = ws.terminal_sizes();
+    let screens: BTreeMap<_, _> = ws
+        .grid_layout()
+        .iter()
+        .map(|view| {
+            let mut term = Terminal::new(view.body.cols, view.body.rows);
+            term.feed(&[b'A' + (view.pane.id - 1) as u8]);
+            (view.pane.id, term.snapshot())
+        })
+        .collect();
+    let original = compose(&ws, &screens, true, None, 0);
+    let source = original.panes.iter().find(|v| v.pane.id == 1).unwrap();
+    let target = original.panes.iter().find(|v| v.pane.id == 4).unwrap();
+    let start = Point {
+        x: source.rect.x + 8,
+        y: source.rect.y,
+    };
+    let destination = Point {
+        x: target.rect.x + 8,
+        y: target.body.y + 1,
+    };
+    let mut router = Router::default();
+    for action in actions(router.route(click(start), &original)) {
+        ws.apply(&action).unwrap();
+    }
+    let moved = actions(router.route(drag_event(MouseKind::Move, destination), &original));
+    assert_eq!(moved, vec![Action::GridDrag(Some((1, 4)))]);
+    for action in moved {
+        ws.apply(&action).unwrap();
+    }
+    let preview = compose(&ws, &screens, true, None, 0);
+    assert_eq!(
+        ws.panes.iter().map(|p| p.id).collect::<Vec<_>>(),
+        [1, 2, 3, 4]
+    );
+    assert_eq!(ws.terminal_sizes(), sizes);
+    assert_eq!(preview.panes, original.panes);
+    let at = usize::from(target.body.y * preview.cols + target.body.x);
+    assert_eq!(preview.cells[at].text, "A");
+    let header = usize::from(target.rect.y * preview.cols + target.rect.x);
+    assert!(
+        preview.cells[header..header + usize::from(target.rect.cols)]
+            .iter()
+            .map(|cell| cell.text.as_str())
+            .collect::<String>()
+            .contains("Drop here")
+    );
+    assert_ne!(preview.cells[at].bg, original.cells[at].bg);
+    assert!(
+        router
+            .route(drag_event(MouseKind::Move, destination), &preview)
+            .is_empty(),
+        "preview must keep the same hit target under the pointer"
+    );
+    let cancel = actions(router.route(InputEvent::Bytes(vec![27]), &preview));
+    assert_eq!(cancel, vec![Action::GridDrag(None)]);
+    for action in cancel {
+        ws.apply(&action).unwrap();
+    }
+    let mut mouse_app = original.clone();
+    for view in &mut mouse_app.panes {
+        view.modes.mouse_click = true;
+    }
+    assert!(
+        router
+            .route(drag_event(MouseKind::Release, destination), &mouse_app)
+            .is_empty(),
+        "the cancelled drag's release must not reach an application"
+    );
+    let restored = compose(&ws, &screens, true, None, 0);
+    assert!(
+        restored.cells == original.cells,
+        "cancel must restore the original presentation"
+    );
+    assert_eq!(screens[&1].cells[0].text, "A");
+    let mut terminal = Terminal::new(preview.cols, preview.rows);
+    terminal.feed(&terminal_diff(None, &preview));
+    assert!(
+        terminal.snapshot().cells == preview.cells,
+        "drag preview must replay without changing text or styles"
+    );
+    router.route(click(start), &original);
+    router.route(drag_event(MouseKind::Move, destination), &original);
+    // Escape can arrive before the server has returned the first preview frame.
+    assert_eq!(
+        actions(router.route(InputEvent::Bytes(vec![27]), &original)),
+        vec![Action::GridDrag(None)]
+    );
+}
+
+#[test]
+fn session_tables_select_rows_and_use_explicit_action_buttons() {
+    use kelpmux::native::{
+        history::Entry,
+        hover,
+        ui::DialogKind,
+        workspace::{dialog_bounds_for, parked_cards},
+    };
+    let mut ws = workspace((120, 40), (2, 1));
+    for pane in &mut ws.panes {
+        pane.kind = Some(Kind::Codex);
+        pane.cwd = "/project".into();
+    }
+    ws.ui.closed_tabs = (0..2)
+        .map(|index| Entry {
+            key: format!("old:{index}"),
+            workspace: "dev".into(),
+            pane: index,
+            cwd: "/project".into(),
+            name: format!("Conversation {index}"),
+            kind: Some(Kind::Codex),
+            session_id: Some(format!("session-{index}")),
+            argv: vec![],
+            closed_at: Some(kelpmux::now()),
+            reason: "Closed".into(),
+        })
+        .collect();
+    for (action, kind) in [
+        (Action::Recovery, DialogKind::Recovery),
+        (Action::Agents(AgentFilter::All), DialogKind::Agents),
+    ] {
+        ws.apply(&action).unwrap();
+        let f = frame(&ws);
+        let bounds = dialog_bounds_for(f.cols, f.rows, kind);
+        for (index, rect) in parked_cards(bounds, 0, 2) {
+            for row in 0..rect.rows {
+                let point = Point {
+                    x: rect.x + 2,
+                    y: rect.y + row,
+                };
+                assert_eq!(hover::target(&f, point), Some(rect));
+                let picked = actions(Router::default().route(click(point), &f));
+                assert_eq!(picked, vec![Action::DialogPick(index)]);
+                let control = kelpmux::native::workspace::session_control(rect);
+                assert_eq!(
+                    actions(Router::default().route(
+                        click(Point {
+                            x: control.x,
+                            y: rect.y + row
+                        }),
+                        &f
+                    )),
+                    if !(1..=2).contains(&row) {
+                        vec![Action::DialogPick(index)]
+                    } else if kind == DialogKind::Recovery {
+                        vec![Action::ReopenRequest(index)]
+                    } else {
+                        vec![Action::Focus(index as u64 + 1), Action::DialogClose]
+                    }
+                );
+            }
+            for y in [rect.y, rect.y + 3] {
+                for x in rect.x + 1..rect.x + rect.cols {
+                    assert_eq!(f.cells[usize::from(y * f.cols + x)].text, " ");
+                }
+            }
+            let cell = &f.cells[usize::from((rect.y + 3) * f.cols + rect.x + 2)];
+            assert!(cell.underline);
+            assert_eq!(cell.underline_color, Some(Color::Rgb(99, 126, 144)));
+            let mut hovered = cell.clone();
+            hover::highlight(&mut hovered, f.ui.terminal_theme, hover::strength(&f, rect));
+            assert_eq!(hovered.underline_color, cell.underline_color);
+            assert_ne!(hovered.bg, cell.bg);
+            assert_eq!(
+                cell.bg,
+                if index == 0 {
+                    Color::Rgb(50, 76, 96)
+                } else {
+                    Color::Rgb(32, 53, 68)
+                }
+            );
+        }
+        let text = f.cells.iter().map(|c| c.text.as_str()).collect::<String>();
+        assert!(text.contains("Conversation") && text.contains("/project"));
+    }
+    assert_eq!(kelpmux::native::ui::activity_phase(3, 3), 0);
+    assert_eq!(kelpmux::native::ui::activity_phase(3, 6), 1);
+    assert_eq!(kelpmux::native::ui::activity_phase(4, 3), 1);
+}
+
+#[test]
+fn closed_restore_popup_offers_only_relevant_actions_and_cancel_preserves_history() {
+    use kelpmux::native::{
+        history::Entry,
+        hover,
+        ui::DialogKind,
+        workspace::{dialog_bounds_for, reopen_buttons},
+    };
+    for (kind, session_id, argv, labels, expected) in [
+        (
+            Some(Kind::Codex),
+            Some("session-safe"),
+            vec![],
+            vec!["Resume conversation", "Cancel"],
+            vec![Action::ReopenTab(0), Action::DialogClose],
+        ),
+        (
+            Some(Kind::Claude),
+            None,
+            vec![],
+            vec!["Open conversation picker", "Cancel"],
+            vec![Action::ReopenTab(0), Action::DialogClose],
+        ),
+        (
+            None,
+            None,
+            vec!["sleep".to_string(), "60".to_string()],
+            vec!["Restart program", "Open folder", "Cancel"],
+            vec![
+                Action::RerunTab(0),
+                Action::ReopenTab(0),
+                Action::DialogClose,
+            ],
+        ),
+        (
+            None,
+            None,
+            vec![],
+            vec!["Open folder", "Cancel"],
+            vec![Action::ReopenTab(0), Action::DialogClose],
+        ),
+    ] {
+        for size in [(40, 10), (120, 40)] {
+            let mut ws = workspace(size, (1, 1));
+            ws.ui.closed_tabs.push(Entry {
+                key: "closed:1".into(),
+                workspace: "dev".into(),
+                pane: 1,
+                name: "My conversation".into(),
+                cwd: "/project".into(),
+                kind,
+                session_id: session_id.map(str::to_owned),
+                argv: argv.clone(),
+                closed_at: Some(kelpmux::now()),
+                reason: "Closed".into(),
+            });
+            ws.apply(&Action::Recovery).unwrap();
+            let list = frame(&ws);
+            assert!(
+                Router::default()
+                    .route(InputEvent::Bytes(b"x".to_vec()), &list)
+                    .is_empty()
+            );
+            assert_eq!(
+                actions(Router::default().route(InputEvent::Bytes(b"\r".to_vec()), &list)),
+                vec![Action::ReopenRequest(0)]
+            );
+            ws.apply(&Action::ReopenRequest(0)).unwrap();
+            let popup = frame(&ws);
+            let text = popup
+                .cells
+                .iter()
+                .map(|cell| cell.text.as_str())
+                .collect::<String>();
+            assert!(text.contains("My conversation") && text.contains("/project"));
+            let bounds = dialog_bounds_for(popup.cols, popup.rows, DialogKind::ReopenConfirm);
+            let controls = reopen_buttons(bounds, labels.len());
+            for pair in controls.windows(2) {
+                assert_eq!(pair[0].y, pair[1].y);
+                assert!(pair[0].x + pair[0].cols < pair[1].x);
+                assert_ne!(
+                    popup.cells[usize::from(pair[0].y * popup.cols + pair[0].x)].bg,
+                    popup.cells[usize::from(pair[1].y * popup.cols + pair[1].x)].bg
+                );
+            }
+            for (index, rect) in controls.into_iter().enumerate() {
+                let label = (rect.y..rect.y + rect.rows)
+                    .map(|y| {
+                        popup.cells[usize::from(y * popup.cols + rect.x)
+                            ..usize::from(y * popup.cols + rect.x + rect.cols)]
+                            .iter()
+                            .map(|cell| cell.text.as_str())
+                            .collect::<String>()
+                    })
+                    .collect::<Vec<_>>()
+                    .join(" ")
+                    .replace('›', "");
+                let label = label.split_whitespace().collect::<Vec<_>>().join(" ");
+                assert!(
+                    label == labels[index]
+                        || (labels[index] == "Open conversation picker" && label == "Pick session"),
+                    "unexpected label: {label}"
+                );
+                let point = Point {
+                    x: rect.x + 1,
+                    y: rect.y,
+                };
+                assert_eq!(hover::target(&popup, point), Some(rect));
+                assert_eq!(
+                    actions(Router::default().route(click(point), &popup)),
+                    vec![expected[index].clone()]
+                );
+                ws.apply(&Action::DialogPick(index)).unwrap();
+                assert_eq!(
+                    actions(
+                        Router::default().route(InputEvent::Bytes(b"\r".to_vec()), &frame(&ws))
+                    ),
+                    vec![expected[index].clone()]
+                );
+            }
+            ws.apply(&Action::DialogClose).unwrap();
+            assert_eq!(ws.ui.dialog.unwrap().kind, DialogKind::Recovery);
+            assert_eq!(ws.ui.closed_tabs.len(), 1);
+        }
+    }
+}
+
+#[test]
+fn agents_action_button_distinguishes_open_from_unpark_and_cancel_returns_to_agents() {
+    use kelpmux::native::{
+        ui::DialogKind,
+        workspace::{dialog_bounds_for, parked_cards, session_control},
+    };
+    let mut ws = workspace((120, 40), (2, 1));
+    for pane in &mut ws.panes {
+        pane.kind = Some(Kind::Codex);
+    }
+    ws.apply(&Action::Park(2)).unwrap();
+    ws.apply(&Action::Agents(AgentFilter::All)).unwrap();
+    let f = frame(&ws);
+    let text = f
+        .cells
+        .iter()
+        .map(|cell| cell.text.as_str())
+        .collect::<String>();
+    assert!(text.contains("Open tab") && text.contains("Unpark"));
+    let bounds = dialog_bounds_for(f.cols, f.rows, DialogKind::Agents);
+    let rect = parked_cards(bounds, 0, 2)[1].1;
+    assert_eq!(
+        actions(Router::default().route(
+            click(Point {
+                x: rect.x + 2,
+                y: rect.y
+            }),
+            &f
+        )),
+        vec![Action::DialogPick(1)]
+    );
+    let control = session_control(rect);
+    let requested = actions(Router::default().route(
+        click(Point {
+            x: control.x,
+            y: control.y,
+        }),
+        &f,
+    ));
+    assert_eq!(requested, vec![Action::RestoreRequest(2)]);
+    for action in requested {
+        ws.apply(&action).unwrap();
+    }
+    for action in actions(Router::default().route(InputEvent::Bytes(vec![27]), &frame(&ws))) {
+        ws.apply(&action).unwrap();
+    }
+    assert_eq!(ws.ui.dialog.unwrap().kind, DialogKind::Agents);
+    assert_eq!(ws.ui.dialog.unwrap().selection, 1);
+    assert!(ws.panes[1].parked);
 }
