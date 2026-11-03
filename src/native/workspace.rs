@@ -15,6 +15,7 @@ pub struct Workspace {
     pub grid_rows: u8,
     pub help: bool,
     pub ui: UiState,
+    restore_origin: Option<Dialog>,
 }
 impl Workspace {
     pub fn new(cols: u16, rows: u16) -> Result<Self> {
@@ -28,6 +29,7 @@ impl Workspace {
             grid_cols: 1,
             grid_rows: 1,
             help: false,
+            restore_origin: None,
             ui: UiState {
                 grid_shape: (1, 1),
                 ..Default::default()
@@ -493,6 +495,23 @@ impl Workspace {
                 if Some(id) == self.ui.scratch || self.panes[index].parked != restore {
                     return Err("tab is not available for this action".into());
                 }
+                self.restore_origin = if restore {
+                    self.ui
+                        .dialog
+                        .filter(|dialog| {
+                            matches!(dialog.kind, DialogKind::Agents | DialogKind::Parked)
+                        })
+                        .map(|mut dialog| {
+                            dialog.selection = self
+                                .dialog_entries()
+                                .iter()
+                                .position(|pane| *pane == id)
+                                .unwrap_or(dialog.selection);
+                            dialog
+                        })
+                } else {
+                    None
+                };
                 self.help = false;
                 self.ui.dialog = Some(Dialog {
                     kind: if restore {
@@ -534,6 +553,7 @@ impl Workspace {
             }
             Action::Restore(id) => {
                 let index = self.require_pane(id)?;
+                self.restore_origin = None;
                 self.panes[index].parked = false;
                 self.active = id;
                 if self.reading != ReadingMode::Grid {
@@ -888,6 +908,16 @@ impl Workspace {
                 });
             }
             Action::DialogClose => {
+                if self
+                    .ui
+                    .dialog
+                    .is_some_and(|d| d.kind == DialogKind::RestoreConfirm)
+                {
+                    if let Some(origin) = self.restore_origin.take() {
+                        self.ui.dialog = Some(origin);
+                        return Ok(());
+                    }
+                }
                 if let Some(dialog) = self
                     .ui
                     .dialog
