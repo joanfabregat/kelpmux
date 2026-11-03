@@ -28,6 +28,16 @@ pub const SIDEBAR_BALL_FRAMES: [&str; 10] = [
 ];
 pub const GRID_BALL_FRAMES: [&str; 4] = ["●··", "·●·", "··●", "·●·"];
 pub const ACTIVITY_INTERVAL_MS: u64 = 150;
+pub const GRID_ACTIVITY_INTERVAL_MS: u64 = 200;
+pub const ANIMATION_TICK_MS: u64 = 50;
+pub fn activity_phase(tick: usize, columns: u16) -> usize {
+    tick.saturating_mul(ANIMATION_TICK_MS as usize)
+        / if columns == 3 {
+            GRID_ACTIVITY_INTERVAL_MS as usize
+        } else {
+            ACTIVITY_INTERVAL_MS as usize
+        }
+}
 pub fn status_icon(status: crate::model::Status) -> &'static str {
     match status {
         crate::model::Status::Working => SPINNER_FRAMES[0],
@@ -402,6 +412,8 @@ pub struct UiState {
     pub tab_scroll_anchor: Option<usize>,
     #[serde(default)]
     pub tab_drop: Option<(super::protocol::PaneId, Option<super::protocol::PaneId>)>,
+    #[serde(default)]
+    pub grid_drop: Option<(super::protocol::PaneId, super::protocol::PaneId)>,
     #[serde(default)]
     pub status: super::status::Snapshot,
     #[serde(default)]

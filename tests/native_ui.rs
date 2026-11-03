@@ -96,7 +96,7 @@ fn history_and_agents_buttons_share_click_geometry_and_restore_shortcut() {
             .iter()
             .map(|c| c.text.as_str())
             .collect::<String>();
-        assert!(text.contains("parked #2") && text.contains("claude"));
+        assert!(text.contains("Parked #2") && text.contains("claude"));
     }
 }
 #[test]
@@ -486,7 +486,7 @@ fn parked_table_animates_status_and_modals_dim_without_altering_terminal_content
     ws.apply(&Action::Parked).unwrap();
     let bounds = dialog_bounds_for(ws.cols, ws.rows, DialogKind::Parked);
     let a = compose(&ws, &screens, true, None, 0);
-    let b = compose(&ws, &screens, true, None, 2);
+    let b = compose(&ws, &screens, true, None, 4);
     assert_ne!(a.cells, b.cells);
     for (before, after) in a.cells.iter().zip(&b.cells) {
         assert_eq!(before.bg, after.bg);
@@ -686,7 +686,12 @@ fn agent_picker_scrolls_to_selection_on_small_tablet() {
     ws.apply(&Action::DialogPick(8)).unwrap();
     let f = frame(&ws);
     let bounds = dialog_bounds(f.cols, f.rows);
-    let row = bounds.y + bounds.rows - 1;
+    let row = kelpmux::native::workspace::parked_cards(bounds, 8, 9)
+        .last()
+        .unwrap()
+        .1
+        .y
+        + 1;
     let text = f.cells
         [usize::from(row) * usize::from(f.cols)..usize::from(row + 1) * usize::from(f.cols)]
         .iter()
@@ -906,10 +911,13 @@ fn shaded_grid_headers_meet_previous_rows_without_empty_separators() {
         for view in &views {
             if view.rect.x > 0 {
                 let x = view.rect.x - 1;
-                assert_eq!(f.cells[usize::from(view.body.y * f.cols + x)].text, "┃");
+                assert_eq!(f.cells[usize::from(view.body.y * f.cols + x)].text, "▎");
+                assert_eq!(f.cells[usize::from(view.body.y * f.cols + x - 1)].text, "▕");
                 let left = views
                     .iter()
-                    .find(|left| left.rect.y == view.rect.y && left.rect.x + left.rect.cols == x)
+                    .find(|left| {
+                        left.rect.y == view.rect.y && left.rect.x + left.rect.cols == x - 1
+                    })
                     .unwrap();
                 assert_eq!(
                     f.cells[usize::from(view.rect.y * f.cols + left.rect.x + left.rect.cols - 1)]
@@ -923,6 +931,10 @@ fn shaded_grid_headers_meet_previous_rows_without_empty_separators() {
                 assert_eq!(
                     f.cells[usize::from(view.rect.y * f.cols + x)].bg,
                     f.cells[usize::from(view.rect.y * f.cols + view.rect.x)].bg
+                );
+                assert_eq!(
+                    f.cells[usize::from(view.rect.y * f.cols + x - 1)].bg,
+                    f.cells[usize::from(view.rect.y * f.cols + left.rect.x)].bg
                 );
                 assert!(
                     views
@@ -1929,20 +1941,21 @@ fn working_indicators_replay_in_grid_sidebar_folded_and_parked_views() {
         let mut position = None;
         for tick in 0..=8 {
             let f = compose(&ws, &BTreeMap::new(), true, None, tick);
+            let phase = kelpmux::native::ui::activity_phase(tick, if mode == 0 { 3 } else { 1 });
             let glyph = if mode == 0 {
-                GRID_BALL_FRAMES[tick % GRID_BALL_FRAMES.len()]
+                GRID_BALL_FRAMES[phase % GRID_BALL_FRAMES.len()]
                     .chars()
                     .next()
                     .unwrap()
                     .to_string()
             } else if mode == 1 {
-                SIDEBAR_BALL_FRAMES[tick % SIDEBAR_BALL_FRAMES.len()]
+                SIDEBAR_BALL_FRAMES[phase % SIDEBAR_BALL_FRAMES.len()]
                     .chars()
                     .next()
                     .unwrap()
                     .to_string()
             } else {
-                SPINNER_FRAMES[tick % SPINNER_FRAMES.len()].into()
+                SPINNER_FRAMES[phase % SPINNER_FRAMES.len()].into()
             };
             let index = f.cells.iter().position(|c| c.text == glyph).unwrap();
             assert_eq!(*position.get_or_insert(index), index);
@@ -4098,18 +4111,25 @@ fn sidebar_drag_inserts_without_swapping_and_keeps_active_pane_and_controls() {
         ws.apply(&action).unwrap();
     }
     let marked = frame(&ws);
-    assert!(
-        marked
-            .cells
-            .iter()
-            .any(|cell| cell.underline && cell.underline_color == Some(Color::Indexed(75)))
+    assert_eq!(
+        ws.panes.iter().map(|p| p.id).collect::<Vec<_>>(),
+        [1, 2, 3, 4]
     );
-    for (before, after) in before_marker.cells.iter().zip(&marked.cells) {
-        assert_eq!(
-            (&before.text, before.width, before.fg, before.bg),
-            (&after.text, after.width, after.fg, after.bg)
-        );
-    }
+    assert_eq!(marked.panes, before_marker.panes);
+    let landing = sidebar_tab(&ws, 2);
+    let text = marked.cells[usize::from((landing.y + 1) * marked.cols + landing.x)
+        ..usize::from((landing.y + 1) * marked.cols + landing.x + landing.cols)]
+        .iter()
+        .map(|c| c.text.as_str())
+        .collect::<String>();
+    assert!(
+        text.contains("agent 界 1"),
+        "missing source at landing position: {text}"
+    );
+    assert_ne!(
+        marked.cells[usize::from(landing.y * marked.cols + landing.x)].bg,
+        before_marker.cells[usize::from(landing.y * marked.cols + landing.x)].bg
+    );
     let mut terminal = Terminal::new(marked.cols, marked.rows);
     terminal.feed(&terminal_diff(None, &marked));
     assert_eq!(terminal.snapshot().cells, marked.cells);
@@ -4891,4 +4911,149 @@ fn typed_notifications_and_statuses_keep_completion_separate_from_attention() {
             }
         }
     }
+}
+
+#[test]
+fn grid_drag_previews_landing_without_changing_order_or_terminal_geometry() {
+    let mut ws = workspace((120, 40), (2, 2));
+    let sizes = ws.terminal_sizes();
+    let screens: BTreeMap<_, _> = ws
+        .grid_layout()
+        .iter()
+        .map(|view| {
+            let mut term = Terminal::new(view.body.cols, view.body.rows);
+            term.feed(&[b'A' + (view.pane.id - 1) as u8]);
+            (view.pane.id, term.snapshot())
+        })
+        .collect();
+    let original = compose(&ws, &screens, true, None, 0);
+    let source = original.panes.iter().find(|v| v.pane.id == 1).unwrap();
+    let target = original.panes.iter().find(|v| v.pane.id == 4).unwrap();
+    let start = Point {
+        x: source.rect.x + 8,
+        y: source.rect.y,
+    };
+    let destination = Point {
+        x: target.rect.x + 8,
+        y: target.body.y + 1,
+    };
+    let mut router = Router::default();
+    for action in actions(router.route(click(start), &original)) {
+        ws.apply(&action).unwrap();
+    }
+    let moved = actions(router.route(drag_event(MouseKind::Move, destination), &original));
+    assert_eq!(moved, vec![Action::GridDrag(Some((1, 4)))]);
+    for action in moved {
+        ws.apply(&action).unwrap();
+    }
+    let preview = compose(&ws, &screens, true, None, 0);
+    assert_eq!(
+        ws.panes.iter().map(|p| p.id).collect::<Vec<_>>(),
+        [1, 2, 3, 4]
+    );
+    assert_eq!(ws.terminal_sizes(), sizes);
+    assert_eq!(preview.panes, original.panes);
+    let at = usize::from(target.body.y * preview.cols + target.body.x);
+    assert_eq!(preview.cells[at].text, "A");
+    assert_ne!(preview.cells[at].bg, original.cells[at].bg);
+    assert!(
+        router
+            .route(drag_event(MouseKind::Move, destination), &preview)
+            .is_empty(),
+        "preview must keep the same hit target under the pointer"
+    );
+    let cancel = actions(router.route(InputEvent::Bytes(vec![27]), &preview));
+    assert_eq!(cancel, vec![Action::GridDrag(None)]);
+    for action in cancel {
+        ws.apply(&action).unwrap();
+    }
+    let mut mouse_app = original.clone();
+    for view in &mut mouse_app.panes {
+        view.modes.mouse_click = true;
+    }
+    assert!(
+        router
+            .route(drag_event(MouseKind::Release, destination), &mouse_app)
+            .is_empty(),
+        "the cancelled drag's release must not reach an application"
+    );
+    let restored = compose(&ws, &screens, true, None, 0);
+    assert!(
+        restored.cells == original.cells,
+        "cancel must restore the original presentation"
+    );
+    assert_eq!(screens[&1].cells[0].text, "A");
+    let mut terminal = Terminal::new(preview.cols, preview.rows);
+    terminal.feed(&terminal_diff(None, &preview));
+    assert!(
+        terminal.snapshot().cells == preview.cells,
+        "drag preview must replay without changing text or styles"
+    );
+    router.route(click(start), &original);
+    router.route(drag_event(MouseKind::Move, destination), &original);
+    // Escape can arrive before the server has returned the first preview frame.
+    assert_eq!(
+        actions(router.route(InputEvent::Bytes(vec![27]), &original)),
+        vec![Action::GridDrag(None)]
+    );
+}
+
+#[test]
+fn recent_and_agents_tables_share_three_row_click_and_hover_targets() {
+    use kelpmux::native::{
+        history::Entry,
+        hover,
+        ui::DialogKind,
+        workspace::{dialog_bounds_for, parked_cards},
+    };
+    let mut ws = workspace((120, 40), (2, 1));
+    for pane in &mut ws.panes {
+        pane.kind = Some(Kind::Codex);
+        pane.cwd = "/project".into();
+    }
+    ws.ui.closed_tabs = (0..2)
+        .map(|index| Entry {
+            key: format!("old:{index}"),
+            workspace: "dev".into(),
+            pane: index,
+            cwd: "/project".into(),
+            name: format!("Conversation {index}"),
+            kind: Some(Kind::Codex),
+            session_id: Some(format!("session-{index}")),
+            argv: vec![],
+            closed_at: Some(kelpmux::now()),
+            reason: "Closed".into(),
+        })
+        .collect();
+    for (action, kind) in [
+        (Action::Recovery, DialogKind::Recovery),
+        (Action::Agents(AgentFilter::All), DialogKind::Agents),
+    ] {
+        ws.apply(&action).unwrap();
+        let f = frame(&ws);
+        let bounds = dialog_bounds_for(f.cols, f.rows, kind);
+        for (index, rect) in parked_cards(bounds, 0, 2) {
+            for row in 0..3 {
+                let point = Point {
+                    x: rect.x + 2,
+                    y: rect.y + row,
+                };
+                assert_eq!(hover::target(&f, point), Some(rect));
+                let picked = actions(Router::default().route(click(point), &f));
+                assert_eq!(
+                    picked,
+                    if kind == DialogKind::Recovery {
+                        vec![Action::ReopenTab(index)]
+                    } else {
+                        vec![Action::Focus(index as u64 + 1), Action::DialogClose]
+                    }
+                );
+            }
+        }
+        let text = f.cells.iter().map(|c| c.text.as_str()).collect::<String>();
+        assert!(text.contains("Conversation") && text.contains("/project"));
+    }
+    assert_eq!(kelpmux::native::ui::activity_phase(3, 3), 0);
+    assert_eq!(kelpmux::native::ui::activity_phase(3, 6), 1);
+    assert_eq!(kelpmux::native::ui::activity_phase(4, 3), 1);
 }
