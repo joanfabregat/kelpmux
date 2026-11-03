@@ -1034,17 +1034,37 @@ impl Router {
                     return output;
                 }
             }
-            if dialog.kind == super::ui::DialogKind::Parked && event.kind == MouseKind::Press {
+            if matches!(
+                dialog.kind,
+                super::ui::DialogKind::Parked
+                    | super::ui::DialogKind::Recovery
+                    | super::ui::DialogKind::Agents
+            ) {
                 let entries = frame_entries(frame);
-                if let Some((index, _)) =
+                if let Some((index, rect)) =
                     super::workspace::parked_cards(bounds, dialog.selection, entries.len())
                         .into_iter()
-                        .find(|(_, rect)| {
-                            super::workspace::parked_controls(*rect)[1].contains(event.position)
-                        })
+                        .find(|(_, rect)| rect.contains(event.position))
                 {
-                    self.pending_modal = true;
-                    emit(&mut output, Action::ClosePaneRequest(entries[index]), true);
+                    if event.kind == MouseKind::Press {
+                        if dialog.kind == super::ui::DialogKind::Parked {
+                            let [restore, close] = super::workspace::parked_controls(rect);
+                            if close.contains(event.position) {
+                                self.pending_modal = true;
+                                emit(&mut output, Action::ClosePaneRequest(entries[index]), true);
+                            } else if restore.contains(event.position) {
+                                self.pending_modal = true;
+                                output.extend(self.pick_dialog(frame, index));
+                            } else {
+                                emit(&mut output, Action::DialogPick(index), true);
+                            }
+                        } else if super::workspace::session_control(rect).contains(event.position) {
+                            self.pending_modal = true;
+                            output.extend(self.pick_dialog(frame, index));
+                        } else {
+                            emit(&mut output, Action::DialogPick(index), true);
+                        }
+                    }
                     return output;
                 }
             }

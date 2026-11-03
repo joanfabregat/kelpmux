@@ -59,12 +59,6 @@ pub fn target(frame: &Frame, point: Point) -> Option<Rect> {
             DialogKind::Parked => {
                 let count = frame.panes.iter().filter(|view| view.pane.parked).count();
                 for (_, rect) in ws::parked_cards(bounds, dialog.selection, count) {
-                    let rect = Rect {
-                        y: rect.y + 1,
-                        rows: rect.rows.saturating_sub(1),
-                        ..rect
-                    };
-                    regions.extend(ws::parked_controls(rect));
                     regions.push(rect);
                 }
             }
@@ -78,11 +72,7 @@ pub fn target(frame: &Frame, point: Point) -> Option<Rect> {
                 regions.extend(
                     ws::parked_cards(bounds, dialog.selection, count)
                         .into_iter()
-                        .map(|(_, rect)| Rect {
-                            y: rect.y + 1,
-                            rows: rect.rows.saturating_sub(1),
-                            ..rect
-                        }),
+                        .map(|(_, rect)| rect),
                 );
             }
             DialogKind::Status => {

@@ -1766,8 +1766,12 @@ pub fn tab_new_line(rect: Rect) -> Rect {
     }
 }
 
-/// Restore and close buttons occupy the full height of a parked entry.
+/// Action buttons occupy the two data rows; the third row carries the rule.
 pub fn parked_controls(rect: Rect) -> [Rect; 2] {
+    let rect = Rect {
+        rows: rect.rows.saturating_sub(1),
+        ..rect
+    };
     let close = Rect {
         x: rect.x + rect.cols.saturating_sub(4),
         cols: 3,
@@ -1775,11 +1779,22 @@ pub fn parked_controls(rect: Rect) -> [Rect; 2] {
     };
     [
         Rect {
-            x: close.x.saturating_sub(3),
+            x: close.x.saturating_sub(if rect.cols >= 60 { 11 } else { 3 }),
+            cols: if rect.cols >= 60 { 11 } else { 3 },
             ..close
         },
         close,
     ]
+}
+
+pub fn session_control(rect: Rect) -> Rect {
+    let width = if rect.cols >= 60 { 12 } else { 3 };
+    Rect {
+        x: rect.x + rect.cols.saturating_sub(width + 1),
+        cols: width,
+        rows: rect.rows.saturating_sub(1),
+        ..rect
+    }
 }
 
 /// Shared three-row parked entry bounds for drawing, hover and click routing.
