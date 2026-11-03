@@ -690,7 +690,8 @@ fn agent_picker_scrolls_to_selection_on_small_tablet() {
         .last()
         .unwrap()
         .1
-        .y;
+        .y
+        + 1;
     let text = f.cells
         [usize::from(row) * usize::from(f.cols)..usize::from(row + 1) * usize::from(f.cols)]
         .iter()
@@ -1467,9 +1468,9 @@ fn parked_entries_scroll_and_only_buttons_restore_or_close() {
             let cards = parked_cards(bounds, selection, 9);
             assert!(cards.iter().any(|(index, _)| *index == selection));
             for (index, rect) in cards {
-                assert_eq!(rect.rows, 3);
+                assert_eq!(rect.rows, 4);
                 assert!(rect.y + rect.rows <= bounds.y + bounds.rows);
-                for row in 0..3 {
+                for row in 0..rect.rows {
                     assert_eq!(
                         f.cells[usize::from((rect.y + row) * f.cols + rect.x)].text,
                         "▌"
@@ -1493,7 +1494,7 @@ fn parked_entries_scroll_and_only_buttons_restore_or_close() {
                             }),
                             &f
                         )),
-                        if row < 2 {
+                        if (1..=2).contains(&row) {
                             vec![Action::RestoreRequest(index as u64 + 1)]
                         } else {
                             vec![Action::DialogPick(index)]
@@ -1507,7 +1508,7 @@ fn parked_entries_scroll_and_only_buttons_restore_or_close() {
                             }),
                             &f
                         )),
-                        if row < 2 {
+                        if (1..=2).contains(&row) {
                             vec![Action::ClosePaneRequest(index as u64 + 1)]
                         } else {
                             vec![Action::DialogPick(index)]
@@ -2156,10 +2157,10 @@ fn tab_surfaces_follow_dark_and_light_backgrounds_without_repainting_terminal_de
             kelpmux::native::ui::DialogKind::Parked,
         );
         let card = kelpmux::native::workspace::parked_cards(bounds, 0, 2)[1].1;
-        let title = &parked.cells[usize::from(card.y * parked.cols + card.x + 8)];
+        let title = &parked.cells[usize::from((card.y + 1) * parked.cols + card.x + 8)];
         assert_eq!(title.fg, Color::Indexed(231));
         assert_eq!(
-            parked.cells[usize::from(card.y * parked.cols + card.x + 6)].fg,
+            parked.cells[usize::from((card.y + 1) * parked.cols + card.x + 6)].fg,
             Color::Rgb(155, 205, 185)
         );
     }
@@ -5056,7 +5057,7 @@ fn session_tables_select_rows_and_use_explicit_action_buttons() {
         let f = frame(&ws);
         let bounds = dialog_bounds_for(f.cols, f.rows, kind);
         for (index, rect) in parked_cards(bounds, 0, 2) {
-            for row in 0..3 {
+            for row in 0..rect.rows {
                 let point = Point {
                     x: rect.x + 2,
                     y: rect.y + row,
@@ -5073,7 +5074,7 @@ fn session_tables_select_rows_and_use_explicit_action_buttons() {
                         }),
                         &f
                     )),
-                    if row == 2 {
+                    if !(1..=2).contains(&row) {
                         vec![Action::DialogPick(index)]
                     } else if kind == DialogKind::Recovery {
                         vec![Action::ReopenRequest(index)]
@@ -5082,7 +5083,12 @@ fn session_tables_select_rows_and_use_explicit_action_buttons() {
                     }
                 );
             }
-            let cell = &f.cells[usize::from((rect.y + 2) * f.cols + rect.x + 2)];
+            for y in [rect.y, rect.y + 3] {
+                for x in rect.x + 1..rect.x + rect.cols {
+                    assert_eq!(f.cells[usize::from(y * f.cols + x)].text, " ");
+                }
+            }
+            let cell = &f.cells[usize::from((rect.y + 3) * f.cols + rect.x + 2)];
             assert!(cell.underline);
             assert_eq!(cell.underline_color, Some(Color::Rgb(99, 126, 144)));
             let mut hovered = cell.clone();
