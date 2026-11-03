@@ -4,6 +4,9 @@ use super::{engine::safe_text, protocol::*, ui::PALETTE, workspace::Workspace};
 use std::{collections::BTreeMap, fmt::Write};
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 const GRID_BORDER: Color = Color::Rgb(71, 113, 153);
+const TABLE_BG: Color = Color::Rgb(32, 53, 68);
+const TABLE_SELECTED: Color = Color::Rgb(50, 76, 96);
+const TABLE_MUTED: Color = Color::Rgb(164, 182, 194);
 
 pub fn compose(
     workspace: &Workspace,
@@ -781,12 +784,6 @@ fn theme_surface(workspace: &Workspace, offset: u8) -> Color {
 fn tab_accent(workspace: &Workspace, selected: bool) -> Color {
     theme_surface(workspace, if selected { 88 } else { 50 })
 }
-fn tab_background(workspace: &Workspace, selected: bool) -> Color {
-    if selected && workspace.ui.terminal_theme[1].is_none() {
-        return Color::Indexed(242);
-    }
-    theme_surface(workspace, if selected { 50 } else { 14 })
-}
 fn tab_text(workspace: &Workspace, _selected: bool) -> Color {
     if workspace.ui.terminal_theme[1]
         .is_some_and(|[r, g, b]| u16::from(r) * 3 + u16::from(g) * 6 + u16::from(b) >= 1280)
@@ -804,11 +801,22 @@ fn draw_dialog(
 ) {
     use super::ui::{AgentFilter, DialogKind};
     let bounds = super::workspace::dialog_bounds_for(frame.cols, frame.rows, dialog.kind);
-    fill(frame, bounds, Color::Indexed(236));
+    fill(
+        frame,
+        bounds,
+        if matches!(
+            dialog.kind,
+            DialogKind::Parked | DialogKind::Recovery | DialogKind::Agents
+        ) {
+            TABLE_BG
+        } else {
+            Color::Indexed(236)
+        },
+    );
     let header_bg = Color::Indexed(
         if matches!(
             dialog.kind,
-            DialogKind::Parked | DialogKind::ParkConfirm | DialogKind::RestoreConfirm
+            DialogKind::ParkConfirm | DialogKind::RestoreConfirm
         ) {
             super::ui::PARKED_BG
         } else if dialog.kind == DialogKind::CloseConfirm {
@@ -823,16 +831,16 @@ fn draw_dialog(
         .unwrap_or_else(|| " Notifications".into());
     let title = match dialog.kind {
         DialogKind::Status => " System status · live",
-        DialogKind::Parked => " ⊟ Parked tabs · select to restore",
+        DialogKind::Parked => " ⊟ Parked tabs · use Unpark or Close",
         DialogKind::Grid => " ▦ Grid · arrows, Enter or click",
         DialogKind::Overview => " Workspace overview · l links conversation",
         DialogKind::AgentLink => " Link agent conversation · Enter or click",
         DialogKind::Notifications => &notification_title,
         DialogKind::Recovery => {
             if workspace.ui.recovery_loading {
-                " ↺ Recently closed · loading…"
+                " ↺ Closed · loading…"
             } else {
-                " ↺ Closed · Enter or click to restore"
+                " ↺ Closed · use Restore or Enter"
             }
         }
         DialogKind::Search => " Search history",
@@ -2831,7 +2839,7 @@ fn draw_parked(
                 width,
                 label,
                 Color::Indexed(color),
-                Color::Indexed(236),
+                TABLE_BG,
                 bold,
             );
         }
@@ -2841,7 +2849,15 @@ fn draw_parked(
     for (x, width, label) in [
         (bounds.x + 2, 6, "Tab"),
         (title_x, restore.x.saturating_sub(title_x + 1), "Name"),
-        (restore.x, 3, " ↥ "),
+        (
+            restore.x,
+            restore.cols,
+            if restore.cols > 3 {
+                " Unpark "
+            } else {
+                " ↥ "
+            },
+        ),
         (close.x, 3, " × "),
     ] {
         write_text(
@@ -2851,18 +2867,22 @@ fn draw_parked(
             width,
             label,
             Color::Indexed(250),
-            Color::Indexed(236),
+            TABLE_BG,
             true,
         );
     }
     for (index, rect) in super::workspace::parked_cards(bounds, dialog.selection, panes.len()) {
         let pane = panes[index];
-        let y = rect.y + 1;
+        let y = rect.y;
         let selected = index == dialog.selection;
-        let accent = tab_accent(workspace, selected);
-        let bg = tab_background(workspace, selected);
+        let accent = if selected {
+            Color::Rgb(109, 174, 240)
+        } else {
+            TABLE_BG
+        };
+        let bg = if selected { TABLE_SELECTED } else { TABLE_BG };
         fill(frame, rect, bg);
-        for row in rect.y + 1..rect.y + rect.rows {
+        for row in rect.y..rect.y + rect.rows {
             write_text(frame, bounds.x, row, 1, "▌", accent, bg, false);
         }
         write_text(
@@ -2871,11 +2891,7 @@ fn draw_parked(
             y,
             4,
             &format!(" {} ", pane.id),
-            if selected {
-                Color::Indexed(226)
-            } else {
-                tab_text(workspace, false)
-            },
+            Color::Rgb(109, 174, 240),
             bg,
             true,
         );
@@ -2891,18 +2907,33 @@ fn draw_parked(
             y,
             title_width,
             &title,
-            tab_text(workspace, selected),
+            Color::Indexed(231),
             bg,
             false,
         );
         let [restore, close] = super::workspace::parked_controls(rect);
-        for (control, label, color) in [(restore, " ↥ ", super::ui::RESTORE_BG), (close, " × ", 88)]
-        {
-            let control = Rect {
-                y: control.y + 1,
-                rows: control.rows.saturating_sub(1),
-                ..control
-            };
+        write_text(
+            frame,
+            title_x,
+            y + 1,
+            title_width,
+            &safe_text(&pane.cwd),
+            TABLE_MUTED,
+            bg,
+            false,
+        );
+        for (control, label, color) in [
+            (
+                restore,
+                if restore.cols > 3 {
+                    " ↥ Unpark "
+                } else {
+                    " ↥ "
+                },
+                super::ui::RESTORE_BG,
+            ),
+            (close, " × ", 88),
+        ] {
             fill(frame, control, Color::Indexed(color));
             write_text(
                 frame,
@@ -2927,7 +2958,7 @@ fn draw_parked(
             },
             spinner,
         );
-        draw_entry_separator(frame, workspace, rect, index);
+        draw_entry_separator(frame, rect);
     }
 }
 fn relative_age(seconds: u64) -> String {
@@ -2946,20 +2977,16 @@ fn relative_age(seconds: u64) -> String {
     format!("{value}{unit} ago")
 }
 
-fn draw_entry_separator(frame: &mut Frame, workspace: &Workspace, rect: Rect, index: usize) {
-    let bg = Color::Indexed(236);
-    fill(frame, Rect { rows: 1, ..rect }, bg);
-    if index > 0 {
-        write_text(
-            frame,
-            rect.x + 1,
-            rect.y,
-            rect.cols.saturating_sub(2),
-            &"─".repeat(usize::from(rect.cols.saturating_sub(2))),
-            neutral(workspace, 38),
-            bg,
-            false,
-        );
+fn draw_entry_separator(frame: &mut Frame, rect: Rect) {
+    let y = rect.y + rect.rows.saturating_sub(1);
+    for x in rect.x + 1..rect.x + rect.cols.saturating_sub(1) {
+        if let Some(cell) = frame
+            .cells
+            .get_mut(usize::from(y) * usize::from(frame.cols) + usize::from(x))
+        {
+            cell.underline = true;
+            cell.underline_color = Some(Color::Rgb(99, 126, 144));
+        }
     }
 }
 
@@ -3016,9 +3043,10 @@ fn draw_session_table(
             })
             .collect()
     };
-    let width = bounds.cols.saturating_sub(4);
+    let action = super::workspace::session_control(bounds);
+    let width = action.x.saturating_sub(bounds.x + 3);
     let location = (width / 6).clamp(5, 14);
-    let kind = (width / 8).clamp(5, 8);
+    let kind = (width / 8).clamp(5, 9);
     let state = (width / 5).clamp(7, 20);
     let name = width.saturating_sub(location + kind + state + 3);
     let x = bounds.x + 2;
@@ -3040,10 +3068,20 @@ fn draw_session_table(
             size,
             label,
             Color::Indexed(250),
-            Color::Indexed(236),
+            TABLE_BG,
             true,
         );
     }
+    write_text(
+        frame,
+        action.x,
+        bounds.y + 1,
+        action.cols,
+        "Action",
+        Color::Indexed(250),
+        TABLE_BG,
+        true,
+    );
     if rows.is_empty() {
         write_text(
             frame,
@@ -3056,22 +3094,26 @@ fn draw_session_table(
                 "No running agents"
             },
             Color::Indexed(245),
-            Color::Indexed(236),
+            TABLE_BG,
             false,
         );
     }
     for (index, rect) in super::workspace::parked_cards(bounds, dialog.selection, rows.len()) {
         let selected = index == dialog.selection;
-        let bg = tab_background(workspace, selected);
+        let bg = if selected { TABLE_SELECTED } else { TABLE_BG };
         fill(frame, rect, bg);
-        for y in rect.y + 1..rect.y + rect.rows {
+        for y in rect.y..rect.y + rect.rows {
             write_text(
                 frame,
                 rect.x,
                 y,
                 1,
                 "▌",
-                tab_accent(workspace, selected),
+                if selected {
+                    Color::Rgb(109, 174, 240)
+                } else {
+                    bg
+                },
                 bg,
                 false,
             );
@@ -3081,10 +3123,10 @@ fn draw_session_table(
             write_text(
                 frame,
                 x,
-                rect.y + 1,
+                rect.y,
                 size,
                 value,
-                tab_text(workspace, selected),
+                Color::Indexed(231),
                 bg,
                 selected,
             );
@@ -3092,14 +3134,61 @@ fn draw_session_table(
         write_text(
             frame,
             rect.x + 2,
-            rect.y + 2,
-            rect.cols.saturating_sub(4),
+            rect.y + 1,
+            width,
             &row.4,
-            neutral(workspace, 55),
+            TABLE_MUTED,
             bg,
             false,
         );
-        draw_entry_separator(frame, workspace, rect, index);
+        let control = super::workspace::session_control(rect);
+        let parked = !recovery
+            && workspace.dialog_entries().get(index).is_some_and(|id| {
+                workspace
+                    .panes
+                    .iter()
+                    .any(|pane| pane.id == *id && pane.parked)
+            });
+        let (label, color) = if recovery {
+            (
+                if control.cols > 3 {
+                    " ↺ Restore "
+                } else {
+                    " ↺ "
+                },
+                Color::Rgb(38, 90, 67),
+            )
+        } else if parked {
+            (
+                if control.cols > 3 {
+                    " ↥ Unpark "
+                } else {
+                    " ↥ "
+                },
+                Color::Rgb(102, 84, 123),
+            )
+        } else {
+            (
+                if control.cols > 3 {
+                    " ↗ Open tab "
+                } else {
+                    " ↗ "
+                },
+                Color::Rgb(41, 85, 116),
+            )
+        };
+        fill(frame, control, color);
+        write_text(
+            frame,
+            control.x,
+            control.y,
+            control.cols,
+            label,
+            Color::Indexed(231),
+            color,
+            false,
+        );
+        draw_entry_separator(frame, rect);
     }
 }
 
