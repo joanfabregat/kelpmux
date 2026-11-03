@@ -1137,7 +1137,7 @@ impl Server {
                         .is_some_and(|d| d.kind == super::ui::DialogKind::Recovery)
                     && !self.workspace.ui.closed_tabs.is_empty()
                 {
-                    if let Err(error) = self.feature_action(client, &Action::ReopenTab(0)) {
+                    if let Err(error) = self.feature_action(client, &Action::ReopenRequest(0)) {
                         self.notice = Some(format!("Restore: {error}"));
                     }
                 }
@@ -1343,14 +1343,16 @@ impl Server {
                 self.reopen_pending = Some(client);
                 return self.feature_action(client, &Action::Recovery);
             }
+            Action::ReopenRequest(_) => {
+                self.workspace.apply(action)?;
+            }
             Action::ReopenTab(index) | Action::RerunTab(index) => {
-                if !self
-                    .workspace
-                    .ui
-                    .dialog
-                    .is_some_and(|d| d.kind == super::ui::DialogKind::Recovery)
-                {
-                    return Err("open Recently closed before restoring a tab".into());
+                if !self.workspace.ui.dialog.is_some_and(|d| {
+                    d.kind == super::ui::DialogKind::Recovery
+                        || (d.kind == super::ui::DialogKind::ReopenConfirm
+                            && d.source == Some(*index as u64))
+                }) {
+                    return Err("select a Closed entry before restoring a tab".into());
                 }
                 let entry = self
                     .workspace

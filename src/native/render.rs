@@ -832,7 +832,7 @@ fn draw_dialog(
             if workspace.ui.recovery_loading {
                 " ↺ Recently closed · loading…"
             } else {
-                " ↺ Closed · Enter: resume agent / open folder · x: rerun program"
+                " ↺ Closed · Enter or click to restore"
             }
         }
         DialogKind::Search => " Search history",
@@ -841,6 +841,7 @@ fn draw_dialog(
         DialogKind::CloseConfirm => " Close this tab?",
         DialogKind::ParkConfirm => " ⊟ Park this tab?",
         DialogKind::RestoreConfirm => " ↥ Restore this tab?",
+        DialogKind::ReopenConfirm => " ↺ Restore closed tab",
         DialogKind::Color => " Tab color · arrows, Enter or click",
         DialogKind::Agents => match dialog.filter {
             AgentFilter::All => " ◇ Agents",
@@ -908,6 +909,52 @@ fn draw_dialog(
                 }),
                 bg,
             );
+        }
+    } else if dialog.kind == DialogKind::ReopenConfirm {
+        if let Some(entry) = dialog
+            .source
+            .and_then(|id| workspace.ui.closed_tabs.get(id as usize))
+        {
+            let choices = entry.restore_choices();
+            let controls = super::workspace::reopen_buttons(bounds, choices.len());
+            let limit = controls.first().map_or(bounds.y + bounds.rows, |r| r.y);
+            let detail = entry
+                .command()
+                .or_else(|| entry.previous_command())
+                .unwrap_or_default();
+            for (offset, text) in [entry.name.as_str(), entry.cwd.as_str(), detail.as_str()]
+                .into_iter()
+                .enumerate()
+            {
+                let y = bounds.y + 2 + offset as u16;
+                if y < limit {
+                    write_text(
+                        frame,
+                        bounds.x + 2,
+                        y,
+                        bounds.cols.saturating_sub(4),
+                        &safe_text(text),
+                        Color::Indexed(250),
+                        Color::Indexed(236),
+                        offset == 0,
+                    );
+                }
+            }
+            for (index, (rect, choice)) in controls.into_iter().zip(choices).enumerate() {
+                let selected = index == dialog.selection;
+                let bg = Color::Indexed(if selected { 24 } else { 238 });
+                fill(frame, rect, bg);
+                write_text(
+                    frame,
+                    rect.x,
+                    rect.y,
+                    rect.cols,
+                    &format!("{} {}", if selected { "›" } else { " " }, choice.label()),
+                    Color::Indexed(231),
+                    bg,
+                    selected,
+                );
+            }
         }
     } else if matches!(
         dialog.kind,

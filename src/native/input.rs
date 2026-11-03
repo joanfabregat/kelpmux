@@ -627,10 +627,6 @@ impl Router {
                     emit(&mut output, Action::RecoveryCopy(dialog.selection), true);
                     continue;
                 }
-                if key == b"x" && dialog.kind == super::ui::DialogKind::Recovery {
-                    emit(&mut output, Action::RerunTab(dialog.selection), true);
-                    continue;
-                }
                 let action = match key {
                     b"\x1b" | b"q" => Some(Action::DialogClose),
                     b"\x1b[A" => Some(Action::DialogNavigate { dx: 0, dy: -1 }),
@@ -1092,7 +1088,11 @@ impl Router {
                 }
                 return output;
             }
-            let index = if dialog.kind == super::ui::DialogKind::Grid {
+            let index = if dialog.kind == super::ui::DialogKind::ReopenConfirm {
+                super::workspace::reopen_buttons(bounds, frame_entries(frame).len())
+                    .iter()
+                    .position(|rect| rect.contains(event.position))
+            } else if dialog.kind == super::ui::DialogKind::Grid {
                 super::workspace::grid_cards(bounds)
                     .iter()
                     .position(|rect| rect.contains(event.position))
@@ -1619,7 +1619,29 @@ impl Router {
                 .ui
                 .closed_tabs
                 .get(index)
-                .map(|_| vec![ClientMessage::Action(Action::ReopenTab(index))])
+                .map(|_| vec![ClientMessage::Action(Action::ReopenRequest(index))])
+                .unwrap_or_default();
+        }
+        if dialog.kind == DialogKind::ReopenConfirm {
+            use super::history::RestoreChoice;
+            let Some(source) = dialog.source.map(|id| id as usize) else {
+                return vec![];
+            };
+            let Some(entry) = frame.ui.closed_tabs.get(source) else {
+                return vec![];
+            };
+            return entry
+                .restore_choices()
+                .get(index)
+                .map(|choice| {
+                    vec![ClientMessage::Action(match choice {
+                        RestoreChoice::Resume | RestoreChoice::Picker | RestoreChoice::Folder => {
+                            Action::ReopenTab(source)
+                        }
+                        RestoreChoice::Restart => Action::RerunTab(source),
+                        RestoreChoice::Cancel => Action::DialogClose,
+                    })]
+                })
                 .unwrap_or_default();
         }
         if dialog.kind == DialogKind::Search {
@@ -1830,6 +1852,13 @@ fn frame_entries(frame: &Frame) -> Vec<u64> {
                 .collect()
         }
         Some(DialogKind::Recovery) => (0..frame.ui.closed_tabs.len() as u64).collect(),
+        Some(DialogKind::ReopenConfirm) => frame
+            .ui
+            .dialog
+            .and_then(|d| d.source)
+            .and_then(|index| frame.ui.closed_tabs.get(index as usize))
+            .map(|entry| (0..entry.restore_choices().len() as u64).collect())
+            .unwrap_or_default(),
         Some(DialogKind::Search) => (0..frame.ui.search_hits.len() as u64).collect(),
         _ => {
             let panes = frame

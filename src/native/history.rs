@@ -5,6 +5,25 @@ use serde::{Deserialize, Serialize};
 use std::{collections::BTreeMap, fs, io::Read, os::unix::fs::MetadataExt, path::Path};
 
 const LIMIT: usize = 256;
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RestoreChoice {
+    Resume,
+    Picker,
+    Restart,
+    Folder,
+    Cancel,
+}
+impl RestoreChoice {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Resume => "Resume conversation",
+            Self::Picker => "Open conversation picker",
+            Self::Restart => "Restart program",
+            Self::Folder => "Open folder",
+            Self::Cancel => "Cancel",
+        }
+    }
+}
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Entry {
     pub key: String,
@@ -19,6 +38,23 @@ pub struct Entry {
     pub reason: String,
 }
 impl Entry {
+    pub fn restore_choices(&self) -> Vec<RestoreChoice> {
+        use RestoreChoice::*;
+        if self.kind.is_some() {
+            vec![
+                if self.session_id.as_deref().is_some_and(crate::session_id) {
+                    Resume
+                } else {
+                    Picker
+                },
+                Cancel,
+            ]
+        } else if self.previous_command().is_some() {
+            vec![Restart, Folder, Cancel]
+        } else {
+            vec![Folder, Cancel]
+        }
+    }
     /// Construct only trusted agent invocations; ordinary commands are opt-in.
     pub fn command(&self) -> Option<String> {
         self.kind.map(|kind| {

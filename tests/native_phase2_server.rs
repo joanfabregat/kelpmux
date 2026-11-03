@@ -846,6 +846,18 @@ fn closed_application_reopens_folder_and_explicit_rerun_restarts_argv() {
         listed.ui.closed_tabs[index].cwd,
         daemon.root.to_string_lossy()
     );
+    peer.action(Action::ReopenRequest(index));
+    let confirm = peer.wait(|f| {
+        f.ui.dialog
+            .is_some_and(|d| d.kind == DialogKind::ReopenConfirm)
+    });
+    assert!(confirm.panes.iter().all(|p| p.pane.pid != old));
+    assert!(
+        confirm
+            .panes
+            .iter()
+            .all(|p| p.pane.status != Status::Working)
+    );
     peer.action(Action::RerunTab(index));
     peer.wait(|f| {
         f.ui.dialog.is_none()
@@ -867,6 +879,12 @@ fn closed_application_reopens_folder_and_explicit_rerun_restarts_argv() {
     peer.action(Action::ClosePaneConfirm(active));
     peer.wait(|f| f.panes.iter().all(|p| p.pane.id != active));
     peer.action(Action::ReopenLast);
+    let confirm = peer.wait(|f| {
+        f.ui.dialog
+            .is_some_and(|d| d.kind == DialogKind::ReopenConfirm)
+    });
+    let index = confirm.ui.dialog.unwrap().source.unwrap() as usize;
+    peer.action(Action::ReopenTab(index));
     let reopened = peer.wait(|f| {
         f.ui.dialog.is_none()
             && f.active > active

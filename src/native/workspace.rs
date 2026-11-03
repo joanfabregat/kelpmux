@@ -733,6 +733,19 @@ impl Workspace {
                     .get(index)
                     .ok_or("invalid recovery entry")?;
             }
+            Action::ReopenRequest(index) => {
+                self.ui.closed_tabs.get(index).ok_or("unknown closed tab")?;
+                if self.ui.recovery_loading {
+                    return Err("closed tabs are still loading".into());
+                }
+                self.help = false;
+                self.ui.dialog = Some(Dialog {
+                    kind: DialogKind::ReopenConfirm,
+                    selection: 0,
+                    source: Some(index as u64),
+                    filter: AgentFilter::All,
+                });
+            }
             Action::ReopenLast | Action::ReopenTab(_) | Action::RerunTab(_) => {
                 return Err("restoring tabs requires the PTY server".into());
             }
@@ -875,6 +888,19 @@ impl Workspace {
                 });
             }
             Action::DialogClose => {
+                if let Some(dialog) = self
+                    .ui
+                    .dialog
+                    .filter(|d| d.kind == DialogKind::ReopenConfirm)
+                {
+                    self.ui.dialog = Some(Dialog {
+                        kind: DialogKind::Recovery,
+                        selection: dialog.source.unwrap_or(0) as usize,
+                        source: None,
+                        filter: AgentFilter::All,
+                    });
+                    return Ok(());
+                }
                 if let Some(dialog) = self
                     .ui
                     .dialog
@@ -1133,6 +1159,18 @@ impl Workspace {
         Ok(cols as usize * rows as usize)
     }
     pub fn dialog_entries(&self) -> Vec<PaneId> {
+        if let Some(dialog) = self
+            .ui
+            .dialog
+            .filter(|d| d.kind == DialogKind::ReopenConfirm)
+        {
+            return self
+                .ui
+                .closed_tabs
+                .get(dialog.source.unwrap_or(u64::MAX) as usize)
+                .map(|entry| (0..entry.restore_choices().len() as u64).collect())
+                .unwrap_or_default();
+        }
         match self.ui.dialog.map(|dialog| dialog.kind) {
             Some(DialogKind::AgentLink) => {
                 return (0..=self.ui.agent_sessions.len() as u64).collect();
@@ -1213,6 +1251,16 @@ pub fn dialog_bounds(cols: u16, rows: u16) -> Rect {
 pub fn dialog_bounds_for(cols: u16, rows: u16, kind: super::ui::DialogKind) -> Rect {
     if kind == super::ui::DialogKind::Status {
         return super::status::bounds(cols, rows);
+    }
+    if kind == super::ui::DialogKind::ReopenConfirm {
+        let width = cols.saturating_sub(4).min(76);
+        let height = rows.saturating_sub(2).min(12);
+        return Rect {
+            x: (cols - width) / 2,
+            y: (rows - 1 - height) / 2,
+            cols: width,
+            rows: height,
+        };
     }
     if !matches!(
         kind,
@@ -1442,6 +1490,17 @@ pub fn tab_close(rect: Rect) -> Rect {
     }
 }
 
+pub fn reopen_buttons(bounds: Rect, count: usize) -> Vec<Rect> {
+    let count = count.min(usize::from(bounds.rows.saturating_sub(2)));
+    (0..count)
+        .map(|index| Rect {
+            x: bounds.x + 2,
+            y: bounds.y + bounds.rows.saturating_sub(count as u16 + 1) + index as u16,
+            cols: bounds.cols.saturating_sub(4),
+            rows: 1,
+        })
+        .collect()
+}
 pub fn close_buttons(bounds: Rect) -> [Rect; 2] {
     let width = bounds.cols.saturating_sub(6) / 2;
     let height = if bounds.rows >= 9 {

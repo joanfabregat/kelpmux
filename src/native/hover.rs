@@ -42,6 +42,13 @@ pub fn target(frame: &Frame, point: Point) -> Option<Rect> {
             DialogKind::CloseConfirm | DialogKind::ParkConfirm | DialogKind::RestoreConfirm => {
                 regions.extend(ws::close_buttons(bounds))
             }
+            DialogKind::ReopenConfirm => {
+                let count = dialog
+                    .source
+                    .and_then(|id| frame.ui.closed_tabs.get(id as usize))
+                    .map_or(0, |entry| entry.restore_choices().len());
+                regions.extend(ws::reopen_buttons(bounds, count));
+            }
             DialogKind::Color => regions.extend(ws::color_cards(bounds)),
             DialogKind::Grid => regions.extend(ws::grid_cards(bounds)),
             DialogKind::Move => regions.extend(ws::move_cards(
