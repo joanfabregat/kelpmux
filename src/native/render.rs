@@ -832,7 +832,7 @@ fn draw_dialog(
             if workspace.ui.recovery_loading {
                 " ↺ Recently closed · loading…"
             } else {
-                " ↺ Recently closed · Enter reopen · x rerun application"
+                " ↺ Closed · Enter: resume agent / open folder · x: rerun program"
             }
         }
         DialogKind::Search => " Search history",
@@ -2815,8 +2815,7 @@ fn draw_parked(
         let accent = tab_accent(workspace, selected);
         let bg = tab_background(workspace, selected);
         fill(frame, rect, bg);
-        draw_entry_separator(frame, workspace, rect, index);
-        for row in rect.y..rect.y + rect.rows {
+        for row in rect.y + 1..rect.y + rect.rows {
             write_text(frame, bounds.x, row, 1, "▌", accent, bg, false);
         }
         write_text(
@@ -2852,6 +2851,11 @@ fn draw_parked(
         let [restore, close] = super::workspace::parked_controls(rect);
         for (control, label, color) in [(restore, " ↥ ", super::ui::RESTORE_BG), (close, " × ", 88)]
         {
+            let control = Rect {
+                y: control.y + 1,
+                rows: control.rows.saturating_sub(1),
+                ..control
+            };
             fill(frame, control, Color::Indexed(color));
             write_text(
                 frame,
@@ -2876,6 +2880,7 @@ fn draw_parked(
             },
             spinner,
         );
+        draw_entry_separator(frame, workspace, rect, index);
     }
 }
 fn relative_age(seconds: u64) -> String {
@@ -2895,6 +2900,8 @@ fn relative_age(seconds: u64) -> String {
 }
 
 fn draw_entry_separator(frame: &mut Frame, workspace: &Workspace, rect: Rect, index: usize) {
+    let bg = Color::Indexed(236);
+    fill(frame, Rect { rows: 1, ..rect }, bg);
     if index > 0 {
         write_text(
             frame,
@@ -2903,10 +2910,7 @@ fn draw_entry_separator(frame: &mut Frame, workspace: &Workspace, rect: Rect, in
             rect.cols.saturating_sub(2),
             &"─".repeat(usize::from(rect.cols.saturating_sub(2))),
             neutral(workspace, 38),
-            tab_background(
-                workspace,
-                index == workspace.ui.dialog.map_or(0, |d| d.selection),
-            ),
+            bg,
             false,
         );
     }
@@ -3013,8 +3017,7 @@ fn draw_session_table(
         let selected = index == dialog.selection;
         let bg = tab_background(workspace, selected);
         fill(frame, rect, bg);
-        draw_entry_separator(frame, workspace, rect, index);
-        for y in rect.y..rect.y + rect.rows {
+        for y in rect.y + 1..rect.y + rect.rows {
             write_text(
                 frame,
                 rect.x,
@@ -3049,6 +3052,7 @@ fn draw_session_table(
             bg,
             false,
         );
+        draw_entry_separator(frame, workspace, rect, index);
     }
 }
 

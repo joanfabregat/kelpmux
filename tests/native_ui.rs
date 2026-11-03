@@ -495,7 +495,7 @@ fn parked_table_animates_status_and_modals_dim_without_altering_terminal_content
             assert_eq!(before.fg, after.fg);
         }
     }
-    let accent = usize::from((bounds.y + 2) * ws.cols + bounds.x);
+    let accent = usize::from((bounds.y + 3) * ws.cols + bounds.x);
     assert_eq!(a.cells[accent].text, "▌");
     assert_eq!(a.cells[accent].fg, Color::Indexed(250));
 }
@@ -1465,7 +1465,7 @@ fn parked_three_row_entries_scroll_and_every_row_restores_the_correct_tab() {
                 for row in 0..3 {
                     assert_eq!(
                         f.cells[usize::from((rect.y + row) * f.cols + rect.x)].text,
-                        "▌"
+                        if row == 0 { " " } else { "▌" }
                     );
                     assert_eq!(
                         actions(Router::default().route(
@@ -5046,7 +5046,14 @@ fn recent_and_agents_tables_share_three_row_click_and_hover_targets() {
                     x: rect.x + 2,
                     y: rect.y + row,
                 };
-                assert_eq!(hover::target(&f, point), Some(rect));
+                assert_eq!(
+                    hover::target(&f, point),
+                    (row > 0).then_some(Rect {
+                        y: rect.y + 1,
+                        rows: rect.rows - 1,
+                        ..rect
+                    })
+                );
                 let picked = actions(Router::default().route(click(point), &f));
                 assert_eq!(
                     picked,
