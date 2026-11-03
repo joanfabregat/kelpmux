@@ -1766,10 +1766,11 @@ pub fn tab_new_line(rect: Rect) -> Rect {
     }
 }
 
-/// Action buttons occupy the two data rows; the third row carries the rule.
+/// Action buttons occupy the two data rows between the top and bottom padding.
 pub fn parked_controls(rect: Rect) -> [Rect; 2] {
     let rect = Rect {
-        rows: rect.rows.saturating_sub(1),
+        y: rect.y + 1,
+        rows: rect.rows.saturating_sub(2),
         ..rect
     };
     let close = Rect {
@@ -1792,14 +1793,14 @@ pub fn session_control(rect: Rect) -> Rect {
     Rect {
         x: rect.x + rect.cols.saturating_sub(width + 1),
         cols: width,
-        rows: rect.rows.saturating_sub(1),
-        ..rect
+        y: rect.y + 1,
+        rows: rect.rows.saturating_sub(2),
     }
 }
 
-/// Shared three-row parked entry bounds for drawing, hover and click routing.
+/// Shared four-row entries: top padding, two data rows, bottom padding/rule.
 pub fn parked_cards(bounds: Rect, selection: usize, count: usize) -> Vec<(usize, Rect)> {
-    let visible = usize::from(bounds.rows.saturating_sub(2) / 3);
+    let visible = usize::from(bounds.rows.saturating_sub(2) / 4);
     let offset = selection.saturating_sub(visible.saturating_sub(1));
     (offset..count)
         .take(visible)
@@ -1809,9 +1810,9 @@ pub fn parked_cards(bounds: Rect, selection: usize, count: usize) -> Vec<(usize,
                 index,
                 Rect {
                     x: bounds.x,
-                    y: bounds.y + 2 + row as u16 * 3,
+                    y: bounds.y + 2 + row as u16 * 4,
                     cols: bounds.cols,
-                    rows: 3,
+                    rows: 4,
                 },
             )
         })

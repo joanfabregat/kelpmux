@@ -2873,7 +2873,7 @@ fn draw_parked(
     }
     for (index, rect) in super::workspace::parked_cards(bounds, dialog.selection, panes.len()) {
         let pane = panes[index];
-        let y = rect.y;
+        let y = rect.y + 1;
         let selected = index == dialog.selection;
         let accent = if selected {
             Color::Rgb(109, 174, 240)
@@ -3123,7 +3123,7 @@ fn draw_session_table(
             write_text(
                 frame,
                 x,
-                rect.y,
+                rect.y + 1,
                 size,
                 value,
                 Color::Indexed(231),
@@ -3134,7 +3134,7 @@ fn draw_session_table(
         write_text(
             frame,
             rect.x + 2,
-            rect.y + 1,
+            rect.y + 2,
             width,
             &row.4,
             TABLE_MUTED,
