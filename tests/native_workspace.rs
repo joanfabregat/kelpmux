@@ -302,7 +302,12 @@ fn every_grid_balances_cells_keeps_header_footer_and_all_panes() {
                 assert!(view.rect.y + view.rect.rows < rows);
             }
             if views.len() > 1 && views[0].rect.y == views[1].rect.y {
-                assert_eq!(views[0].rect.x + views[0].rect.cols + 1, views[1].rect.x);
+                assert_eq!(
+                    views[0].rect.x
+                        + views[0].rect.cols
+                        + kelpmux::native::workspace::GRID_DIVIDER_COLS,
+                    views[1].rect.x
+                );
                 assert!(views[0].rect.cols.abs_diff(views[1].rect.cols) <= 1);
             }
             ws.resize(40, 10).unwrap();
