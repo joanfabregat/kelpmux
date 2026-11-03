@@ -268,6 +268,7 @@ pub enum DialogKind {
     CloseConfirm,
     ParkConfirm,
     RestoreConfirm,
+    ReopenConfirm,
     Color,
 }
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
