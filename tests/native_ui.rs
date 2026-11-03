@@ -497,7 +497,7 @@ fn parked_table_animates_status_and_modals_dim_without_altering_terminal_content
     }
     let accent = usize::from((bounds.y + 3) * ws.cols + bounds.x);
     assert_eq!(a.cells[accent].text, "▌");
-    assert_eq!(a.cells[accent].fg, Color::Indexed(250));
+    assert_eq!(a.cells[accent].fg, Color::Rgb(109, 174, 240));
 }
 
 #[test]
@@ -690,8 +690,7 @@ fn agent_picker_scrolls_to_selection_on_small_tablet() {
         .last()
         .unwrap()
         .1
-        .y
-        + 1;
+        .y;
     let text = f.cells
         [usize::from(row) * usize::from(f.cols)..usize::from(row + 1) * usize::from(f.cols)]
         .iter()
@@ -699,13 +698,21 @@ fn agent_picker_scrolls_to_selection_on_small_tablet() {
         .collect::<String>();
     assert!(text.contains('9'));
     assert_eq!(
-        actions(Router::default().route(
-            click(Point {
-                x: bounds.x + 1,
-                y: row
-            }),
-            &f
-        )),
+        actions(
+            Router::default().route(
+                click(Point {
+                    x: kelpmux::native::workspace::session_control(
+                        *kelpmux::native::workspace::parked_cards(bounds, 8, 9)
+                            .last()
+                            .map(|(_, rect)| rect)
+                            .unwrap()
+                    )
+                    .x,
+                    y: row
+                }),
+                &f
+            )
+        ),
         vec![Action::Focus(9), Action::DialogClose]
     );
 }
@@ -1442,7 +1449,7 @@ fn tab_folder_subtitles_and_horizontal_bars_touch_terminal_content() {
 }
 
 #[test]
-fn parked_three_row_entries_scroll_and_every_row_restores_the_correct_tab() {
+fn parked_entries_scroll_and_only_buttons_restore_or_close() {
     use kelpmux::native::{
         ui::DialogKind,
         workspace::{dialog_bounds_for, parked_cards, parked_controls},
@@ -1465,7 +1472,7 @@ fn parked_three_row_entries_scroll_and_every_row_restores_the_correct_tab() {
                 for row in 0..3 {
                     assert_eq!(
                         f.cells[usize::from((rect.y + row) * f.cols + rect.x)].text,
-                        if row == 0 { " " } else { "▌" }
+                        "▌"
                     );
                     assert_eq!(
                         actions(Router::default().route(
@@ -1475,7 +1482,7 @@ fn parked_three_row_entries_scroll_and_every_row_restores_the_correct_tab() {
                             }),
                             &f
                         )),
-                        vec![Action::RestoreRequest(index as u64 + 1)]
+                        vec![Action::DialogPick(index)]
                     );
                     let [restore, close] = parked_controls(rect);
                     assert_eq!(
@@ -1486,7 +1493,11 @@ fn parked_three_row_entries_scroll_and_every_row_restores_the_correct_tab() {
                             }),
                             &f
                         )),
-                        vec![Action::RestoreRequest(index as u64 + 1)]
+                        if row < 2 {
+                            vec![Action::RestoreRequest(index as u64 + 1)]
+                        } else {
+                            vec![Action::DialogPick(index)]
+                        }
                     );
                     assert_eq!(
                         actions(Router::default().route(
@@ -1496,7 +1507,11 @@ fn parked_three_row_entries_scroll_and_every_row_restores_the_correct_tab() {
                             }),
                             &f
                         )),
-                        vec![Action::ClosePaneRequest(index as u64 + 1)]
+                        if row < 2 {
+                            vec![Action::ClosePaneRequest(index as u64 + 1)]
+                        } else {
+                            vec![Action::DialogPick(index)]
+                        }
                     );
                 }
             }
@@ -2141,10 +2156,10 @@ fn tab_surfaces_follow_dark_and_light_backgrounds_without_repainting_terminal_de
             kelpmux::native::ui::DialogKind::Parked,
         );
         let card = kelpmux::native::workspace::parked_cards(bounds, 0, 2)[1].1;
-        let title = &parked.cells[usize::from((card.y + 1) * parked.cols + card.x + 8)];
-        assert_eq!(title.fg, Color::Indexed(if light { 232 } else { 231 }));
+        let title = &parked.cells[usize::from(card.y * parked.cols + card.x + 8)];
+        assert_eq!(title.fg, Color::Indexed(231));
         assert_eq!(
-            parked.cells[usize::from((card.y + 1) * parked.cols + card.x + 6)].fg,
+            parked.cells[usize::from(card.y * parked.cols + card.x + 6)].fg,
             Color::Rgb(155, 205, 185)
         );
     }
@@ -2475,7 +2490,7 @@ fn empty_parked_list_has_a_centered_explanation_and_matching_header_without_tabl
         let footer = parked_button(f.rows, 0);
         assert_eq!(
             f.cells[usize::from(bounds.y * f.cols + bounds.x)].bg,
-            Color::Indexed(PARKED_BG)
+            Color::Indexed(24)
         );
         assert_eq!(
             original.cells[usize::from(footer.y * f.cols + footer.x)].bg,
@@ -5007,7 +5022,7 @@ fn grid_drag_previews_landing_without_changing_order_or_terminal_geometry() {
 }
 
 #[test]
-fn recent_and_agents_tables_share_three_row_click_and_hover_targets() {
+fn session_tables_select_rows_and_use_explicit_action_buttons() {
     use kelpmux::native::{
         history::Entry,
         hover,
@@ -5046,24 +5061,42 @@ fn recent_and_agents_tables_share_three_row_click_and_hover_targets() {
                     x: rect.x + 2,
                     y: rect.y + row,
                 };
-                assert_eq!(
-                    hover::target(&f, point),
-                    (row > 0).then_some(Rect {
-                        y: rect.y + 1,
-                        rows: rect.rows - 1,
-                        ..rect
-                    })
-                );
+                assert_eq!(hover::target(&f, point), Some(rect));
                 let picked = actions(Router::default().route(click(point), &f));
+                assert_eq!(picked, vec![Action::DialogPick(index)]);
+                let control = kelpmux::native::workspace::session_control(rect);
                 assert_eq!(
-                    picked,
-                    if kind == DialogKind::Recovery {
+                    actions(Router::default().route(
+                        click(Point {
+                            x: control.x,
+                            y: rect.y + row
+                        }),
+                        &f
+                    )),
+                    if row == 2 {
+                        vec![Action::DialogPick(index)]
+                    } else if kind == DialogKind::Recovery {
                         vec![Action::ReopenRequest(index)]
                     } else {
                         vec![Action::Focus(index as u64 + 1), Action::DialogClose]
                     }
                 );
             }
+            let cell = &f.cells[usize::from((rect.y + 2) * f.cols + rect.x + 2)];
+            assert!(cell.underline);
+            assert_eq!(cell.underline_color, Some(Color::Rgb(99, 126, 144)));
+            let mut hovered = cell.clone();
+            hover::highlight(&mut hovered, f.ui.terminal_theme, hover::strength(&f, rect));
+            assert_eq!(hovered.underline_color, cell.underline_color);
+            assert_ne!(hovered.bg, cell.bg);
+            assert_eq!(
+                cell.bg,
+                if index == 0 {
+                    Color::Rgb(50, 76, 96)
+                } else {
+                    Color::Rgb(32, 53, 68)
+                }
+            );
         }
         let text = f.cells.iter().map(|c| c.text.as_str()).collect::<String>();
         assert!(text.contains("Conversation") && text.contains("/project"));
@@ -5175,4 +5208,55 @@ fn closed_restore_popup_offers_only_relevant_actions_and_cancel_preserves_histor
             assert_eq!(ws.ui.closed_tabs.len(), 1);
         }
     }
+}
+
+#[test]
+fn agents_action_button_distinguishes_open_from_unpark_and_cancel_returns_to_agents() {
+    use kelpmux::native::{
+        ui::DialogKind,
+        workspace::{dialog_bounds_for, parked_cards, session_control},
+    };
+    let mut ws = workspace((120, 40), (2, 1));
+    for pane in &mut ws.panes {
+        pane.kind = Some(Kind::Codex);
+    }
+    ws.apply(&Action::Park(2)).unwrap();
+    ws.apply(&Action::Agents(AgentFilter::All)).unwrap();
+    let f = frame(&ws);
+    let text = f
+        .cells
+        .iter()
+        .map(|cell| cell.text.as_str())
+        .collect::<String>();
+    assert!(text.contains("Open tab") && text.contains("Unpark"));
+    let bounds = dialog_bounds_for(f.cols, f.rows, DialogKind::Agents);
+    let rect = parked_cards(bounds, 0, 2)[1].1;
+    assert_eq!(
+        actions(Router::default().route(
+            click(Point {
+                x: rect.x + 2,
+                y: rect.y
+            }),
+            &f
+        )),
+        vec![Action::DialogPick(1)]
+    );
+    let control = session_control(rect);
+    let requested = actions(Router::default().route(
+        click(Point {
+            x: control.x,
+            y: control.y,
+        }),
+        &f,
+    ));
+    assert_eq!(requested, vec![Action::RestoreRequest(2)]);
+    for action in requested {
+        ws.apply(&action).unwrap();
+    }
+    for action in actions(Router::default().route(InputEvent::Bytes(vec![27]), &frame(&ws))) {
+        ws.apply(&action).unwrap();
+    }
+    assert_eq!(ws.ui.dialog.unwrap().kind, DialogKind::Agents);
+    assert_eq!(ws.ui.dialog.unwrap().selection, 1);
+    assert!(ws.panes[1].parked);
 }
