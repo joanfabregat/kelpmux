@@ -2,6 +2,7 @@ use super::protocol::*;
 use super::ui::{AgentFilter, Dialog, DialogKind, UiState};
 use crate::Result;
 pub const GRIDS: [(u8, u8); 6] = [(1, 1), (2, 1), (2, 2), (3, 2), (2, 3), (3, 3)];
+pub const GRID_DIVIDER_COLS: u16 = 2;
 
 #[derive(Debug, Clone)]
 pub struct Workspace {
@@ -14,6 +15,7 @@ pub struct Workspace {
     pub grid_rows: u8,
     pub help: bool,
     pub ui: UiState,
+    restore_origin: Option<Dialog>,
 }
 impl Workspace {
     pub fn new(cols: u16, rows: u16) -> Result<Self> {
@@ -27,6 +29,7 @@ impl Workspace {
             grid_cols: 1,
             grid_rows: 1,
             help: false,
+            restore_origin: None,
             ui: UiState {
                 grid_shape: (1, 1),
                 ..Default::default()
@@ -192,14 +195,18 @@ impl Workspace {
     /// Fixed columns across every row, including unused visual slots.
     pub fn grid_slots(&self) -> Vec<Rect> {
         let (cols, rows) = self.automatic_shape();
-        let x = weighted_boundaries(self.cols - u16::from(cols - 1), cols, &[]);
+        let x = weighted_boundaries(
+            self.cols - GRID_DIVIDER_COLS * u16::from(cols - 1),
+            cols,
+            &[],
+        );
         let y = weighted_boundaries(self.rows - 1, rows, &[]);
         (0..usize::from(cols) * usize::from(rows))
             .map(|index| {
                 let col = index % usize::from(cols);
                 let row = index / usize::from(cols);
                 Rect {
-                    x: x[col] + col as u16,
+                    x: x[col] + col as u16 * GRID_DIVIDER_COLS,
                     y: y[row],
                     cols: x[col + 1] - x[col],
                     rows: y[row + 1] - y[row],
@@ -242,7 +249,7 @@ impl Workspace {
     }
     fn grid_capacity(&self) -> (u8, u8) {
         (
-            ((self.cols + 1) / 13).max(1) as u8,
+            ((self.cols + GRID_DIVIDER_COLS) / (12 + GRID_DIVIDER_COLS)).max(1) as u8,
             ((self.rows - 1) / 3).max(1) as u8,
         )
     }
@@ -327,6 +334,9 @@ impl Workspace {
             .ok_or_else(|| "unknown pane".into())
     }
     pub fn apply(&mut self, action: &Action) -> Result<()> {
+        if !matches!(action, Action::GridDrag(_)) {
+            self.ui.grid_drop = None;
+        }
         if !matches!(
             action,
             Action::TabDrag(_) | Action::Reorder { .. } | Action::ScrollTabs(_)
@@ -370,6 +380,20 @@ impl Workspace {
             self.ui.tab_scroll_anchor = Some(anchor);
         }
         match *action {
+            Action::GridDrag(drop) => {
+                if let Some((source, target)) = drop {
+                    if self.reading != ReadingMode::Grid {
+                        return Err("grid drag requires grid view".into());
+                    }
+                    for id in [source, target] {
+                        let index = self.require_pane(id)?;
+                        if self.panes[index].parked || Some(id) == self.ui.scratch {
+                            return Err("only visible grid panes can be dragged".into());
+                        }
+                    }
+                }
+                self.ui.grid_drop = drop;
+            }
             Action::TabDrag(drop) => {
                 if let Some((source, before)) = drop {
                     for id in std::iter::once(source).chain(before) {
@@ -471,6 +495,23 @@ impl Workspace {
                 if Some(id) == self.ui.scratch || self.panes[index].parked != restore {
                     return Err("tab is not available for this action".into());
                 }
+                self.restore_origin = if restore {
+                    self.ui
+                        .dialog
+                        .filter(|dialog| {
+                            matches!(dialog.kind, DialogKind::Agents | DialogKind::Parked)
+                        })
+                        .map(|mut dialog| {
+                            dialog.selection = self
+                                .dialog_entries()
+                                .iter()
+                                .position(|pane| *pane == id)
+                                .unwrap_or(dialog.selection);
+                            dialog
+                        })
+                } else {
+                    None
+                };
                 self.help = false;
                 self.ui.dialog = Some(Dialog {
                     kind: if restore {
@@ -512,6 +553,7 @@ impl Workspace {
             }
             Action::Restore(id) => {
                 let index = self.require_pane(id)?;
+                self.restore_origin = None;
                 self.panes[index].parked = false;
                 self.active = id;
                 if self.reading != ReadingMode::Grid {
@@ -707,9 +749,25 @@ impl Workspace {
             Action::AccentSet(accent) => self.ui.config.accent = accent,
             Action::RecoveryCopy(index) => {
                 self.ui
-                    .recovery
+                    .closed_tabs
                     .get(index)
                     .ok_or("invalid recovery entry")?;
+            }
+            Action::ReopenRequest(index) => {
+                self.ui.closed_tabs.get(index).ok_or("unknown closed tab")?;
+                if self.ui.recovery_loading {
+                    return Err("closed tabs are still loading".into());
+                }
+                self.help = false;
+                self.ui.dialog = Some(Dialog {
+                    kind: DialogKind::ReopenConfirm,
+                    selection: 0,
+                    source: Some(index as u64),
+                    filter: AgentFilter::All,
+                });
+            }
+            Action::ReopenLast | Action::ReopenTab(_) | Action::RerunTab(_) => {
+                return Err("restoring tabs requires the PTY server".into());
             }
             Action::SearchCopy(index) => {
                 self.ui
@@ -850,6 +908,29 @@ impl Workspace {
                 });
             }
             Action::DialogClose => {
+                if self
+                    .ui
+                    .dialog
+                    .is_some_and(|d| d.kind == DialogKind::RestoreConfirm)
+                {
+                    if let Some(origin) = self.restore_origin.take() {
+                        self.ui.dialog = Some(origin);
+                        return Ok(());
+                    }
+                }
+                if let Some(dialog) = self
+                    .ui
+                    .dialog
+                    .filter(|d| d.kind == DialogKind::ReopenConfirm)
+                {
+                    self.ui.dialog = Some(Dialog {
+                        kind: DialogKind::Recovery,
+                        selection: dialog.source.unwrap_or(0) as usize,
+                        source: None,
+                        filter: AgentFilter::All,
+                    });
+                    return Ok(());
+                }
                 if let Some(dialog) = self
                     .ui
                     .dialog
@@ -1108,6 +1189,18 @@ impl Workspace {
         Ok(cols as usize * rows as usize)
     }
     pub fn dialog_entries(&self) -> Vec<PaneId> {
+        if let Some(dialog) = self
+            .ui
+            .dialog
+            .filter(|d| d.kind == DialogKind::ReopenConfirm)
+        {
+            return self
+                .ui
+                .closed_tabs
+                .get(dialog.source.unwrap_or(u64::MAX) as usize)
+                .map(|entry| (0..entry.restore_choices().len() as u64).collect())
+                .unwrap_or_default();
+        }
         match self.ui.dialog.map(|dialog| dialog.kind) {
             Some(DialogKind::AgentLink) => {
                 return (0..=self.ui.agent_sessions.len() as u64).collect();
@@ -1117,7 +1210,7 @@ impl Workspace {
                     .map(|item| item.id)
                     .collect();
             }
-            Some(DialogKind::Recovery) => return (0..self.ui.recovery.len() as u64).collect(),
+            Some(DialogKind::Recovery) => return (0..self.ui.closed_tabs.len() as u64).collect(),
             Some(DialogKind::Search) => return (0..self.ui.search_hits.len() as u64).collect(),
             _ => {}
         }
@@ -1188,6 +1281,16 @@ pub fn dialog_bounds(cols: u16, rows: u16) -> Rect {
 pub fn dialog_bounds_for(cols: u16, rows: u16, kind: super::ui::DialogKind) -> Rect {
     if kind == super::ui::DialogKind::Status {
         return super::status::bounds(cols, rows);
+    }
+    if kind == super::ui::DialogKind::ReopenConfirm {
+        let width = cols.saturating_sub(4).min(76);
+        let height = rows.saturating_sub(2).min(12);
+        return Rect {
+            x: (cols - width) / 2,
+            y: (rows - 1 - height) / 2,
+            cols: width,
+            rows: height,
+        };
     }
     if !matches!(
         kind,
@@ -1417,6 +1520,27 @@ pub fn tab_close(rect: Rect) -> Rect {
     }
 }
 
+pub fn reopen_buttons(bounds: Rect, count: usize) -> Vec<Rect> {
+    if count == 0 {
+        return vec![];
+    }
+    let count = count.min(3) as u16;
+    let gap = 2;
+    let available = bounds.cols.saturating_sub(4 + gap * (count - 1));
+    let height = if bounds.rows >= 9 { 3 } else { 2 };
+    (0..count)
+        .map(|index| {
+            let start = available * index / count;
+            let end = available * (index + 1) / count;
+            Rect {
+                x: bounds.x + 2 + start + index * gap,
+                y: bounds.y + bounds.rows.saturating_sub(height + 1),
+                cols: end - start,
+                rows: height,
+            }
+        })
+        .collect()
+}
 pub fn close_buttons(bounds: Rect) -> [Rect; 2] {
     let width = bounds.cols.saturating_sub(6) / 2;
     let height = if bounds.rows >= 9 {
@@ -1476,7 +1600,7 @@ pub fn help_button(rows: u16, count: usize) -> Rect {
     }
 }
 pub fn sidebar_status_rows(rows: u16) -> u16 {
-    if rows >= 18 { 8 } else { 3 }
+    if rows >= 18 { 9 } else { 4 }
 }
 pub fn sidebar_button_rows(_rows: u16) -> u16 {
     1
@@ -1500,10 +1624,10 @@ pub fn sidebar_controls(
     }
     let right = width.div_ceil(2);
     [
+        rect(0, rows - 3 * height, right),
+        rect(right, rows - 3 * height, width - right),
         rect(0, rows - 2 * height, right),
         rect(right, rows - 2 * height, width - right),
-        rect(0, rows - height, right),
-        rect(right, rows - height, width - right),
     ]
 }
 pub fn color_cards(bounds: Rect) -> Vec<Rect> {
@@ -1652,8 +1776,13 @@ pub fn tab_new_line(rect: Rect) -> Rect {
     }
 }
 
-/// Restore and close buttons occupy the full height of a parked entry.
+/// Action buttons occupy the two data rows between the top and bottom padding.
 pub fn parked_controls(rect: Rect) -> [Rect; 2] {
+    let rect = Rect {
+        y: rect.y + 1,
+        rows: rect.rows.saturating_sub(2),
+        ..rect
+    };
     let close = Rect {
         x: rect.x + rect.cols.saturating_sub(4),
         cols: 3,
@@ -1661,16 +1790,27 @@ pub fn parked_controls(rect: Rect) -> [Rect; 2] {
     };
     [
         Rect {
-            x: close.x.saturating_sub(3),
+            x: close.x.saturating_sub(if rect.cols >= 60 { 11 } else { 3 }),
+            cols: if rect.cols >= 60 { 11 } else { 3 },
             ..close
         },
         close,
     ]
 }
 
-/// Shared three-row parked entry bounds for drawing, hover and click routing.
+pub fn session_control(rect: Rect) -> Rect {
+    let width = if rect.cols >= 60 { 12 } else { 3 };
+    Rect {
+        x: rect.x + rect.cols.saturating_sub(width + 1),
+        cols: width,
+        y: rect.y + 1,
+        rows: rect.rows.saturating_sub(2),
+    }
+}
+
+/// Shared four-row entries: top padding, two data rows, bottom padding/rule.
 pub fn parked_cards(bounds: Rect, selection: usize, count: usize) -> Vec<(usize, Rect)> {
-    let visible = usize::from(bounds.rows.saturating_sub(2) / 3);
+    let visible = usize::from(bounds.rows.saturating_sub(2) / 4);
     let offset = selection.saturating_sub(visible.saturating_sub(1));
     (offset..count)
         .take(visible)
@@ -1680,9 +1820,9 @@ pub fn parked_cards(bounds: Rect, selection: usize, count: usize) -> Vec<(usize,
                 index,
                 Rect {
                     x: bounds.x,
-                    y: bounds.y + 2 + row as u16 * 3,
+                    y: bounds.y + 2 + row as u16 * 4,
                     cols: bounds.cols,
-                    rows: 3,
+                    rows: 4,
                 },
             )
         })

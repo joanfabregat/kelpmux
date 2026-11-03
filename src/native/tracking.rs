@@ -62,8 +62,8 @@ pub fn tab_name(agent: &Agent, terminal: Option<&str>, alias: Option<&str>) -> (
 }
 
 /// Applications may decorate OSC titles with a spinner independently of agent
-/// metadata. Remove only a leading braille glyph followed by whitespace; never
-/// infer lifecycle state from it or rewrite explicit names and aliases.
+/// metadata. Strip its leading spinner and a matching folder suffix, including
+/// Linux's deleted-cwd marker. Never rewrite explicit names or aliases.
 pub fn agent_terminal_title<'a>(title: &'a str, cwd: &str) -> &'a str {
     let title = title.trim();
     let mut chars = title.chars();
@@ -76,16 +76,22 @@ pub fn agent_terminal_title<'a>(title: &'a str, cwd: &str) -> &'a str {
         }
         _ => title,
     };
-    let folder = Path::new(cwd)
-        .file_name()
-        .and_then(|name| name.to_str())
-        .unwrap_or("");
+    // Try the literal path first: a real folder may itself end in " (deleted)".
+    for path in [cwd, cwd.strip_suffix(" (deleted)").unwrap_or(cwd)] {
+        let folder = Path::new(path)
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or("");
+        if let Some(name) = title
+            .strip_suffix(folder)
+            .filter(|_| !folder.is_empty())
+            .and_then(|prefix| prefix.strip_suffix(" | "))
+            .filter(|name| !name.trim().is_empty())
+        {
+            return name;
+        }
+    }
     title
-        .strip_suffix(folder)
-        .filter(|_| !folder.is_empty())
-        .and_then(|prefix| prefix.strip_suffix(" | "))
-        .filter(|name| !name.trim().is_empty())
-        .unwrap_or(title)
 }
 
 /// Preserve logical pane order, including ordinary shells in the unfiltered view.

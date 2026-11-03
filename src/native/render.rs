@@ -3,8 +3,136 @@
 use super::{engine::safe_text, protocol::*, ui::PALETTE, workspace::Workspace};
 use std::{collections::BTreeMap, fmt::Write};
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
+const GRID_BORDER: Color = Color::Rgb(71, 113, 153);
+const TABLE_BG: Color = Color::Rgb(32, 53, 68);
+const TABLE_SELECTED: Color = Color::Rgb(50, 76, 96);
+const TABLE_MUTED: Color = Color::Rgb(164, 182, 194);
 
 pub fn compose(
+    workspace: &Workspace,
+    screens: &BTreeMap<PaneId, Screen>,
+    controller: bool,
+    notice: Option<&str>,
+    spinner: usize,
+) -> Frame {
+    let action = workspace
+        .ui
+        .tab_drop
+        .map(|(source, before)| (source, Action::Reorder { source, before }))
+        .or_else(|| {
+            workspace
+                .ui
+                .grid_drop
+                .map(|(source, target)| (source, Action::Swap { source, target }))
+        });
+    if let Some((source, action)) = action {
+        let mut preview = workspace.clone();
+        let visible: Vec<_> = workspace
+            .panes
+            .iter()
+            .filter(|p| !p.parked && Some(p.id) != workspace.ui.scratch)
+            .collect();
+        let anchor = workspace.ui.tab_scroll_anchor.unwrap_or_else(|| {
+            visible
+                .iter()
+                .position(|p| p.id == workspace.active)
+                .unwrap_or(0)
+        });
+        if preview.apply(&action).is_ok() {
+            preview.ui.tab_scroll_anchor = Some(anchor);
+            let mut frame = compose_scene(&preview, screens, controller, notice, spinner);
+            let landing = if workspace.reading == ReadingMode::Grid {
+                frame
+                    .panes
+                    .iter()
+                    .find(|v| v.pane.id == source)
+                    .map(|v| v.rect)
+            } else {
+                let panes: Vec<_> = preview
+                    .panes
+                    .iter()
+                    .filter(|p| !p.parked && Some(p.id) != preview.ui.scratch)
+                    .collect();
+                let index = panes.iter().position(|p| p.id == source);
+                super::workspace::tab_targets(
+                    preview.cols,
+                    preview.rows,
+                    &preview.ui.config,
+                    panes.len(),
+                    anchor,
+                    preview.panes.iter().filter(|p| p.parked).count(),
+                )
+                .into_iter()
+                .find_map(|(target, rect)| {
+                    (Some(target) == index.map(super::workspace::TabTarget::Pane)).then_some(rect)
+                })
+            };
+            if let Some(rect) = landing {
+                for y in rect.y..(rect.y + rect.rows).min(frame.rows) {
+                    for x in rect.x..(rect.x + rect.cols).min(frame.cols) {
+                        let cell = &mut frame.cells
+                            [usize::from(y) * usize::from(frame.cols) + usize::from(x)];
+                        let base = match cell.bg {
+                            Color::Rgb(r, g, b) => [r, g, b],
+                            Color::Default => terminal_backdrop(workspace),
+                            other => {
+                                let (r, g, b) = color_rgb(other, false);
+                                [r, g, b]
+                            }
+                        };
+                        cell.bg = mix(base, [150, 150, 150], 25);
+                    }
+                }
+                if workspace.reading == ReadingMode::Grid && rect.cols > 0 {
+                    let bg = neutral(workspace, 28);
+                    let label = " Drop here ";
+                    write_text(
+                        &mut frame,
+                        rect.x,
+                        rect.y,
+                        rect.cols,
+                        &" ".repeat(usize::from(rect.cols)),
+                        tab_text(workspace, false),
+                        bg,
+                        false,
+                    );
+                    write_text(
+                        &mut frame,
+                        rect.x + rect.cols.saturating_sub(label.width() as u16) / 2,
+                        rect.y,
+                        rect.cols,
+                        label,
+                        tab_text(workspace, false),
+                        bg,
+                        true,
+                    );
+                    let start = usize::from(rect.y) * usize::from(frame.cols) + usize::from(rect.x);
+                    if rect.x > 0 {
+                        frame.cells[start - 1].bg = frame.cells[start].bg;
+                    }
+                    if rect.x + rect.cols < frame.cols {
+                        let right = start + usize::from(rect.cols);
+                        frame.cells[right].bg = frame.cells[right - 1].bg;
+                    }
+                }
+            }
+            // Keep authoritative hit targets while dragging so moving cards do
+            // not make the same pointer position oscillate between destinations.
+            frame.panes = workspace.layout();
+            for view in &mut frame.panes {
+                if let Some(screen) = screens.get(&view.pane.id) {
+                    view.modes = screen.modes;
+                }
+            }
+            frame.ui = workspace.ui.clone();
+            frame.cursor = None;
+            return frame;
+        }
+    }
+    compose_scene(workspace, screens, controller, notice, spinner)
+}
+
+fn compose_scene(
     workspace: &Workspace,
     screens: &BTreeMap<PaneId, Screen>,
     controller: bool,
@@ -35,6 +163,7 @@ pub fn compose(
         for rect in workspace.grid_slots().into_iter().skip(count) {
             let bg = theme_surface(workspace, 8);
             fill(&mut frame, rect, bg);
+            grid_header_rule(&mut frame, rect);
             write_text(
                 &mut frame,
                 rect.x + rect.cols.saturating_sub(8) / 2,
@@ -162,7 +291,7 @@ pub fn compose(
             format!(
                 "^{}: {} tabs/grid · Enter new · p park · {} detach",
                 char::from(b'A' + workspace.ui.config.prefix - 1),
-                binding_label(&workspace.ui.config, "z", "read"),
+                "Alt+Tab",
                 binding_label(&workspace.ui.config, "d", "detach")
             )
         } else {
@@ -182,7 +311,8 @@ pub fn compose(
         let [config, mode, _, _] = frame.controls();
         let footer_cols = frame.footer_cols();
         if workspace.ui.show_dev_badge {
-            draw_dev_badge(&mut frame, help.x + help.cols, y);
+            let agents = frame.history_controls()[1];
+            draw_dev_badge(&mut frame, agents.x + agents.cols, y);
         }
         let width = frame.cols.saturating_sub(footer_cols);
         write_text(
@@ -258,6 +388,28 @@ pub fn compose(
     } else if !workspace.ui.vitals.is_empty() && notice.is_none() {
         draw_vitals(&mut frame, &workspace.ui.vitals);
     }
+    if !matches!(frame.reading, ReadingMode::Fullscreen(_)) {
+        let [closed, agents] = frame.history_controls();
+        for (rect, label, color) in [(closed, "↺ Closed", 110), (agents, "◇ Agents", 115)] {
+            let label = if rect.cols < 8 {
+                if rect == closed { "↺" } else { "◇" }
+            } else {
+                label
+            };
+            let inset = u16::from(frame.sidebar_status() && rect.cols > 1);
+            fill(&mut frame, rect, neutral(workspace, 14));
+            write_text(
+                &mut frame,
+                rect.x + inset,
+                rect.y,
+                rect.cols.saturating_sub(inset),
+                label,
+                Color::Indexed(color),
+                neutral(workspace, 14),
+                false,
+            );
+        }
+    }
     if workspace.help || workspace.ui.dialog.is_some() || workspace.ui.scratch_visible {
         let keep =
             if workspace.ui.scratch_visible && !workspace.help && workspace.ui.dialog.is_none() {
@@ -281,7 +433,7 @@ fn help_entries(config: &super::ui::UiConfig) -> Vec<(String, &'static str)> {
     let key = |default, action| binding_label(config, default, action);
     vec![
         ("1–9".into(), "Select tab (also Alt+1–9)"),
-        (key("z", "read"), "Tabs / grid (also Alt+Tab)"),
+        ("Alt+Tab".into(), "Tabs / grid"),
         (key("g/e", "grid"), "Automatic grid view"),
         (key("f", "fullscreen"), "Focus tab / return to grid"),
         ("Enter".into(), "New tab"),
@@ -316,7 +468,8 @@ fn help_entries(config: &super::ui::UiConfig) -> Vec<(String, &'static str)> {
         ("Tab number".into(), "Choose tab color (click)"),
         (key("o", "overview"), "Workspace overview"),
         (key("b", "notifications"), "Notifications"),
-        (key("r", "recovery"), "Recovery journal"),
+        (key("r", "recovery"), "Recently closed / previous run"),
+        (key("z", "reopen"), "Reopen most recently closed tab"),
         (
             format!(
                 "{} / {}",
@@ -459,17 +612,50 @@ fn draw_grid_separators(frame: &mut Frame, workspace: &Workspace) {
         let right = rect.x + rect.cols;
         if right < frame.cols {
             for y in rect.y..rect.y + rect.rows {
-                write_text(
-                    frame,
-                    right,
-                    y,
-                    1,
-                    "┃",
-                    Color::Rgb(69, 76, 86),
-                    Color::Default,
-                    false,
-                );
+                // Continue the neighboring header surface behind the line;
+                // a default background here leaves a dark gap in the header.
+                let bg = if y == rect.y {
+                    theme_surface(workspace, 8)
+                } else {
+                    Color::Default
+                };
+                for (offset, glyph) in ["▕", "▎"].into_iter().enumerate() {
+                    write_text(
+                        frame,
+                        right + offset as u16,
+                        y,
+                        1,
+                        glyph,
+                        GRID_BORDER,
+                        bg,
+                        false,
+                    );
+                    if y == rect.y {
+                        grid_header_rule(
+                            frame,
+                            Rect {
+                                x: right + offset as u16,
+                                y,
+                                cols: 1,
+                                rows: 1,
+                            },
+                        );
+                    }
+                }
             }
+        }
+    }
+}
+/// A colored underline draws a horizontal rule inside the existing header row.
+/// No screen row or application cell is taken away from a terminal body.
+fn grid_header_rule(frame: &mut Frame, rect: Rect) {
+    for x in rect.x..rect.x.saturating_add(rect.cols).min(frame.cols) {
+        if let Some(cell) = frame
+            .cells
+            .get_mut(usize::from(rect.y) * usize::from(frame.cols) + usize::from(x))
+        {
+            cell.underline = true;
+            cell.underline_color = Some(GRID_BORDER);
         }
     }
 }
@@ -495,6 +681,20 @@ fn header(
         "",
         spinner,
     );
+    if workspace.reading == ReadingMode::Grid {
+        grid_header_rule(frame, view.rect);
+        if view.rect.x > 0 {
+            let start =
+                usize::from(view.rect.y) * usize::from(frame.cols) + usize::from(view.rect.x);
+            // Continue the neighboring header surface through the divider cell.
+            frame.cells[start - 1].bg = frame.cells[start].bg;
+        }
+        let right = view.rect.x + view.rect.cols;
+        if right < frame.cols {
+            let end = usize::from(view.rect.y) * usize::from(frame.cols) + usize::from(right);
+            frame.cells[end].bg = frame.cells[end - 1].bg;
+        }
+    }
 }
 
 fn inactive_color(color: Color, foreground: bool, theme: [Option<[u8; 3]>; 2]) -> Color {
@@ -584,12 +784,6 @@ fn theme_surface(workspace: &Workspace, offset: u8) -> Color {
 fn tab_accent(workspace: &Workspace, selected: bool) -> Color {
     theme_surface(workspace, if selected { 88 } else { 50 })
 }
-fn tab_background(workspace: &Workspace, selected: bool) -> Color {
-    if selected && workspace.ui.terminal_theme[1].is_none() {
-        return Color::Indexed(242);
-    }
-    theme_surface(workspace, if selected { 50 } else { 14 })
-}
 fn tab_text(workspace: &Workspace, _selected: bool) -> Color {
     if workspace.ui.terminal_theme[1]
         .is_some_and(|[r, g, b]| u16::from(r) * 3 + u16::from(g) * 6 + u16::from(b) >= 1280)
@@ -607,11 +801,22 @@ fn draw_dialog(
 ) {
     use super::ui::{AgentFilter, DialogKind};
     let bounds = super::workspace::dialog_bounds_for(frame.cols, frame.rows, dialog.kind);
-    fill(frame, bounds, Color::Indexed(236));
+    fill(
+        frame,
+        bounds,
+        if matches!(
+            dialog.kind,
+            DialogKind::Parked | DialogKind::Recovery | DialogKind::Agents
+        ) {
+            TABLE_BG
+        } else {
+            Color::Indexed(236)
+        },
+    );
     let header_bg = Color::Indexed(
         if matches!(
             dialog.kind,
-            DialogKind::Parked | DialogKind::ParkConfirm | DialogKind::RestoreConfirm
+            DialogKind::ParkConfirm | DialogKind::RestoreConfirm
         ) {
             super::ui::PARKED_BG
         } else if dialog.kind == DialogKind::CloseConfirm {
@@ -626,16 +831,16 @@ fn draw_dialog(
         .unwrap_or_else(|| " Notifications".into());
     let title = match dialog.kind {
         DialogKind::Status => " System status · live",
-        DialogKind::Parked => " ⊟ Parked tabs · select to restore",
+        DialogKind::Parked => " ⊟ Parked tabs · use Unpark or Close",
         DialogKind::Grid => " ▦ Grid · arrows, Enter or click",
         DialogKind::Overview => " Workspace overview · l links conversation",
         DialogKind::AgentLink => " Link agent conversation · Enter or click",
         DialogKind::Notifications => &notification_title,
         DialogKind::Recovery => {
             if workspace.ui.recovery_loading {
-                " Recovery · loading…"
+                " ↺ Closed · loading…"
             } else {
-                " Recovery"
+                " ↺ Closed · use Restore or Enter"
             }
         }
         DialogKind::Search => " Search history",
@@ -644,11 +849,12 @@ fn draw_dialog(
         DialogKind::CloseConfirm => " Close this tab?",
         DialogKind::ParkConfirm => " ⊟ Park this tab?",
         DialogKind::RestoreConfirm => " ↥ Restore this tab?",
+        DialogKind::ReopenConfirm => " ↺ Restore closed tab",
         DialogKind::Color => " Tab color · arrows, Enter or click",
         DialogKind::Agents => match dialog.filter {
-            AgentFilter::All => " Agents",
-            AgentFilter::Attention => " Agents needing attention",
-            AgentFilter::Finished => " Finished agents",
+            AgentFilter::All => " ◇ Agents",
+            AgentFilter::Attention => " ◇ Agents needing attention",
+            AgentFilter::Finished => " ◇ Finished agents",
         },
     };
     write_text(
@@ -711,6 +917,117 @@ fn draw_dialog(
                 }),
                 bg,
             );
+        }
+    } else if dialog.kind == DialogKind::ReopenConfirm {
+        if let Some(entry) = dialog
+            .source
+            .and_then(|id| workspace.ui.closed_tabs.get(id as usize))
+        {
+            let choices = entry.restore_choices();
+            let controls = super::workspace::reopen_buttons(bounds, choices.len());
+            let limit = controls.first().map_or(bounds.y + bounds.rows, |r| r.y);
+            let detail = entry
+                .command()
+                .or_else(|| entry.previous_command())
+                .unwrap_or_default();
+            for (offset, text) in [entry.name.as_str(), entry.cwd.as_str(), detail.as_str()]
+                .into_iter()
+                .enumerate()
+            {
+                let y = bounds.y + 2 + offset as u16;
+                if y < limit {
+                    write_text(
+                        frame,
+                        bounds.x + 2,
+                        y,
+                        bounds.cols.saturating_sub(4),
+                        &safe_text(text),
+                        Color::Indexed(250),
+                        Color::Indexed(236),
+                        offset == 0,
+                    );
+                }
+            }
+            for (index, (rect, choice)) in controls.into_iter().zip(choices).enumerate() {
+                use super::history::RestoreChoice;
+                let selected = index == dialog.selection;
+                let bg = Color::Indexed(match choice {
+                    RestoreChoice::Cancel => {
+                        if selected {
+                            240
+                        } else {
+                            238
+                        }
+                    }
+                    RestoreChoice::Folder => {
+                        if selected {
+                            27
+                        } else {
+                            24
+                        }
+                    }
+                    _ => {
+                        if selected {
+                            35
+                        } else {
+                            super::ui::RESTORE_BG
+                        }
+                    }
+                });
+                fill(frame, rect, bg);
+                let width = rect.cols.saturating_sub(2);
+                let wrap = |label: &str| {
+                    let mut lines = vec![String::new()];
+                    for word in label.split_whitespace() {
+                        let last = lines.last_mut().unwrap();
+                        if !last.is_empty() && last.width() + 1 + word.width() > usize::from(width)
+                        {
+                            lines.push(word.to_string());
+                        } else {
+                            if !last.is_empty() {
+                                last.push(' ');
+                            }
+                            last.push_str(word);
+                        }
+                    }
+                    lines
+                };
+                let mut lines = wrap(choice.label());
+                if lines.len() > usize::from(rect.rows) {
+                    lines = wrap(match choice {
+                        RestoreChoice::Resume => "Resume",
+                        RestoreChoice::Picker => "Pick session",
+                        RestoreChoice::Restart => "Restart",
+                        RestoreChoice::Folder => "Open folder",
+                        RestoreChoice::Cancel => "Cancel",
+                    });
+                }
+                let y = rect.y + rect.rows.saturating_sub(lines.len() as u16) / 2;
+                for (row, label) in lines.iter().enumerate() {
+                    write_text(
+                        frame,
+                        rect.x + 1 + width.saturating_sub(label.width() as u16) / 2,
+                        y + row as u16,
+                        width,
+                        label,
+                        Color::Indexed(231),
+                        bg,
+                        true,
+                    );
+                }
+                if selected {
+                    write_text(
+                        frame,
+                        rect.x,
+                        rect.y + rect.rows / 2,
+                        1,
+                        "›",
+                        Color::Indexed(231),
+                        bg,
+                        true,
+                    );
+                }
+            }
         }
     } else if matches!(
         dialog.kind,
@@ -880,6 +1197,8 @@ fn draw_dialog(
                 dialog.selection == index + 1,
             );
         }
+    } else if matches!(dialog.kind, DialogKind::Recovery | DialogKind::Agents) {
+        draw_session_table(frame, workspace, dialog, bounds);
     } else if dialog.kind == DialogKind::Parked {
         draw_parked(frame, workspace, dialog, bounds, spinner);
     } else if matches!(
@@ -1058,12 +1377,17 @@ fn draw_dialog(
                 let bg = Color::Indexed(if index == dialog.selection { 24 } else { 236 });
                 fill(frame, rect, bg);
                 let label = format!(
-                    " {} {} {} · {} · session {}",
-                    pane.number,
+                    " {} {} · {} · {} · {} · {}",
+                    if pane.parked {
+                        format!("parked #{}", pane.id)
+                    } else {
+                        format!("tab {}", pane.number)
+                    },
                     super::ui::status_icon(pane.status),
+                    pane.kind.map_or("shell", |kind| kind.as_str()),
                     pane.title,
-                    pane.status.text(),
-                    pane.session_id.as_deref().unwrap_or("unknown")
+                    pane.cwd,
+                    pane.status.text()
                 );
                 write_text(
                     frame,
@@ -1498,35 +1822,6 @@ fn draw_tabs(frame: &mut Frame, workspace: &Workspace, spinner: usize) {
             }
         }
     }
-    if let Some((_, before)) = workspace.ui.tab_drop {
-        let index = before
-            .and_then(|id| panes.iter().position(|p| p.id == id))
-            .unwrap_or(panes.len());
-        let marker = targets
-            .iter()
-            .find_map(|(target, rect)| match target {
-                TabTarget::Pane(i) if *i == index => Some(rect.y.saturating_sub(1)),
-                _ => None,
-            })
-            .or_else(|| {
-                targets
-                    .iter()
-                    .rev()
-                    .find_map(|(target, rect)| match target {
-                        TabTarget::Pane(i) if *i + 1 == index => Some(rect.y + rect.rows - 1),
-                        _ => None,
-                    })
-            });
-        if let Some(y) = marker {
-            let width = frame.sidebar_width() - 1;
-            for x in 0..width {
-                let cell =
-                    &mut frame.cells[usize::from(y) * usize::from(frame.cols) + usize::from(x)];
-                cell.underline = true;
-                cell.underline_color = Some(Color::Indexed(75));
-            }
-        }
-    }
     let x = frame.sidebar_width() - 1;
     let accent = neutral(workspace, 23);
     for y in 0..frame.rows {
@@ -1573,16 +1868,13 @@ fn draw_folded_tab(
         bg,
         true,
     );
-    let indicator_width = if rect.cols >= 2 { 2 } else { 0 };
+    let indicator_width = u16::from(rect.cols > 0);
     let track = Rect {
         x: rect.x + rect.cols.saturating_sub(indicator_width) / 2,
         y: rect.y + 1,
         cols: indicator_width,
         rows: 1,
     };
-    if pane.status == crate::model::Status::Working {
-        activity_sheen(frame, workspace, rect, tick);
-    }
     activity_indicator(frame, workspace, pane, track, tick);
 }
 
@@ -1653,7 +1945,13 @@ fn draw_tab(
             park.x.saturating_sub(count_width).saturating_sub(x),
         )
     };
-    let marker_width = 2;
+    let marker_width = if rect.rows >= 2 {
+        6
+    } else if grid {
+        3
+    } else {
+        1
+    };
     let track = if rect.rows >= 2 {
         Rect {
             x: number.x + number.cols + 1,
@@ -1671,6 +1969,8 @@ fn draw_tab(
             y: title_y,
             cols: if title_width >= marker_width + 2 {
                 marker_width
+            } else if title_width >= 3 {
+                1
             } else {
                 0
             },
@@ -1849,9 +2149,6 @@ fn draw_tab(
         );
     }
     activity_indicator(frame, workspace, pane, track, spinner);
-    if pane.status == crate::model::Status::Working {
-        activity_sheen(frame, workspace, rect, spinner);
-    }
 }
 
 fn activity_indicator(
@@ -1861,11 +2158,18 @@ fn activity_indicator(
     track: Rect,
     tick: usize,
 ) {
-    if track.cols < 2 {
+    if track.cols == 0 {
         return;
     }
     let icon = if pane.status == crate::model::Status::Working {
-        Some(super::ui::MOON_FRAMES[tick % 8])
+        let tick = super::ui::activity_phase(tick, track.cols);
+        Some(if track.cols >= 6 {
+            super::ui::SIDEBAR_BALL_FRAMES[tick % super::ui::SIDEBAR_BALL_FRAMES.len()]
+        } else if track.cols >= 3 {
+            super::ui::GRID_BALL_FRAMES[tick % super::ui::GRID_BALL_FRAMES.len()]
+        } else {
+            super::ui::SPINNER_FRAMES[tick % super::ui::SPINNER_FRAMES.len()]
+        })
     } else {
         super::ui::pane_indicator(&workspace.ui, pane)
     };
@@ -1873,43 +2177,14 @@ fn activity_indicator(
         let bg =
             frame.cells[usize::from(track.y) * usize::from(frame.cols) + usize::from(track.x)].bg;
         let fg = match icon {
-            super::ui::WAIT_ICON => Color::Indexed(226),
+            super::ui::WAIT_ICON => Color::Indexed(110),
             super::ui::DONE_ICON => Color::Indexed(114),
             super::ui::ALERT_ICON => Color::Indexed(203),
-            _ => neutral(workspace, 55),
+            _ => Color::Rgb(155, 205, 185),
         };
         write_text(frame, track.x, track.y, track.cols, icon, fg, bg, true);
     }
 }
-fn activity_sheen(frame: &mut Frame, workspace: &Workspace, rect: Rect, tick: usize) {
-    let base = terminal_backdrop(workspace);
-    let light = u16::from(base[0]) * 3 + u16::from(base[1]) * 6 + u16::from(base[2]) >= 1280;
-    let divisor = if rect.rows > 1 { 3 } else { 6 };
-    let period = if rect.rows > 1 { 20 } else { 19 };
-    let band = usize::from(rect.cols).div_ceil(divisor).max(3);
-    let head = (tick % period) * (usize::from(rect.cols) + band * 2) / period;
-    for y in rect.y..rect.y + rect.rows {
-        for x in 0..rect.cols {
-            let index = usize::from(y) * usize::from(frame.cols) + usize::from(rect.x + x);
-            if frame.cells[index].width == 0 && x > 0 {
-                frame.cells[index].bg = frame.cells[index - 1].bg;
-                continue;
-            }
-            let alpha = band.saturating_sub((usize::from(x) + band).abs_diff(head)) * 16 / band;
-            if let Color::Rgb(r, g, b) = frame.cells[index].bg {
-                let lift = |c: u8| {
-                    if light {
-                        c - (usize::from(c) * alpha / 255) as u8
-                    } else {
-                        c + ((255 - usize::from(c)) * alpha / 255) as u8
-                    }
-                };
-                frame.cells[index].bg = Color::Rgb(lift(r), lift(g), lift(b));
-            }
-        }
-    }
-}
-
 fn marquee_title(title: &str, width: u16, ticks: u16) -> String {
     let title = safe_text(title);
     let chars: Vec<_> = title.chars().take(512).collect();
@@ -2039,7 +2314,7 @@ fn sidebar_dev_watermark(frame: &Frame) -> Rect {
     let width = frame.sidebar_width() - 1;
     let free = top - occupied;
     if free == 0 {
-        let cols = if sidebar_status_rows(frame.rows) == 3 {
+        let cols = if sidebar_status_rows(frame.rows) == 4 {
             3
         } else {
             7
@@ -2207,15 +2482,15 @@ fn draw_sidebar_status(frame: &mut Frame, workspace: &Workspace, notice: Option<
     let foreground = tab_text(workspace, false);
     let muted = neutral(workspace, 55);
     let value_color = neutral(workspace, 85);
-    let metric_top = if rows > 3 { top + 1 } else { top };
-    let controls_top = frame.rows - 2 * super::workspace::sidebar_button_rows(frame.rows);
-    let metric_end = if rows > 3 {
+    let metric_top = if rows >= 9 { top + 1 } else { top };
+    let controls_top = frame.rows - 3 * super::workspace::sidebar_button_rows(frame.rows);
+    let metric_end = if rows >= 9 {
         controls_top - 1
     } else {
         controls_top
     };
-    let compact_dev = workspace.ui.show_dev_badge && rows == 3 && watermark.y == top;
-    if rows > 3 {
+    let compact_dev = workspace.ui.show_dev_badge && rows == 4 && watermark.y == top;
+    if rows >= 9 {
         for y in [top, controls_top - 1] {
             write_text(
                 frame,
@@ -2229,7 +2504,7 @@ fn draw_sidebar_status(frame: &mut Frame, workspace: &Workspace, notice: Option<
             );
         }
     }
-    if !frame.controller && rows > 3 {
+    if !frame.controller && rows >= 9 {
         write_text(
             frame,
             2,
@@ -2268,7 +2543,7 @@ fn draw_sidebar_status(frame: &mut Frame, workspace: &Workspace, notice: Option<
         if y < metric_end {
             write_text(frame, 1, y, width - 2, &line, value_color, bg, false);
         }
-    } else if !frame.controller && rows == 3 {
+    } else if !frame.controller && rows == 4 {
         write_text(
             frame,
             1,
@@ -2294,7 +2569,7 @@ fn draw_sidebar_status(frame: &mut Frame, workspace: &Workspace, notice: Option<
                 values: vec![],
             });
         }
-        let capacity = usize::from(metric_end - metric_top);
+        let capacity = usize::from(metric_end.saturating_sub(metric_top));
         let visible: Vec<_> = metrics.iter().take(capacity).collect();
         let mut y = metric_top;
         for metric in visible {
@@ -2499,16 +2774,15 @@ fn draw_sidebar_status(frame: &mut Frame, workspace: &Workspace, notice: Option<
             },
         ),
     ] {
-        let label_width = (label.width() as u16).min(rect.cols);
         let button_bg = neutral(workspace, 14);
         fill(frame, rect, button_bg);
-        let inset = (rect.cols - label_width) / 2;
+        let inset = u16::from(rect.cols > 1);
         write_text(
             frame,
             rect.x + inset,
             rect.y + rect.rows / 2,
             rect.cols - inset,
-            &label,
+            label.trim(),
             if rect == config {
                 Color::Rgb(95, 175, 255)
             } else if rect == mode {
@@ -2604,6 +2878,36 @@ fn draw_vitals(frame: &mut Frame, segments: &[(String, u8)]) {
         Color::Indexed(244),
     );
 }
+fn draw_empty_table(
+    frame: &mut Frame,
+    bounds: Rect,
+    icon: &str,
+    title: &str,
+    explanation: &str,
+    color: u8,
+) {
+    let middle = bounds.y + bounds.rows / 2;
+    for (y, label, color, bold) in [
+        (middle.saturating_sub(2), icon, color, true),
+        (middle, title, 231, true),
+        (middle + 1, explanation, 250, false),
+        (bounds.y + bounds.rows - 2, "Esc to close", 245, false),
+    ] {
+        let width = bounds.cols.saturating_sub(4);
+        let text_width: u16 = label.chars().map(char_width).sum();
+        write_text(
+            frame,
+            bounds.x + 2 + width.saturating_sub(text_width) / 2,
+            y,
+            width,
+            label,
+            Color::Indexed(color),
+            TABLE_BG,
+            bold,
+        );
+    }
+}
+
 fn draw_parked(
     frame: &mut Frame,
     workspace: &Workspace,
@@ -2614,33 +2918,29 @@ fn draw_parked(
     let [restore, close] = super::workspace::parked_controls(bounds);
     let panes: Vec<_> = workspace.panes.iter().filter(|p| p.parked).collect();
     if panes.is_empty() {
-        let middle = bounds.y + bounds.rows / 2;
-        for (y, label, color, bold) in [
-            (middle.saturating_sub(2), "⊟", super::ui::PARKED_BG, true),
-            (middle, "No parked tabs", 231, true),
-            (middle + 1, "Park tabs to keep jobs running.", 250, false),
-            (bounds.y + bounds.rows - 2, "Esc to close", 245, false),
-        ] {
-            let width = bounds.cols.saturating_sub(4);
-            let text_width: u16 = label.chars().map(char_width).sum();
-            write_text(
-                frame,
-                bounds.x + 2 + width.saturating_sub(text_width) / 2,
-                y,
-                width,
-                label,
-                Color::Indexed(color),
-                Color::Indexed(236),
-                bold,
-            );
-        }
+        draw_empty_table(
+            frame,
+            bounds,
+            "⊟",
+            "No parked tabs",
+            "Park tabs to keep jobs running.",
+            super::ui::PARKED_BG,
+        );
         return;
     }
     let title_x = bounds.x + 8;
     for (x, width, label) in [
         (bounds.x + 2, 6, "Tab"),
         (title_x, restore.x.saturating_sub(title_x + 1), "Name"),
-        (restore.x, 3, " ↥ "),
+        (
+            restore.x,
+            restore.cols,
+            if restore.cols > 3 {
+                " Unpark "
+            } else {
+                " ↥ "
+            },
+        ),
         (close.x, 3, " × "),
     ] {
         write_text(
@@ -2650,7 +2950,7 @@ fn draw_parked(
             width,
             label,
             Color::Indexed(250),
-            Color::Indexed(236),
+            TABLE_BG,
             true,
         );
     }
@@ -2658,8 +2958,12 @@ fn draw_parked(
         let pane = panes[index];
         let y = rect.y + 1;
         let selected = index == dialog.selection;
-        let accent = tab_accent(workspace, selected);
-        let bg = tab_background(workspace, selected);
+        let accent = if selected {
+            Color::Rgb(109, 174, 240)
+        } else {
+            TABLE_BG
+        };
+        let bg = if selected { TABLE_SELECTED } else { TABLE_BG };
         fill(frame, rect, bg);
         for row in rect.y..rect.y + rect.rows {
             write_text(frame, bounds.x, row, 1, "▌", accent, bg, false);
@@ -2670,11 +2974,7 @@ fn draw_parked(
             y,
             4,
             &format!(" {} ", pane.id),
-            if selected {
-                Color::Indexed(226)
-            } else {
-                tab_text(workspace, false)
-            },
+            Color::Rgb(109, 174, 240),
             bg,
             true,
         );
@@ -2690,13 +2990,33 @@ fn draw_parked(
             y,
             title_width,
             &title,
-            tab_text(workspace, selected),
+            Color::Indexed(231),
             bg,
             false,
         );
         let [restore, close] = super::workspace::parked_controls(rect);
-        for (control, label, color) in [(restore, " ↥ ", super::ui::RESTORE_BG), (close, " × ", 88)]
-        {
+        write_text(
+            frame,
+            title_x,
+            y + 1,
+            title_width,
+            &safe_text(&pane.cwd),
+            TABLE_MUTED,
+            bg,
+            false,
+        );
+        for (control, label, color) in [
+            (
+                restore,
+                if restore.cols > 3 {
+                    " ↥ Unpark "
+                } else {
+                    " ↥ "
+                },
+                super::ui::RESTORE_BG,
+            ),
+            (close, " × ", 88),
+        ] {
             fill(frame, control, Color::Indexed(color));
             write_text(
                 frame,
@@ -2716,13 +3036,263 @@ fn draw_parked(
             Rect {
                 x: rect.x + 6,
                 y,
-                cols: 2,
+                cols: 1,
                 rows: 1,
             },
             spinner,
         );
+        draw_entry_separator(frame, rect);
     }
 }
+fn relative_age(seconds: u64) -> String {
+    let (value, unit) = [
+        (31_536_000, "y"),
+        (2_592_000, "mo"),
+        (604_800, "w"),
+        (86_400, "d"),
+        (3_600, "h"),
+        (60, "m"),
+        (1, "s"),
+    ]
+    .into_iter()
+    .find(|(size, _)| seconds >= *size)
+    .map_or((0, "s"), |(size, unit)| (seconds / size, unit));
+    format!("{value}{unit} ago")
+}
+
+fn draw_entry_separator(frame: &mut Frame, rect: Rect) {
+    let y = rect.y + rect.rows.saturating_sub(1);
+    for x in rect.x + 1..rect.x + rect.cols.saturating_sub(1) {
+        if let Some(cell) = frame
+            .cells
+            .get_mut(usize::from(y) * usize::from(frame.cols) + usize::from(x))
+        {
+            cell.underline = true;
+            cell.underline_color = Some(Color::Rgb(99, 126, 144));
+        }
+    }
+}
+
+fn draw_session_table(
+    frame: &mut Frame,
+    workspace: &Workspace,
+    dialog: super::ui::Dialog,
+    bounds: Rect,
+) {
+    use super::ui::DialogKind;
+    let recovery = dialog.kind == DialogKind::Recovery;
+    let rows: Vec<(String, String, String, String, String)> = if recovery {
+        workspace
+            .ui
+            .closed_tabs
+            .iter()
+            .map(|entry| {
+                (
+                    entry.workspace.clone(),
+                    entry
+                        .kind
+                        .map_or_else(|| entry.name.clone(), |kind| kind.as_str().into()),
+                    if entry.kind.is_some() {
+                        entry.name.clone()
+                    } else {
+                        "—".into()
+                    },
+                    relative_age(crate::now().saturating_sub(entry.closed_at.unwrap_or(0))),
+                    format!("{} · {}", entry.cwd, entry.reason),
+                )
+            })
+            .collect()
+    } else {
+        workspace
+            .dialog_entries()
+            .iter()
+            .filter_map(|id| workspace.panes.iter().find(|p| p.id == *id))
+            .map(|pane| {
+                (
+                    if pane.parked {
+                        format!("Parked #{}", pane.id)
+                    } else {
+                        format!("Tab {}", pane.number)
+                    },
+                    pane.kind.map_or("shell", |kind| kind.as_str()).into(),
+                    pane.title.clone(),
+                    format!(
+                        "{} {}",
+                        super::ui::status_icon(pane.status),
+                        pane.status.text()
+                    ),
+                    pane.cwd.clone(),
+                )
+            })
+            .collect()
+    };
+    if rows.is_empty() {
+        let (icon, title, explanation, color) = if recovery {
+            if workspace.ui.recovery_loading {
+                (
+                    "↺",
+                    "Loading closed tabs…",
+                    "Earlier tabs are being checked.",
+                    110,
+                )
+            } else {
+                ("↺", "No closed tabs", "Closed tabs appear here.", 110)
+            }
+        } else {
+            match dialog.filter {
+                super::ui::AgentFilter::All => {
+                    ("◇", "No running agents", "Start an agent in a tab.", 115)
+                }
+                super::ui::AgentFilter::Attention => (
+                    "◇",
+                    "No agents need attention",
+                    "Questions and errors appear here.",
+                    115,
+                ),
+                super::ui::AgentFilter::Finished => (
+                    "◇",
+                    "No finished agents",
+                    "Completed agents appear here.",
+                    115,
+                ),
+            }
+        };
+        draw_empty_table(frame, bounds, icon, title, explanation, color);
+        return;
+    }
+    let action = super::workspace::session_control(bounds);
+    let width = action.x.saturating_sub(bounds.x + 3);
+    let location = (width / 6).clamp(5, 14);
+    let kind = (width / 8).clamp(5, 9);
+    let state = (width / 5).clamp(7, 20);
+    let name = width.saturating_sub(location + kind + state + 3);
+    let x = bounds.x + 2;
+    let columns = [
+        (x, location, "Location"),
+        (x + location + 1, kind, "Agent/App"),
+        (x + location + kind + 2, name, "Conversation"),
+        (
+            x + location + kind + name + 3,
+            state,
+            if recovery { "Closed" } else { "Status" },
+        ),
+    ];
+    for (x, size, label) in columns {
+        write_text(
+            frame,
+            x,
+            bounds.y + 1,
+            size,
+            label,
+            Color::Indexed(250),
+            TABLE_BG,
+            true,
+        );
+    }
+    write_text(
+        frame,
+        action.x,
+        bounds.y + 1,
+        action.cols,
+        "Action",
+        Color::Indexed(250),
+        TABLE_BG,
+        true,
+    );
+    for (index, rect) in super::workspace::parked_cards(bounds, dialog.selection, rows.len()) {
+        let selected = index == dialog.selection;
+        let bg = if selected { TABLE_SELECTED } else { TABLE_BG };
+        fill(frame, rect, bg);
+        for y in rect.y..rect.y + rect.rows {
+            write_text(
+                frame,
+                rect.x,
+                y,
+                1,
+                "▌",
+                if selected {
+                    Color::Rgb(109, 174, 240)
+                } else {
+                    bg
+                },
+                bg,
+                false,
+            );
+        }
+        let row = &rows[index];
+        for ((x, size, _), value) in columns.into_iter().zip([&row.0, &row.1, &row.2, &row.3]) {
+            write_text(
+                frame,
+                x,
+                rect.y + 1,
+                size,
+                value,
+                Color::Indexed(231),
+                bg,
+                selected,
+            );
+        }
+        write_text(
+            frame,
+            rect.x + 2,
+            rect.y + 2,
+            width,
+            &row.4,
+            TABLE_MUTED,
+            bg,
+            false,
+        );
+        let control = super::workspace::session_control(rect);
+        let parked = !recovery
+            && workspace.dialog_entries().get(index).is_some_and(|id| {
+                workspace
+                    .panes
+                    .iter()
+                    .any(|pane| pane.id == *id && pane.parked)
+            });
+        let (label, color) = if recovery {
+            (
+                if control.cols > 3 {
+                    " ↺ Restore "
+                } else {
+                    " ↺ "
+                },
+                Color::Rgb(38, 90, 67),
+            )
+        } else if parked {
+            (
+                if control.cols > 3 {
+                    " ↥ Unpark "
+                } else {
+                    " ↥ "
+                },
+                Color::Rgb(102, 84, 123),
+            )
+        } else {
+            (
+                if control.cols > 3 {
+                    " ↗ Open tab "
+                } else {
+                    " ↗ "
+                },
+                Color::Rgb(41, 85, 116),
+            )
+        };
+        fill(frame, control, color);
+        write_text(
+            frame,
+            control.x,
+            control.y,
+            control.cols,
+            label,
+            Color::Indexed(231),
+            color,
+            false,
+        );
+        draw_entry_separator(frame, rect);
+    }
+}
+
 fn draw_dashboard(
     frame: &mut Frame,
     workspace: &Workspace,
@@ -2862,15 +3432,17 @@ fn draw_dashboard(
         }
         DialogKind::Recovery => workspace
             .ui
-            .recovery
+            .closed_tabs
             .iter()
             .map(|item| {
                 format!(
-                    "{} · {} · {} · session {} · Enter/y copies resume",
+                    "{} · {} · {} · {} · {} · {}s ago",
                     item.workspace,
-                    item.entry.cwd,
-                    item.entry.name,
-                    item.entry.session_id.as_deref().unwrap_or("unknown")
+                    item.kind.map_or("app", |kind| kind.as_str()),
+                    item.name,
+                    item.cwd,
+                    item.reason,
+                    crate::now().saturating_sub(item.closed_at.unwrap_or(0))
                 )
             })
             .collect(),
@@ -3433,6 +4005,21 @@ fn draw_status_summary(frame: &mut Frame, workspace: &Workspace, bounds: Rect, h
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn closed_age_uses_the_largest_readable_unit() {
+        for (seconds, expected) in [
+            (0, "0s ago"),
+            (59, "59s ago"),
+            (60, "1m ago"),
+            (3_600, "1h ago"),
+            (86_400, "1d ago"),
+            (604_800, "1w ago"),
+            (2_592_000, "1mo ago"),
+            (31_536_000, "1y ago"),
+        ] {
+            assert_eq!(super::relative_age(seconds), expected);
+        }
+    }
     use super::*;
     use crate::{model::Status, native::engine::Terminal};
     fn view(cols: u16, overlay: bool) -> PaneView {
