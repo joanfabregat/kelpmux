@@ -1294,10 +1294,13 @@ mod fit_tests {
         let mut terminal = super::super::engine::Terminal::new(40, 10);
         terminal.feed(&output);
         assert_eq!(
-            terminal.snapshot().cells[9 * 40 + 2].bg,
+            terminal.snapshot().cells[9 * 40 + usize::from(frame.controls()[0].x) + 2].bg,
             Color::Rgb(24, 119, 159)
         );
-        assert_eq!(frame.cells[39 * 120 + 2].bg, Color::Indexed(24));
+        assert_eq!(
+            frame.cells[39 * 120 + usize::from(frame.controls()[0].x) + 2].bg,
+            Color::Indexed(24)
+        );
     }
     #[test]
     fn fitted_sidebar_keeps_controls_bottom_aligned_and_maps_their_clicks() {
@@ -1342,7 +1345,7 @@ mod fit_tests {
             .iter()
             .map(|c| c.text.as_str())
             .collect();
-        assert!(footer.starts_with(" ⚙︎ Config"));
+        assert!(footer.starts_with(" ▦ Tabs"));
         assert!(footer.contains("Obs"));
     }
     #[test]
@@ -1431,7 +1434,7 @@ mod fit_tests {
                     &frame.cells[source..source + usize::from(frame.footer_cols().min(size.0))]
                 );
                 let text: String = fit.cells[row..].iter().map(|c| c.text.as_str()).collect();
-                assert!(text.starts_with(" ⚙︎ Config"));
+                assert!(text.starts_with(" ▦ Tabs"));
                 if size.0 >= frame.footer_cols() + 5 {
                     assert!(text.contains(if notice.is_some() { "conn" } else { "51%" }));
                 }
