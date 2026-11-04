@@ -42,6 +42,26 @@ fn pane(id: u64, status: Status) -> PaneInfo {
     }
 }
 #[test]
+fn pending_background_work_has_a_static_indicator_and_no_completion_alert() {
+    let fixture = Fixture::new();
+    let time = kelpmux::now();
+    let mut activity = Activity::load(&fixture.0, "background").unwrap();
+    let mut agent = pane(1, Status::Working);
+    activity
+        .observe(std::slice::from_ref(&agent), time)
+        .unwrap();
+    agent.status = Status::WaitingBackground;
+    activity
+        .observe(std::slice::from_ref(&agent), time + 1)
+        .unwrap();
+    assert!(activity.all().is_empty());
+    assert_eq!(
+        kelpmux::native::ui::pane_indicator(&Default::default(), &agent),
+        Some("◌")
+    );
+    assert_eq!(agent.status.text(), "WAITING IN BACKGROUND");
+}
+#[test]
 fn notification_baselines_support_more_than_sixty_four_tabs() {
     let fixture = Fixture::new();
     let time = kelpmux::now();
