@@ -3073,19 +3073,26 @@ fn dev_badge_is_visible_in_grid_horizontal_tabs_and_compact_sidebars() {
                 assert_eq!(plain.panes, f.panes);
                 continue;
             }
-            let start = usize::from((f.rows - 1) * f.cols + f.footer_cols() - 5);
-            let cells: Vec<_> = f.cells.iter().enumerate().skip(start).take(5).collect();
-            assert_eq!(cells.len(), 5);
+            let badge_cols = kelpmux::native::ui::GRID_DEV_COLS;
+            let start = usize::from((f.rows - 1) * f.cols + f.footer_cols() - badge_cols);
+            let cells: Vec<_> = f
+                .cells
+                .iter()
+                .enumerate()
+                .skip(start)
+                .take(usize::from(badge_cols))
+                .collect();
+            assert_eq!(cells.len(), usize::from(badge_cols));
             assert_eq!(
                 cells
                     .iter()
                     .map(|(_, cell)| cell.text.as_str())
                     .collect::<String>(),
-                " DEV "
+                " D E V "
             );
             assert!(cells.iter().all(|(_, cell)| cell.bold
                 && cell.fg == Color::Indexed(203)
-                && cell.bg == Color::Indexed(240)));
+                && cell.bg == Color::Rgb(98, 42, 48)));
             let sidebar = f.sidebar_status();
             assert!(cells.iter().all(|(i, _)| {
                 let x = *i as u16 % f.cols;
@@ -3093,13 +3100,29 @@ fn dev_badge_is_visible_in_grid_horizontal_tabs_and_compact_sidebars() {
                 if sidebar {
                     x < kelpmux::native::workspace::sidebar_width(f.cols) - 1
                 } else {
-                    y == f.rows - 1 && x >= f.footer_cols() - 5
+                    y == f.rows - 1 && x >= f.footer_cols() - badge_cols
                 }
             }));
             assert_eq!(plain.controls(), f.controls());
             assert_eq!(plain.panes, f.panes);
         }
     }
+}
+#[test]
+fn grid_footer_help_fills_its_hit_area_and_agents_keeps_right_padding() {
+    let ws = workspace((120, 40), (2, 2));
+    let f = frame(&ws);
+    let help = f.controls()[3];
+    let background = f.cells[usize::from(help.y * f.cols + help.x)].bg;
+    assert!(
+        (help.x..help.x + help.cols)
+            .all(|x| f.cells[usize::from(help.y * f.cols + x)].bg == background)
+    );
+    let agents = f.history_controls()[1];
+    let label: String = (agents.x..agents.x + agents.cols)
+        .map(|x| f.cells[usize::from(agents.y * f.cols + x)].text.as_str())
+        .collect();
+    assert_eq!(label, " ◇ Agents ");
 }
 
 #[test]
