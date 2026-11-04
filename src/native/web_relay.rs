@@ -444,6 +444,8 @@ fn serve(
             "text/css; charset=utf-8"
         } else if path.ends_with(".wasm") {
             "application/wasm"
+        } else if path.ends_with(".woff2") {
+            "font/woff2"
         } else {
             "application/octet-stream"
         };
