@@ -477,8 +477,9 @@ impl Terminal {
     /// are scrollback; zero is the first live primary row. At most 1,000 rows.
     pub fn history(&self, start: i32, limit: usize) -> Vec<(i32, String)> {
         if let Some(rows) = &self.primary_history {
-            rows.iter()
-                .filter(|row| row.line >= start)
+            let first = rows.partition_point(|row| row.line < start);
+            rows[first..]
+                .iter()
                 .take(limit.min(1000))
                 .map(|row| (row.line, row.text.clone()))
                 .collect()

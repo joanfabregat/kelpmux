@@ -334,6 +334,10 @@ fn serve(
         tcp.set_nonblocking(true)?;
         tcp.set_nodelay(true)?;
         ws.get_mut().set_nonblocking(true)?;
+        // Terminal updates are small and latency-sensitive in both directions.
+        // Disabling Nagle only on the SSH leg leaves browser-bound updates
+        // waiting for TCP acknowledgements at the reverse proxy.
+        ws.get_mut().set_nodelay(true)?;
         let mut pending = Vec::new();
         let mut buffer = [0u8; 32768];
         let mut progress = Instant::now();
