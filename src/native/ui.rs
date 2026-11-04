@@ -12,6 +12,7 @@ pub const PARKED_BG: u8 = 60;
 pub const RESTORE_BG: u8 = 29;
 pub const CLOSED_BUTTON_BG: [u8; 3] = [46, 69, 86];
 pub const AGENTS_BUTTON_BG: [u8; 3] = [48, 79, 70];
+pub const GRID_DEV_COLS: u16 = 7;
 pub const ALERT_ICON: &str = "!";
 pub const WAIT_ICON: &str = "?";
 pub const DONE_ICON: &str = "✓";

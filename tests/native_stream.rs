@@ -338,14 +338,33 @@ fn handshake_bounds_mixed_modes_resync_and_tui_coexistence() {
             break;
         }
     }
-    write_message(&mut tui, &ClientMessage::Input(b"BAD\n".to_vec())).unwrap();
-    loop {
-        if let Some(ServerMessage::Error(e)) = read_message(&mut tui).unwrap() {
-            assert!(e.contains("claim"));
-            break;
-        }
-    }
+    // Losing terminal focus must not steal the browser's pane back.
+    write_message(&mut tui, &ClientMessage::Input(b"\x1b[O".to_vec())).unwrap();
     assert_eq!(d.inspect(1).cols, 140);
+    // Actual typing immediately reclaims control, geometry and the first byte.
+    write_message(
+        &mut tui,
+        &ClientMessage::Input(b"printf 'TUI_%s\\n' RESUMED\n".to_vec()),
+    )
+    .unwrap();
+    a.until(1, |screen| text(screen).contains("TUI_RESUMED"));
+    assert_ne!(d.inspect(1).cols, 140);
+    assert!(
+        a.error(Request::Input {
+            pane: 1,
+            bytes: vec![3]
+        })
+        .contains("lease")
+    );
+    // A browser blur racing this TUI reclaim may release an already-free pane.
+    a.send(Request::Release { pane: 1 });
+    a.lease(1, true);
+    a.send(Request::Resize {
+        pane: 1,
+        cols: 140,
+        rows: 40,
+    });
+    a.until(1, |screen| screen.cols == 140);
     let mut observer = d.socket();
     write_message(
         &mut observer,

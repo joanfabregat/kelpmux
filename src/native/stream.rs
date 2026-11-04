@@ -11,8 +11,8 @@
 //! Claim/Resize/Input/Paste/Mouse address one pane. Claim is exclusive, explicit
 //! takeover may replace an owner, and release/disconnect restores the current base
 //! workspace geometry. Leases have connection lifetime (no time-based expiry).
-//! The ordinary TUI retains its independent workspace controller; leased panes reject
-//! its input and ignore its geometry until explicitly reclaimed with ClaimPane.
+//! The ordinary TUI retains its independent workspace controller. Actual controller
+//! input/focus reclaims a pane; passive resize and focus-out never steal a lease.
 //!
 //! At most 100,000 cells are subscribed per connection. A later resize exceeding
 //! that aggregate budget disconnects that subscriber rather than accumulating state.

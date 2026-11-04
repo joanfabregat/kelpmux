@@ -656,6 +656,18 @@ impl Server {
         }
         Ok(())
     }
+    fn tui_take_pane(&mut self, pane: PaneId) {
+        if let Some(lease) = self.leases.remove(&pane) {
+            if let Some(client) = self.clients.get_mut(&lease.owner) {
+                let _ = client.send(ServerMessage::Stream(super::stream::Event::Lease {
+                    pane,
+                    owner: None,
+                }));
+            }
+            self.resize();
+            self.dirty = true;
+        }
+    }
     fn stream_owned(&self, client: u64, pane: PaneId) -> Result<()> {
         if !self.panes.contains_key(&pane) {
             return Err("unknown pane".into());
@@ -752,9 +764,14 @@ impl Server {
                     }))?;
             }
             Request::Release { pane } => {
-                self.stream_owned(id, pane)?;
-                self.leases.remove(&pane);
-                self.resize();
+                if self.leases.contains_key(&pane) {
+                    self.stream_owned(id, pane)?;
+                } else if !self.panes.contains_key(&pane) {
+                    return Err("unknown pane".into());
+                }
+                if self.leases.remove(&pane).is_some() {
+                    self.resize();
+                }
                 self.clients
                     .get_mut(&id)
                     .unwrap()
@@ -2013,10 +2030,13 @@ impl Server {
                         self.resize();
                     }
                     ClientMessage::Input(bytes) => {
-                        self.tui_write_allowed(self.workspace.active)?;
                         if bytes.len() > MAX_INPUT {
                             return Err("input too large".into());
                         }
+                        if bytes == b"\x1b[O" && self.leases.contains_key(&self.workspace.active) {
+                            return Ok(());
+                        }
+                        self.tui_take_pane(self.workspace.active);
                         self.panes
                             .get_mut(&self.workspace.active)
                             .ok_or("no active pane")?
@@ -2032,10 +2052,10 @@ impl Server {
                         self.dirty = true;
                     }
                     ClientMessage::Paste(bytes) => {
-                        self.tui_write_allowed(self.workspace.active)?;
                         if bytes.len() > MAX_INPUT {
                             return Err("paste too large".into());
                         }
+                        self.tui_take_pane(self.workspace.active);
                         let pane = self
                             .panes
                             .get_mut(&self.workspace.active)
@@ -2067,25 +2087,32 @@ impl Server {
                             if !self.panes.contains_key(&pane) {
                                 return Err("unknown pane".into());
                             }
-                            self.leases.remove(&pane);
-                            self.resize();
+                            self.tui_take_pane(pane);
                             return Ok(());
                         }
                         match &action {
                             Action::Scroll { pane, .. } | Action::SelectText { pane, .. } => {
-                                self.tui_write_allowed(*pane)?
+                                self.tui_take_pane(*pane)
                             }
                             Action::SelectionStart | Action::SelectionMove { .. } => {
-                                self.tui_write_allowed(self.workspace.active)?
+                                self.tui_take_pane(self.workspace.active)
                             }
                             Action::SearchSelect(index) => {
                                 if let Some(hit) = self.workspace.ui.search_hits.get(*index) {
-                                    self.tui_write_allowed(hit.pane)?;
+                                    self.tui_take_pane(hit.pane);
                                 }
                             }
                             _ => {}
                         }
                         let geometry = matches!(action, Action::ResizeGrid { .. });
+                        let focus = matches!(
+                            action,
+                            Action::Focus(_)
+                                | Action::Read(_)
+                                | Action::Select(_)
+                                | Action::Fullscreen(_)
+                                | Action::FocusDirection { .. }
+                        );
                         if !self.feature_action(id, &action)? {
                             match action {
                                 Action::Shutdown => self.shutdown = true,
@@ -2121,6 +2148,9 @@ impl Server {
                                 }
                                 other => self.workspace.apply(&other)?,
                             }
+                        }
+                        if focus {
+                            self.tui_take_pane(self.workspace.active);
                         }
                         self.persist_ui()?;
                         if geometry {
@@ -2175,7 +2205,14 @@ impl Server {
         else {
             return Ok(());
         };
-        self.tui_write_allowed(view.pane.id)?;
+        if matches!(
+            mouse.kind,
+            MouseKind::Press | MouseKind::WheelUp | MouseKind::WheelDown
+        ) {
+            self.tui_take_pane(view.pane.id);
+        } else if self.leases.contains_key(&view.pane.id) {
+            return Ok(());
+        }
         if mouse.kind == MouseKind::Press {
             let focus_only = self.workspace.reading == ReadingMode::Grid
                 && self.workspace.active != view.pane.id;

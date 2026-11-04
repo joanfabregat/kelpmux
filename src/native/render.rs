@@ -277,6 +277,11 @@ fn compose_scene(
     }
     if frame.rows > 0 && !frame.sidebar_status() {
         let y = frame.rows - 1;
+        let footer_bg = if frame.ui.show_dev_badge {
+            Color::Rgb(60, 35, 39)
+        } else {
+            Color::Indexed(super::ui::FOOTER_BG)
+        };
         fill(
             &mut frame,
             Rect {
@@ -285,7 +290,7 @@ fn compose_scene(
                 cols: workspace.cols,
                 rows: 1,
             },
-            Color::Indexed(super::ui::FOOTER_BG),
+            footer_bg,
         );
         let label = if controller {
             format!(
@@ -322,7 +327,7 @@ fn compose_scene(
             width,
             &text,
             Color::Indexed(250),
-            Color::Indexed(super::ui::FOOTER_BG),
+            footer_bg,
             false,
         );
         write_text(
@@ -356,6 +361,15 @@ fn compose_scene(
         let help_label = notification_icon
             .map(|icon| format!(" {icon} "))
             .unwrap_or_else(|| " ? ".into());
+        fill(
+            &mut frame,
+            help,
+            Color::Indexed(match notification_icon {
+                Some(super::ui::DONE_ICON) => 29,
+                Some(super::ui::ALERT_ICON) => 160,
+                _ => 94,
+            }),
+        );
         write_text(
             &mut frame,
             help.x,
@@ -2265,10 +2279,10 @@ fn draw_dev_badge(frame: &mut Frame, x: u16, y: u16) {
         frame,
         x,
         y,
-        5,
-        " DEV ",
+        super::ui::GRID_DEV_COLS,
+        " D E V ",
         Color::Indexed(203),
-        Color::Indexed(240),
+        Color::Rgb(98, 42, 48),
         true,
     );
 }
@@ -2818,6 +2832,11 @@ fn toolbar_button(frame: &mut Frame, rect: Rect, text: &str, bg: Color) {
     }
 }
 fn draw_vitals(frame: &mut Frame, segments: &[(String, u8)]) {
+    let bg = if frame.ui.show_dev_badge {
+        Color::Rgb(60, 35, 39)
+    } else {
+        Color::Indexed(super::ui::FOOTER_BG)
+    };
     let segments: Vec<_> = segments
         .iter()
         .filter(|(text, _)| !super::vitals::is_clock_segment(text))
@@ -2862,7 +2881,7 @@ fn draw_vitals(frame: &mut Frame, segments: &[(String, u8)]) {
             cols: available,
             rows: 1,
         },
-        Color::Indexed(super::ui::FOOTER_BG),
+        bg,
     );
     for (text, color) in selected {
         if x >= end {
@@ -2876,7 +2895,7 @@ fn draw_vitals(frame: &mut Frame, segments: &[(String, u8)]) {
             (end - x).min(width),
             text,
             Color::Indexed(*color),
-            Color::Indexed(super::ui::FOOTER_BG),
+            bg,
             false,
         );
         x = x.saturating_add(width + 1);

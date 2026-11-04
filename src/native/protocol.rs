@@ -73,7 +73,14 @@ impl Frame {
     }
     pub fn footer_cols(&self) -> u16 {
         let agents = self.history_controls()[1];
-        (agents.x + agents.cols + if self.ui.show_dev_badge { 5 } else { 0 }).min(self.cols)
+        (agents.x
+            + agents.cols
+            + if self.ui.show_dev_badge {
+                super::ui::GRID_DEV_COLS
+            } else {
+                0
+            })
+        .min(self.cols)
     }
     pub fn history_controls(&self) -> [Rect; 2] {
         if self.sidebar_status() {
@@ -99,11 +106,15 @@ impl Frame {
         } else {
             let help = self.controls()[3];
             let x = help.x + help.cols;
-            let available = self
-                .cols
-                .saturating_sub(x + if self.ui.show_dev_badge { 5 } else { 0 });
+            let available = self.cols.saturating_sub(
+                x + if self.ui.show_dev_badge {
+                    super::ui::GRID_DEV_COLS
+                } else {
+                    0
+                },
+            );
             let closed = 10.min(available.div_ceil(2));
-            let agents = 8.min(available.saturating_sub(closed));
+            let agents = 10.min(available.saturating_sub(closed));
             [
                 Rect {
                     x,
