@@ -2188,6 +2188,7 @@ fn activity_indicator(
         let bg =
             frame.cells[usize::from(track.y) * usize::from(frame.cols) + usize::from(track.x)].bg;
         let fg = match icon {
+            "◌" => Color::Indexed(245),
             super::ui::WAIT_ICON => Color::Indexed(110),
             super::ui::DONE_ICON => Color::Indexed(114),
             super::ui::ALERT_ICON => Color::Indexed(203),

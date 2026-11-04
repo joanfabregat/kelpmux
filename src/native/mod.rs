@@ -1,5 +1,6 @@
 //! Owned Linux multiplexer. The legacy tmux adapter remains independent.
 pub mod activity;
+pub mod background;
 pub mod bridge;
 pub mod cli;
 pub mod delta;

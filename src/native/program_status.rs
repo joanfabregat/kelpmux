@@ -348,6 +348,12 @@ impl Snapshot {
         let Some(status) = self.records.status(agent.kind) else {
             return false;
         };
+        // A quiet foreground does not mean pending background work is done.
+        if agent.status == Status::WaitingBackground
+            && matches!(status, Status::Idle | Status::TurnFinished)
+        {
+            return false;
+        }
         agent.status = status;
         agent.observation = Observation {
             source: StatusSource::Terminal,

@@ -176,6 +176,8 @@ impl Store {
                         agent.source = "hook".into();
                     }
                     if agent.session_id.as_deref() == Some(&hook.id)
+                        && !(agent.status == Status::WaitingBackground
+                            && matches!(hook.status, Status::Idle | Status::TurnFinished))
                         && agent.observation.source != crate::model::StatusSource::Terminal
                         && (agent.status == Status::Unknown
                             || agent.source == "hook"

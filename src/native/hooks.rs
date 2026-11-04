@@ -13,6 +13,13 @@ pub fn run(args: &[String]) -> Result<()> {
         _ => return Err("native-event requires codex or claude".into()),
     };
     args.remove(0);
+    let background_only =
+        if let Some(index) = args.iter().position(|arg| arg == "--background-only") {
+            args.remove(index);
+            true
+        } else {
+            false
+        };
     let option = |args: &mut Vec<String>, name: &str| -> Result<Option<String>> {
         if let Some(i) = args.iter().position(|arg| arg == name) {
             args.remove(i);
@@ -49,7 +56,14 @@ pub fn run(args: &[String]) -> Result<()> {
     if bytes.len() > 64 * 1024 {
         return Err("native hook payload exceeds 64 KiB".into());
     }
-    receive(&state, &pane, kind, &serde_json::from_slice(&bytes)?)
+    let input = serde_json::from_slice(&bytes)?;
+    if background_only {
+        if kind != Kind::Claude {
+            return Err("background events require Claude".into());
+        }
+        return super::background::receive(&state, &pane, &input);
+    }
+    receive(&state, &pane, kind, &input)
 }
 
 pub fn receive(state: &Path, pane: &str, kind: Kind, input: &serde_json::Value) -> Result<()> {

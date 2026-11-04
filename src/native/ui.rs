@@ -114,7 +114,7 @@ pub fn notification_label(icon: &str) -> &'static str {
 pub fn pane_indicator(ui: &UiState, pane: &super::protocol::PaneInfo) -> Option<&'static str> {
     use crate::model::Status;
     match pane.status {
-        Status::InputNeeded | Status::TurnFinished | Status::Failed => {
+        Status::InputNeeded | Status::TurnFinished | Status::Failed | Status::WaitingBackground => {
             Some(status_icon(pane.status))
         }
         Status::Idle | Status::Unknown | Status::Exited => {

@@ -31,4 +31,5 @@ pub(super) fn enrich(context: &Discovery, proc: &Process, args: &[String], agent
             agent.source = "resume-argument".into();
         }
     }
+    crate::native::background::enrich(&context.proc_root, agent);
 }
