@@ -1,5 +1,18 @@
 use kelpmux::native::{engine::Terminal, protocol::Point};
 #[test]
+fn late_pages_in_long_primary_history_remain_correct_in_alternate_screen() {
+    let mut term = Terminal::new(30, 4);
+    for n in 0..20_000 {
+        term.feed(format!("row-{n}\r\n").as_bytes());
+    }
+    let expected = term.history(-30, 20);
+    term.feed(b"\x1b[?1049hALT");
+    assert_eq!(term.history(-30, 20), expected);
+    assert_eq!(term.history(-30, 0), Vec::new());
+    assert!(term.history(100, 20).is_empty());
+    assert!(term.history(i32::MIN, 20)[0].0 < -1000);
+}
+#[test]
 fn unicode_wrapped_and_repeated_search_hits_do_not_change_the_viewport() {
     let mut term = Terminal::new(12, 3);
     term.feed(
