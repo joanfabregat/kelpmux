@@ -286,6 +286,59 @@ fn independent_pane_leases_resize_input_observers_takeover_and_disconnect() {
         thread::sleep(Duration::from_millis(20));
     }
 }
+
+#[test]
+fn controller_theme_is_owned_per_pane_and_replaced_on_takeover() {
+    let daemon = Daemon::start();
+    let mut a = daemon.peer();
+    let mut b = daemon.peer();
+    a.send(Request::Subscribe { panes: vec![1] });
+    b.send(Request::Subscribe { panes: vec![1] });
+    assert!(
+        b.error(Request::Theme {
+            pane: 1,
+            foreground: [10, 20, 30],
+            background: [40, 50, 60]
+        })
+        .contains("lease")
+    );
+    a.lease(1, false);
+    a.send(Request::Theme {
+        pane: 1,
+        foreground: [11, 22, 33],
+        background: [44, 55, 66],
+    });
+    a.send(Request::Input {
+        pane: 1,
+        bytes: b"printf '\\033[7mTHEME_PROBE\\033[0m\\n'\n".to_vec(),
+    });
+    a.until(1, |screen| {
+        screen
+            .cells
+            .iter()
+            .any(|cell| cell.text == "T" && cell.bg == Color::Rgb(11, 22, 33))
+    });
+    b.lease(1, true);
+    b.send(Request::Theme {
+        pane: 1,
+        foreground: [77, 88, 99],
+        background: [1, 2, 3],
+    });
+    b.until(1, |screen| {
+        screen
+            .cells
+            .iter()
+            .any(|cell| cell.text == "T" && cell.bg == Color::Rgb(77, 88, 99))
+    });
+    assert!(
+        a.error(Request::Theme {
+            pane: 1,
+            foreground: [10, 20, 30],
+            background: [40, 50, 60]
+        })
+        .contains("lease")
+    );
+}
 #[test]
 fn handshake_bounds_mixed_modes_resync_and_tui_coexistence() {
     let d = Daemon::start();

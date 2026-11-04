@@ -46,21 +46,53 @@ pub const CAPABILITIES: &[&str] = &[
     "vitals",
     "hyperlinks",
     "program-status",
+    "controller-theme",
 ];
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Request {
-    Hello { version: u16 },
-    Subscribe { panes: Vec<PaneId> },
-    Claim { pane: PaneId, takeover: bool },
-    Release { pane: PaneId },
-    Resize { pane: PaneId, cols: u16, rows: u16 },
-    Input { pane: PaneId, bytes: Vec<u8> },
-    Paste { pane: PaneId, bytes: Vec<u8> },
-    Mouse { pane: PaneId, event: MouseEvent },
-    Resync { pane: PaneId },
-    Acknowledge { notification: u64 },
+    Hello {
+        version: u16,
+    },
+    Subscribe {
+        panes: Vec<PaneId>,
+    },
+    Claim {
+        pane: PaneId,
+        takeover: bool,
+    },
+    Release {
+        pane: PaneId,
+    },
+    Resize {
+        pane: PaneId,
+        cols: u16,
+        rows: u16,
+    },
+    Theme {
+        pane: PaneId,
+        foreground: [u8; 3],
+        background: [u8; 3],
+    },
+    Input {
+        pane: PaneId,
+        bytes: Vec<u8>,
+    },
+    Paste {
+        pane: PaneId,
+        bytes: Vec<u8>,
+    },
+    Mouse {
+        pane: PaneId,
+        event: MouseEvent,
+    },
+    Resync {
+        pane: PaneId,
+    },
+    Acknowledge {
+        notification: u64,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

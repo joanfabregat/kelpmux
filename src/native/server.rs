@@ -409,6 +409,7 @@ struct StreamClient {
 struct PaneLease {
     owner: u64,
     size: (u16, u16),
+    theme: Option<[[u8; 3]; 2]>,
 }
 fn wire(message: &ServerMessage) -> Result<Vec<u8>> {
     let bytes = serde_json::to_vec(message)?;
@@ -645,8 +646,14 @@ impl Server {
     }
     fn apply_theme(&mut self) {
         let theme = self.terminal_theme();
-        for pane in self.panes.values_mut() {
-            pane.terminal.set_theme(theme);
+        for (id, pane) in &mut self.panes {
+            let colors = self
+                .leases
+                .get(id)
+                .and_then(|lease| lease.theme)
+                .map(|colors| colors.map(Some))
+                .unwrap_or(theme);
+            pane.terminal.set_theme(colors);
         }
         self.dirty = true;
     }
@@ -753,6 +760,7 @@ impl Server {
                     PaneLease {
                         owner: id,
                         size: pty.size,
+                        theme: None,
                     },
                 );
                 self.clients
@@ -762,6 +770,7 @@ impl Server {
                         pane,
                         owner: Some(id),
                     }))?;
+                self.apply_theme();
             }
             Request::Release { pane } => {
                 if self.leases.contains_key(&pane) {
@@ -782,6 +791,15 @@ impl Server {
                 super::stream::validate_size(cols, rows)?;
                 self.leases.get_mut(&pane).unwrap().size = (cols, rows);
                 self.panes.get_mut(&pane).unwrap().resize(cols, rows);
+            }
+            Request::Theme {
+                pane,
+                foreground,
+                background,
+            } => {
+                self.stream_owned(id, pane)?;
+                self.leases.get_mut(&pane).unwrap().theme = Some([foreground, background]);
+                self.apply_theme();
             }
             Request::Input { pane, bytes } => {
                 self.stream_owned(id, pane)?;
@@ -1781,7 +1799,7 @@ impl Server {
                 pane.resize(cols.max(1), rows.max(1));
             }
         }
-        self.dirty = true;
+        self.apply_theme();
     }
     fn message(&mut self, id: u64, message: ClientMessage) -> Result<()> {
         if let ClientMessage::Stream(request) = message {
