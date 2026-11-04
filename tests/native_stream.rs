@@ -166,6 +166,40 @@ fn text(s: &Screen) -> String {
     s.cells.iter().map(|c| c.text.as_str()).collect()
 }
 #[test]
+fn legacy_mouse_events_reach_ncurses_without_utf8_reencoding() {
+    let daemon = Daemon::start();
+    let mut peer = daemon.peer();
+    peer.send(Request::Subscribe { panes: vec![1] });
+    peer.lease(1, false);
+    peer.send(Request::Input { pane: 1, bytes: b"stty -icanon -echo; printf '\\033[?1000hMOUSE_%s' READY; dd bs=1 count=12 2>/dev/null | od -An -tu1; printf '\\033[?1000lMOUSE_%s' DONE; stty sane\n".to_vec() });
+    peer.until(1, |s| {
+        s.modes.mouse_click && text(s).contains("MOUSE_READY")
+    });
+    for kind in [MouseKind::Press, MouseKind::Release] {
+        peer.send(Request::Mouse {
+            pane: 1,
+            event: MouseEvent {
+                position: Point { x: 9, y: 4 },
+                kind,
+                button: 0,
+                shift: false,
+                alt: false,
+                ctrl: false,
+            },
+        });
+    }
+    peer.until(1, |s| text(s).contains("MOUSE_DONE"));
+    let output = text(&daemon.inspect(1));
+    let words: Vec<_> = output.split_whitespace().collect();
+    assert!(
+        words.windows(12).any(|words| words
+            == [
+                "27", "91", "77", "32", "42", "37", "27", "91", "77", "35", "42", "37"
+            ]),
+        "{output}"
+    );
+}
+#[test]
 fn independent_pane_leases_resize_input_observers_takeover_and_disconnect() {
     let d = Daemon::start();
     let mut a = d.peer();

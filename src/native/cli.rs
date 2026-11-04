@@ -30,6 +30,8 @@ pub const HELP: &str = "Owned native terminal workspaces (Linux):
   kelpmux status|stop|recover|diagnostics|templates [--workspace NAME]
   kelpmux benchmark
   kelpmux bridge [--workspace NAME] [--socket PATH]
+  kelpmux web-bridge [--workspace NAME] [--socket PATH]
+  kelpmux web-relay --config PATH
   kelpmux stream-inspect [--workspace NAME] [PANE_ID ...]
   kelpmux server [--socket PATH] [--state-dir PATH] [--shell PATH] [--cwd PATH] [--size CxR] [--config PATH]
   kelpmux attach [--workspace NAME] [--socket PATH] [--takeover] [--current-client]
@@ -167,7 +169,14 @@ fn options(args: &[String]) -> Result<Options> {
         && workspace.is_none()
         && matches!(
             verb.as_str(),
-            "attach" | "ssh-entry" | "status" | "diagnostics" | "ctl" | "bridge" | "stream-inspect"
+            "attach"
+                | "ssh-entry"
+                | "status"
+                | "diagnostics"
+                | "ctl"
+                | "bridge"
+                | "web-bridge"
+                | "stream-inspect"
         )
     {
         result.state = result
@@ -233,6 +242,12 @@ pub fn run(args: &[String]) -> Result<()> {
     if args.iter().any(|arg| arg == "--help" || arg == "-h") {
         println!("{HELP}");
         return Ok(());
+    }
+    if args.first().is_some_and(|arg| arg == "web-relay") {
+        if args.len() != 3 || args[1] != "--config" {
+            return Err("usage: kelpmux web-relay --config PATH".into());
+        }
+        return super::web_relay::run(std::path::Path::new(&args[2]));
     }
     let options = options(args)?;
     match args[0].as_str() {
@@ -306,6 +321,7 @@ pub fn run(args: &[String]) -> Result<()> {
             Ok(())
         }
         "bridge" => super::bridge::run(connect(&options.socket)?),
+        "web-bridge" => super::web_bridge::run(&options.socket, &options.state),
         "stream-inspect" => {
             let panes = options
                 .command

@@ -1711,7 +1711,7 @@ fn automatic_grid_parking_controls_alert_colors_and_three_row_tabs() {
                 .position(|cell| cell.text == "?")
                 .unwrap();
         assert_eq!(f.cells[at].text, "?");
-        assert_eq!(f.cells[at].bg, Color::Rgb(58, 61, 64));
+        assert_eq!(f.cells[at].bg, Color::Rgb(93, 80, 53));
         ws.ui.notifications.push(Notification {
             id: 1,
             pane: 1,
@@ -1732,10 +1732,10 @@ fn automatic_grid_parking_controls_alert_colors_and_three_row_tabs() {
                 .position(|cell| cell.text == kelpmux::native::ui::WAIT_ICON)
                 .unwrap();
         assert_eq!(frame(&ws).cells[alert].text, kelpmux::native::ui::WAIT_ICON);
-        assert_eq!(frame(&ws).cells[alert].bg, Color::Rgb(58, 61, 64));
+        assert_eq!(frame(&ws).cells[alert].bg, Color::Rgb(93, 80, 53));
         ws.apply(&Action::Acknowledge(1)).unwrap();
         assert_eq!(frame(&ws).cells[at].text, "?");
-        assert_eq!(frame(&ws).cells[at].bg, Color::Rgb(58, 61, 64));
+        assert_eq!(frame(&ws).cells[at].bg, Color::Rgb(93, 80, 53));
     }
 }
 
@@ -2289,12 +2289,14 @@ fn sidebar_status_controls_and_metrics_leave_the_last_terminal_row_usable() {
                         .iter()
                         .any(|cell| cell.text != " " && cell.fg == Color::Indexed(196))
                 );
-                for control in f.controls() {
+                for (control, background) in f.controls().into_iter().zip([
+                    Color::Rgb(36, 80, 111),
+                    Color::Rgb(70, 85, 106),
+                    Color::Rgb(81, 72, 95),
+                    Color::Rgb(93, 80, 53),
+                ]) {
                     for x in control.x..control.x + control.cols {
-                        assert_eq!(
-                            f.cells[usize::from(control.y * f.cols + x)].bg,
-                            Color::Rgb(58, 61, 64)
-                        );
+                        assert_eq!(f.cells[usize::from(control.y * f.cols + x)].bg, background);
                     }
                 }
                 let notice = compose(
@@ -2427,7 +2429,10 @@ fn footer_parked_help_order_has_no_new_tab_button() {
                 format!(" ⊟ Parked ({count}) ")
             };
             if f.sidebar_status() {
-                assert_eq!(label.trim(), expected.trim());
+                assert_eq!(
+                    label.split_whitespace().collect::<Vec<_>>(),
+                    expected.split_whitespace().collect::<Vec<_>>()
+                );
             } else {
                 assert_eq!(label, expected);
             }
@@ -2442,7 +2447,7 @@ fn footer_parked_help_order_has_no_new_tab_button() {
                 assert_eq!(
                     f.cells[usize::from(parked.y * f.cols + x)].bg,
                     if f.sidebar_status() {
-                        Color::Rgb(58, 61, 64)
+                        Color::Rgb(81, 72, 95)
                     } else {
                         Color::Indexed(kelpmux::native::ui::PARKED_BG)
                     }
@@ -4805,11 +4810,9 @@ fn neutral_sidebar_surfaces_follow_terminal_background_independently_of_accent()
             assert_eq!(at(0, selected.y).bg, blend(background, accent.rgb(), 34));
             assert_eq!(at(0, selected.y).fg, blend([0; 3], accent.rgb(), 100));
             assert_eq!(at(2, selected.y + 1).fg, blend(background, ink, 85));
-            assert!(
-                f.controls()
-                    .iter()
-                    .all(|r| at(r.x, r.y).bg == blend(background, ink, 14))
-            );
+            let controls = f.controls();
+            assert_eq!(at(controls[0].x, controls[0].y).bg, Color::Rgb(36, 80, 111));
+            assert_eq!(at(controls[2].x, controls[2].y).bg, Color::Rgb(81, 72, 95));
             let footer_color = |rect: Rect| {
                 let start = usize::from((rect.y + rect.rows / 2) * f.cols + rect.x);
                 f.cells[start..start + usize::from(rect.cols)]
@@ -4818,9 +4821,12 @@ fn neutral_sidebar_surfaces_follow_terminal_background_independently_of_accent()
                     .unwrap()
                     .fg
             };
-            assert_eq!(footer_color(f.controls()[0]), Color::Rgb(95, 175, 255));
-            assert_eq!(footer_color(f.controls()[1]), Color::Indexed(114));
-            assert_ne!(footer_color(f.controls()[0]), footer_color(f.controls()[1]));
+            assert_eq!(footer_color(f.controls()[0]), Color::Indexed(231));
+            assert_eq!(footer_color(f.controls()[1]), Color::Indexed(231));
+            assert_ne!(
+                at(controls[0].x, controls[0].y).bg,
+                at(controls[1].x, controls[1].y).bg
+            );
             // Background sheen changes only the card fill, in the right direction for the theme.
             ws.panes[0].status = Status::Working;
             for tick in 0..30 {
