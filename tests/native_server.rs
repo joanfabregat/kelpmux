@@ -984,7 +984,7 @@ fn new_tabs_create_more_than_nine_ptys_and_preserve_existing_jobs() {
         let saved: serde_json::Value =
             serde_json::from_slice(&fs::read(daemon.root.join("state/workspace.json")).unwrap())
                 .unwrap();
-        assert_eq!(saved["ui"]["view_modes"][1], true);
+        assert_eq!(saved["ui"]["view_modes"][1], false);
         assert_eq!((panes[0].id, panes[0].pid), original);
         assert_eq!(panes[0].palette, 4);
         for (index, pane) in panes.iter().enumerate() {

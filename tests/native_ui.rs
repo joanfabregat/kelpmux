@@ -33,6 +33,19 @@ fn workspace(size: (u16, u16), shape: (u8, u8)) -> Workspace {
 fn frame(ws: &Workspace) -> Frame {
     compose(ws, &BTreeMap::new(), true, None, 0)
 }
+#[test]
+fn grid_toggle_is_first_and_config_second_in_both_toolbars() {
+    for tabs in [false, true] {
+        let mut ws = workspace((120, 40), (2, 1));
+        if tabs {
+            ws.apply(&Action::Read(1)).unwrap();
+        }
+        let f = frame(&ws);
+        let [config, mode, ..] = f.controls();
+        assert_eq!(mode.x, 0);
+        assert_eq!(config.x, mode.cols);
+    }
+}
 fn actions(messages: Vec<ClientMessage>) -> Vec<Action> {
     messages
         .into_iter()
@@ -850,13 +863,12 @@ fn footer_buttons_and_compact_vitals_have_disjoint_hit_targets() {
         .collect::<String>();
     assert!(!footer.contains("14:49"));
     assert!(footer.contains("Parked"));
-    assert!(footer.starts_with(" ⚙︎ Config"));
-    assert!(footer.starts_with(" ⚙︎ Config  ▦ Tabs "));
+    assert!(footer.starts_with(" ▦ Tabs  ⚙︎ Config "));
     assert!(footer.find("Parked").unwrap() < footer.find('?').unwrap());
     assert!(!footer.contains('⛶') && !footer.contains('▣'));
     let start = usize::from((f.rows - 1) * f.cols);
     let config = f.controls()[0];
-    let trailing = &f.cells[start + usize::from(config.cols - 1)];
+    let trailing = &f.cells[start + usize::from(config.x + config.cols - 1)];
     assert_eq!(trailing.text, " ");
     assert_eq!(trailing.bg, Color::Indexed(24));
     assert!(
@@ -871,7 +883,7 @@ fn footer_buttons_and_compact_vitals_have_disjoint_hit_targets() {
     assert_eq!(
         actions(Router::default().route(
             click(Point {
-                x: 1,
+                x: config.x + 1,
                 y: f.rows - 1
             }),
             &f
@@ -2318,7 +2330,7 @@ fn sidebar_status_controls_and_metrics_leave_the_last_terminal_row_usable() {
                 assert_eq!(display.snapshot().cells, notice.cells);
             }
             let [config, mode, parked, help] = f.controls();
-            for (left, right) in [(config, mode), (parked, help)] {
+            for (left, right) in [(mode, config), (parked, help)] {
                 assert_eq!(left.x, 0);
                 assert_eq!(left.x + left.cols, right.x);
                 assert_eq!(right.x + right.cols, width);
@@ -2439,7 +2451,7 @@ fn footer_parked_help_order_has_no_new_tab_button() {
             assert_eq!(parked.x, if f.sidebar_status() { 0 } else { 18 });
             if f.sidebar_status() {
                 assert_eq!(parked.x + parked.cols, help.x);
-                assert_eq!(f.controls()[1].x, help.x);
+                assert_eq!(f.controls()[0].x, help.x);
             } else {
                 assert_eq!(parked.x + parked.cols, help.x);
             }
