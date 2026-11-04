@@ -22,6 +22,7 @@ impl Kind {
 #[serde(rename_all = "snake_case")]
 pub enum Status {
     Working,
+    WaitingBackground,
     InputNeeded,
     TurnFinished,
     Idle,
@@ -35,6 +36,7 @@ impl Status {
     pub fn text(self) -> &'static str {
         match self {
             Self::Working => "WORKING",
+            Self::WaitingBackground => "WAITING IN BACKGROUND",
             Self::InputNeeded => "INPUT NEEDED",
             Self::TurnFinished => "TURN FINISHED",
             Self::Idle => "IDLE",
@@ -46,6 +48,7 @@ impl Status {
     pub fn marker(self) -> &'static str {
         match self {
             Self::Working => WORKING_FRAMES[0],
+            Self::WaitingBackground => "◌",
             Self::InputNeeded => "!",
             Self::TurnFinished => "✓",
             Self::Idle => "○",
@@ -61,6 +64,7 @@ impl Status {
                 Self::InputNeeded
             }
             "idle" => Self::Idle,
+            "waiting_background" => Self::WaitingBackground,
             "completed" | "turn_finished" => Self::TurnFinished,
             "error" | "failed" | "systemError" => Self::Failed,
             _ => Self::Unknown,
