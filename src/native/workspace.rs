@@ -1624,8 +1624,8 @@ pub fn sidebar_controls(
     }
     let right = width.div_ceil(2);
     [
-        rect(0, rows - 3 * height, right),
         rect(right, rows - 3 * height, width - right),
+        rect(0, rows - 3 * height, right),
         rect(0, rows - 2 * height, right),
         rect(right, rows - 2 * height, width - right),
     ]

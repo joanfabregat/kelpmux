@@ -83,6 +83,9 @@ pub struct Monitor {
     current: Snapshot,
 }
 impl Monitor {
+    pub fn refreshing(&self) -> bool {
+        self.pending.is_some()
+    }
     pub fn poll(&mut self, open: bool) -> &Snapshot {
         if !open {
             self.discard_pending = true;

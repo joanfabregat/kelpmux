@@ -1272,6 +1272,8 @@ impl Server {
                 return Err("grid layout is automatic; use New Tab, Park or Close".into());
             }
             Action::NewTab => {
+                let grid =
+                    self.workspace.reading == ReadingMode::Grid && self.workspace.active != 0;
                 // Spawn first; failure must leave every existing pane and view intact.
                 self.spawn_pane(None)?;
                 self.workspace.ui.tab_scroll_anchor = None;
@@ -1281,9 +1283,13 @@ impl Server {
                 }
                 self.workspace.reflow();
                 self.workspace.active = id;
-                self.workspace.reading = ReadingMode::Tabs(id);
+                self.workspace.reading = if grid {
+                    ReadingMode::Grid
+                } else {
+                    ReadingMode::Tabs(id)
+                };
                 self.workspace.ui.config.view_modes
-                    [super::ui::geometry_bucket(self.workspace.cols)] = Some(true);
+                    [super::ui::geometry_bucket(self.workspace.cols)] = Some(!grid);
                 let mut number = 0;
                 for pane in &mut self.workspace.panes {
                     if Some(pane.id) == self.workspace.ui.scratch {

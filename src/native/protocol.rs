@@ -55,13 +55,13 @@ impl Frame {
         } else {
             [
                 Rect {
-                    x: 0,
+                    x: super::ui::FOOTER_MODE_COLS,
                     y: self.rows - 1,
                     cols: super::ui::FOOTER_CONFIG_COLS,
                     rows: 1,
                 },
                 Rect {
-                    x: super::ui::FOOTER_CONFIG_COLS,
+                    x: 0,
                     y: self.rows - 1,
                     cols: super::ui::FOOTER_MODE_COLS,
                     rows: 1,
