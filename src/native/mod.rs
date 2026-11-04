@@ -24,4 +24,6 @@ pub mod tracking;
 pub mod ui;
 pub mod upgrade;
 pub mod vitals;
+pub mod web_bridge;
+pub mod web_relay;
 pub mod workspace;

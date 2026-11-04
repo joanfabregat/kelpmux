@@ -390,23 +390,20 @@ fn compose_scene(
     }
     if !matches!(frame.reading, ReadingMode::Fullscreen(_)) {
         let [closed, agents] = frame.history_controls();
-        for (rect, label, color) in [(closed, "↺ Closed", 110), (agents, "◇ Agents", 115)] {
+        for (rect, label, color) in [
+            (closed, "↺ Closed", super::ui::CLOSED_BUTTON_BG),
+            (agents, "◇ Agents", super::ui::AGENTS_BUTTON_BG),
+        ] {
             let label = if rect.cols < 8 {
                 if rect == closed { "↺" } else { "◇" }
             } else {
                 label
             };
-            let inset = u16::from(frame.sidebar_status() && rect.cols > 1);
-            fill(&mut frame, rect, neutral(workspace, 14));
-            write_text(
+            toolbar_button(
                 &mut frame,
-                rect.x + inset,
-                rect.y,
-                rect.cols.saturating_sub(inset),
+                rect,
                 label,
-                Color::Indexed(color),
-                neutral(workspace, 14),
-                false,
+                Color::Rgb(color[0], color[1], color[2]),
             );
         }
     }
@@ -2774,31 +2771,48 @@ fn draw_sidebar_status(frame: &mut Frame, workspace: &Workspace, notice: Option<
             },
         ),
     ] {
-        let button_bg = neutral(workspace, 14);
-        fill(frame, rect, button_bg);
-        let inset = u16::from(rect.cols > 1);
+        let bg = if rect == config {
+            Color::Rgb(36, 80, 111)
+        } else if rect == mode {
+            Color::Rgb(70, 85, 106)
+        } else if rect == parked {
+            Color::Rgb(81, 72, 95)
+        } else if notification_icon == Some(super::ui::DONE_ICON) {
+            Color::Indexed(29)
+        } else if notification_icon == Some(super::ui::ALERT_ICON) {
+            Color::Indexed(160)
+        } else {
+            Color::Rgb(93, 80, 53)
+        };
+        toolbar_button(frame, rect, &label, bg);
+    }
+}
+fn toolbar_button(frame: &mut Frame, rect: Rect, text: &str, bg: Color) {
+    fill(frame, rect, bg);
+    let (icon, label) = text.trim().split_once(' ').unwrap_or((text.trim(), ""));
+    let y = rect.y + rect.rows / 2;
+    let inset = u16::from(rect.cols > 2);
+    write_text(
+        frame,
+        rect.x + inset,
+        y,
+        rect.cols.saturating_sub(inset),
+        icon,
+        Color::Indexed(231),
+        bg,
+        false,
+    );
+    let available = rect.cols.saturating_sub(3);
+    let width = label.width().min(usize::from(available)) as u16;
+    if width > 0 {
         write_text(
             frame,
-            rect.x + inset,
-            rect.y + rect.rows / 2,
-            rect.cols - inset,
-            label.trim(),
-            if rect == config {
-                Color::Rgb(95, 175, 255)
-            } else if rect == mode {
-                Color::Indexed(114)
-            } else {
-                Color::Indexed(if rect == parked {
-                    141
-                } else if notification_icon == Some(super::ui::DONE_ICON) {
-                    114
-                } else if notification_icon == Some(super::ui::ALERT_ICON) {
-                    203
-                } else {
-                    222
-                })
-            },
-            button_bg,
+            rect.x + 3 + available.saturating_sub(width) / 2,
+            y,
+            width,
+            label,
+            Color::Indexed(231),
+            bg,
             false,
         );
     }

@@ -59,29 +59,7 @@ fn shape(frame: &Frame) -> Result<usize> {
     Ok(cells)
 }
 pub(crate) fn cell_valid(cell: &Cell) -> bool {
-    if cell.width > 2
-        || cell.text.len() > 1024
-        || cell.text.chars().any(char::is_control)
-        || cell
-            .hyperlink
-            .as_ref()
-            .is_some_and(|uri| !super::protocol::valid_hyperlink(uri))
-    {
-        return false;
-    }
-    let mut chars = cell.text.chars();
-    if cell.width == 0 {
-        return cell.text.is_empty();
-    }
-    if let Some(first) = chars.next() {
-        (unicode_width::UnicodeWidthChar::width(first).unwrap_or(0) == usize::from(cell.width)
-            || (cell.text.contains('\u{fe0f}')
-                && unicode_width::UnicodeWidthStr::width(cell.text.as_str())
-                    == usize::from(cell.width)))
-            && chars.all(|ch| unicode_width::UnicodeWidthChar::width(ch).unwrap_or(0) == 0)
-    } else {
-        true
-    }
+    kelpmux_client_core::cell_valid(cell)
 }
 fn same_geometry(old: &Frame, new: &Frame) -> bool {
     old.cols == new.cols

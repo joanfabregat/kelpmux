@@ -838,8 +838,20 @@ impl Server {
                             )
                             .as_bytes(),
                         )?;
-                    } else {
-                        return Err("legacy mouse encoding unsupported by stream client".into());
+                    } else if event.position.x < 223 && event.position.y < 223 {
+                        let button = if event.kind == MouseKind::Release {
+                            3
+                        } else {
+                            button
+                        };
+                        pty.queue(&[
+                            27,
+                            b'[',
+                            b'M',
+                            button as u8 + 32,
+                            event.position.x as u8 + 33,
+                            event.position.y as u8 + 33,
+                        ])?;
                     }
                 }
             }
