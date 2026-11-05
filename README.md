@@ -30,3 +30,5 @@ The server will depend on shared protocol/types, not client presentation or brow
 The local checkout is `~/repos/kelp/server`. Build and compatibility instructions are in MIGRATION.md. Keep changes scoped to the extraction; do not introduce containers, remote execution or a privileged host-management service in this scaffold.
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) and [SECURITY.md](SECURITY.md). Licensed under [Apache-2.0](LICENSE).
+
+The [independent terminal stream contract](docs/native-client-protocol.md) documents bounded snapshots/deltas, input ownership and framing. The retained composed-screen TUI contract is documented separately in MIGRATION.md.
