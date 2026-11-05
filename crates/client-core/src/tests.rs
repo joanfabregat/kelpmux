@@ -1,4 +1,17 @@
 use super::*;
+#[test]
+fn history_layout_preserves_wide_combining_and_joined_glyph_columns() {
+    let s = history_screen(&["A界e\u{301}👩\u{200d}💻Z".into()], 12, 2).unwrap();
+    assert_eq!(s.cells.len(), 24);
+    assert_eq!(s.cells[1].text, "界");
+    assert_eq!(s.cells[1].width, 2);
+    assert_eq!(s.cells[2].width, 0);
+    assert_eq!(s.cells[3].text, "e\u{301}");
+    assert_eq!(s.cells[4].text, "👩\u{200d}💻");
+    assert_eq!(s.cells[4].width, 2);
+    assert_eq!(s.cells[6].text, "Z");
+    assert!(history_screen(&[], 401, 1).is_err());
+}
 fn screen() -> PaneSnapshot {
     PaneSnapshot {
         pane: 1,

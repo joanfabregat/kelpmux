@@ -11,6 +11,75 @@ use types::*;
 pub type Result<T> = std::result::Result<T, String>;
 pub const MAX_MESSAGE: usize = 16 * 1024 * 1024;
 pub const MAX_CELLS: usize = 100_000;
+/// Layout plain history using the same Unicode width library as the terminal.
+/// Keep this in Rust so browser search/selection do not count wide or combining
+/// characters as independent one-column cells.
+pub fn history_screen(lines: &[String], cols: u16, rows: u16) -> Result<Screen> {
+    if !(1..=400).contains(&cols) || !(1..=160).contains(&rows) {
+        return Err("invalid history dimensions".into());
+    }
+    let mut cells = Vec::with_capacity(usize::from(cols) * usize::from(rows));
+    for y in 0..usize::from(rows) {
+        let mut glyphs: Vec<Cell> = Vec::new();
+        for ch in lines.get(y).map(String::as_str).unwrap_or("").chars() {
+            if ch.is_control() {
+                continue;
+            }
+            let width = unicode_width::UnicodeWidthChar::width(ch).unwrap_or(0);
+            let join = glyphs.last().is_some_and(|last| {
+                last.text.ends_with('\u{200d}')
+                    || (('\u{1f1e6}'..='\u{1f1ff}').contains(&ch)
+                        && last.text.chars().count() == 1
+                        && last
+                            .text
+                            .chars()
+                            .next()
+                            .is_some_and(|c| ('\u{1f1e6}'..='\u{1f1ff}').contains(&c)))
+            });
+            if width == 0 || join || ('\u{1f3fb}'..='\u{1f3ff}').contains(&ch) {
+                if let Some(last) = glyphs.last_mut() {
+                    if last.text.len() + ch.len_utf8() <= 1024 {
+                        last.text.push(ch);
+                        last.width = unicode_width::UnicodeWidthStr::width(last.text.as_str())
+                            .clamp(1, 2) as u8;
+                    }
+                }
+            } else {
+                glyphs.push(Cell {
+                    text: ch.to_string(),
+                    width: width.min(2) as u8,
+                    ..Cell::default()
+                });
+            }
+            if glyphs.len() > usize::from(cols) {
+                break;
+            }
+        }
+        let start = cells.len();
+        for glyph in glyphs {
+            if cells.len() - start + usize::from(glyph.width) > usize::from(cols) {
+                break;
+            }
+            let wide = glyph.width == 2;
+            cells.push(glyph);
+            if wide {
+                cells.push(Cell {
+                    text: String::new(),
+                    width: 0,
+                    ..Cell::default()
+                });
+            }
+        }
+        cells.resize(start + usize::from(cols), Cell::default());
+    }
+    Ok(Screen {
+        cols,
+        rows,
+        cells,
+        cursor: None,
+        modes: InputModes::default(),
+    })
+}
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PaneSnapshot {
     pub pane: PaneId,
@@ -296,6 +365,27 @@ mod wasm {
     #[unsafe(no_mangle)]
     pub extern "C" fn reset() {
         CLIENT.with(|c| *c.borrow_mut() = Client::default());
+    }
+    #[unsafe(no_mangle)]
+    pub unsafe extern "C" fn layout_history(
+        pointer: *const u8,
+        length: usize,
+        cols: u16,
+        rows: u16,
+    ) {
+        let value = if length > 4 * 1024 * 1024 {
+            json!({"error":"history layout too large"})
+        } else {
+            let bytes = unsafe { std::slice::from_raw_parts(pointer, length) };
+            match serde_json::from_slice::<Vec<String>>(bytes)
+                .map_err(|e| e.to_string())
+                .and_then(|lines| history_screen(&lines, cols, rows))
+            {
+                Ok(screen) => json!({"screen":screen}),
+                Err(error) => json!({"error":error}),
+            }
+        };
+        OUTPUT.with(|o| *o.borrow_mut() = serde_json::to_vec(&value).unwrap());
     }
     #[unsafe(no_mangle)]
     pub extern "C" fn select(pane: u64, x1: u16, y1: u16, x2: u16, y2: u16) {
