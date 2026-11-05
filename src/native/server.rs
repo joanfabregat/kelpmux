@@ -1843,6 +1843,25 @@ impl Server {
                     .unwrap()
                     .send(ServerMessage::Diagnostics(report))?;
             }
+            ClientMessage::SearchPane { pane, query, limit } => {
+                if query.is_empty()
+                    || query.len() > 256
+                    || query.chars().any(char::is_control)
+                    || limit > 64
+                {
+                    return Err("invalid pane search".into());
+                }
+                let hits = self
+                    .panes
+                    .get(&pane)
+                    .ok_or("unknown pane")?
+                    .terminal
+                    .search(&query, limit);
+                self.clients
+                    .get_mut(&id)
+                    .unwrap()
+                    .send(ServerMessage::PaneSearch { pane, hits })?;
+            }
             ClientMessage::History { pane, start, limit } => {
                 if limit > 200 {
                     return Err("history page exceeds 200 lines".into());

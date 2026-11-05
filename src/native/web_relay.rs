@@ -393,18 +393,42 @@ fn serve(
                     Err(e) => return Err(e.into()),
                 }
             }
-            match ws.flush() {
-                Ok(()) => {}
-                Err(tungstenite::Error::Io(e)) if e.kind() == std::io::ErrorKind::WouldBlock => {}
+            let ws_blocked = match ws.flush() {
+                Ok(()) => false,
+                Err(tungstenite::Error::Io(e)) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                    true
+                }
                 Err(e) => return Err(e.into()),
-            }
+            };
             if progress.elapsed() > Duration::from_secs(180) {
                 return Ok(());
             }
             if !host_key.checked && handshake_started.elapsed() > Duration::from_secs(15) {
                 return Err("SSH host-key verification timed out".into());
             }
-            std::thread::sleep(Duration::from_millis(10));
+            // Wake as soon as either leg has input instead of imposing a
+            // 10 ms sleep on every interactive exchange. Only wait for writes
+            // when backpressure actually left data queued.
+            use std::os::fd::AsRawFd;
+            let mut fds = [
+                libc::pollfd {
+                    fd: ws.get_ref().as_raw_fd(),
+                    events: libc::POLLIN | if ws_blocked { libc::POLLOUT } else { 0 },
+                    revents: 0,
+                },
+                libc::pollfd {
+                    fd: tcp.as_raw_fd(),
+                    events: libc::POLLIN | if pending.is_empty() { 0 } else { libc::POLLOUT },
+                    revents: 0,
+                },
+            ];
+            let ready = unsafe { libc::poll(fds.as_mut_ptr(), 2, 10) };
+            if ready < 0 {
+                let error = std::io::Error::last_os_error();
+                if error.kind() != std::io::ErrorKind::Interrupted {
+                    return Err(error.into());
+                }
+            }
         }
     }
     // Consume the request header before closing a static response. Dropping a
@@ -617,6 +641,86 @@ mod tests {
             workspace: "dev".into(),
             dev: true,
         }
+    }
+    #[test]
+    fn interactive_relay_round_trip_probe() {
+        use tungstenite::client::IntoClientRequest;
+        let wire = exchange(&pinned_key(&config().ssh_host_key).unwrap());
+        let target = TcpListener::bind("127.0.0.1:0").unwrap();
+        let target_address = target.local_addr().unwrap();
+        let expected = wire.len();
+        let echo = std::thread::spawn(move || {
+            for _ in 0..2 {
+                let (mut socket, _) = target.accept().unwrap();
+                socket.set_nodelay(true).unwrap();
+                socket
+                    .set_read_timeout(Some(Duration::from_secs(5)))
+                    .unwrap();
+                socket.write_all(&wire).unwrap();
+                let mut byte = [0u8; 1];
+                while socket.read_exact(&mut byte).is_ok() {
+                    if socket.write_all(&byte).is_err() {
+                        break;
+                    }
+                }
+            }
+        });
+        let mut direct = TcpStream::connect(target_address).unwrap();
+        direct.set_nodelay(true).unwrap();
+        direct
+            .set_read_timeout(Some(Duration::from_secs(5)))
+            .unwrap();
+        direct.read_exact(&mut vec![0; expected]).unwrap();
+        let mut direct_times = Vec::new();
+        for n in 0..24u8 {
+            let at = Instant::now();
+            direct.write_all(&[n]).unwrap();
+            let mut received = [0];
+            direct.read_exact(&mut received).unwrap();
+            assert_eq!(received, [n]);
+            direct_times.push(at.elapsed().as_secs_f64() * 1000.0);
+        }
+        drop(direct);
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let relay = std::thread::spawn(move || {
+            let (socket, _) = listener.accept().unwrap();
+            let mut budget = Budget::default();
+            assert!(budget.claim(socket.peer_addr().unwrap().ip()));
+            let _ = serve(socket, &config(), target_address, &Mutex::new(budget));
+        });
+        let mut request = format!("ws://{address}/ssh").into_client_request().unwrap();
+        request
+            .headers_mut()
+            .insert("Origin", config().origin.parse().unwrap());
+        let socket = TcpStream::connect(address).unwrap();
+        socket.set_nodelay(true).unwrap();
+        socket
+            .set_read_timeout(Some(Duration::from_secs(5)))
+            .unwrap();
+        let (mut ws, _) = tungstenite::client(request, socket).unwrap();
+        let mut received = 0;
+        while received < expected {
+            if let Message::Binary(bytes) = ws.read().unwrap() {
+                received += bytes.len();
+            }
+        }
+        let mut relay_times = Vec::new();
+        for n in 0..24u8 {
+            let at = Instant::now();
+            ws.send(Message::Binary(vec![n].into())).unwrap();
+            assert_eq!(ws.read().unwrap().into_data().as_ref(), &[n]);
+            relay_times.push(at.elapsed().as_secs_f64() * 1000.0);
+        }
+        drop(ws);
+        relay.join().unwrap();
+        echo.join().unwrap();
+        direct_times.sort_by(f64::total_cmp);
+        relay_times.sort_by(f64::total_cmp);
+        println!(
+            "Local transport RTT, 24 samples: direct TCP median={:.3}ms p95={:.3}ms; WebSocket relay median={:.3}ms p95={:.3}ms (excludes VPN/TLS/WASSH/application)",
+            direct_times[12], direct_times[22], relay_times[12], relay_times[22]
+        );
     }
     fn http(request: &[u8]) -> Vec<u8> {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();

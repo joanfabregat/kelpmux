@@ -3,7 +3,7 @@ use crate::{Result, model::Status};
 use serde::{Deserialize, Serialize};
 use std::io::{Read, Write};
 
-pub const VERSION: u16 = 56;
+pub const VERSION: u16 = 57;
 pub const MAX_MESSAGE: usize = 16 * 1024 * 1024;
 pub const MAX_INPUT: usize = 64 * 1024;
 pub use kelpmux_client_core::types::*;
@@ -286,6 +286,11 @@ pub enum ClientMessage {
         start: i32,
         limit: usize,
     },
+    SearchPane {
+        pane: PaneId,
+        query: String,
+        limit: usize,
+    },
     InspectPane {
         pane: PaneId,
     },
@@ -315,6 +320,10 @@ pub enum ServerMessage {
     History {
         pane: PaneId,
         lines: Vec<(i32, String)>,
+    },
+    PaneSearch {
+        pane: PaneId,
+        hits: Vec<(i32, String)>,
     },
     Patch(super::delta::Patch),
     PaneState {
