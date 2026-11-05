@@ -2,7 +2,7 @@
 
 Use signed commits and pull requests for the default branch. Force-pushing or deleting the default branch is prohibited. Resolve review conversations before merging; prefer squash merges and delete merged topic branches. A second approval is not mandatory while there is only one maintainer, because GitHub does not allow authors to approve their own pull requests. CODEOWNERS identifies the maintainer but does not provide independent review by itself.
 
-Run applicable local checks before pushing and verify the resulting CI run before merging. New scaffolds have no executable implementation or CI yet; add meaningful build, test and compatibility checks with the first code import, then make those checks required. A documentation scaffold is not evidence that migrated code has passed tests.
+Run applicable local checks before pushing and verify the resulting CI run before merging. The extracted components have independent build, test, compatibility and dependency-audit checks; required checks are enforced on the default branch. Passing CI does not replace reviewing imports and security boundaries.
 
 GitHub Actions must use read-only default token permissions and grant additional permissions only to the job that needs them. Actions must be approved and pinned to full commit SHAs. External fork workflows require maintainer approval; private forks must not receive secrets or write tokens. Do not use privileged pull_request_target or workflow_run jobs to check out and execute untrusted pull-request code. Do not expose persistent personal/self-hosted runners to untrusted contributions. Workflow approval is a security decision, not an automatic consequence of opening a pull request.
 
