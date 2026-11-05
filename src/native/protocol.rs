@@ -3,7 +3,7 @@ use crate::{Result, model::Status};
 use serde::{Deserialize, Serialize};
 use std::io::{Read, Write};
 
-pub const VERSION: u16 = 57;
+pub const VERSION: u16 = 58;
 pub const MAX_MESSAGE: usize = 16 * 1024 * 1024;
 pub const MAX_INPUT: usize = 64 * 1024;
 pub use kelpmux_client_core::types::*;
@@ -323,7 +323,8 @@ pub enum ServerMessage {
     },
     PaneSearch {
         pane: PaneId,
-        hits: Vec<(i32, String)>,
+        hits: Vec<PaneSearchMatch>,
+        truncated: bool,
     },
     Patch(super::delta::Patch),
     PaneState {
@@ -346,6 +347,17 @@ pub enum ServerMessage {
     Error(String),
     Detached,
     Pong,
+}
+
+/// An immutable search preview. Coordinates address these rows, never a later
+/// history page whose relative line numbers may have shifted with new output.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PaneSearchMatch {
+    pub source: String,
+    pub first_line: i32,
+    pub lines: Vec<String>,
+    pub start: Point,
+    pub end: Point,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

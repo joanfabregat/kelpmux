@@ -490,6 +490,116 @@ impl Terminal {
                 .collect()
         }
     }
+    /// Browser search carries its own immutable context, including the source
+    /// buffer, so ongoing output and alternate-screen switches cannot retarget it.
+    pub fn web_search(&self, query: &str, limit: usize) -> (Vec<PaneSearchMatch>, bool) {
+        if query.is_empty()
+            || query.len() > 256
+            || query.chars().any(char::is_control)
+            || limit == 0
+        {
+            return (Vec::new(), false);
+        }
+        let live = self.rows();
+        let mut sources = Vec::new();
+        if let Some(primary) = &self.primary_history {
+            sources.push(("primary", primary.as_slice()));
+        }
+        sources.push((
+            if self.is_alternate() {
+                "alternate"
+            } else {
+                "primary"
+            },
+            live.as_slice(),
+        ));
+        let needle = query.to_lowercase();
+        let mut hits = Vec::new();
+        let mut budget = 4 * 1024 * 1024usize;
+        let height = (self.term.screen_lines() * 2).clamp(4, 160);
+        for (source, rows) in sources {
+            let mut first = 0;
+            while first < rows.len() {
+                let mut last = first;
+                let mut text = String::new();
+                let mut parts = Vec::new();
+                loop {
+                    let row = &rows[last];
+                    let mut end = row.text.len().min(MAX_INPUT.saturating_sub(text.len()));
+                    while !row.text.is_char_boundary(end) {
+                        end -= 1;
+                    }
+                    let start = text.len();
+                    text.push_str(&row.text[..end]);
+                    parts.push((last, start, text.len()));
+                    last += 1;
+                    if !row.wrapped || last == rows.len() {
+                        break;
+                    }
+                }
+                // Track original byte bounds through Unicode lowercase expansion.
+                let mut folded = String::new();
+                let mut positions = Vec::new();
+                for (at, ch) in text.char_indices() {
+                    for lower in ch.to_lowercase() {
+                        positions.push((folded.len(), at, at + ch.len_utf8()));
+                        folded.push(lower);
+                    }
+                }
+                for (at, matched) in folded.match_indices(&needle) {
+                    if hits.len() >= limit.min(64) {
+                        return (hits, true);
+                    }
+                    let start_map = positions.partition_point(|p| p.0 <= at).saturating_sub(1);
+                    let end_map = positions
+                        .partition_point(|p| p.0 < at + matched.len())
+                        .saturating_sub(1);
+                    let begin = positions[start_map].1;
+                    let end = positions[end_map].2;
+                    let a = parts.iter().find(|(_, _, b)| *b > begin).unwrap();
+                    let b = parts.iter().rev().find(|(_, a, _)| *a < end).unwrap();
+                    let mut context_start = a.0.saturating_sub((height / 4).min(20));
+                    let mut context_end = (context_start + height).min(rows.len()).max(b.0 + 1);
+                    // Keep previews bounded even for unusually long wrapped matches.
+                    if context_end - context_start > 160 {
+                        context_start = a.0;
+                        context_end = (a.0 + 160).min(rows.len());
+                    }
+                    if b.0 >= context_end {
+                        continue;
+                    }
+                    let bytes: usize = rows[context_start..context_end]
+                        .iter()
+                        .map(|row| row.text.len())
+                        .sum();
+                    if bytes > budget {
+                        return (hits, true);
+                    }
+                    budget -= bytes;
+                    let x1 = unicode_width::UnicodeWidthStr::width(&text[a.1..begin]);
+                    let x2 = unicode_width::UnicodeWidthStr::width(&text[b.1..end]);
+                    hits.push(PaneSearchMatch {
+                        source: source.into(),
+                        first_line: rows[context_start].line,
+                        lines: rows[context_start..context_end]
+                            .iter()
+                            .map(|row| row.text.clone())
+                            .collect(),
+                        start: Point {
+                            x: x1.min(399) as u16,
+                            y: (a.0 - context_start) as u16,
+                        },
+                        end: Point {
+                            x: x2.saturating_sub(1).min(399) as u16,
+                            y: (b.0 - context_start) as u16,
+                        },
+                    });
+                }
+                first = last;
+            }
+        }
+        (hits, false)
+    }
     /// Literal Unicode search over joined wrapped primary rows. Bounds protect
     /// interactive searches from unbounded queries/results/very long wraps.
     /// While alternate mode is active, its primary snapshot and current active

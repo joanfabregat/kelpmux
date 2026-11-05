@@ -1851,16 +1851,20 @@ impl Server {
                 {
                     return Err("invalid pane search".into());
                 }
-                let hits = self
+                let (hits, truncated) = self
                     .panes
                     .get(&pane)
                     .ok_or("unknown pane")?
                     .terminal
-                    .search(&query, limit);
+                    .web_search(&query, limit);
                 self.clients
                     .get_mut(&id)
                     .unwrap()
-                    .send(ServerMessage::PaneSearch { pane, hits })?;
+                    .send(ServerMessage::PaneSearch {
+                        pane,
+                        hits,
+                        truncated,
+                    })?;
             }
             ClientMessage::History { pane, start, limit } => {
                 if limit > 200 {
