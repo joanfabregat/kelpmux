@@ -4,7 +4,7 @@ KelpServer is the open-source persistent terminal server in the Kelp family. It 
 
 ## Status
 
-This repository is a scaffold for the planned extraction from [KelpMux](https://github.com/joanfabregat/kelpmux). No implementation has been migrated and there is no standalone KelpServer release yet.
+The component has been extracted from KelpMux development commit `1033e4b`. See [MIGRATION.md](MIGRATION.md) for history provenance, build instructions and compatibility boundaries.
 
 ## Scope
 
@@ -27,6 +27,8 @@ The server will depend on shared protocol/types, not client presentation or brow
 
 ## Development
 
-The local checkout is `~/repos/kelp/server`. Build and compatibility instructions will be added with the implementation. Keep changes scoped to the extraction; do not introduce containers, remote execution or a privileged host-management service in this scaffold.
+The local checkout is `~/repos/kelp/server`. Build and compatibility instructions are in MIGRATION.md. Keep changes scoped to the extraction; do not introduce containers, remote execution or a privileged host-management service in this scaffold.
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) and [SECURITY.md](SECURITY.md). Licensed under [Apache-2.0](LICENSE).
+
+The [independent terminal stream contract](docs/native-client-protocol.md) documents bounded snapshots/deltas, input ownership and framing. The retained composed-screen TUI contract is documented separately in MIGRATION.md.
