@@ -336,11 +336,11 @@ fn search_unicode_history_clipboard_selection_and_alternate_reveal_use_real_ptys
         limit: 64,
     });
     loop {
-        if let ServerMessage::PaneSearch { pane, hits } = observer.read() {
+        if let ServerMessage::PaneSearch { pane, hits, .. } = observer.read() {
             assert_eq!(pane, panes[0].id);
             assert!(
                 hits.iter()
-                    .any(|(_, text)| text.contains("UNICODE_探査_alpha"))
+                    .any(|hit| hit.lines.join("").contains("UNICODE_探査_alpha"))
             );
             break;
         }
