@@ -270,7 +270,7 @@ dependencies = [
 [[package]]
 name = "kelpserver"
 version = "0.2.0-beta.6"
-source = "git+https://github.com/joanfabregat/kelpserver?rev=1517ce57bc4886b3adea6517f70d773c16396290#1517ce57bc4886b3adea6517f70d773c16396290"
+source = "git+https://github.com/joanfabregat/kelpserver?rev=a521dfe8d6909cb9c42f27db0d630a117d90c7da#a521dfe8d6909cb9c42f27db0d630a117d90c7da"
 dependencies = [
  "alacritty_terminal",
  "base64",

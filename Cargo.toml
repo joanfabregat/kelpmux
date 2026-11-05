@@ -7,7 +7,7 @@ license = "Apache-2.0"
 description = "Kelp terminal interface"
 
 [dependencies]
-kelpserver = { git = "https://github.com/joanfabregat/kelpserver", rev = "1517ce57bc4886b3adea6517f70d773c16396290", version = "0.2.0-beta.6" }
+kelpserver = { git = "https://github.com/joanfabregat/kelpserver", rev = "a521dfe8d6909cb9c42f27db0d630a117d90c7da", version = "0.2.0-beta.6" }
 kelpclient = { git = "https://github.com/joanfabregat/kelpclient", rev = "616d1dfb043db078ee593f542602b0f2d58c26a0", version = "0.1.0" }
 base64 = "0.22"
 unicode-width = "=0.2.2"
