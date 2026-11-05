@@ -15,6 +15,16 @@
 
 Kelpmux is a persistent terminal workspace for coding agents, inspired by Monterey's kelp forests. The native Rust server owns its PTYs, Alacritty terminal emulation, grids, reading views and agent metadata. Detaching a client leaves shells and agents running. Apache-2.0 licensed; native mode needs no tmux.
 
+## Component split and maintenance
+
+KelpMux remains the open-source terminal interface. Feature development is frozen while the web-first management application evolves; compatibility, security and necessary bug fixes remain in scope.
+
+The planned split introduces [KelpServer](https://github.com/joanfabregat/kelpserver) for the persistent terminal daemon and [KelpClient](https://github.com/joanfabregat/kelpclient) for shared protocol types and Rust/WASM terminal client libraries. KelpHub is maintained separately and contains the web interface and management service. Its management API may support optional TUI integrations later; feature parity is not a requirement.
+
+This checkout still contains the existing combined implementation. The new repositories are scaffolds until the extraction is implemented and validated. The local component layout is `~/repos/kelp/server`, `~/repos/kelp/client`, `~/repos/kelp/mux` and `~/repos/kelp/hub`.
+
+Report vulnerabilities through [SECURITY.md](SECURITY.md), rather than public issues. Repository security and contribution controls are described in [the repository policy](docs/repository-security.md).
+
 ## Native beta
 
 - Automatic balanced grids computed from unparked tabs and terminal dimensions. Resizing the view preserves processes.
