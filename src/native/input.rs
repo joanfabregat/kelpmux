@@ -1852,16 +1852,8 @@ fn push_input(output: &mut Vec<ClientMessage>, bytes: &[u8]) {
     output.push(ClientMessage::Input(bytes.to_vec()));
 }
 /// Matches the renderer's centered help panel in the work area above the footer.
-pub fn help_bounds(cols: u16, rows: u16) -> Rect {
-    let width = cols.saturating_sub(4).min(76);
-    let height = rows.saturating_sub(2).min(30);
-    Rect {
-        x: (cols - width) / 2,
-        y: (rows.saturating_sub(1) - height) / 2,
-        cols: width,
-        rows: height,
-    }
-}
+pub use super::workspace::help_bounds;
+
 fn frame_entries(frame: &Frame) -> Vec<u64> {
     use super::ui::DialogKind;
     match frame.ui.dialog.map(|dialog| dialog.kind) {

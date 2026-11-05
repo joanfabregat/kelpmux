@@ -1,93 +1,30 @@
-<h1 align="center">Kelpmux</h1>
+# KelpMux
 
-<p align="center">
-  <img src="assets/kelpmux-logo.png" alt="Kelpmux logo: terminal panes intertwined with kelp" width="320">
-</p>
+KelpMux is the open-source terminal interface to persistent Kelp terminal workspaces. It provides grid and sidebar views, agent activity, parking, recently closed sessions, recovery and system metrics. Detaching leaves shells and agents running.
 
-<p align="center">
-  <a href="https://github.com/joanfabregat/kelpmux/actions/workflows/ci.yml"><img src="https://github.com/joanfabregat/kelpmux/actions/workflows/ci.yml/badge.svg?branch=main" alt="CI status"></a>
-  <a href="https://github.com/joanfabregat/kelpmux/actions/workflows/release-build.yml"><img src="https://github.com/joanfabregat/kelpmux/actions/workflows/release-build.yml/badge.svg?branch=main" alt="Release build status"></a>
-  <a href="docs/releases.md"><img src="https://img.shields.io/badge/version-0.2.0--beta.6-blue" alt="Version 0.2.0-beta.6"></a>
-  <a href="LICENSE"><img src="https://img.shields.io/github/license/joanfabregat/kelpmux" alt="License: Apache-2.0"></a>
-  <a href="#build-and-validate"><img src="https://img.shields.io/badge/Rust-1.85%2B-orange?logo=rust" alt="Rust 1.85 or newer"></a>
-  <a href="docs/native.md"><img src="https://img.shields.io/badge/Linux-x86__64%20%7C%20ARM64-blue?logo=linux" alt="Linux x86-64 and ARM64"></a>
-</p>
+Feature development is frozen while the web-first KelpHub application evolves. Compatibility, security and necessary fixes remain in scope; feature parity with the web application is not required.
 
-Kelpmux is a persistent terminal workspace for coding agents, inspired by Monterey's kelp forests. The native Rust server owns its PTYs, Alacritty terminal emulation, grids, reading views and agent metadata. Detaching a client leaves shells and agents running. Apache-2.0 licensed; native mode needs no tmux.
+## Components
 
-## Component split and maintenance
+- [KelpServer](https://github.com/joanfabregat/kelpserver) owns PTYs, authoritative terminal state and persistent sessions.
+- [KelpClient](https://github.com/joanfabregat/kelpclient) provides shared protocol/types and Rust/WASM terminal client libraries.
+- KelpHub provides the separately maintained web interface and management service.
 
-KelpMux remains the open-source terminal interface. Feature development is frozen while the web-first management application evolves; compatibility, security and necessary bug fixes remain in scope.
+This repository retains the existing TUI and optional legacy tmux adapter. It no longer owns the terminal server implementation or browser/management code. See [MIGRATION.md](MIGRATION.md) for source-history provenance and the intentionally retained composed-screen compatibility boundary.
 
-The planned split introduces [KelpServer](https://github.com/joanfabregat/kelpserver) for the persistent terminal daemon and [KelpClient](https://github.com/joanfabregat/kelpclient) for shared protocol types and Rust/WASM terminal client libraries. KelpHub is maintained separately and contains the web interface and management service. Its management API may support optional TUI integrations later; feature parity is not a requirement.
+## Build and run
 
-This checkout still contains the existing combined implementation. The new repositories are scaffolds until the extraction is implemented and validated. The local component layout is `~/repos/kelp/server`, `~/repos/kelp/client`, `~/repos/kelp/mux` and `~/repos/kelp/hub`.
-
-Report vulnerabilities through [SECURITY.md](SECURITY.md), rather than public issues. Repository security and contribution controls are described in [the repository policy](docs/repository-security.md).
-
-## Native beta
-
-- Automatic balanced grids computed from unparked tabs and terminal dimensions. Resizing the view preserves processes.
-- Park tabs behind a restore list while their terminals, output and agent status continue running.
-- Reopen useful closed tabs and previous-run sessions through explicit resume, picker, program-restart or folder choices; navigate running and parked agents in a separate table.
-- Aligned grid overview with inactive cells and resizable left-sidebar tabs, with alternating tab backgrounds and full-width terminals.
-- Popup configuration and close-tab confirmations, plus CPU, memory, swap and disk metrics and a detailed system statistics popup.
-- Stable pane IDs and colors, distinct pane numbers, lifecycle markers and bouncing-ball working indicators. Agent selection filters questions and finished sessions; missing session evidence stays unknown.
-- Configurable shortcuts and graphical pane movement, preserving application word-editing keys outside explicit bindings.
-- Named persistent workspaces with explicit start, attach, status and stop commands. One controller, additional observers and explicit takeover.
-- Alacritty application colors, Unicode text, history, alternate screens, terminal query replies, application mouse reporting, local selection and bracketed paste.
-- Shared OSC 7501 activity reporting from Claude/Codex, modular passive discovery and read-only daemon metadata, optional lifecycle hooks and a seven-day metadata journal. Codex launches with its original working directory and arguments. No prompts, responses, credentials or transcripts are stored in the journal.
-- Overview, persistent unread notifications with optional sound, and a recovery dashboard grouped by workspace and project with copyable resume commands.
-- A persistent scratch terminal popup, history search across one or all terminals, and keyboard or mouse selection with OSC 52 copy.
-- Startup tab counts, named terminal templates and directories; remembered view widths and automatic equalization.
-- Revision-checked incremental frames with bounded slow-client resynchronization, a reproducible payload benchmark and content-free diagnostics.
-
-The server runs on **Linux** with readable `/proc`; CI tests x86-64 and ARM64. The server must stay alive to preserve terminals. A crash or reboot does not recreate terminal processes; the journal identifies sessions for manual resumption in their agent TUIs. Physical RootShell/device validation is separate from automated PTY profiles.
-
-## Start an isolated workspace
-
-Build or unpack the binary, then use a new workspace name. Existing alpha and tmux workspaces can continue independently:
+Build/install `kelpserver` alongside `kelpmux`, or configure `KELPSERVER_BINARY`. See [MIGRATION.md](MIGRATION.md) for build commands and validation requirements. No split-component release has been published yet.
 
 ```sh
-kelpmux start --workspace beta-trial
-kelpmux attach --workspace beta-trial
+kelpmux start --workspace trial
+kelpmux attach --workspace trial
 ```
 
-Inspect it with `kelpmux status --workspace beta-trial`. `Ctrl-B`, then `d` detaches without ending processes. `kelpmux stop --workspace beta-trial` ends that workspace and its owned shells; stop only a disposable trial when finished testing.
+`Ctrl-B`, then `d` detaches. `g` selects grid, `z` reopens the latest useful closed tab, `p` parks a tab and `u` shows parked tabs. Stop a disposable workspace with `kelpmux stop --workspace trial`; stopping ends its processes. Existing settings and XDG state paths are preserved. A server crash or reboot requires recovery/resume; metadata does not preserve live processes.
 
-`Ctrl-B`, then `g` or `e` opens the automatic grid; `z` reopens the most recently closed useful tab; `r` opens Recently closed, including previous runs; `f` toggles full terminal width; `?` opens help. Empty shells are excluded from history. Prefix then Enter creates a tab, `p` requests parking the active tab, and `u` opens the parked list. The ⊟ tab control requests parking; the Parked control in the tab bar opens the colored restore table. Parking and restoring each require confirmation: Enter confirms, Esc cancels. `Ctrl-B`, then `a` opens the agent switcher, including parked agents; `!` filters attention and `n` filters finished sessions; `s` opens pane movement. Recently closed and Agents also have buttons in the sidebar and grid footer. Use `attach --takeover` or `Ctrl-B`, then `t` to take control from another client. Controller dimensions determine geometry; observers see a clipped or padded frame.
+The local checkout is `~/repos/kelp/mux`. Source operations do not replace running dev or pre-prod installations. The legacy [native guide](docs/native.md) describes the retained interaction model; component ownership/build instructions in MIGRATION.md supersede its combined-binary packaging assumptions.
 
-`kelpmux ssh-entry --workspace beta-trial` attaches or starts the named workspace from an SSH shell. Automatic SSH routing requires explicit login-hook configuration; a launch command injected into an already running tmux agent is not a shell command. Keep existing SSH authentication unchanged and choose Kelpmux before automatic tmux attachment. See [native commands, configuration and SSH setup](docs/native.md).
+## Security and contributions
 
-The foreground `server --socket PATH --state-dir PATH` and explicit `ctl --socket PATH` interface remain available for controlled development and independent endpoints. Commands never migrate a tmux workspace or install agent hooks automatically.
-
-## Build and validate
-
-Rust 1.85+ is required. CI pins development Rust 1.99.0, tests minimum Rust, audits locked dependencies against fresh RustSec advisories, and checks their license expressions. Run dependency-bearing commands in your approved container workflow where required.
-
-```sh
-cargo fmt --all -- --check
-cargo clippy --locked --all-targets -- -D warnings
-cargo test --locked
-cargo build --locked --release
-```
-
-Native fixtures use disposable PTYs, shells and private sockets/state. They test reconnect identity, controller/observer behavior, malformed/slow clients, ANSI/query handling, fragmented input, paste, automatic grids, parking, exit cleanup, responsive tabs/dialogs, agent filters, configuration and workspace lifecycle. They do not launch real agents or modify an existing workspace. Small and large terminal profiles check rendering and resize behavior; the [release checklist](docs/releases.md) separately covers hands-on RootShell and display checks.
-
-Quality, native architecture, minimum-Rust, dependency policy and legacy integration jobs run in parallel. Reviewed cache actions restore locked dependency sources and job/toolchain-specific build outputs; only successful trusted events save caches. Current advisories and audit results are never cached. Release jobs produce versioned archives, license texts and verified SHA-256 checksums.
-
-## Legacy tmux compatibility
-
-Older metadata/helper commands remain available for existing tmux 3.8+ workspaces: `daemon`, `scan`, `list`, `tmux-config`, reading helpers and guarded layouts. tmux owns those terminals and their configuration. Review generated configuration before sourcing it; Kelpmux never changes dotfiles or starts discovery automatically. Legacy mode requires a separately installed tmux; native archives do not bundle it. See [hook examples](examples), [discovery details](docs/discovery.md), and `kelpmux --help`. Keep legacy state separate from a native trial.
-
-## State and releases
-
-Native state uses the XDG state directory or `~/.local/state/kelpmux`; workspace names select independent private endpoints. The discovery worker writes its private registry and seven-day journal under each server's state root. Explicit foreground servers can choose a dedicated socket and state directory. See [architecture](docs/architecture.md) for protocol, geometry, discovery and process-safety boundaries.
-
-Release builds validate the repository and package GNU/Linux x86-64 and ARM64 binaries, documentation, locked dependency licenses and checksums. A version string alone does not publish a release, install a binary or start a service. See the [release procedure](docs/releases.md).
-
-## Unreleased native-client foundation
-
-The planned graphical clients are macOS, iPadOS, iOS and web. The [four-client architecture proposal](docs/adr/0002-four-clients-and-web-ssh.md) complements the native protocol ADR with a shared client core, browser SSH authentication and terminal text selection requirements.
-
-Development beta.3 adds experimental independent pane streams, per-pane control/size leases, an SSH stdio bridge, read-only reference inspection and matching-client attachment without restarting workspaces. It also fixes a fragmented-Unicode rendering bug and adds conformance and nine-pane stress coverage. Existing beta.2/alpha sessions keep their current behavior until explicitly replaced. See the [implemented stream contract](docs/native-client-protocol.md) and [proposed native/MCP/device ADR](docs/adr/0001-native-client-protocol-and-device-capabilities.md). Native applications and MCP/device access remain future work.
+Use [SECURITY.md](SECURITY.md) for private vulnerability reporting. Follow [CONTRIBUTING.md](CONTRIBUTING.md) and [repository security policy](docs/repository-security.md). Licensed under [Apache-2.0](LICENSE); see NOTICE for attribution.

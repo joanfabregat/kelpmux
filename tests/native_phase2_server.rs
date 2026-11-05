@@ -330,6 +330,27 @@ fn search_unicode_history_clipboard_selection_and_alternate_reveal_use_real_ptys
     let mut observer = daemon.connect();
     let before = peer.screen(panes[0].id);
     assert!(observer.history(panes[0].id).len() <= 200);
+    observer.send(ClientMessage::SearchPane {
+        pane: panes[0].id,
+        query: "UNICODE_探査_alpha".into(),
+        limit: 64,
+    });
+    loop {
+        if let ServerMessage::PaneSearch { pane, hits, .. } = observer.read() {
+            assert_eq!(pane, panes[0].id);
+            assert!(
+                hits.iter()
+                    .any(|hit| hit.lines.join("").contains("UNICODE_探査_alpha"))
+            );
+            break;
+        }
+    }
+    observer.send(ClientMessage::SearchPane {
+        pane: panes[0].id,
+        query: "too-many".into(),
+        limit: 65,
+    });
+    assert!(observer.error().contains("search"));
     assert_eq!(peer.screen(panes[0].id), before);
     observer.send(ClientMessage::History {
         pane: panes[0].id,

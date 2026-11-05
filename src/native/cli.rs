@@ -4,21 +4,13 @@ use super::{
     input::{Decoder, Router},
     protocol::*,
     render::terminal_diff,
-    server::{self, ServerConfig},
 };
 use crate::Result;
 use base64::{Engine, engine::general_purpose::STANDARD};
 use std::{
     collections::VecDeque,
-    fs,
     io::{Read, Write},
-    os::{
-        fd::AsRawFd,
-        unix::{
-            fs::{FileTypeExt, MetadataExt},
-            net::UnixStream,
-        },
-    },
+    os::{fd::AsRawFd, unix::net::UnixStream},
     path::{Path, PathBuf},
     sync::atomic::{AtomicBool, Ordering},
     time::{Duration, Instant},
@@ -30,6 +22,8 @@ pub const HELP: &str = "Owned native terminal workspaces (Linux):
   kelpmux status|stop|recover|diagnostics|templates [--workspace NAME]
   kelpmux benchmark
   kelpmux bridge [--workspace NAME] [--socket PATH]
+  kelpmux web-bridge [--workspace NAME] [--socket PATH]
+  kelpmux web-relay --config PATH
   kelpmux stream-inspect [--workspace NAME] [PANE_ID ...]
   kelpmux server [--socket PATH] [--state-dir PATH] [--shell PATH] [--cwd PATH] [--size CxR] [--config PATH]
   kelpmux attach [--workspace NAME] [--socket PATH] [--takeover] [--current-client]
@@ -47,7 +41,6 @@ Attach keys: Ctrl-B d detach, z grid/tabs, f full width, g/e automatic grid,
   o overview, b notifications, r recovery, / search, c scratch,
   N next question, P next completion, Space selection, Enter new, p park, u parked.
 Configurable in --config JSON. Scratch is persistent until explicitly closed.";
-const TIMEOUT: Duration = Duration::from_secs(3);
 const ESCAPE_TIMEOUT: Duration = Duration::from_millis(35);
 // JSON encodes byte arrays as decimal integers: a 64 KiB paste can exceed
 // 256 KiB on the wire even when the raw payload is within its limit.
@@ -167,7 +160,14 @@ fn options(args: &[String]) -> Result<Options> {
         && workspace.is_none()
         && matches!(
             verb.as_str(),
-            "attach" | "ssh-entry" | "status" | "diagnostics" | "ctl" | "bridge" | "stream-inspect"
+            "attach"
+                | "ssh-entry"
+                | "status"
+                | "diagnostics"
+                | "ctl"
+                | "bridge"
+                | "web-bridge"
+                | "stream-inspect"
         )
     {
         result.state = result
@@ -234,27 +234,21 @@ pub fn run(args: &[String]) -> Result<()> {
         println!("{HELP}");
         return Ok(());
     }
+    if args.first().is_some_and(|arg| arg == "web-relay") {
+        if args.len() != 3 || args[1] != "--config" {
+            return Err("usage: kelpmux web-relay --config PATH".into());
+        }
+        return Err("Web hosting moved to kelphub web-relay".into());
+    }
     let options = options(args)?;
     match args[0].as_str() {
-        "server" => {
-            if options.background && !super::lifecycle::detach(&options.state)? {
-                return Ok(());
-            }
-            server::serve(ServerConfig {
-                initial_weights: options.settings.grid_weights,
-                template: options.settings.template,
-                socket: options.socket,
-                state_dir: options.state,
-                shell: options.shell,
-                cwd: options.cwd,
-                cols: options.size.0,
-                rows: options.size.1,
-                ui: options.settings.ui,
-                initial_grid: options.settings.grid,
-                initial_tabs: options.settings.tab_count,
-            })
-        }
+        "server" => kelpserver::native::cli::run(args),
         "start" | "ssh-entry" => {
+            let selected_server = options
+                .server_binary
+                .clone()
+                .or_else(|| std::env::var_os("KELPSERVER_BINARY").map(PathBuf::from))
+                .unwrap_or(std::env::current_exe()?.with_file_name("kelpserver"));
             super::lifecycle::start(super::lifecycle::StartRequest {
                 socket: &options.socket,
                 state: &options.state,
@@ -264,7 +258,7 @@ pub fn run(args: &[String]) -> Result<()> {
                 rows: options.size.1,
                 settings: &options.settings,
                 replace_running: options.replace_running,
-                executable: options.server_binary.as_deref(),
+                executable: Some(&selected_server),
             })?;
             if args[0] == "ssh-entry" {
                 attach(attach_socket(&options)?, options.takeover)
@@ -306,6 +300,7 @@ pub fn run(args: &[String]) -> Result<()> {
             Ok(())
         }
         "bridge" => super::bridge::run(connect(&options.socket)?),
+        "web-bridge" => Err("Web management moved to kelphub web-bridge".into()),
         "stream-inspect" => {
             let panes = options
                 .command
@@ -336,77 +331,7 @@ pub fn run(args: &[String]) -> Result<()> {
         _ => Err("unknown native command".into()),
     }
 }
-pub(crate) fn connect(path: &Path) -> Result<UnixStream> {
-    for ancestor in path.ancestors() {
-        if fs::symlink_metadata(ancestor).is_ok_and(|meta| meta.file_type().is_symlink()) {
-            return Err("native socket path contains a symlink".into());
-        }
-    }
-    let meta = fs::symlink_metadata(path)?;
-    if !meta.file_type().is_socket()
-        || meta.uid() != unsafe { libc::geteuid() }
-        || meta.mode() & 0o077 != 0
-    {
-        return Err("native socket must be private and owned by this user".into());
-    }
-    let parent = fs::symlink_metadata(path.parent().ok_or("socket needs a directory")?)?;
-    if !parent.is_dir() || parent.uid() != unsafe { libc::geteuid() } || parent.mode() & 0o077 != 0
-    {
-        return Err("native socket directory must be private and owned by this user".into());
-    }
-    let socket = UnixStream::connect(path)?;
-    let mut credentials: libc::ucred = unsafe { std::mem::zeroed() };
-    let mut length = std::mem::size_of::<libc::ucred>() as libc::socklen_t;
-    if unsafe {
-        libc::getsockopt(
-            socket.as_raw_fd(),
-            libc::SOL_SOCKET,
-            libc::SO_PEERCRED,
-            (&mut credentials as *mut libc::ucred).cast(),
-            &mut length,
-        )
-    } != 0
-    {
-        return Err(std::io::Error::last_os_error().into());
-    }
-    if length as usize != std::mem::size_of::<libc::ucred>()
-        || credentials.uid != unsafe { libc::geteuid() }
-    {
-        return Err("native server belongs to another user".into());
-    }
-    socket.set_read_timeout(Some(TIMEOUT))?;
-    socket.set_write_timeout(Some(TIMEOUT))?;
-    Ok(socket)
-}
-pub(crate) fn response(socket: &mut UnixStream) -> Result<ServerMessage> {
-    let deadline = Instant::now() + TIMEOUT;
-    fn exact(socket: &mut UnixStream, mut bytes: &mut [u8], deadline: Instant) -> Result<()> {
-        while !bytes.is_empty() {
-            let remaining = deadline
-                .checked_duration_since(Instant::now())
-                .ok_or("native handshake timed out")?;
-            socket.set_read_timeout(Some(remaining))?;
-            match socket.read(bytes) {
-                Ok(0) => return Err("native server disconnected before its reply".into()),
-                Ok(n) => {
-                    bytes = &mut bytes[n..];
-                }
-                Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
-                Err(e) => return Err(e.into()),
-            }
-        }
-        Ok(())
-    }
-    let mut header = [0; 4];
-    exact(socket, &mut header, deadline)?;
-    let size = u32::from_be_bytes(header) as usize;
-    if size == 0 || size > MAX_MESSAGE {
-        return Err("invalid native reply size".into());
-    }
-    let mut bytes = vec![0; size];
-    exact(socket, &mut bytes, deadline)?;
-    Ok(serde_json::from_slice(&bytes)?)
-}
+pub use kelpserver::native::connection::{connect, response};
 fn control(path: &Path, args: &[String]) -> Result<()> {
     let [command, rest @ ..] = args else {
         return Err("ctl requires a command".into());
@@ -1278,10 +1203,13 @@ mod fit_tests {
         let mut terminal = super::super::engine::Terminal::new(40, 10);
         terminal.feed(&output);
         assert_eq!(
-            terminal.snapshot().cells[9 * 40 + 2].bg,
+            terminal.snapshot().cells[9 * 40 + usize::from(frame.controls()[0].x) + 2].bg,
             Color::Rgb(24, 119, 159)
         );
-        assert_eq!(frame.cells[39 * 120 + 2].bg, Color::Indexed(24));
+        assert_eq!(
+            frame.cells[39 * 120 + usize::from(frame.controls()[0].x) + 2].bg,
+            Color::Indexed(24)
+        );
     }
     #[test]
     fn fitted_sidebar_keeps_controls_bottom_aligned_and_maps_their_clicks() {
@@ -1326,7 +1254,7 @@ mod fit_tests {
             .iter()
             .map(|c| c.text.as_str())
             .collect();
-        assert!(footer.starts_with(" ⚙︎ Config"));
+        assert!(footer.starts_with(" ▦ Tabs"));
         assert!(footer.contains("Obs"));
     }
     #[test]
@@ -1415,7 +1343,7 @@ mod fit_tests {
                     &frame.cells[source..source + usize::from(frame.footer_cols().min(size.0))]
                 );
                 let text: String = fit.cells[row..].iter().map(|c| c.text.as_str()).collect();
-                assert!(text.starts_with(" ⚙︎ Config"));
+                assert!(text.starts_with(" ▦ Tabs"));
                 if size.0 >= frame.footer_cols() + 5 {
                     assert!(text.contains(if notice.is_some() { "conn" } else { "51%" }));
                 }

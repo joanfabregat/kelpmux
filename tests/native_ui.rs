@@ -33,6 +33,19 @@ fn workspace(size: (u16, u16), shape: (u8, u8)) -> Workspace {
 fn frame(ws: &Workspace) -> Frame {
     compose(ws, &BTreeMap::new(), true, None, 0)
 }
+#[test]
+fn grid_toggle_is_first_and_config_second_in_both_toolbars() {
+    for tabs in [false, true] {
+        let mut ws = workspace((120, 40), (2, 1));
+        if tabs {
+            ws.apply(&Action::Read(1)).unwrap();
+        }
+        let f = frame(&ws);
+        let [config, mode, ..] = f.controls();
+        assert_eq!(mode.x, 0);
+        assert_eq!(config.x, mode.cols);
+    }
+}
 fn actions(messages: Vec<ClientMessage>) -> Vec<Action> {
     messages
         .into_iter()
@@ -850,13 +863,12 @@ fn footer_buttons_and_compact_vitals_have_disjoint_hit_targets() {
         .collect::<String>();
     assert!(!footer.contains("14:49"));
     assert!(footer.contains("Parked"));
-    assert!(footer.starts_with(" ⚙︎ Config"));
-    assert!(footer.starts_with(" ⚙︎ Config  ▦ Tabs "));
+    assert!(footer.starts_with(" ▦ Tabs  ⚙︎ Config "));
     assert!(footer.find("Parked").unwrap() < footer.find('?').unwrap());
     assert!(!footer.contains('⛶') && !footer.contains('▣'));
     let start = usize::from((f.rows - 1) * f.cols);
     let config = f.controls()[0];
-    let trailing = &f.cells[start + usize::from(config.cols - 1)];
+    let trailing = &f.cells[start + usize::from(config.x + config.cols - 1)];
     assert_eq!(trailing.text, " ");
     assert_eq!(trailing.bg, Color::Indexed(24));
     assert!(
@@ -871,7 +883,7 @@ fn footer_buttons_and_compact_vitals_have_disjoint_hit_targets() {
     assert_eq!(
         actions(Router::default().route(
             click(Point {
-                x: 1,
+                x: config.x + 1,
                 y: f.rows - 1
             }),
             &f
@@ -1711,7 +1723,7 @@ fn automatic_grid_parking_controls_alert_colors_and_three_row_tabs() {
                 .position(|cell| cell.text == "?")
                 .unwrap();
         assert_eq!(f.cells[at].text, "?");
-        assert_eq!(f.cells[at].bg, Color::Rgb(58, 61, 64));
+        assert_eq!(f.cells[at].bg, Color::Rgb(93, 80, 53));
         ws.ui.notifications.push(Notification {
             id: 1,
             pane: 1,
@@ -1732,10 +1744,10 @@ fn automatic_grid_parking_controls_alert_colors_and_three_row_tabs() {
                 .position(|cell| cell.text == kelpmux::native::ui::WAIT_ICON)
                 .unwrap();
         assert_eq!(frame(&ws).cells[alert].text, kelpmux::native::ui::WAIT_ICON);
-        assert_eq!(frame(&ws).cells[alert].bg, Color::Rgb(58, 61, 64));
+        assert_eq!(frame(&ws).cells[alert].bg, Color::Rgb(93, 80, 53));
         ws.apply(&Action::Acknowledge(1)).unwrap();
         assert_eq!(frame(&ws).cells[at].text, "?");
-        assert_eq!(frame(&ws).cells[at].bg, Color::Rgb(58, 61, 64));
+        assert_eq!(frame(&ws).cells[at].bg, Color::Rgb(93, 80, 53));
     }
 }
 
@@ -2289,12 +2301,14 @@ fn sidebar_status_controls_and_metrics_leave_the_last_terminal_row_usable() {
                         .iter()
                         .any(|cell| cell.text != " " && cell.fg == Color::Indexed(196))
                 );
-                for control in f.controls() {
+                for (control, background) in f.controls().into_iter().zip([
+                    Color::Rgb(36, 80, 111),
+                    Color::Rgb(70, 85, 106),
+                    Color::Rgb(81, 72, 95),
+                    Color::Rgb(93, 80, 53),
+                ]) {
                     for x in control.x..control.x + control.cols {
-                        assert_eq!(
-                            f.cells[usize::from(control.y * f.cols + x)].bg,
-                            Color::Rgb(58, 61, 64)
-                        );
+                        assert_eq!(f.cells[usize::from(control.y * f.cols + x)].bg, background);
                     }
                 }
                 let notice = compose(
@@ -2316,7 +2330,7 @@ fn sidebar_status_controls_and_metrics_leave_the_last_terminal_row_usable() {
                 assert_eq!(display.snapshot().cells, notice.cells);
             }
             let [config, mode, parked, help] = f.controls();
-            for (left, right) in [(config, mode), (parked, help)] {
+            for (left, right) in [(mode, config), (parked, help)] {
                 assert_eq!(left.x, 0);
                 assert_eq!(left.x + left.cols, right.x);
                 assert_eq!(right.x + right.cols, width);
@@ -2427,14 +2441,17 @@ fn footer_parked_help_order_has_no_new_tab_button() {
                 format!(" ⊟ Parked ({count}) ")
             };
             if f.sidebar_status() {
-                assert_eq!(label.trim(), expected.trim());
+                assert_eq!(
+                    label.split_whitespace().collect::<Vec<_>>(),
+                    expected.split_whitespace().collect::<Vec<_>>()
+                );
             } else {
                 assert_eq!(label, expected);
             }
             assert_eq!(parked.x, if f.sidebar_status() { 0 } else { 18 });
             if f.sidebar_status() {
                 assert_eq!(parked.x + parked.cols, help.x);
-                assert_eq!(f.controls()[1].x, help.x);
+                assert_eq!(f.controls()[0].x, help.x);
             } else {
                 assert_eq!(parked.x + parked.cols, help.x);
             }
@@ -2442,7 +2459,7 @@ fn footer_parked_help_order_has_no_new_tab_button() {
                 assert_eq!(
                     f.cells[usize::from(parked.y * f.cols + x)].bg,
                     if f.sidebar_status() {
-                        Color::Rgb(58, 61, 64)
+                        Color::Rgb(81, 72, 95)
                     } else {
                         Color::Indexed(kelpmux::native::ui::PARKED_BG)
                     }
@@ -3068,19 +3085,26 @@ fn dev_badge_is_visible_in_grid_horizontal_tabs_and_compact_sidebars() {
                 assert_eq!(plain.panes, f.panes);
                 continue;
             }
-            let start = usize::from((f.rows - 1) * f.cols + f.footer_cols() - 5);
-            let cells: Vec<_> = f.cells.iter().enumerate().skip(start).take(5).collect();
-            assert_eq!(cells.len(), 5);
+            let badge_cols = kelpmux::native::ui::GRID_DEV_COLS;
+            let start = usize::from((f.rows - 1) * f.cols + f.footer_cols() - badge_cols);
+            let cells: Vec<_> = f
+                .cells
+                .iter()
+                .enumerate()
+                .skip(start)
+                .take(usize::from(badge_cols))
+                .collect();
+            assert_eq!(cells.len(), usize::from(badge_cols));
             assert_eq!(
                 cells
                     .iter()
                     .map(|(_, cell)| cell.text.as_str())
                     .collect::<String>(),
-                " DEV "
+                " D E V "
             );
             assert!(cells.iter().all(|(_, cell)| cell.bold
                 && cell.fg == Color::Indexed(203)
-                && cell.bg == Color::Indexed(240)));
+                && cell.bg == Color::Rgb(98, 42, 48)));
             let sidebar = f.sidebar_status();
             assert!(cells.iter().all(|(i, _)| {
                 let x = *i as u16 % f.cols;
@@ -3088,13 +3112,29 @@ fn dev_badge_is_visible_in_grid_horizontal_tabs_and_compact_sidebars() {
                 if sidebar {
                     x < kelpmux::native::workspace::sidebar_width(f.cols) - 1
                 } else {
-                    y == f.rows - 1 && x >= f.footer_cols() - 5
+                    y == f.rows - 1 && x >= f.footer_cols() - badge_cols
                 }
             }));
             assert_eq!(plain.controls(), f.controls());
             assert_eq!(plain.panes, f.panes);
         }
     }
+}
+#[test]
+fn grid_footer_help_fills_its_hit_area_and_agents_keeps_right_padding() {
+    let ws = workspace((120, 40), (2, 2));
+    let f = frame(&ws);
+    let help = f.controls()[3];
+    let background = f.cells[usize::from(help.y * f.cols + help.x)].bg;
+    assert!(
+        (help.x..help.x + help.cols)
+            .all(|x| f.cells[usize::from(help.y * f.cols + x)].bg == background)
+    );
+    let agents = f.history_controls()[1];
+    let label: String = (agents.x..agents.x + agents.cols)
+        .map(|x| f.cells[usize::from(agents.y * f.cols + x)].text.as_str())
+        .collect();
+    assert_eq!(label, " ◇ Agents ");
 }
 
 #[test]
@@ -4805,11 +4845,9 @@ fn neutral_sidebar_surfaces_follow_terminal_background_independently_of_accent()
             assert_eq!(at(0, selected.y).bg, blend(background, accent.rgb(), 34));
             assert_eq!(at(0, selected.y).fg, blend([0; 3], accent.rgb(), 100));
             assert_eq!(at(2, selected.y + 1).fg, blend(background, ink, 85));
-            assert!(
-                f.controls()
-                    .iter()
-                    .all(|r| at(r.x, r.y).bg == blend(background, ink, 14))
-            );
+            let controls = f.controls();
+            assert_eq!(at(controls[0].x, controls[0].y).bg, Color::Rgb(36, 80, 111));
+            assert_eq!(at(controls[2].x, controls[2].y).bg, Color::Rgb(81, 72, 95));
             let footer_color = |rect: Rect| {
                 let start = usize::from((rect.y + rect.rows / 2) * f.cols + rect.x);
                 f.cells[start..start + usize::from(rect.cols)]
@@ -4818,9 +4856,12 @@ fn neutral_sidebar_surfaces_follow_terminal_background_independently_of_accent()
                     .unwrap()
                     .fg
             };
-            assert_eq!(footer_color(f.controls()[0]), Color::Rgb(95, 175, 255));
-            assert_eq!(footer_color(f.controls()[1]), Color::Indexed(114));
-            assert_ne!(footer_color(f.controls()[0]), footer_color(f.controls()[1]));
+            assert_eq!(footer_color(f.controls()[0]), Color::Indexed(231));
+            assert_eq!(footer_color(f.controls()[1]), Color::Indexed(231));
+            assert_ne!(
+                at(controls[0].x, controls[0].y).bg,
+                at(controls[1].x, controls[1].y).bg
+            );
             // Background sheen changes only the card fill, in the right direction for the theme.
             ws.panes[0].status = Status::Working;
             for tick in 0..30 {

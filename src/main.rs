@@ -125,6 +125,8 @@ fn run() -> Result<()> {
                 | "templates"
                 | "benchmark"
                 | "bridge"
+                | "web-bridge"
+                | "web-relay"
                 | "stream-inspect"
         )
     }) {

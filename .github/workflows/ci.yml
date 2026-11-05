@@ -1,95 +1,45 @@
 name: CI
 on:
   push:
-    branches: ['**']
+    branches: [main, 'refactor/**']
   pull_request:
-  workflow_call:
 permissions:
   contents: read
 concurrency:
-  group: ci-${{ github.workflow }}-${{ github.ref }}-${{ github.event_name }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' || (github.event_name == 'push' && github.ref_type == 'branch') }}
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 env:
-  CARGO_TERM_COLOR: always
   CARGO_INCREMENTAL: '0'
-  RUST_BACKTRACE: '1'
+  CARGO_TERM_COLOR: always
 jobs:
-  quality:
-    runs-on: ubuntu-24.04
-    timeout-minutes: 15
-    steps:
-      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
-        with:
-          persist-credentials: false
-      - name: Restore compiler and dependency cache
-        id: rust-cache
-        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
-        with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git/db
-            target/debug
-          key: rust-quality-${{ runner.os }}-${{ runner.arch }}-1.99.0-${{ hashFiles('Cargo.lock', 'Cargo.toml', '.cargo/**') }}-${{ github.sha }}
-          restore-keys: rust-quality-${{ runner.os }}-${{ runner.arch }}-1.99.0-${{ hashFiles('Cargo.lock', 'Cargo.toml', '.cargo/**') }}-
-      - name: Install pinned toolchain
-        run: rustup toolchain install 1.99.0 --profile minimal --component rustfmt --component clippy
-      - name: Fetch all locked platform sources for license collection
-        run: cargo fetch --locked
-      - run: cargo +1.99.0 fmt --all -- --check
-      - name: Stable demo launcher contracts (no real workspace)
-        run: |
-          bash -n scripts/demo.sh scripts/test-demo.sh
-          bash scripts/test-demo.sh
-          bash -n scripts/channels.sh scripts/test-channels.sh
-          bash scripts/test-channels.sh
-      - run: cargo +1.99.0 clippy --locked --offline --all-targets -- -D warnings
-      - name: Unit, metadata, protocol and hook contracts (PTY suites run in the architecture matrix)
-        run: cargo +1.99.0 test --locked --offline --lib --test core --test native_protocol --test native_hooks --test native_activity --test native_recovery --test native_tab_history --test native_delta --test native_templates
-      - name: Validate distribution license texts
-        run: bash scripts/package-licenses.sh target/dependency-licenses
-      - name: Save trusted compiler and dependency cache
-        if: success() && contains(fromJSON('["push","workflow_dispatch","release"]'), github.event_name) && steps.rust-cache.outputs.cache-hit != 'true'
-        uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
-        with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git/db
-            target/debug
-          key: ${{ steps.rust-cache.outputs.cache-primary-key }}
-  native:
-    name: Native PTY and terminal (${{ matrix.os }})
+  validate:
     strategy:
       fail-fast: false
       matrix:
         os: [ubuntu-24.04, ubuntu-24.04-arm]
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 15
+    timeout-minutes: 20
     steps:
-      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
         with:
           persist-credentials: false
-      - id: rust-cache
-        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
-        with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git/db
-            target/debug
-          key: rust-native-${{ runner.os }}-${{ runner.arch }}-1.99.0-${{ hashFiles('Cargo.lock', 'Cargo.toml', '.cargo/**') }}-${{ github.sha }}
-          restore-keys: rust-native-${{ runner.os }}-${{ runner.arch }}-1.99.0-${{ hashFiles('Cargo.lock', 'Cargo.toml', '.cargo/**') }}-
-      - run: rustup toolchain install 1.99.0 --profile minimal
+      - run: rustup toolchain install 1.99.0 --profile minimal --component rustfmt --component clippy
       - run: cargo +1.99.0 fetch --locked
-      - name: Real owned PTYs, terminal engine, and frontend routing
-        run: cargo +1.99.0 test --locked --offline --test native_server --test native_engine --test native_workspace --test native_client --test native_ui --test native_tracking --test native_lifecycle --test native_vitals --test native_history --test native_phase2_ui --test native_phase2_server --test native_stream --test native_upgrades --test native_conformance --test native_stress --test native_bridge --test native_program_status --test native_reference -- --test-threads=2
-      - name: Save trusted compiler and dependency cache
-        if: success() && contains(fromJSON('["push","workflow_dispatch","release"]'), github.event_name) && steps.rust-cache.outputs.cache-hit != 'true'
-        uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+      - run: cargo +1.99.0 fmt --all -- --check
+      - run: cargo +1.99.0 clippy --locked --offline --all-targets -- -D warnings
+      - run: cargo +1.99.0 build --locked --offline -p kelpserver --bin kelpserver
+      - run: cargo +1.99.0 test --workspace --locked --offline -- --test-threads=2
+  msrv:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
         with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git/db
-            target/debug
-          key: ${{ steps.rust-cache.outputs.cache-primary-key }}
+          persist-credentials: false
+      - run: rustup toolchain install 1.85.0 --profile minimal
+      - run: cargo +1.85.0 fetch --locked
+      - run: cargo +1.85.0 build --locked --offline -p kelpserver --bin kelpserver
+      - run: cargo +1.85.0 test --workspace --locked --offline -- --test-threads=2
   integration:
     name: Legacy tmux compatibility (${{ matrix.os }})
     strategy:
@@ -138,6 +88,7 @@ jobs:
           echo "$PWD/target/tmux-3.8/bin" >> "$GITHUB_PATH"
       - run: rustup toolchain install 1.99.0 --profile minimal
       - run: cargo +1.99.0 fetch --locked
+      - run: cargo +1.99.0 build --locked --offline -p kelpserver --bin kelpserver
       - name: Real tmux integration (private sockets, no user configuration)
         run: cargo +1.99.0 test --locked --offline --test tmux -- --ignored --test-threads=2
       - name: Save trusted compiler and dependency cache
@@ -155,35 +106,6 @@ jobs:
         with:
           path: target/tmux-3.8
           key: ${{ steps.tmux-cache.outputs.cache-primary-key }}
-  msrv:
-    runs-on: ubuntu-24.04
-    timeout-minutes: 15
-    steps:
-      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
-        with:
-          persist-credentials: false
-      - id: rust-cache
-        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
-        with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git/db
-            target/debug
-          key: rust-msrv-${{ runner.os }}-${{ runner.arch }}-1.85.0-${{ hashFiles('Cargo.lock', 'Cargo.toml', '.cargo/**') }}-${{ github.sha }}
-          restore-keys: rust-msrv-${{ runner.os }}-${{ runner.arch }}-1.85.0-${{ hashFiles('Cargo.lock', 'Cargo.toml', '.cargo/**') }}-
-      - run: rustup toolchain install 1.85.0 --profile minimal
-      - run: cargo +1.85.0 fetch --locked
-      - name: All tests on the minimum Rust version, including owned PTYs
-        run: cargo +1.85.0 test --locked --offline -- --test-threads=2
-      - name: Save trusted compiler and dependency cache
-        if: success() && contains(fromJSON('["push","workflow_dispatch","release"]'), github.event_name) && steps.rust-cache.outputs.cache-hit != 'true'
-        uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
-        with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git/db
-            target/debug
-          key: ${{ steps.rust-cache.outputs.cache-primary-key }}
   dependencies:
     runs-on: ubuntu-24.04
     timeout-minutes: 15

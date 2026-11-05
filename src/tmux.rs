@@ -2,7 +2,6 @@ use crate::{
     Result, label,
     model::{Agent, Status, WORKING_FRAMES},
 };
-use serde::{Deserialize, Serialize};
 use std::{collections::BTreeMap, path::PathBuf, process::Command};
 
 pub const HEADER_BACKGROUND: &str = "#{?pane_active,#{?@kelpmux-color,#{@kelpmux-color},colour245},#{?@kelpmux-color-muted,#{@kelpmux-color-muted},colour239}}";
@@ -39,16 +38,7 @@ pub struct Tmux {
     pub socket: Option<PathBuf>,
     pub binary: Option<PathBuf>,
 }
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct Pane {
-    pub id: String,
-    pub window: String,
-    pub pid: u32,
-    pub index: usize,
-    pub cwd: String,
-    pub dead: bool,
-    pub floating: bool,
-}
+pub use kelpserver::discovery::Pane;
 
 impl Tmux {
     pub fn run(&self, args: &[&str]) -> Result<String> {

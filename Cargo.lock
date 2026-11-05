@@ -234,11 +234,47 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8f42a60cbdf9a97f5d2305f08a87dc4e09308d1276d28c869c684d7777685682"
 
 [[package]]
+name = "kelpclient"
+version = "0.1.0"
+source = "git+https://github.com/joanfabregat/kelpclient?rev=616d1dfb043db078ee593f542602b0f2d58c26a0#616d1dfb043db078ee593f542602b0f2d58c26a0"
+dependencies = [
+ "kelpclient-protocol",
+ "serde",
+ "serde_json",
+ "unicode-width",
+]
+
+[[package]]
+name = "kelpclient-protocol"
+version = "0.1.0"
+source = "git+https://github.com/joanfabregat/kelpclient?rev=616d1dfb043db078ee593f542602b0f2d58c26a0#616d1dfb043db078ee593f542602b0f2d58c26a0"
+dependencies = [
+ "serde",
+ "unicode-width",
+]
+
+[[package]]
 name = "kelpmux"
 version = "0.2.0-beta.6"
 dependencies = [
+ "base64",
+ "kelpclient",
+ "kelpserver",
+ "libc",
+ "serde",
+ "serde_json",
+ "tungstenite",
+ "unicode-width",
+]
+
+[[package]]
+name = "kelpserver"
+version = "0.2.0-beta.6"
+source = "git+https://github.com/joanfabregat/kelpserver?rev=a521dfe8d6909cb9c42f27db0d630a117d90c7da#a521dfe8d6909cb9c42f27db0d630a117d90c7da"
+dependencies = [
  "alacritty_terminal",
  "base64",
+ "kelpclient-protocol",
  "libc",
  "serde",
  "serde_json",

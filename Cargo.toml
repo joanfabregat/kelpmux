@@ -4,20 +4,19 @@ version = "0.2.0-beta.6"
 edition = "2024"
 rust-version = "1.85"
 license = "Apache-2.0"
-description = "Persistent terminal workspaces for coding agents"
-repository = "https://github.com/joanfabregat/kelpmux"
-keywords = ["tmux", "terminal", "agents", "claude", "codex"]
-categories = ["command-line-utilities"]
+description = "Kelp terminal interface"
 
 [dependencies]
-alacritty_terminal = { version = "=0.26.0", default-features = false }
+kelpserver = { git = "https://github.com/joanfabregat/kelpserver", rev = "a521dfe8d6909cb9c42f27db0d630a117d90c7da", version = "0.2.0-beta.6" }
+kelpclient = { git = "https://github.com/joanfabregat/kelpclient", rev = "616d1dfb043db078ee593f542602b0f2d58c26a0", version = "0.1.0" }
 base64 = "0.22"
 unicode-width = "=0.2.2"
 libc = "0.2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+
+[dev-dependencies]
 tungstenite = { version = "=0.30.0", default-features = false, features = ["handshake"] }
 
-[profile.release]
-lto = "thin"
-strip = true
+[workspace]
+members = []
