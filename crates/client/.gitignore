@@ -1,0 +1,17 @@
+# Local credentials and runtime state; never rely on ignores alone for confidentiality.
+.env
+.env.*
+!.env.example
+*.key
+*.pem
+*.p12
+*.pfx
+/target/
+/node_modules/
+/dist/
+/coverage/
+/.cache/
+/.local/
+/uploads/
+*.log
+.DS_Store
