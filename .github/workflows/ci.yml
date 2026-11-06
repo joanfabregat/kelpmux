@@ -93,7 +93,7 @@ jobs:
         run: cargo +1.99.0 test --locked --offline --test tmux -- --ignored --test-threads=2
       - name: Save trusted compiler and dependency cache
         if: success() && contains(fromJSON('["push","workflow_dispatch","release"]'), github.event_name) && steps.rust-cache.outputs.cache-hit != 'true'
-        uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
             ~/.cargo/registry
@@ -102,7 +102,7 @@ jobs:
           key: ${{ steps.rust-cache.outputs.cache-primary-key }}
       - name: Save trusted verified tmux build
         if: success() && contains(fromJSON('["push","workflow_dispatch","release"]'), github.event_name) && steps.tmux-cache.outputs.cache-hit != 'true'
-        uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: target/tmux-3.8
           key: ${{ steps.tmux-cache.outputs.cache-primary-key }}
@@ -151,7 +151,7 @@ jobs:
           ' metadata.json
       - name: Save trusted pinned audit executable
         if: success() && contains(fromJSON('["push","workflow_dispatch","release"]'), github.event_name) && steps.audit-cache.outputs.cache-hit != 'true'
-        uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ~/.cargo/bin/cargo-audit
           key: ${{ steps.audit-cache.outputs.cache-primary-key }}
