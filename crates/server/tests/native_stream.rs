@@ -714,3 +714,70 @@ fn small_panes_and_large_request_batches_preserve_leases_and_processes() {
     peer.until(2, |_| true);
     assert_eq!(daemon.inspect(1).cols, 12);
 }
+
+#[test]
+fn clipboard_writes_require_opt_in_and_only_reach_the_pane_owner() {
+    let daemon = Daemon::start();
+    let mut owner = daemon.peer();
+    let mut observer = daemon.peer();
+    owner.send(Request::Subscribe { panes: vec![1] });
+    observer.send(Request::Subscribe { panes: vec![1, 2] });
+    owner.lease(1, false);
+    observer.lease(2, false);
+    observer.send(Request::Clipboard { enabled: true });
+    owner.send(Request::Input {
+        pane: 1,
+        bytes: b"printf '\\033]52;c;aGVsbG8=\\007'; printf 'DEFAULT_%s\\n' DONE\n".to_vec(),
+    });
+    loop {
+        assert!(!matches!(owner.next(), Event::Clipboard { .. }));
+        if owner
+            .screens
+            .get(&1)
+            .is_some_and(|s| text(&s.screen).contains("DEFAULT_DONE"))
+        {
+            break;
+        }
+    }
+    owner.send(Request::Clipboard { enabled: true });
+    owner.send(Request::Input {
+        pane: 1,
+        bytes: b"printf '\\033]52;c;aGVsbG8=\\007'\n".to_vec(),
+    });
+    loop {
+        if let Event::Clipboard { pane, text } = owner.next() {
+            assert_eq!(pane, 1);
+            assert_eq!(text, "hello");
+            break;
+        }
+    }
+    observer.send(Request::Input {
+        pane: 2,
+        bytes: b"printf 'OBSERVER_%s\\n' BARRIER\n".to_vec(),
+    });
+    loop {
+        assert!(!matches!(observer.next(), Event::Clipboard { .. }));
+        if observer
+            .screens
+            .get(&2)
+            .is_some_and(|s| text(&s.screen).contains("OBSERVER_BARRIER"))
+        {
+            break;
+        }
+    }
+    owner.send(Request::Clipboard { enabled: false });
+    owner.send(Request::Input {
+        pane: 1,
+        bytes: b"printf '\\033]52;c;aGVsbG8=\\007'; printf 'DISABLED_%s\\n' DONE\n".to_vec(),
+    });
+    loop {
+        assert!(!matches!(owner.next(), Event::Clipboard { .. }));
+        if owner
+            .screens
+            .get(&1)
+            .is_some_and(|s| text(&s.screen).contains("DISABLED_DONE"))
+        {
+            break;
+        }
+    }
+}

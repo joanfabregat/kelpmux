@@ -124,6 +124,7 @@ impl State {
                     self.leases.push(stream::Lease { pane, owner });
                 }
             }
+            Event::Clipboard { .. } => return Err("unsolicited clipboard event".into()),
             Event::Error { message } => return Err(message.into()),
         }
         Ok(())

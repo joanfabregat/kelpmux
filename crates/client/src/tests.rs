@@ -1,4 +1,5 @@
 use super::*;
+use serde_json::json;
 #[test]
 fn history_layout_preserves_wide_combining_and_joined_glyph_columns() {
     let s = history_screen(&["A界e\u{301}👩\u{200d}💻Z".into()], 12, 2).unwrap();
@@ -88,4 +89,22 @@ fn selection_preserves_wide_and_combining_cells() {
         c.selection(1, Point { x: 0, y: 0 }, Point { x: 3, y: 0 })
             .is_err()
     );
+}
+
+#[test]
+fn clipboard_events_are_bounded_ephemeral_messages() {
+    let mut client = Client::default();
+    assert!(
+        client
+            .accept(&json!({"Stream":{"type":"clipboard","pane":1,"text":"copied"}}))
+            .is_ok()
+    );
+    assert!(client.screens.is_empty());
+    for event in [
+        json!({"Stream":{"type":"clipboard","pane":0,"text":"bad"}}),
+        json!({"Stream":{"type":"clipboard","pane":1,"text":"x".repeat(65537)}}),
+        json!({"Stream":{"type":"clipboard","pane":1,"text":false}}),
+    ] {
+        assert!(client.accept(&event).is_err());
+    }
 }

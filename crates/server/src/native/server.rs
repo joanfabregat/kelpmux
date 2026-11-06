@@ -402,6 +402,7 @@ struct Client {
     queued: usize,
 }
 struct StreamClient {
+    clipboard: bool,
     panes: Vec<PaneId>,
     previous: BTreeMap<PaneId, super::stream::PaneSnapshot>,
     metadata: Option<super::stream::Update>,
@@ -699,6 +700,7 @@ impl Server {
                 return Err("connection already initialized".into());
             }
             client.stream = Some(StreamClient {
+                clipboard: false,
                 panes: Vec::new(),
                 previous: BTreeMap::new(),
                 metadata: None,
@@ -719,6 +721,15 @@ impl Server {
             return Err("stream hello required".into());
         }
         match request {
+            Request::Clipboard { enabled } => {
+                self.clients
+                    .get_mut(&id)
+                    .unwrap()
+                    .stream
+                    .as_mut()
+                    .unwrap()
+                    .clipboard = enabled;
+            }
             Request::Subscribe { panes } => {
                 let unique: std::collections::BTreeSet<_> = panes.iter().copied().collect();
                 if panes.len() > super::stream::MAX_SUBSCRIPTIONS
@@ -2411,7 +2422,7 @@ impl Server {
                                     }
                                 }
                                 Effect::Clipboard(text) if text.len() <= MAX_INPUT => {
-                                    clipboard.push(text)
+                                    clipboard.push((*id, text))
                                 }
                                 Effect::Bell => {
                                     if let Some(info) =
@@ -2466,8 +2477,22 @@ impl Server {
             }
         }
         self.refresh_programs(programs);
-        if let Some(client) = self.controller.and_then(|id| self.clients.get_mut(&id)) {
-            for text in clipboard {
+        for (pane, text) in clipboard {
+            if let Some(lease) = self.leases.get(&pane) {
+                if let Some(client) = self.clients.get_mut(&lease.owner) {
+                    if client
+                        .stream
+                        .as_ref()
+                        .is_some_and(|stream| stream.clipboard)
+                    {
+                        let _ =
+                            client.send(ServerMessage::Stream(super::stream::Event::Clipboard {
+                                pane,
+                                text,
+                            }));
+                    }
+                }
+            } else if let Some(client) = self.controller.and_then(|id| self.clients.get_mut(&id)) {
                 let _ = client.send(ServerMessage::Clipboard(text));
             }
         }
