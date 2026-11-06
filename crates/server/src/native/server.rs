@@ -608,6 +608,7 @@ impl Drop for RecoveryJob {
     }
 }
 struct Server {
+    spawn_requests: BTreeMap<String, (PaneId, PathBuf, Vec<String>)>,
     history: super::history::History,
     reopen_pending: Option<u64>,
     remember_tab_order: bool,
@@ -1829,6 +1830,70 @@ impl Server {
             return Err("stream peers may only send stream requests".into());
         }
         match message {
+            ClientMessage::SpawnPane { request, cwd, argv } => {
+                if self.clients[&id].attached && self.controller != Some(id) {
+                    return Err("observers cannot create panes".into());
+                }
+                if request.is_empty()
+                    || request.len() > 128
+                    || !request
+                        .bytes()
+                        .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
+                    || !cwd.is_absolute()
+                    || argv.len() > 32
+                    || argv.iter().map(String::len).sum::<usize>() > 8192
+                    || argv.iter().any(|arg| arg.contains('\0'))
+                    || argv.first().is_some_and(|arg| arg.is_empty())
+                {
+                    return Err("invalid pane creation request".into());
+                }
+                let cwd = cwd.canonicalize()?;
+                if !cwd.is_dir() {
+                    return Err("working directory must be a directory".into());
+                }
+                let pane = if let Some((pane, previous_cwd, previous_argv)) =
+                    self.spawn_requests.get(&request)
+                {
+                    if previous_cwd != &cwd || previous_argv != &argv {
+                        return Err(
+                            "creation request was already used with different parameters".into(),
+                        );
+                    }
+                    if !self.panes.contains_key(pane) {
+                        return Err("created pane has already closed".into());
+                    }
+                    *pane
+                } else {
+                    let pane = self.next_pane;
+                    let startup = (!argv.is_empty()).then(|| {
+                        argv.iter()
+                            .map(|arg| crate::shell_quote(arg))
+                            .collect::<Vec<_>>()
+                            .join(" ")
+                    });
+                    self.spawn_pane_command(
+                        Some(super::templates::TemplatePane {
+                            name: "shell".into(),
+                            cwd: cwd.clone(),
+                            shell: None,
+                        }),
+                        startup.as_deref(),
+                    )?;
+                    self.aliases.remove(&pane);
+                    if self.spawn_requests.len() >= 512 {
+                        self.spawn_requests.pop_first();
+                    }
+                    self.spawn_requests
+                        .insert(request.clone(), (pane, cwd, argv));
+                    self.resize();
+                    self.dirty = true;
+                    pane
+                };
+                self.clients
+                    .get_mut(&id)
+                    .unwrap()
+                    .send(ServerMessage::SpawnedPane { request, pane })?;
+            }
             ClientMessage::Diagnostics => {
                 let report = super::diagnostics::Report {
                     version: env!("CARGO_PKG_VERSION").into(),
@@ -3009,6 +3074,7 @@ pub fn serve(mut config: ServerConfig) -> Result<()> {
         clients: BTreeMap::new(),
         controller: None,
         next_pane: 1,
+        spawn_requests: BTreeMap::new(),
         next_client: 1,
         dirty: true,
         notice: None,
