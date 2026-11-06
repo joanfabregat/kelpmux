@@ -53,7 +53,7 @@ jobs:
         with:
           persist-credentials: false
       - id: rust-cache
-        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
             ~/.cargo/registry
@@ -63,7 +63,7 @@ jobs:
           restore-keys: rust-legacy-${{ runner.os }}-${{ runner.arch }}-1.99.0-${{ hashFiles('Cargo.lock', 'Cargo.toml', '.cargo/**') }}-
       - name: Restore verified tmux build
         id: tmux-cache
-        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: target/tmux-3.8
           key: tmux-${{ matrix.os }}-${{ runner.arch }}-e79c699c7e949dccd0a4a125e17b8d1261e311b16979dbc8eb34542f3966d82e-${{ hashFiles('scripts/build-tmux.sh') }}
@@ -125,7 +125,7 @@ jobs:
           persist-credentials: false
       - name: Restore pinned audit executable
         id: audit-cache
-        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ~/.cargo/bin/cargo-audit
           key: cargo-audit-${{ runner.os }}-${{ runner.arch }}-rust1.99.0-0.22.2
