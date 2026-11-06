@@ -7,7 +7,7 @@ license = "Apache-2.0"
 description = "Persistent user-owned Kelp terminal server"
 
 [dependencies]
-kelpclient-protocol = { git = "https://github.com/joanfabregat/kelpclient", rev = "616d1dfb043db078ee593f542602b0f2d58c26a0", version = "0.1.0" }
+kelpclient-protocol = { path = "../protocol", version = "0.1.0" }
 alacritty_terminal = { version = "=0.26.0", default-features = false }
 tungstenite = { version = "=0.30.0", default-features = false, features = ["handshake"] }
 base64 = "0.22"
@@ -17,7 +17,4 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 
 [dev-dependencies]
-kelpclient = { git = "https://github.com/joanfabregat/kelpclient", rev = "616d1dfb043db078ee593f542602b0f2d58c26a0", version = "0.1.0" }
-
-[workspace]
-members = []
+kelpclient = { path = "../client", version = "0.1.0" }

@@ -1,2 +1,11 @@
 /target/
 *.tar.gz
+
+# Local credentials and development outputs.
+.env
+.env.*
+!.env.example
+*.key
+*.pem
+*.log
+/metadata.json

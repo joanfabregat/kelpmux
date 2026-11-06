@@ -8,6 +8,6 @@ Include affected versions or commits, prerequisites, impact and a minimal reprod
 
 ## Supported code
 
-Security reports about the default branch and latest published release are welcome. New scaffolds have no deployable release yet. Older releases do not have a promised long-term support window. The component split is being prepared; existing combined KelpMux releases remain relevant until extraction is complete.
+Security reports about the default branch and latest published release are welcome. New scaffolds have no deployable release yet. Older releases do not have a promised long-term support window. The OSS server, client libraries and TUI share this workspace; KelpHub maintains its web and management code separately. Existing combined KelpMux releases remain supported during the packaging transition.
 
 A terminal client can exercise the authenticated Linux user's authority. SSH authentication does not make executing untrusted terminal commands safe, and the web origin remains trusted frontend delivery code. Keep relay, user-owned services and credentials separated.

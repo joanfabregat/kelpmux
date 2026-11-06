@@ -4,7 +4,7 @@ Kelpmux owns long-running PTYs and Alacritty terminal interpretation. Clients ow
 
 The broader proposed contract is [ADR 0001](adr/0001-native-client-protocol-and-device-capabilities.md). It covers pane lifecycle, independent device sizes, live agent status, notifications, remote Vitals and a future MCP/device request channel. The ADR deliberately distinguishes those proposals from the implemented requests below.
 
-The browser client and authenticated management adapter live in KelpHub. Shared portable types and terminal client state live in [KelpClient](https://github.com/joanfabregat/kelpclient). Desktop/mobile implementation choices remain deferred. The composed-screen TUI compatibility implementation is retained; see MIGRATION.md for current component ownership.
+The browser client and authenticated management adapter live in KelpHub. Shared portable types and terminal client state live in [KelpClient](../../client/README.md). Desktop/mobile implementation choices remain deferred. The composed-screen TUI compatibility implementation is retained; see [MIGRATION.md](../../../MIGRATION.md) for current component ownership.
 
 Screen input modes include an additive, default-zero `keyboard_flags` bitfield using the five Kitty keyboard enhancement flags. The composed frontend negotiates those flags with the outer terminal while retaining key disambiguation for its own controls. Native clients must preserve modified Enter events and distinguish key release from key press. Pane snapshots preserve default foreground/background colors so the attached terminal supplies its theme. Explicit application colors and OSC palette changes remain pane-local.
 
