@@ -1,20 +1,28 @@
 # KelpMux
 
-KelpMux is the open-source terminal interface to persistent Kelp terminal workspaces. It provides grid and sidebar views, agent activity, parking, recently closed sessions, recovery and system metrics. Detaching leaves shells and agents running.
+KelpMux is the open-source terminal foundation for persistent workspaces. This repository contains the terminal server, shared Rust/WASM client libraries and TUI. The TUI provides grid and sidebar views, agent activity, parking, recently closed sessions, recovery and system metrics. Detaching leaves shells and agents running.
 
-Feature development is frozen while the web-first KelpHub application evolves. Compatibility, security and necessary fixes remain in scope; feature parity with the web application is not required.
+TUI feature development is frozen while the separately maintained KelpHub web application evolves. Compatibility, security and necessary fixes remain in scope; feature parity with the web application is not required.
 
-## Components
+## Workspace
 
-- [KelpServer](https://github.com/joanfabregat/kelpserver) owns PTYs, authoritative terminal state and persistent sessions.
-- [KelpClient](https://github.com/joanfabregat/kelpclient) provides shared protocol/types and Rust/WASM terminal client libraries.
-- KelpHub provides the separately maintained web interface and management service.
+| Package | Location | Responsibility |
+| --- | --- | --- |
+| `kelpmux` | `src/` | Terminal interface and optional legacy tmux adapter |
+| `kelpserver` | [crates/server](crates/server) | PTYs, authoritative terminal state, persistent sessions and generic SSH byte relay |
+| `kelpclient` | [crates/client](crates/client) | Shared terminal state, selection/history utilities and WASM bindings |
+| `kelpclient-protocol` | [crates/protocol](crates/protocol) | Portable wire types and validation |
 
-This repository retains the existing TUI and optional legacy tmux adapter. It no longer owns the terminal server implementation or browser/management code. See [MIGRATION.md](MIGRATION.md) for source-history provenance and the intentionally retained composed-screen compatibility boundary.
+These are modules in one Cargo workspace, not separate source repositories. KelpHub owns the web interface, authenticated management backend, uploads and application hosting. It depends on this workspace at an immutable Git revision. See [MIGRATION.md](MIGRATION.md) for history provenance and the intentionally retained composed-screen TUI compatibility boundary.
 
 ## Build and run
 
-Build/install `kelpserver` alongside `kelpmux`, or configure `KELPSERVER_BINARY`. See [MIGRATION.md](MIGRATION.md) for build commands and validation requirements. No split-component release has been published yet.
+```sh
+cargo build --workspace --release --locked
+cargo test --workspace --locked
+```
+
+Install `target/release/kelpmux` and `target/release/kelpserver` together, or configure `KELPSERVER_BINARY` with the server path. Build the portable browser core with `cargo build -p kelpclient --release --locked --target wasm32-unknown-unknown` after installing that Rust target. Run builds in your environment's approved container workflow. No release of this workspace layout has been published yet.
 
 ```sh
 kelpmux start --workspace trial

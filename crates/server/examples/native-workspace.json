@@ -1,0 +1,14 @@
+{
+  "tab_count": 4,
+  "ui": {
+    "prefix": 2,
+    "tab_position": "left",
+    "read_width": 120,
+    "bindings": {
+      "z": "read",
+      "f": "fullscreen",
+      "g": "grid",
+      ",": "config"
+    }
+  }
+}
