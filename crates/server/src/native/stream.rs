@@ -47,6 +47,7 @@ pub const CAPABILITIES: &[&str] = &[
     "hyperlinks",
     "program-status",
     "controller-theme",
+    "clipboard-write",
 ];
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -57,6 +58,10 @@ pub enum Request {
     },
     Subscribe {
         panes: Vec<PaneId>,
+    },
+    /// Opt in to application clipboard writes for panes owned by this connection.
+    Clipboard {
+        enabled: bool,
     },
     Claim {
         pane: PaneId,
@@ -161,6 +166,10 @@ pub enum Event {
     Lease {
         pane: PaneId,
         owner: Option<u64>,
+    },
+    Clipboard {
+        pane: PaneId,
+        text: String,
     },
     Error {
         message: String,

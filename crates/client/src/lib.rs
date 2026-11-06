@@ -268,6 +268,13 @@ impl Client {
                 }
                 self.screens = next;
             }
+            Some("clipboard") => {
+                if event["pane"].as_u64().is_none_or(|pane| pane == 0)
+                    || event["text"].as_str().is_none_or(|text| text.len() > 65536)
+                {
+                    return Err("invalid clipboard event".into());
+                }
+            }
             Some("lease") | Some("error") => {}
             _ => return Err("unsupported stream event".into()),
         }
