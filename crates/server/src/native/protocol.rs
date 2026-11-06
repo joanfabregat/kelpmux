@@ -275,6 +275,12 @@ pub enum Action {
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum ClientMessage {
+    /// Same-UID administration; advertised by the pane-spawn capability.
+    SpawnPane {
+        request: String,
+        cwd: std::path::PathBuf,
+        argv: Vec<String>,
+    },
     ThemeColor {
         background: bool,
         rgb: [u8; 3],
@@ -315,6 +321,10 @@ pub enum ClientMessage {
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum ServerMessage {
+    SpawnedPane {
+        request: String,
+        pane: PaneId,
+    },
     Stream(super::stream::Event),
     Diagnostics(super::diagnostics::Report),
     History {

@@ -781,3 +781,94 @@ fn clipboard_writes_require_opt_in_and_only_reach_the_pane_owner() {
         }
     }
 }
+
+#[test]
+fn structured_creation_sets_cwd_quotes_arguments_and_retries_without_stealing_a_lease() {
+    let daemon = Daemon::start();
+    let cwd = daemon.root.join("working folder ' ; literal");
+    fs::create_dir(&cwd).unwrap();
+    let sentinel = daemon.root.join("must-not-exist");
+    let argument = format!("literal '; touch {}; #", sentinel.display());
+    let request = ClientMessage::SpawnPane {
+        request: "creation-test".into(),
+        cwd: cwd.clone(),
+        argv: vec![
+            "/usr/bin/printf".into(),
+            "CREATED_%s\\n".into(),
+            argument.clone(),
+        ],
+    };
+    let mut owner = daemon.peer();
+    owner.send(Request::Subscribe { panes: vec![1] });
+    owner.lease(1, false);
+    owner.send(Request::Resize {
+        pane: 1,
+        cols: 37,
+        rows: 8,
+    });
+    owner.until(1, |screen| screen.cols == 37 && screen.rows == 8);
+    let create = || {
+        let mut socket = daemon.socket();
+        write_message(&mut socket, &request).unwrap();
+        match read_message(&mut socket).unwrap().unwrap() {
+            ServerMessage::SpawnedPane { request, pane } => {
+                assert_eq!(request, "creation-test");
+                pane
+            }
+            other => panic!("{other:?}"),
+        }
+    };
+    let created = create();
+    assert_eq!(created, 3);
+    assert_eq!(create(), created);
+    let mut socket = daemon.socket();
+    write_message(&mut socket, &ClientMessage::Inspect).unwrap();
+    if let ServerMessage::State { panes, active, .. } = read_message(&mut socket).unwrap().unwrap()
+    {
+        assert_eq!(panes.len(), 3);
+        assert_eq!(active, 1);
+        let info = panes.iter().find(|p| p.id == created).unwrap();
+        assert_eq!(
+            fs::read_link(format!("/proc/{}/cwd", info.pid)).unwrap(),
+            cwd
+        );
+    } else {
+        panic!("missing state");
+    }
+    assert_eq!(daemon.inspect(1).cols, 37);
+    assert_eq!(daemon.inspect(1).rows, 8);
+    let mut view = daemon.peer();
+    view.send(Request::Subscribe {
+        panes: vec![created],
+    });
+    view.until(created, |screen| text(screen).contains("CREATED_literal"));
+    assert!(!sentinel.exists());
+    let mut socket = daemon.socket();
+    write_message(
+        &mut socket,
+        &ClientMessage::SpawnPane {
+            request: "creation-test".into(),
+            cwd: cwd.clone(),
+            argv: vec![],
+        },
+    )
+    .unwrap();
+    assert!(matches!(
+        read_message(&mut socket).unwrap(),
+        Some(ServerMessage::Error(_))
+    ));
+    let mut socket = daemon.socket();
+    write_message(
+        &mut socket,
+        &ClientMessage::SpawnPane {
+            request: "bad-directory".into(),
+            cwd: PathBuf::from("relative"),
+            argv: vec![],
+        },
+    )
+    .unwrap();
+    assert!(matches!(
+        read_message(&mut socket).unwrap(),
+        Some(ServerMessage::Error(_))
+    ));
+}
