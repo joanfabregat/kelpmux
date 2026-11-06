@@ -1,6 +1,6 @@
 # Native client foundation
 
-Kelpmux owns long-running PTYs and Alacritty terminal interpretation. Clients own presentation. Native mode has no tmux or WezTerm runtime dependency. The composed ANSI frontend is protocol v55 (horizontal restore-choice confirmation buttons); the separate experimental pane stream remains v1. Pane metadata adds a default-false `parked` field. Parking leaves PTY contents, status and stream subscriptions alive; restoring a pane returns it to the composed UI. A matching frontend/server pair is required because mouse routing shares their UI geometry and dialog types. Pane streaming shipped in beta.3; the updated composed status geometry requires a current dev build. A graphical desktop/mobile client and MCP/device tools are not implemented.
+Kelpmux owns long-running PTYs and Alacritty terminal interpretation. Clients own presentation. Native mode has no tmux or WezTerm runtime dependency. The composed ANSI frontend is protocol v58; the separate experimental pane stream remains v1. Pane metadata adds a default-false `parked` field. Parking leaves PTY contents, status and stream subscriptions alive; restoring a pane returns it to the composed UI. A matching frontend/server pair is required because mouse routing shares their UI geometry and dialog types. Pane streaming shipped in beta.3; the updated composed status geometry requires a current dev build. A graphical desktop/mobile client and MCP/device tools are not implemented.
 
 The broader proposed contract is [ADR 0001](adr/0001-native-client-protocol-and-device-capabilities.md). It covers pane lifecycle, independent device sizes, live agent status, notifications, remote Vitals and a future MCP/device request channel. The ADR deliberately distinguishes those proposals from the implemented requests below.
 
@@ -56,7 +56,7 @@ Leases last until release, takeover or disconnect; release/disconnect restores t
 
 ## State, notifications and Vitals
 
-The `program-status` capability adds `terminal` observation evidence from pane-local OSC 7501 reports. Current dev clients must recognize this status-source value; the experimental stream remains v1 and is not a frozen compatibility contract. The composed frontend/server pair uses v55. Terminal activity takes precedence over metadata polling without implying that a conversation ID is known.
+The `program-status` capability adds `terminal` observation evidence from pane-local OSC 7501 reports. Current dev clients must recognize this status-source value; the experimental stream remains v1 and is not a frozen compatibility contract. The composed frontend/server pair uses v58. Terminal activity takes precedence over metadata polling without implying that a conversation ID is known.
 
 Pane metadata carries identity, agent kind, session ID if known, status, activity times and status observation evidence. Evidence distinguishes process, lifecycle hook, live record, agent-server and transcript observations. `checked_at` records a check; optional `event_at` records an actual known event time. Reading an old transcript again does not invent a new lifecycle event. Unknown or stale evidence remains visible in the overview, and an idle observation does not become a completed turn automatically.
 
