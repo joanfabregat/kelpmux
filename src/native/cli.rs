@@ -884,6 +884,12 @@ fn attach_socket(options: &Options) -> Result<UnixStream> {
         super::upgrade::attach_matching(&options.socket, &options.state, options.takeover)
     }
 }
+#[derive(PartialEq)]
+enum FocusHandoff {
+    AwaitingPong,
+    AwaitingFrame,
+}
+
 fn attach(mut socket: UnixStream, takeover: bool) -> Result<()> {
     if unsafe { libc::isatty(0) } != 1 || unsafe { libc::isatty(1) } != 1 {
         return Err("attach requires stdin and stdout to be TTYs".into());
@@ -920,6 +926,8 @@ fn attach(mut socket: UnixStream, takeover: bool) -> Result<()> {
     let mut stdout = TerminalWriter;
     let mut notice: Option<String> = None;
     let mut pending = VecDeque::new();
+    let mut focus_handoff = None;
+    let mut focus_report_pending = false;
     let mut revision = 0;
     let mut keyboard_mode = 1;
     let mut pointer = None;
@@ -957,6 +965,9 @@ fn attach(mut socket: UnixStream, takeover: bool) -> Result<()> {
             match message {
                 ServerMessage::Frame(frame) => {
                     validate_frame(&frame)?;
+                    if focus_handoff == Some(FocusHandoff::AwaitingFrame) {
+                        focus_handoff = None;
+                    }
                     revision = 1;
                     newest = Some(frame);
                 }
@@ -967,6 +978,9 @@ fn attach(mut socket: UnixStream, takeover: bool) -> Result<()> {
                         .ok_or("frame patch arrived before a snapshot")?;
                     let frame = super::delta::apply(previous, revision, &patch)?;
                     validate_frame(&frame)?;
+                    if focus_handoff == Some(FocusHandoff::AwaitingFrame) {
+                        focus_handoff = None;
+                    }
                     revision = patch.revision;
                     newest = Some(frame);
                 }
@@ -982,6 +996,9 @@ fn attach(mut socket: UnixStream, takeover: bool) -> Result<()> {
                     error_changed = true;
                 }
                 ServerMessage::Detached => return Ok(()),
+                ServerMessage::Pong if focus_handoff == Some(FocusHandoff::AwaitingPong) => {
+                    focus_handoff = Some(FocusHandoff::AwaitingFrame);
+                }
                 _ => {}
             }
         }
@@ -1043,6 +1060,24 @@ fn attach(mut socket: UnixStream, takeover: bool) -> Result<()> {
         }
         if let Some(frame) = latest.as_ref() {
             while let Some(mut event) = pending.pop_front() {
+                if focus_handoff.is_some() {
+                    pending.push_front(event);
+                    break;
+                }
+                if !focus_report_pending
+                    && matches!(&event, InputEvent::Bytes(bytes) if bytes == b"\x1b[I")
+                {
+                    channel.send(&ClientMessage::Action(Action::Takeover))?;
+                    // The barrier distinguishes the handoff's frame from older
+                    // queued observer frames. Claim only once per focus report:
+                    // another connection may have gained focus in the meantime.
+                    channel.send(&ClientMessage::Ping)?;
+                    pending.push_front(event);
+                    focus_handoff = Some(FocusHandoff::AwaitingPong);
+                    focus_report_pending = true;
+                    break;
+                }
+                focus_report_pending = false;
                 // Footer controls stay at the left edge when fitted.
                 // Pane and help-panel coordinates stay in backend geometry.
                 if let InputEvent::Mouse(mouse) = &mut event {

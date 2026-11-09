@@ -1,13 +1,13 @@
 [package]
 name = "kelpmux"
-version = "0.2.0-beta.6"
+version = "0.2.0-beta.7"
 edition = "2024"
 rust-version = "1.85"
 license = "Apache-2.0"
 description = "Kelp terminal interface"
 
 [dependencies]
-kelpserver = { path = "crates/server", version = "0.2.0-beta.6" }
+kelpserver = { path = "crates/server", version = "0.2.0-beta.7" }
 kelpclient = { path = "crates/client", version = "0.1.0" }
 base64 = "0.22"
 unicode-width = "=0.2.2"

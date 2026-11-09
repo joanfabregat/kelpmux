@@ -22,7 +22,7 @@ cargo build --workspace --release --locked
 cargo test --workspace --locked
 ```
 
-Install `target/release/kelpmux` and `target/release/kelpserver` together, or configure `KELPSERVER_BINARY` with the server path. Build the portable browser core with `cargo build -p kelpclient --release --locked --target wasm32-unknown-unknown` after installing that Rust target. Run builds in your environment's approved container workflow. No release of this workspace layout has been published yet.
+Install `target/release/kelpmux` and `target/release/kelpserver` together, or configure `KELPSERVER_BINARY` with the server path. Build the portable browser core with `cargo build -p kelpclient --release --locked --target wasm32-unknown-unknown` after installing that Rust target. Run builds in your environment's approved container workflow. Version `0.2.0-beta.7` is the first beta packaged from this consolidated workspace; its Linux archives include both executables.
 
 ```sh
 kelpmux start --workspace trial

@@ -253,7 +253,7 @@ dependencies = [
 
 [[package]]
 name = "kelpmux"
-version = "0.2.0-beta.6"
+version = "0.2.0-beta.7"
 dependencies = [
  "base64",
  "kelpclient",
@@ -267,7 +267,7 @@ dependencies = [
 
 [[package]]
 name = "kelpserver"
-version = "0.2.0-beta.6"
+version = "0.2.0-beta.7"
 dependencies = [
  "alacritty_terminal",
  "base64",

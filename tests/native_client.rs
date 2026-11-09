@@ -329,7 +329,12 @@ fn attach_keyboard_paste_focus_mouse_resize_detach_reconnect_restores_tty() {
             .unwrap();
             while let Some(message) = read_message::<ClientMessage>(&mut socket).unwrap() {
                 let detach = matches!(message, ClientMessage::Action(Action::Detach));
+                let ping = matches!(message, ClientMessage::Ping);
                 sender.send(message).unwrap();
+                if ping {
+                    write_message(&mut socket, &ServerMessage::Pong).unwrap();
+                    write_message(&mut socket, &ServerMessage::Frame(frame(true))).unwrap();
+                }
                 if detach {
                     write_message(&mut socket, &ServerMessage::Detached).unwrap();
                     break;
@@ -401,6 +406,114 @@ fn attach_keyboard_paste_focus_mouse_resize_detach_reconnect_restores_tty() {
     again.finish(true);
     backend.join().unwrap();
 }
+#[test]
+fn focusing_observer_takes_control_before_routing_immediate_input() {
+    let fixture = Fixture::new();
+    let path = fixture.socket.clone();
+    let (sender, receiver) = mpsc::channel();
+    let backend = thread::spawn(move || {
+        let mut socket = fixture.accept();
+        welcome(&mut socket, false);
+        while let Some(message) = read_message::<ClientMessage>(&mut socket).unwrap() {
+            let takeover = matches!(message, ClientMessage::Action(Action::Takeover));
+            let detach = matches!(message, ClientMessage::Action(Action::Detach));
+            sender.send(message).unwrap();
+            if takeover {
+                assert!(matches!(
+                    read_message::<ClientMessage>(&mut socket).unwrap(),
+                    Some(ClientMessage::Ping)
+                ));
+                // An older observer snapshot must not trigger another takeover
+                // or discard the keys waiting behind the focus report.
+                write_message(&mut socket, &ServerMessage::Frame(frame(false))).unwrap();
+                // Keys delivered in the same TTY read must wait for confirmation.
+                socket
+                    .set_read_timeout(Some(Duration::from_millis(100)))
+                    .unwrap();
+                assert!(read_message::<ClientMessage>(&mut socket).is_err());
+                socket
+                    .set_read_timeout(Some(Duration::from_secs(5)))
+                    .unwrap();
+                write_message(&mut socket, &ServerMessage::Pong).unwrap();
+                write_message(&mut socket, &ServerMessage::Frame(frame(true))).unwrap();
+            }
+            if detach {
+                write_message(&mut socket, &ServerMessage::Detached).unwrap();
+                break;
+            }
+        }
+    });
+    let mut tty = Pty::spawn(&path, 80, 24);
+    tty.ready();
+    // Neither focus loss nor pasted focus sequences can claim ownership.
+    tty.input(b"\x1b[O\x1b[200~\x1b[I\x1b[201~");
+    assert!(receiver.recv_timeout(Duration::from_millis(150)).is_err());
+    // Exercise fragmented focus reporting and immediately following keys.
+    tty.input(b"\x1b[");
+    tty.input(b"Ikept");
+    assert!(matches!(
+        receiver.recv_timeout(Duration::from_secs(2)).unwrap(),
+        ClientMessage::Action(Action::Takeover)
+    ));
+    let mut typed = Vec::new();
+    while typed.len() < b"\x1b[Ikept".len() {
+        if let ClientMessage::Input(bytes) = receiver.recv_timeout(Duration::from_secs(2)).unwrap()
+        {
+            typed.extend(bytes);
+        }
+    }
+    assert_eq!(typed, b"\x1b[Ikept");
+    // A late blur only reaches the opt-in application; it never releases control.
+    tty.input(b"\x1b[O");
+    assert!(matches!(
+        receiver.recv_timeout(Duration::from_secs(2)).unwrap(),
+        ClientMessage::Input(bytes) if bytes == b"\x1b[O"
+    ));
+    tty.input(b"\x02d");
+    tty.finish(true);
+    backend.join().unwrap();
+}
+
+#[test]
+fn focus_handoff_does_not_reclaim_control_after_another_client_wins() {
+    let fixture = Fixture::new();
+    let path = fixture.socket.clone();
+    let (sender, receiver) = mpsc::channel();
+    let backend = thread::spawn(move || {
+        let mut socket = fixture.accept();
+        welcome(&mut socket, false);
+        while let Some(message) = read_message::<ClientMessage>(&mut socket).unwrap() {
+            let takeover = matches!(message, ClientMessage::Action(Action::Takeover));
+            let detach = matches!(message, ClientMessage::Action(Action::Detach));
+            sender.send(message).unwrap();
+            if takeover {
+                assert!(matches!(
+                    read_message::<ClientMessage>(&mut socket).unwrap(),
+                    Some(ClientMessage::Ping)
+                ));
+                write_message(&mut socket, &ServerMessage::Pong).unwrap();
+                // Another client took control before the server composed a frame.
+                write_message(&mut socket, &ServerMessage::Frame(frame(false))).unwrap();
+            }
+            if detach {
+                write_message(&mut socket, &ServerMessage::Detached).unwrap();
+                break;
+            }
+        }
+    });
+    let mut tty = Pty::spawn(&path, 80, 24);
+    tty.ready();
+    tty.input(b"\x1b[Iblocked");
+    assert!(matches!(
+        receiver.recv_timeout(Duration::from_secs(2)).unwrap(),
+        ClientMessage::Action(Action::Takeover)
+    ));
+    assert!(receiver.recv_timeout(Duration::from_millis(150)).is_err());
+    tty.input(b"\x02d");
+    tty.finish(true);
+    backend.join().unwrap();
+}
+
 #[test]
 fn observer_resize_does_not_resize_backend_and_signal_restores_tty() {
     let fixture = Fixture::new();
@@ -767,6 +880,55 @@ fn wait_state(
         thread::sleep(Duration::from_millis(10));
     }
 }
+#[test]
+fn live_frontends_follow_focus_in_both_directions_without_replacing_shells() {
+    let server = LiveServer::start();
+    let mut first = Pty::spawn(&server.socket, 80, 24);
+    first.ready();
+    let panes = wait_state(&server, &mut first, |_, _, controller| controller.is_some());
+    let original = panes[0].clone();
+    let first_controller = server.state().2.unwrap();
+    // A fresh focus report also works when the client already owns control.
+    first.input(b"\x1b[I\x02f");
+    wait_state(&server, &mut first, |_, reading, controller| {
+        controller == Some(first_controller) && reading == ReadingMode::Fullscreen(original.id)
+    });
+    let mut second = Pty::spawn(&server.socket, 100, 30);
+    second.ready();
+    assert_eq!(server.state().2, Some(first_controller));
+
+    // The focus report and shortcut arrive together, before any ownership frame.
+    second.input(b"\x1b[I\x02g");
+    wait_state(&server, &mut second, |_, reading, controller| {
+        controller.is_some() && controller != Some(first_controller) && reading == ReadingMode::Grid
+    });
+    let second_controller = server.state().2.unwrap();
+    let dimensions = || match server.ctl(&["diagnostics"]) {
+        ServerMessage::Diagnostics(report) => (report.cols, report.rows),
+        other => panic!("missing diagnostics: {other:?}"),
+    };
+    assert_eq!(dimensions(), (100, 30));
+
+    // Delayed blur from the old controller cannot undo the handoff.
+    first.input(b"\x1b[O");
+    second.input(b"\x02f");
+    wait_state(&server, &mut second, |_, reading, controller| {
+        controller == Some(second_controller) && reading == ReadingMode::Fullscreen(original.id)
+    });
+    first.input(b"\x1b[I\x02g");
+    let panes = wait_state(&server, &mut first, |_, reading, controller| {
+        controller == Some(first_controller) && reading == ReadingMode::Grid
+    });
+    assert_eq!(dimensions(), (80, 24));
+    assert_eq!(panes.len(), 1);
+    assert_eq!(panes[0].id, original.id);
+    assert_eq!(panes[0].pid, original.pid);
+    first.input(b"\x02d");
+    first.finish(true);
+    second.input(b"\x02d");
+    second.finish(true);
+}
+
 #[test]
 fn live_server_attach_layout_read_fullscreen_detach_reconnect_preserves_shell() {
     let mut server = LiveServer::start();
