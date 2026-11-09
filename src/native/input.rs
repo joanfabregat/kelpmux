@@ -63,7 +63,10 @@ impl Decoder {
             if self.pending[0] != 27 {
                 let byte = self.pending.remove(0);
                 if let Some(InputEvent::Bytes(previous)) = events.last_mut() {
-                    if previous.len() < MAX_INPUT {
+                    if previous.len() < MAX_INPUT
+                        && previous.as_slice() != b"\x1b[I"
+                        && previous.as_slice() != b"\x1b[O"
+                    {
                         previous.push(byte);
                         continue;
                     }

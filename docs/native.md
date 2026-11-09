@@ -129,7 +129,7 @@ Enter that at Ctrl-B then `:` in tmux, not at an agent prompt. A future native c
 
 ## Control, sizing and safe shrink
 
-The first eligible attached client controls the workspace. Additional clients observe it and cannot send application input or change it without explicit takeover. Controller dimensions determine PTY sizes; observer resizes only clip or pad their display. Supported sizes are 40–400 columns and 10–160 rows. A window resize never removes a terminal.
+The first eligible attached client controls the workspace. Focusing another attached TUI automatically transfers control when its terminal reports focus events. The most recently focused connection controls shared input, tab selection and layout; its dimensions determine PTY sizes. Input arriving with the focus event waits for the server to confirm the handoff. Losing focus leaves control in place until another connection takes it, so a delayed focus-loss event cannot revoke the new controller. Terminals without focus reporting can use prefix then `t` or `T`, or attach with `--takeover`. Additional clients observe the workspace; observer resizes only clip or pad their display. Supported sizes are 40–400 columns and 10–160 rows. A window resize never removes a terminal.
 
 Creating a tab explicitly creates one shell. Grid resizing changes geometry and preserves every process; it does not create spare shells or remove idle ones. Closing a tab explicitly requires confirmation. Legacy native layout commands are rejected without changing any terminals; the older tmux helper retains its separate compatibility behavior.
 

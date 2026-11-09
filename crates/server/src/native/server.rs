@@ -2127,6 +2127,11 @@ impl Server {
             }
             ClientMessage::Action(Action::Takeover) if self.clients[&id].attached => {
                 self.workspace.ui.tab_drop = None;
+                // Every explicit or focus-driven claim gets an authoritative
+                // frame, even if ownership is unchanged or another claim wins
+                // before composition. Frontends use it to finish the handoff.
+                self.clients.get_mut(&id).unwrap().previous_frame = None;
+                self.dirty = true;
                 let (cols, rows) = self.clients[&id]
                     .geometry
                     .ok_or("attached client has no geometry")?;
