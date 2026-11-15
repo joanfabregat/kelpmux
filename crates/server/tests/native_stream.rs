@@ -884,8 +884,10 @@ fn shell_commands_report_their_start_return_and_alternate_screen() {
             other => panic!("{other:?}"),
         }
     };
-    // A fresh peer per command: a peer that never reads its event stream
-    // can be dropped as a slow consumer, which would lose later input.
+    // A fresh peer per command keeps each lease owner's unread event stream
+    // short. `after` is the earliest acceptable start in whole seconds;
+    // process start times are derived from clock ticks, so a command begun
+    // just after a second boundary may be reported in the previous second.
     let run = |line: &[u8], after: u64| {
         let mut peer = d.peer();
         peer.lease(1, false);
@@ -899,12 +901,16 @@ fn shell_commands_report_their_start_return_and_alternate_screen() {
             if let Some(command) = info
                 .command
                 .clone()
-                .filter(|c| c.started_at >= after && c.ended_at.is_some())
+                .filter(|c| c.started_at + 1 >= after && c.ended_at.is_some())
             {
                 assert_eq!(info.kind, None);
                 return command;
             }
-            assert!(Instant::now() < deadline, "{info:?}");
+            assert!(
+                Instant::now() < deadline,
+                "{info:?}\n{:?}",
+                text(&d.inspect(1))
+            );
             thread::sleep(Duration::from_millis(100));
         }
     };
