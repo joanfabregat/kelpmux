@@ -5,8 +5,8 @@ use kelpserver::{
     model::{Agent, Kind, Status},
     native::{
         hooks,
-        protocol::PaneInfo,
-        tracking::{filtered, recovery_at},
+        protocol::{PaneInfo, ShellCommand},
+        tracking::{filtered, recovery_at, track_command},
         ui::AgentFilter,
     },
     process,
@@ -516,4 +516,102 @@ fn tab_names_never_use_directory_as_conversation_identity_and_preserve_osc_fallb
         tab_name(&agent, Some("terminal title"), Some("Backend")),
         ("Backend".into(), true)
     );
+}
+#[test]
+fn shell_commands_track_start_return_and_alternate_screen() {
+    let none = || None;
+    // Idle without a running command records nothing.
+    assert_eq!(track_command(None, Status::Idle, false, none, 5, 10), None);
+    // A new command starts at its first process, never in the future or
+    // before the previous command returned.
+    let running = track_command(None, Status::Working, false, || Some(98), 90, 100).unwrap();
+    assert_eq!(
+        running,
+        ShellCommand {
+            started_at: 98,
+            ended_at: None,
+            alternate_screen: false
+        }
+    );
+    assert_eq!(
+        track_command(None, Status::Working, false, || Some(200), 0, 100)
+            .unwrap()
+            .started_at,
+        100
+    );
+    assert_eq!(
+        track_command(None, Status::Working, false, none, 0, 100)
+            .unwrap()
+            .started_at,
+        100
+    );
+    let earlier = ShellCommand {
+        started_at: 50,
+        ended_at: Some(60),
+        alternate_screen: true,
+    };
+    assert_eq!(
+        track_command(
+            Some(earlier.clone()),
+            Status::Working,
+            false,
+            || Some(55),
+            0,
+            100
+        ),
+        Some(ShellCommand {
+            started_at: 60,
+            ended_at: None,
+            alternate_screen: false
+        })
+    );
+    // The alternate screen is sticky for the command's lifetime.
+    let full = track_command(Some(running.clone()), Status::Working, true, none, 0, 102).unwrap();
+    let full = track_command(Some(full), Status::Working, false, none, 0, 104).unwrap();
+    assert!(full.alternate_screen && full.started_at == 98);
+    // Unknown status keeps the record; the return uses the prompt's output.
+    assert_eq!(
+        track_command(Some(full.clone()), Status::Unknown, false, none, 0, 105),
+        Some(full.clone())
+    );
+    let returned = track_command(Some(full), Status::Idle, false, none, 109, 110).unwrap();
+    assert_eq!(returned.ended_at, Some(109));
+    assert!(returned.alternate_screen);
+    // Without output since the start, the return is the observation time.
+    let silent = track_command(Some(running.clone()), Status::Idle, false, none, 90, 111).unwrap();
+    assert_eq!(silent.ended_at, Some(111));
+    assert!(!silent.alternate_screen);
+    // A returned command stays as it was until the next one starts.
+    assert_eq!(
+        track_command(Some(silent.clone()), Status::Idle, true, none, 130, 140),
+        Some(silent)
+    );
+}
+#[test]
+fn pane_info_without_a_command_stays_compatible() {
+    let pane = PaneInfo {
+        id: 1,
+        ..Default::default()
+    };
+    let json = serde_json::to_value(&pane).unwrap();
+    assert!(json.get("command").is_none());
+    let decoded: PaneInfo = serde_json::from_value(json).unwrap();
+    assert_eq!(decoded, pane);
+    let with = PaneInfo {
+        command: Some(ShellCommand {
+            started_at: 1,
+            ended_at: None,
+            alternate_screen: true,
+        }),
+        ..pane
+    };
+    let json = serde_json::to_value(&with).unwrap();
+    assert_eq!(
+        json["command"],
+        serde_json::json!({"started_at":1,"ended_at":null,"alternate_screen":true})
+    );
+    assert_eq!(serde_json::from_value::<PaneInfo>(json).unwrap(), with);
+    let minimal: ShellCommand = serde_json::from_str(r#"{"started_at":4}"#).unwrap();
+    assert_eq!(minimal.ended_at, None);
+    assert!(!minimal.alternate_screen);
 }

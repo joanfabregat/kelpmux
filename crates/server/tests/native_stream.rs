@@ -872,3 +872,48 @@ fn structured_creation_sets_cwd_quotes_arguments_and_retries_without_stealing_a_
         Some(ServerMessage::Error(_))
     ));
 }
+
+#[test]
+fn shell_commands_report_their_start_return_and_alternate_screen() {
+    let d = Daemon::start();
+    let mut peer = d.peer();
+    peer.lease(1, false);
+    let pane = || {
+        let mut socket = d.socket();
+        write_message(&mut socket, &ClientMessage::Inspect).unwrap();
+        match read_message(&mut socket).unwrap().unwrap() {
+            ServerMessage::State { panes, .. } => panes.into_iter().find(|p| p.id == 1).unwrap(),
+            other => panic!("{other:?}"),
+        }
+    };
+    let mut run = |line: &[u8], after: u64| {
+        peer.send(Request::Input {
+            pane: 1,
+            bytes: line.to_vec(),
+        });
+        let deadline = Instant::now() + Duration::from_secs(15);
+        loop {
+            let info = pane();
+            if let Some(command) = info
+                .command
+                .clone()
+                .filter(|c| c.started_at >= after && c.ended_at.is_some())
+            {
+                assert_eq!(info.kind, None);
+                return command;
+            }
+            assert!(Instant::now() < deadline, "{info:?}");
+            thread::sleep(Duration::from_millis(100));
+        }
+    };
+    let start = kelpserver::now();
+    let plain = run(b"sleep 3\n", start);
+    let ended = plain.ended_at.unwrap();
+    assert!((2..=5).contains(&(ended - plain.started_at)), "{plain:?}");
+    assert!(!plain.alternate_screen);
+    // A full-screen program that leaves the alternate screen before the
+    // next status poll is still reported.
+    let full = run(b"printf '\\033[?1049hFULL\\033[?1049l'; sleep 3\n", ended);
+    assert!(full.alternate_screen, "{full:?}");
+    assert!(full.started_at >= ended);
+}

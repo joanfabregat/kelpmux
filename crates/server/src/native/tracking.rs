@@ -1,5 +1,8 @@
 //! Metadata-only agent views and recovery; never launches or resumes a process.
-use super::{protocol::PaneInfo, ui::AgentFilter};
+use super::{
+    protocol::{PaneInfo, ShellCommand},
+    ui::AgentFilter,
+};
 use crate::{
     Result,
     journal::{RETENTION, Store},
@@ -21,6 +24,49 @@ pub fn shell_tab_name(terminal: Option<&str>, alias: Option<&str>, idle: bool) -
         .chars()
         .take(1024)
         .collect()
+}
+
+/// Follows a plain shell's latest foreground command across status polls.
+/// `alternate` says whether the alternate screen was active since the previous
+/// poll, `started` estimates when a newly observed command began, and
+/// `output_at` is the pane's latest output (the returning prompt). Other
+/// statuses keep the record unchanged.
+pub fn track_command(
+    previous: Option<ShellCommand>,
+    status: Status,
+    alternate: bool,
+    started: impl FnOnce() -> Option<u64>,
+    output_at: u64,
+    now: u64,
+) -> Option<ShellCommand> {
+    match (status, previous) {
+        (Status::Working, Some(mut command)) if command.ended_at.is_none() => {
+            command.alternate_screen |= alternate;
+            Some(command)
+        }
+        (Status::Working, previous) => {
+            // A process cannot have started before the previous command ended.
+            let floor = previous.and_then(|p| p.ended_at).unwrap_or(0);
+            Some(ShellCommand {
+                started_at: started().unwrap_or(now).clamp(floor.min(now), now),
+                ended_at: None,
+                alternate_screen: alternate,
+            })
+        }
+        (Status::Idle, Some(mut command)) if command.ended_at.is_none() => {
+            // The returning prompt is the latest output; without output since
+            // the start, the shell returned no later than now.
+            let ended = if output_at > command.started_at {
+                output_at.min(now)
+            } else {
+                now
+            };
+            command.ended_at = Some(ended.max(command.started_at));
+            command.alternate_screen |= alternate;
+            Some(command)
+        }
+        (_, previous) => previous,
+    }
 }
 
 /// A directory is useful context but is not evidence of a conversation's name.

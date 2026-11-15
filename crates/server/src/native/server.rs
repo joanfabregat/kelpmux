@@ -1791,6 +1791,7 @@ impl Server {
             last_activity: crate::now(),
             status_since: crate::now(),
             observation: crate::model::Observation::default(),
+            command: None,
         });
         self.panes.insert(id, pane);
         self.next_pane += 1;
@@ -2728,6 +2729,7 @@ impl Server {
                 info.status = agent.status;
                 info.observation = agent.observation.clone();
                 info.kind = Some(agent.kind);
+                info.command = None;
                 info.session_id = agent.session_id.clone();
                 if let Some(pane) = self.panes.get_mut(&info.id) {
                     let (name, authoritative) = super::tracking::tab_name(
@@ -2753,6 +2755,26 @@ impl Server {
                 } else {
                     Status::Unknown
                 };
+                let alternate = self
+                    .panes
+                    .get_mut(&info.id)
+                    .is_some_and(|pane| pane.terminal.take_alternate_used());
+                let shell = info.pid;
+                info.command = super::tracking::track_command(
+                    info.command.take(),
+                    info.status,
+                    alternate,
+                    || {
+                        let first = process::descendants(&tree, shell)
+                            .into_iter()
+                            .filter(|pid| *pid != shell)
+                            .filter_map(|pid| tree.get(&pid).map(|p| p.start))
+                            .min()?;
+                        process::started_at(Path::new("/proc"), first)
+                    },
+                    info.last_activity,
+                    crate::now(),
+                );
                 info.title = super::tracking::shell_tab_name(
                     self.panes
                         .get(&info.id)

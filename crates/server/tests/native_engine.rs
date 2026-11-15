@@ -554,3 +554,22 @@ fn emoji_presentation_warning_reserves_two_cells_across_fragmented_input() {
     assert_eq!(screen.cells[2].width, 1);
     assert_eq!(screen.cells[3].text, "Z");
 }
+#[test]
+fn alternate_screen_use_is_remembered_until_taken_across_fragments() {
+    let mut pane = Terminal::new(40, 8);
+    assert!(!pane.take_alternate_used());
+    // Entering and leaving within one period is still reported once.
+    for byte in b"\x1b[?1049hFULL\x1b[?1049lback" {
+        pane.feed(&[*byte]);
+    }
+    assert!(!pane.is_alternate());
+    assert!(pane.take_alternate_used());
+    assert!(!pane.take_alternate_used());
+    // A screen that stays alternate is reported in each period.
+    pane.feed(b"\x1b[?1049h");
+    assert!(pane.take_alternate_used());
+    assert!(pane.take_alternate_used());
+    pane.feed(b"\x1b[?1049l");
+    assert!(pane.take_alternate_used());
+    assert!(!pane.take_alternate_used());
+}
