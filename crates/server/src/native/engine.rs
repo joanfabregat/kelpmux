@@ -65,6 +65,9 @@ pub struct Terminal {
     listener: Listener,
     escape: Vec<u8>,
     primary_history: Option<Vec<HistoryRow>>,
+    /// Whether the alternate screen was active since the last
+    /// `take_alternate_used`.
+    alternate_used: bool,
     selection_anchor: Option<TermPoint>,
     selection_head: Option<TermPoint>,
 }
@@ -96,6 +99,7 @@ impl Terminal {
             listener,
             escape: Vec::new(),
             primary_history: None,
+            alternate_used: false,
             selection_anchor: None,
             selection_head: None,
         }
@@ -218,7 +222,9 @@ impl Terminal {
             }
             self.parser
                 .advance(&mut self.term, &bytes[index..index + 1]);
-            if !self.term.mode().contains(TermMode::ALT_SCREEN) && self.escape.is_empty() {
+            if self.term.mode().contains(TermMode::ALT_SCREEN) {
+                self.alternate_used = true;
+            } else if self.escape.is_empty() {
                 self.primary_history = None;
             }
             index += 1;
@@ -661,6 +667,12 @@ impl Terminal {
     }
     pub fn is_alternate(&self) -> bool {
         self.term.mode().contains(TermMode::ALT_SCREEN)
+    }
+    /// Whether the alternate screen was active at any point since the previous
+    /// call. The next period starts with the current screen.
+    pub fn take_alternate_used(&mut self) -> bool {
+        let current = self.is_alternate();
+        std::mem::replace(&mut self.alternate_used, current)
     }
     pub fn scroll_to(&mut self, line: i32) -> Result<()> {
         if self.is_alternate() {

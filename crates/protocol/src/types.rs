@@ -125,4 +125,22 @@ pub struct PaneInfo {
     pub last_activity: u64,
     #[serde(default)]
     pub status_since: u64,
+    /// The latest foreground command of a plain shell pane; absent for agent
+    /// panes and before a shell has run anything.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub command: Option<ShellCommand>,
+}
+/// Neutral facts about a shell's latest foreground command, observed from the
+/// process tree and the terminal. Clients decide what they mean.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ShellCommand {
+    /// When the command's first process started (Unix seconds).
+    pub started_at: u64,
+    /// When the shell returned to its prompt; absent while the command runs.
+    #[serde(default)]
+    pub ended_at: Option<u64>,
+    /// Whether the alternate screen was active at any point during the
+    /// command (full-screen programs such as editors, pagers and monitors).
+    #[serde(default)]
+    pub alternate_screen: bool,
 }

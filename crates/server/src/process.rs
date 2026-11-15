@@ -101,6 +101,21 @@ pub fn links(root: &Path, pid: u32) -> Vec<PathBuf> {
         .collect()
 }
 
+/// Wall-clock time (Unix seconds) of a process start given in clock ticks
+/// since boot, as `Process::start` reports it.
+pub fn started_at(root: &Path, start: u64) -> Option<u64> {
+    let stat = fs::read_to_string(root.join("stat")).ok()?;
+    let boot = stat
+        .lines()
+        .find_map(|line| line.strip_prefix("btime "))?
+        .trim()
+        .parse::<u64>()
+        .ok()?;
+    // SAFETY: sysconf reads a process-wide constant and has no pointer arguments.
+    let ticks = unsafe { libc::sysconf(libc::_SC_CLK_TCK) }.max(1) as u64;
+    boot.checked_add(start / ticks)
+}
+
 pub fn idle(tree: &BTreeMap<u32, Process>, pid: u32, allow_stopped: bool) -> bool {
     let Some(p) = tree.get(&pid) else {
         return false;
