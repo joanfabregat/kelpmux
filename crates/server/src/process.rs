@@ -103,17 +103,43 @@ pub fn links(root: &Path, pid: u32) -> Vec<PathBuf> {
 
 /// Wall-clock time (Unix seconds) of a process start given in clock ticks
 /// since boot, as `Process::start` reports it.
+///
+/// The process age comes from the centisecond `uptime`, not from adding the
+/// start to `btime`: `btime` is truncated to whole seconds, so that sum could
+/// report a start up to two seconds before the process existed.
 pub fn started_at(root: &Path, start: u64) -> Option<u64> {
-    let stat = fs::read_to_string(root.join("stat")).ok()?;
-    let boot = stat
-        .lines()
-        .find_map(|line| line.strip_prefix("btime "))?
-        .trim()
-        .parse::<u64>()
-        .ok()?;
+    let uptime = fs::read_to_string(root.join("uptime")).ok()?;
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .ok()?
+        .as_millis();
     // SAFETY: sysconf reads a process-wide constant and has no pointer arguments.
     let ticks = unsafe { libc::sysconf(libc::_SC_CLK_TCK) }.max(1) as u64;
-    boot.checked_add(start / ticks)
+    started_at_from(&uptime, start, ticks, u64::try_from(now).ok()?)
+}
+
+/// `started_at` with explicit `/proc/uptime` text, clock tick rate and current
+/// Unix time in milliseconds.
+pub fn started_at_from(uptime: &str, start: u64, ticks: u64, now_millis: u64) -> Option<u64> {
+    let (seconds, fraction) = uptime.split_whitespace().next()?.split_once('.')?;
+    if fraction.is_empty() || !fraction.bytes().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    let millis = fraction
+        .bytes()
+        .chain(std::iter::repeat(b'0'))
+        .take(3)
+        .fold(0, |n, digit| n * 10 + u64::from(digit - b'0'));
+    let uptime = seconds
+        .parse::<u64>()
+        .ok()?
+        .checked_mul(1000)?
+        .checked_add(millis)?;
+    let since_boot = start.checked_mul(1000)? / ticks.max(1);
+    // Both values are truncated to a tick, so a process started within the
+    // last tick may appear marginally newer than the uptime.
+    let age = uptime.saturating_sub(since_boot);
+    Some(now_millis.checked_sub(age)? / 1000)
 }
 
 pub fn idle(tree: &BTreeMap<u32, Process>, pid: u32, allow_stopped: bool) -> bool {

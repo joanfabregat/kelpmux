@@ -588,6 +588,24 @@ fn shell_commands_track_start_return_and_alternate_screen() {
     );
 }
 #[test]
+fn process_start_times_keep_sub_second_uptime_precision() {
+    // Observed at 2000.0 s with 1000.1 s of uptime, the host booted at
+    // 999.9 s, which btime truncates to 999. A process started 900.5 s after
+    // boot began at 1900.4 s; btime plus whole seconds reported 1899, before
+    // the process existed.
+    let at = |uptime: &str, start| process::started_at_from(uptime, start, 100, 2_000_000);
+    assert_eq!(at("1000.10 4.00\n", 90_050), Some(1900));
+    assert_eq!(at("1000.1", 90_050), Some(1900));
+    assert_eq!(at("1000.105", 90_050), Some(1900));
+    assert_eq!(at("1000.10", 89_950), Some(1899));
+    // A start recorded after the truncated uptime is now, never the future.
+    assert_eq!(at("1000.10", 100_020), Some(2000));
+    for malformed in ["", "1000", "1000.", "1000.x8", "x.10", "-1.00"] {
+        assert_eq!(at(malformed, 90_050), None, "{malformed:?}");
+    }
+    assert_eq!(process::started_at_from("3000.00", 0, 100, 2_000_000), None);
+}
+#[test]
 fn pane_info_without_a_command_stays_compatible() {
     let pane = PaneInfo {
         id: 1,
