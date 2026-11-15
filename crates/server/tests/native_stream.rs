@@ -876,8 +876,6 @@ fn structured_creation_sets_cwd_quotes_arguments_and_retries_without_stealing_a_
 #[test]
 fn shell_commands_report_their_start_return_and_alternate_screen() {
     let d = Daemon::start();
-    let mut peer = d.peer();
-    peer.lease(1, false);
     let pane = || {
         let mut socket = d.socket();
         write_message(&mut socket, &ClientMessage::Inspect).unwrap();
@@ -886,7 +884,11 @@ fn shell_commands_report_their_start_return_and_alternate_screen() {
             other => panic!("{other:?}"),
         }
     };
-    let mut run = |line: &[u8], after: u64| {
+    // A fresh peer per command: a peer that never reads its event stream
+    // can be dropped as a slow consumer, which would lose later input.
+    let run = |line: &[u8], after: u64| {
+        let mut peer = d.peer();
+        peer.lease(1, false);
         peer.send(Request::Input {
             pane: 1,
             bytes: line.to_vec(),
