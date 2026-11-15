@@ -115,6 +115,18 @@ fn endpoint(config: &ServerConfig) -> Result<(UnixListener, Endpoint)> {
     Ok((listener, guard))
 }
 
+/// Remembered folders may have been moved or deleted since they were saved.
+/// Fall back to the workspace folder, then `$HOME`, then `/`, so one stale
+/// folder cannot prevent a shell from starting.
+fn launch_folder(requested: &Path, workspace: &Path) -> PathBuf {
+    [requested, workspace]
+        .into_iter()
+        .map(Path::to_path_buf)
+        .chain(std::env::var_os("HOME").map(PathBuf::from))
+        .find(|folder| folder.is_absolute() && folder.is_dir())
+        .unwrap_or_else(|| PathBuf::from("/"))
+}
+
 struct NativePane {
     launch_cwd: PathBuf,
     launch_shell: PathBuf,
@@ -1619,13 +1631,7 @@ impl Server {
         }
         Ok(())
     }
-    fn add_pane(&mut self) -> Result<()> {
-        let index = self
-            .workspace
-            .panes
-            .iter()
-            .filter(|pane| Some(pane.id) != self.workspace.ui.scratch)
-            .count();
+    fn add_pane(&mut self, index: usize) -> Result<()> {
         let specification = self
             .config
             .template
@@ -1640,9 +1646,15 @@ impl Server {
     }
     fn reopen_tab(&mut self, entry: super::history::Entry, rerun: bool) -> Result<()> {
         let cwd = PathBuf::from(&entry.cwd);
-        if !cwd.is_absolute() || !cwd.is_dir() {
+        let command = entry
+            .command()
+            .or_else(|| rerun.then(|| entry.previous_command()).flatten());
+        // A plain shell may open in the fallback folder, but never resume or
+        // rerun a program somewhere other than where it originally ran.
+        if !cwd.is_absolute() || (command.is_some() && !cwd.is_dir()) {
             return Err("the original folder no longer exists".into());
         }
+        let moved = !cwd.is_dir();
         if entry.kind.is_some() && entry.session_id.is_some() {
             if let Ok(records) = super::recovery::collect(&self.config.state_dir) {
                 if let Some(live) = records.iter().find(|r| {
@@ -1690,9 +1702,6 @@ impl Server {
             self.workspace.ui.closed_tabs.retain(|e| e.key != entry.key);
             return Ok(());
         }
-        let command = entry
-            .command()
-            .or_else(|| rerun.then(|| entry.previous_command()).flatten());
         self.spawn_pane_command(
             Some(super::templates::TemplatePane {
                 name: "shell".into(),
@@ -1724,7 +1733,10 @@ impl Server {
             .save(&self.config.state_dir.join("tab-history.json"))?;
         self.workspace.ui.closed_tabs.retain(|e| e.key != entry.key);
         self.persist_geometry()?;
-        if entry.kind.is_none() && !rerun {
+        if moved {
+            let folder = self.workspace.panes.last().map_or("", |pane| &pane.cwd);
+            self.notice = Some(format!("{} no longer exists; opened {folder}", entry.cwd));
+        } else if entry.kind.is_none() && !rerun {
             self.notice = Some(format!(
                 "Reopened folder. Previous application: {}",
                 entry.name
@@ -1741,11 +1753,20 @@ impl Server {
         let id = self.next_pane;
         let original_cwd = self.config.cwd.clone();
         let original_shell = self.config.shell.clone();
-        if let Some(specification) = &specification {
-            self.config.cwd = specification.cwd.clone();
-            if let Some(shell) = &specification.shell {
-                self.config.shell = shell.clone();
-            }
+        let requested = specification
+            .as_ref()
+            .map_or(&self.config.cwd, |specification| &specification.cwd);
+        let cwd = launch_folder(requested, &self.config.cwd);
+        if &cwd != requested {
+            eprintln!(
+                "kelpmux: pane %{id}: folder {} is missing or not a directory; starting its shell in {}",
+                requested.display(),
+                cwd.display()
+            );
+        }
+        self.config.cwd = cwd.clone();
+        if let Some(shell) = specification.as_ref().and_then(|s| s.shell.as_ref()) {
+            self.config.shell = shell.clone();
         }
         let pane = NativePane::spawn(
             &self.config,
@@ -1753,15 +1774,18 @@ impl Server {
             self.workspace.rows.saturating_sub(2),
             id,
             startup,
-        );
+        )
+        .map_err(|e| {
+            format!(
+                "pane %{id}: cannot start shell {} in {}: {e}",
+                self.config.shell.display(),
+                cwd.display()
+            )
+        });
         self.config.cwd = original_cwd;
         self.config.shell = original_shell;
         let mut pane = pane?;
         pane.terminal.set_theme(self.terminal_theme());
-        let cwd = specification
-            .as_ref()
-            .map(|specification| specification.cwd.clone())
-            .unwrap_or_else(|| self.config.cwd.clone());
         let title = specification
             .as_ref()
             .map(|specification| specification.name.clone())
@@ -3126,27 +3150,29 @@ pub fn serve(mut config: ServerConfig) -> Result<()> {
             });
     server.remember_tab_order = layout.is_some();
     for index in 0..count {
-        if let Some(saved) = layout.as_ref().and_then(|layout| layout.panes.get(index)) {
-            let (cwd, shell) = (server.config.cwd.clone(), server.config.shell.clone());
-            server.config.cwd = saved.cwd.clone();
-            server.config.shell = saved.shell.clone();
-            let result =
-                server.spawn_pane(
-                    saved
-                        .name
-                        .as_ref()
-                        .map(|name| super::templates::TemplatePane {
-                            name: name.clone(),
-                            cwd: saved.cwd.clone(),
-                            shell: Some(saved.shell.clone()),
-                        }),
-                );
-            server.config.cwd = cwd;
-            server.config.shell = shell;
-            result?;
+        let result = if let Some(saved) = layout.as_ref().and_then(|layout| layout.panes.get(index))
+        {
+            let id = server.next_pane;
+            let result = server.spawn_pane(Some(super::templates::TemplatePane {
+                name: saved.name.clone().unwrap_or_else(|| "shell".into()),
+                cwd: saved.cwd.clone(),
+                shell: Some(saved.shell.clone()),
+            }));
+            if saved.name.is_none() {
+                server.aliases.remove(&id);
+            }
+            result
         } else {
-            server.add_pane()?;
+            server.add_pane(index)
+        };
+        // One unusable saved tab must not prevent the workspace from starting.
+        if let Err(e) = result {
+            eprintln!("kelpmux: skipping startup tab {}: {e}", index + 1);
         }
+    }
+    if server.workspace.panes.is_empty() {
+        // Like closing the last tab, startup always leaves one interactive shell.
+        server.spawn_pane(None)?;
     }
     server.initializing = false;
     server.workspace.reflow();
