@@ -1,0 +1,455 @@
+@font-face {
+  font-family: "JetBrains Mono";
+  src: url("/fonts/JetBrainsMono-Regular.woff2") format("woff2");
+  font-weight: 400;
+  font-style: normal;
+  font-display: swap;
+}
+@font-face {
+  font-family: "JetBrains Mono";
+  src: url("/fonts/JetBrainsMono-Bold.woff2") format("woff2");
+  font-weight: 700;
+  font-style: normal;
+  font-display: swap;
+}
+@font-face {
+  font-family: "JetBrains Mono";
+  src: url("/fonts/JetBrainsMono-Italic.woff2") format("woff2");
+  font-weight: 400;
+  font-style: italic;
+  font-display: swap;
+}
+
+/*
+ * Design tokens. main.tsx sets the selected theme's variant for the
+ * interface mode on :root (appearance.ts): --background, the terminal
+ * colours, and the derived --ui-foreground, --accent-base and --on-accent.
+ * Every UI surface, line and text colour derives from --background and
+ * --ui-foreground, and the accent from the theme's blue, so a theme
+ * restyles the whole application. Terminals may use the other variant
+ * (Settings → Appearance → Terminal color): main.tsx then overrides the
+ * terminal colours on .terminal and .grid-pane only. Status colours keep
+ * one fixed meaning across themes.
+ *
+ * main.tsx sets data-mode="dark" or "light" on :root (Settings → Appearance
+ * → Mode). The dark values are the defaults below; the few mode-dependent
+ * tokens are switched in the :root[data-mode="light"] block that follows.
+ * Components use tokens only, never literal colours.
+ */
+:root {
+  --background: #101113;
+  --terminal-foreground: #d7dce3;
+  /* Black dark's derived interface colours (appearance.ts), the defaults
+   * until main.tsx applies the saved theme. */
+  --ui-foreground: #d7dce3;
+  --accent-base: #79ade0;
+  --accent: var(--accent-base);
+
+  /* Surfaces and lines lift towards white in dark mode, black in light. */
+  --tint: white;
+  --bg: var(--background);
+  --surface-1: color-mix(in srgb, var(--background), var(--tint) 3%);
+  --surface-2: color-mix(in srgb, var(--background), var(--tint) 5.5%);
+  --surface-3: color-mix(in srgb, var(--background), var(--tint) 10%);
+  --line: color-mix(in srgb, var(--background), var(--tint) 10%);
+  --line-strong: color-mix(in srgb, var(--background), var(--tint) 17%);
+  --text: color-mix(in srgb, var(--ui-foreground) 90%, var(--background));
+  --text-2: color-mix(in srgb, var(--ui-foreground) 64%, var(--background));
+  --text-3: color-mix(in srgb, var(--ui-foreground) 44%, var(--background));
+  --term-bg: var(--background);
+  --shadow: 0 12px 32px rgb(0 0 0 / 45%);
+  --shadow-sm: 0 1px 2px rgb(0 0 0 / 25%);
+  --scrim: rgb(0 0 0 / 55%);
+  /* Veil over unselected grid panes. */
+  --pane-dim: rgb(0 0 0 / 22%);
+  --logo-shade: #0e3b2e;
+
+  --accent-soft: color-mix(in srgb, var(--accent) 16%, transparent);
+  --accent-text: color-mix(in srgb, var(--accent) 85%, var(--text));
+  --on-accent: #0b1118;
+
+  --st-working: #5fafff;
+  --st-input: #f2b84b;
+  --st-done: #5cc98a;
+  --st-failed: #f06a6a;
+  --st-idle: var(--text-3);
+  --git-added: #5cc98a;
+  --git-modified: #f2b84b;
+  --git-deleted: #f06a6a;
+  --git-untracked: var(--text-2);
+
+  --font-ui:
+    system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  --font-mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  --fs-xs: 11px;
+  --fs-sm: 12px;
+  --fs-md: 13px;
+  --fs-lg: 15px;
+  --fs-xl: 20px;
+  --fs-2xl: 26px;
+  --s1: 4px;
+  --s2: 8px;
+  --s3: 12px;
+  --s4: 16px;
+  --s5: 24px;
+  --s6: 32px;
+  --r-sm: 4px;
+  --r-md: 6px;
+  --r-lg: 10px;
+  --rail: 264px;
+  --topbar: 48px;
+
+  /* Legacy aliases still used by component styles. */
+  --muted: var(--text-2);
+  --panel: var(--surface-2);
+  --table: var(--surface-3);
+
+  font: var(--fs-md) / 1.45 var(--font-ui);
+  color-scheme: dark;
+  background: var(--bg);
+  color: var(--text);
+  -webkit-font-smoothing: antialiased;
+}
+/* Light mode: same meanings, darker status/Git shades readable on light
+ * surfaces (checked by test/appearance.test.mjs). */
+:root[data-mode="light"] {
+  --tint: black;
+  --text-2: color-mix(in srgb, var(--ui-foreground) 72%, var(--background));
+  --text-3: color-mix(in srgb, var(--ui-foreground) 56%, var(--background));
+  --shadow: 0 12px 32px rgb(0 0 0 / 16%);
+  --shadow-sm: 0 1px 2px rgb(0 0 0 / 14%);
+  --scrim: rgb(0 0 0 / 30%);
+  --pane-dim: rgb(255 255 255 / 40%);
+
+  --st-working: #1f6bc9;
+  --st-input: #9a5b00;
+  --st-done: #1b7a44;
+  --st-failed: #c22f36;
+  --git-added: #1b7a44;
+  --git-modified: #9a5b00;
+  --git-deleted: #c22f36;
+
+  color-scheme: light;
+}
+/*
+ * Accent. appearance.ts derives --accent-base and --on-accent from the
+ * theme's blue with 3:1 on surfaces and 4.5:1 for text on filled accents
+ * in both modes; light mode only mixes more text into the accent text
+ * tint (test/appearance.test.mjs).
+ */
+:root[data-mode="light"] {
+  --accent-text: color-mix(in srgb, var(--accent) 55%, var(--text));
+}
+* {
+  box-sizing: border-box;
+}
+html,
+body,
+#root {
+  margin: 0;
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+}
+h1,
+h2,
+h3,
+p {
+  margin-top: 0;
+}
+h1 {
+  font-size: var(--fs-2xl);
+  letter-spacing: -0.02em;
+}
+h2 {
+  font-size: var(--fs-lg);
+}
+h3 {
+  font-size: var(--fs-md);
+  font-weight: 600;
+}
+hr {
+  border: 0;
+  border-top: 1px solid var(--line);
+  margin: var(--s5) 0;
+}
+code,
+pre,
+.mono,
+.number,
+.key-entry {
+  font-family: var(--font-mono);
+}
+small,
+.muted {
+  color: var(--text-2);
+}
+.faint {
+  color: var(--text-3);
+}
+:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+/* Buttons: plain <button> is the primary action; variants below. */
+button,
+input,
+textarea,
+select {
+  font: inherit;
+  color: inherit;
+}
+button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--s2);
+  min-height: 30px;
+  padding: 0 var(--s3);
+  border: 1px solid transparent;
+  border-radius: var(--r-md);
+  background: var(--accent);
+  color: var(--on-accent);
+  font-weight: 500;
+  white-space: nowrap;
+  cursor: pointer;
+}
+button:hover:not(:disabled) {
+  filter: brightness(1.08);
+}
+button:disabled {
+  cursor: default;
+  opacity: 0.45;
+}
+button.subtle,
+button.config {
+  background: var(--surface-2);
+  border-color: var(--line-strong);
+  color: var(--text);
+}
+button.subtle:hover:not(:disabled),
+button.config:hover:not(:disabled) {
+  filter: none;
+  background: var(--surface-3);
+}
+button.success {
+  background: color-mix(in srgb, var(--st-done) 22%, var(--surface-2));
+  border-color: color-mix(in srgb, var(--st-done) 40%, transparent);
+  color: color-mix(in srgb, var(--st-done) 70%, var(--text));
+}
+button.danger {
+  background: color-mix(in srgb, var(--st-failed) 18%, var(--surface-2));
+  border-color: color-mix(in srgb, var(--st-failed) 40%, transparent);
+  color: color-mix(in srgb, var(--st-failed) 75%, var(--text));
+}
+button.ghost {
+  background: transparent;
+  color: var(--text-2);
+}
+button.ghost:hover:not(:disabled) {
+  filter: none;
+  background: var(--surface-3);
+  color: var(--text);
+}
+button.icon-btn {
+  min-height: 0;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  background: transparent;
+  color: var(--text-2);
+}
+button.icon-btn:hover:not(:disabled) {
+  filter: none;
+  background: var(--surface-3);
+  color: var(--text);
+}
+button.small {
+  min-height: 26px;
+  padding: 0 var(--s2);
+  font-size: var(--fs-sm);
+}
+
+/* Form controls */
+input,
+textarea,
+select {
+  min-height: 32px;
+  padding: 6px var(--s3);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--r-md);
+  background: var(--bg);
+}
+textarea {
+  min-height: 0;
+}
+input:focus,
+textarea:focus,
+select:focus {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-soft);
+}
+input[type="checkbox"],
+input[type="radio"] {
+  min-height: 0;
+  accent-color: var(--accent);
+}
+
+/* Shared pieces */
+.svg-icon {
+  flex: none;
+  width: 16px;
+  height: 16px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.75;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+.svg-icon.sm {
+  width: 14px;
+  height: 14px;
+}
+.svg-icon.lg {
+  width: 20px;
+  height: 20px;
+}
+.actions {
+  display: flex;
+  gap: var(--s2);
+  flex-wrap: wrap;
+}
+.notice {
+  padding: var(--s2) var(--s3);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--r-md);
+  background: var(--surface-2);
+}
+.notice.error {
+  border-color: color-mix(in srgb, var(--st-failed) 45%, transparent);
+  background: color-mix(in srgb, var(--st-failed) 10%, var(--surface-1));
+  color: color-mix(in srgb, var(--st-failed) 60%, var(--text));
+}
+.notice.compact {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: var(--s3);
+  margin: var(--s2) var(--s3) 0;
+}
+.notice.compact button {
+  min-height: 0;
+  padding: 0 var(--s1);
+  background: none;
+  color: inherit;
+}
+.badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 1px 6px;
+  border-radius: 999px;
+  background: var(--surface-3);
+  color: var(--text-2);
+  font-size: var(--fs-xs);
+  font-weight: 600;
+  white-space: nowrap;
+}
+.badge.accent {
+  background: var(--accent-soft);
+  color: var(--accent-text);
+}
+.badge.failed {
+  background: color-mix(in srgb, var(--st-failed) 18%, transparent);
+  color: var(--st-failed);
+}
+.env-badge {
+  padding: 2px 6px;
+  border-radius: var(--r-sm);
+  background: color-mix(in srgb, var(--st-input) 20%, transparent);
+  color: var(--st-input);
+  font: 700 10px var(--font-mono);
+  letter-spacing: 0.08em;
+}
+.kbd {
+  padding: 1px 5px;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--r-sm);
+  color: var(--text-3);
+  font: var(--fs-xs) var(--font-mono);
+}
+
+.empty-state {
+  display: grid;
+  justify-items: center;
+  align-content: center;
+  gap: var(--s2);
+  padding: var(--s6) var(--s4);
+  color: var(--text-2);
+  text-align: center;
+}
+.empty-state h3 {
+  margin: 0;
+  color: var(--text);
+}
+.empty-state p {
+  margin: 0;
+}
+.sr-only {
+  position: absolute;
+  clip: rect(0, 0, 0, 0);
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+}
+/* List rows: inbox, closed lists and overview cards. */
+.list-row {
+  display: flex;
+  align-items: center;
+  gap: var(--s3);
+  padding: 10px var(--s4);
+  border-top: 1px solid var(--line);
+}
+.list-row:first-child {
+  border-top: 0;
+}
+.list-row:hover {
+  background: color-mix(in srgb, var(--surface-3) 45%, transparent);
+}
+.list-row .grow {
+  flex: 1;
+  min-width: 0;
+}
+.list-row .t {
+  display: block;
+  overflow: hidden;
+  font-weight: 500;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.list-row .s {
+  display: block;
+  overflow: hidden;
+  color: var(--text-3);
+  font-size: var(--fs-sm);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+button.list-link {
+  display: block;
+  min-height: 0;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font-weight: 400;
+  text-align: left;
+}
+button.list-link:hover:not(:disabled) {
+  filter: none;
+}
+button.list-link:hover .t {
+  text-decoration: underline;
+}

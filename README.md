@@ -8,12 +8,12 @@ TUI feature development is frozen while the separately maintained KelpHub web ap
 
 | Package | Location | Responsibility |
 | --- | --- | --- |
-| `kelpmux` | `src/` | Terminal interface and optional legacy tmux adapter |
+| `kelpmux` | `src/`, `web/` | Terminal interface, web client (bridge, relay assets and browser UI) and optional legacy tmux adapter |
 | `kelpserver` | [crates/server](crates/server) | PTYs, authoritative terminal state, persistent sessions and generic SSH byte relay |
 | `kelpclient` | [crates/client](crates/client) | Shared terminal state, selection/history utilities and WASM bindings |
 | `kelpclient-protocol` | [crates/protocol](crates/protocol) | Portable wire types and validation |
 
-These are modules in one Cargo workspace, not separate source repositories. KelpHub owns the web interface, authenticated management backend, uploads and application hosting. It depends on this workspace at an immutable Git revision. See [MIGRATION.md](MIGRATION.md) for history provenance and the intentionally retained composed-screen TUI compatibility boundary.
+These are modules in one Cargo workspace, not separate source repositories. The `web/` directory holds the terminals-only browser client (see [docs/web.md](docs/web.md)). KelpHub owns the full web application with project management, authenticated management backend, uploads and its hosting. It depends on this workspace at an immutable Git revision. See [MIGRATION.md](MIGRATION.md) for history provenance and the intentionally retained composed-screen TUI compatibility boundary.
 
 ## Build and run
 
@@ -32,6 +32,10 @@ kelpmux attach --workspace trial
 `Ctrl-B`, then `d` detaches. `g` selects grid, `z` reopens the latest useful closed tab, `p` parks a tab and `u` shows parked tabs. Stop a disposable workspace with `kelpmux stop --workspace trial`; stopping ends its processes. Existing settings and XDG state paths are preserved. A server crash or reboot requires recovery/resume; metadata does not preserve live processes.
 
 The local checkout is `~/repos/kelp/mux`. Source operations do not replace running dev or pre-prod installations. The legacy [native guide](docs/native.md) describes the retained interaction model; component ownership/build instructions in MIGRATION.md supersede its combined-binary packaging assumptions.
+
+## Web client
+
+KelpMux also has an optional browser client for the same workspaces: terminals in tabs or a live grid, search, selection and copy, themes and fonts, signed in with a hardware security key through browser-side OpenSSH. `kelpmux web-relay --config PATH` serves it and relays SSH bytes; OpenSSH runs `kelpmux web-bridge --workspace NAME` for the signed-in user. The TUI and browsers can be used alone or together on the same panes, each with its own layout. Building it, relay configuration, YubiKey registration and the security boundaries are in [docs/web.md](docs/web.md); [ADR 0003](docs/adr/0003-web-client-in-kelpmux.md) records the scope. A build without the web assets still builds and runs the TUI.
 
 ## Security and contributions
 

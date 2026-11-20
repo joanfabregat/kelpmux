@@ -1,0 +1,11 @@
+{
+  "enabled": false,
+  "listen": "127.0.0.1:8080",
+  "origin": "https://terminal.example.com",
+  "ssh_target": "127.0.0.1:22",
+  "ssh_host_key": "ssh-ed25519 REPLACE_WITH_THE_REAL_SERVER_PUBLIC_KEY",
+  "username": "alice",
+  "bridge_command": "/opt/kelpmux/current/kelpmux web-bridge --workspace main",
+  "workspace": "main",
+  "dev": false
+}

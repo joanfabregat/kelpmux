@@ -8,6 +8,8 @@ pub mod native {
     pub mod cli;
     pub mod hover;
     pub mod input;
+    pub mod web_assets;
+    pub mod web_bridge;
 }
 pub mod picker;
 pub mod tmux;

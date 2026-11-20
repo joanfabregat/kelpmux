@@ -22,8 +22,8 @@ pub const HELP: &str = "Owned native terminal workspaces (Linux):
   kelpmux status|stop|recover|diagnostics|templates [--workspace NAME]
   kelpmux benchmark
   kelpmux bridge [--workspace NAME] [--socket PATH]
-  kelpmux web-bridge [--workspace NAME] [--socket PATH]
-  kelpmux web-relay --config PATH
+  kelpmux web-bridge [--workspace NAME] [--socket PATH] [--state-dir PATH]
+  kelpmux web-relay --config PATH   (browser client; see docs/web.md)
   kelpmux stream-inspect [--workspace NAME] [PANE_ID ...]
   kelpmux server [--socket PATH] [--state-dir PATH] [--shell PATH] [--cwd PATH] [--size CxR] [--config PATH]
   kelpmux attach [--workspace NAME] [--socket PATH] [--takeover] [--current-client]
@@ -225,6 +225,15 @@ fn options(args: &[String]) -> Result<Options> {
     result.cwd = absolute(&result.cwd)?;
     Ok(result)
 }
+/// Serves the embedded browser client through the generic relay. A build
+/// without `web/dist` has no assets and refuses to start rather than serving
+/// a page that cannot work.
+fn web_relay(config: &Path, assets: super::web_relay::Assets) -> Result<()> {
+    if !assets.iter().any(|(path, _)| *path == "/index.html") {
+        return Err("this kelpmux build has no web client assets: build web/dist (see docs/web.md), then rebuild kelpmux".into());
+    }
+    super::web_relay::run_with_assets(config, assets)
+}
 fn parse_size(value: &str) -> Result<(u16, u16)> {
     let (cols, rows) = value.split_once('x').ok_or("size must be CxR")?;
     Ok((cols.parse()?, rows.parse()?))
@@ -238,7 +247,11 @@ pub fn run(args: &[String]) -> Result<()> {
         if args.len() != 3 || args[1] != "--config" {
             return Err("usage: kelpmux web-relay --config PATH".into());
         }
-        return Err("Web hosting moved to kelphub web-relay".into());
+        return web_relay(Path::new(&args[2]), super::web_assets::ASSETS);
+    }
+    if args.first().is_some_and(|arg| arg == "web-bridge") {
+        let (socket, state) = super::web_bridge::paths(&args[1..])?;
+        return super::web_bridge::run(&socket, &state);
     }
     let options = options(args)?;
     match args[0].as_str() {
@@ -300,7 +313,6 @@ pub fn run(args: &[String]) -> Result<()> {
             Ok(())
         }
         "bridge" => super::bridge::run(connect(&options.socket)?),
-        "web-bridge" => Err("Web management moved to kelphub web-bridge".into()),
         "stream-inspect" => {
             let panes = options
                 .command
@@ -1388,5 +1400,19 @@ mod fit_tests {
                 assert_eq!(terminal.snapshot().cells, fit.cells);
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod web_tests {
+    use super::*;
+    #[test]
+    fn relay_without_embedded_assets_fails_before_reading_configuration() {
+        let error = web_relay(Path::new("/nonexistent/kelpmux-web.json"), &[])
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("no web client assets"), "{error}");
+        let partial: super::super::web_relay::Assets = &[("/favicon.svg", b"<svg/>")];
+        assert!(web_relay(Path::new("/nonexistent"), partial).is_err());
     }
 }
