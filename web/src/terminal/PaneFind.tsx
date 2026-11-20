@@ -7,14 +7,17 @@ export function PaneFind({
   onReveal,
   onClose,
   onError,
+  initialQuery = "",
 }: {
   store: Store;
   pane: number;
   onReveal: (match: SearchMatch | null) => void;
   onClose: () => void;
   onError: (error: unknown) => void;
+  /** Query to start with, for example from a workspace search. */
+  initialQuery?: string;
 }) {
-  const [query, setQuery] = useState("");
+  const [query, setQuery] = useState(initialQuery);
   const [hits, setHits] = useState<SearchMatch[]>([]);
   const [truncated, setTruncated] = useState(false);
   const [index, setIndex] = useState(0);

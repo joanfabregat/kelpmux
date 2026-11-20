@@ -4,6 +4,7 @@ import type { IconName } from "./icons";
 const sections: readonly (readonly [string, string, IconName])[] = [
   ["appearance", "Appearance", "monitor"],
   ["theme", "Theme", "palette"],
+  ["alerts", "Notifications", "bell"],
   ["shortcuts", "Keyboard", "book-open"],
   ["keys", "Security keys", "key-round"],
   ["connection", "Connection", "plug"],

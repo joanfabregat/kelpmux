@@ -18,6 +18,10 @@ struct Server {
 }
 impl Server {
     fn start() -> Self {
+        Self::start_with(|_| {})
+    }
+    /// Starts a server after `prepare` has seeded its state directory.
+    fn start_with(prepare: impl FnOnce(&std::path::Path)) -> Self {
         static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
         let root = std::env::temp_dir().join(format!(
             "kelpmux-web-bridge-{}-{}",
@@ -25,6 +29,7 @@ impl Server {
             NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
         ));
         fs::create_dir(&root).unwrap();
+        prepare(&root);
         let child = Command::new(env!("CARGO_BIN_EXE_kelpmux"))
             .args(["server", "--state-dir"])
             .arg(root.join("state"))
@@ -195,7 +200,7 @@ fn terminal_operations_create_drive_search_and_close_panes() {
     );
 
     let state = bridge.web(1, "state", json!({}));
-    assert_eq!(state["result"]["api_version"], 1);
+    assert_eq!(state["result"]["api_version"], 2);
     assert_eq!(state["result"]["workspace"], "state");
     // Project, file and Git management do not exist here.
     for (id, method) in [
@@ -279,13 +284,14 @@ fn terminal_operations_create_drive_search_and_close_panes() {
         "{history}"
     );
 
-    // Notification read flags belong to the TUI.
+    // Notification acknowledgements reach the server, which knows no
+    // notification 1 in this fresh workspace.
     bridge.send(json!({"Stream": {"type": "acknowledge", "notification": 1}}));
-    bridge.expect("refusal", |v| {
+    bridge.expect("server reply", |v| {
         v["Stream"]["type"] == "error"
             && v["Stream"]["message"]
                 .as_str()
-                .is_some_and(|m| m.contains("not available"))
+                .is_some_and(|m| m.contains("unknown notification"))
     });
 
     let unconfirmed = bridge.web(11, "close", json!({"pane": pane}));
@@ -407,4 +413,218 @@ fn tui_controller_and_web_client_alternate_pane_input_and_size() {
         }
     }
     assert_eq!(size(&mut bridge), (50, 10));
+}
+
+/// The browser's scratch terminal is the workspace's one scratch terminal:
+/// created on first use without showing it in the TUI, unnumbered, never
+/// parked, and closed like any other terminal.
+#[test]
+fn scratch_terminal_is_created_once_and_unnumbered() {
+    let server = Server::start();
+    let mut bridge = Bridge::start(&server);
+    let welcome = welcome(&mut bridge);
+    assert!(
+        welcome["capabilities"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|c| c == "scratch-create")
+    );
+    let state = bridge.web(1, "state", json!({}));
+    assert!(
+        state["result"]["operations"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|op| op == "scratch")
+    );
+    let first = bridge.web(2, "scratch", json!({}));
+    let scratch = first["result"]["pane"]
+        .as_u64()
+        .unwrap_or_else(|| panic!("{first}"));
+    // The composed (TUI) view neither shows nor focuses it.
+    {
+        use kelpmux::native::protocol::{
+            ClientMessage, ReadingMode, ServerMessage, read_message, write_message,
+        };
+        let mut inspect = UnixStream::connect(server.socket()).unwrap();
+        inspect
+            .set_read_timeout(Some(Duration::from_secs(5)))
+            .unwrap();
+        write_message(&mut inspect, &ClientMessage::Inspect).unwrap();
+        match read_message::<ServerMessage>(&mut inspect)
+            .unwrap()
+            .unwrap()
+        {
+            ServerMessage::State {
+                active, reading, ..
+            } => {
+                assert_ne!(active, scratch);
+                assert!(!matches!(
+                    reading,
+                    ReadingMode::Tabs(id) | ReadingMode::Fullscreen(id) if id == scratch
+                ));
+            }
+            other => panic!("{other:?}"),
+        }
+    }
+    let again = bridge.web(3, "scratch", json!({}));
+    assert_eq!(again["result"]["pane"], scratch);
+    bridge.send(json!({"Stream": {"type": "subscribe", "panes": []}}));
+    let update = bridge.expect("scratch metadata", |v| {
+        v["Stream"]["type"] == "update"
+            && v["Stream"]["panes"]
+                .as_array()
+                .is_some_and(|panes| panes.iter().any(|p| p["id"] == scratch))
+    });
+    let panes = update["Stream"]["panes"].as_array().unwrap();
+    let info = panes.iter().find(|p| p["id"] == scratch).unwrap();
+    assert_eq!(info["number"], 0);
+    assert_eq!(info["parked"], false);
+    assert_eq!(info["title"], "Scratch terminal");
+    // The ordinary terminal keeps its number.
+    assert!(panes.iter().any(|p| p["id"] != scratch && p["number"] == 1));
+
+    let closed = bridge.web(4, "close", json!({"pane": scratch, "confirmed": true}));
+    assert!(closed["result"].is_object(), "{closed}");
+    bridge.expect("scratch removal", |v| {
+        v["Stream"]["type"] == "update"
+            && v["Stream"]["panes"]
+                .as_array()
+                .is_some_and(|panes| !panes.iter().any(|p| p["id"] == scratch))
+    });
+    // A new scratch terminal replaces the closed one.
+    let next = bridge.web(5, "scratch", json!({}));
+    assert!(
+        next["result"]["pane"]
+            .as_u64()
+            .is_some_and(|p| p != scratch)
+    );
+}
+
+/// Closed terminals are listed with the TUI's restore actions and reopen in
+/// a new pane in their folder; the browser chooses only the entry and the
+/// action, never a command.
+#[test]
+fn closed_terminals_are_listed_and_restored() {
+    use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
+    let mut folder = PathBuf::new();
+    let server = Server::start_with(|root| {
+        folder = root.join("project");
+        fs::create_dir(&folder).unwrap();
+        let state = root.join("state");
+        fs::DirBuilder::new().mode(0o700).create(&state).unwrap();
+        let entry = |key: &str, argv: &[&str], closed: u64| {
+            json!({"key": key, "workspace": "state", "pane": 7,
+                   "cwd": folder.to_str().unwrap(), "name": "program",
+                   "kind": null, "session_id": null, "argv": argv,
+                   "closed_at": closed, "reason": "Closed"})
+        };
+        let history = json!({"entries": [
+            entry("old:7", &["sleep", "30"], now - 5),
+            entry("old:8", &[], now - 10),
+        ]});
+        let mut file = fs::OpenOptions::new()
+            .create_new(true)
+            .write(true)
+            .mode(0o600)
+            .open(state.join("tab-history.json"))
+            .unwrap();
+        file.write_all(&serde_json::to_vec(&history).unwrap())
+            .unwrap();
+    });
+    let mut bridge = Bridge::start(&server);
+    welcome(&mut bridge);
+
+    let listing = bridge.web(1, "closed", json!({}));
+    assert_eq!(listing["result"]["workspace"], "state");
+    let entries = listing["result"]["entries"].as_array().unwrap();
+    let program = entries
+        .iter()
+        .find(|e| e["key"] == "old:7")
+        .unwrap_or_else(|| panic!("{listing}"));
+    assert_eq!(program["choices"], json!(["restart", "folder"]));
+    let folder_only = entries.iter().find(|e| e["key"] == "old:8").unwrap();
+    assert_eq!(folder_only["choices"], json!(["folder"]));
+
+    let unconfirmed = bridge.web(
+        2,
+        "restore",
+        json!({"key": "old:8", "choice": "folder", "request": "web-restore-1"}),
+    );
+    assert!(
+        unconfirmed["error"]
+            .as_str()
+            .unwrap()
+            .contains("confirmation")
+    );
+    let wrong = bridge.web(
+        3,
+        "restore",
+        json!({"key": "old:8", "choice": "restart", "request": "web-restore-1", "confirmed": true}),
+    );
+    assert!(
+        wrong["error"].as_str().unwrap().contains("offers"),
+        "{wrong}"
+    );
+    let missing = bridge.web(
+        4,
+        "restore",
+        json!({"key": "nope", "choice": "folder", "request": "web-restore-1", "confirmed": true}),
+    );
+    assert!(missing["error"].as_str().unwrap().contains("no longer"));
+    let restored = bridge.web(
+        5,
+        "restore",
+        json!({"key": "old:8", "choice": "folder", "request": "web-restore-1", "confirmed": true}),
+    );
+    let reopened = restored["result"]["pane"]
+        .as_u64()
+        .unwrap_or_else(|| panic!("{restored}"));
+    assert_eq!(restored["result"]["existing"], false);
+    // Rerunning a program uses the server's recorded command line.
+    let rerun = bridge.web(
+        6,
+        "restore",
+        json!({"key": "old:7", "choice": "restart", "request": "web-restore-2", "confirmed": true}),
+    );
+    let program_pane = rerun["result"]["pane"]
+        .as_u64()
+        .unwrap_or_else(|| panic!("{rerun}"));
+    bridge.send(json!({"Stream": {"type": "subscribe", "panes": [program_pane]}}));
+    let canonical = folder.canonicalize().unwrap();
+    bridge.expect("restored panes in their folder", |v| {
+        v["Stream"]["type"] == "update"
+            && v["Stream"]["panes"].as_array().is_some_and(|panes| {
+                [reopened, program_pane].iter().all(|id| {
+                    panes
+                        .iter()
+                        .any(|p| p["id"] == *id && p["cwd"] == canonical.to_str().unwrap())
+                })
+            })
+    });
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let mut id = 6;
+    loop {
+        id += 1;
+        let processes = bridge.web(id, "status", json!({}));
+        let sleeping = processes["result"]["processes"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .any(|p| {
+                p["command"]
+                    .as_str()
+                    .is_some_and(|c| c.ends_with("/sleep") || c == "sleep")
+            });
+        if sleeping {
+            break;
+        }
+        assert!(Instant::now() < deadline, "rerun not started: {processes}");
+        thread::sleep(Duration::from_millis(100));
+    }
 }

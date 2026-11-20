@@ -4,8 +4,8 @@
 //!
 //! It never listens on TCP, never starts or restarts a workspace server, never
 //! changes SSH authorization and holds no project, file or Git management.
-use super::{connection, protocol::*, status, stream};
-use crate::Result;
+use super::{connection, history, protocol::*, status, stream};
+use crate::{Result, model::Kind};
 use serde_json::{Value, json};
 use std::{
     io,
@@ -20,7 +20,9 @@ use std::{
 };
 
 /// Version of the `Web` request API spoken by this bridge.
-pub const API_VERSION: u64 = 1;
+/// Version 2 added `scratch`, `closed`, `restore` and notification
+/// acknowledgements.
+pub const API_VERSION: u64 = 2;
 /// Largest accepted `Web` request, in bytes of JSON.
 const REQUEST_LIMIT: usize = 65536;
 /// Largest request identifier a browser can represent exactly.
@@ -112,7 +114,7 @@ impl Api {
                 "workspace": self.state.file_name().unwrap_or_default().to_string_lossy(),
                 "version": env!("CARGO_PKG_VERSION"),
                 "server_capabilities": self.capabilities()?,
-                "operations": ["state", "new", "close", "search", "history", "status"],
+                "operations": OPERATIONS,
             })),
             "new" => self.spawn(p),
             "close" => {
@@ -159,8 +161,114 @@ impl Api {
                 value["refreshing"] = json!(self.monitor.refreshing());
                 Ok(value)
             }
+            "scratch" => self.scratch(),
+            "closed" => self.closed(),
+            "restore" => self.restore(p),
             _ => Err("unsupported web operation".into()),
         }
+    }
+    /// The workspace's scratch terminal, created on first use without
+    /// showing it in the TUI. A scratch terminal the TUI already has is
+    /// shared: it is one terminal per workspace, like the TUI's.
+    fn scratch(&self) -> Result<Value> {
+        if !self.capabilities()?.iter().any(|c| c == "scratch-create") {
+            return Err("this terminal server cannot create a scratch terminal for web clients; update and restart it".into());
+        }
+        let ServerMessage::State { panes, .. } = self.command(Action::ScratchCreate)? else {
+            return Err("terminal server did not return its panes".into());
+        };
+        // Parked panes and the scratch terminal are the unnumbered ones.
+        let scratch = panes
+            .iter()
+            .find(|pane| pane.number == 0 && !pane.parked && !pane.dead)
+            .ok_or("terminal server did not create a scratch terminal")?;
+        Ok(json!({ "pane": scratch.id }))
+    }
+    /// Recently closed terminals and previous runs, the TUI's Recovery list:
+    /// this workspace's first, newest first within each group, with the
+    /// restore actions each entry offers.
+    fn closed(&self) -> Result<Value> {
+        let current = self.workspace_name();
+        let mut entries = history::collect(&self.state);
+        entries.sort_by_key(|e| {
+            (
+                e.workspace != current,
+                e.reason != "Closed",
+                std::cmp::Reverse(e.closed_at),
+            )
+        });
+        let entries = entries
+            .iter()
+            .map(|entry| {
+                let mut value = serde_json::to_value(entry)?;
+                value["choices"] = json!(choices(entry));
+                Ok(value)
+            })
+            .collect::<Result<Vec<_>>>()?;
+        Ok(json!({ "workspace": current, "entries": entries }))
+    }
+    /// Reopens a closed terminal in a new pane: `resume` reopens an agent
+    /// conversation, `restart` reruns a shell's last program and `folder`
+    /// opens a shell in its folder. The command line comes from the server's
+    /// own history entry, never from the browser. An agent conversation that
+    /// is already open is returned instead of started twice.
+    fn restore(&self, p: &Value) -> Result<Value> {
+        if p["confirmed"] != true {
+            return Err("restoring a closed terminal requires explicit confirmation".into());
+        }
+        if !self.capabilities()?.iter().any(|c| c == "pane-spawn") {
+            return Err("this terminal server cannot create panes for web clients".into());
+        }
+        let key = p["key"].as_str().ok_or("closed entry required")?;
+        let choice = p["choice"].as_str().ok_or("restore choice required")?;
+        let request = p["request"]
+            .as_str()
+            .ok_or("restore request identity required")?;
+        let entry = history::collect(&self.state)
+            .into_iter()
+            .find(|entry| entry.key == key)
+            .ok_or("this closed terminal is no longer listed")?;
+        if !choices(&entry).contains(&choice) {
+            return Err("choose a restore action this entry offers".into());
+        }
+        if entry.session_id.is_some() {
+            if let ServerMessage::State { panes, .. } = self.exchange(ClientMessage::Inspect)? {
+                if let Some(open) = panes.iter().find(|pane| {
+                    !pane.dead && pane.kind == entry.kind && pane.session_id == entry.session_id
+                }) {
+                    return Ok(json!({ "pane": open.id, "existing": true }));
+                }
+            }
+        }
+        let argv = match choice {
+            "resume" => resume_argv(&entry),
+            "restart" => entry.argv.clone(),
+            _ => vec![],
+        };
+        let original = PathBuf::from(&entry.cwd);
+        let cwd = if original.is_absolute() && original.is_dir() {
+            original
+        } else if argv.is_empty() {
+            home()?
+        } else {
+            // Never resume or rerun a program somewhere it did not run.
+            return Err("the original folder no longer exists".into());
+        };
+        let ServerMessage::SpawnedPane {
+            request: echoed,
+            pane,
+        } = self.exchange(ClientMessage::SpawnPane {
+            request: request.to_owned(),
+            cwd,
+            argv,
+        })?
+        else {
+            return Err("terminal server did not identify the restored pane".into());
+        };
+        if echoed != request {
+            return Err("pane creation identity mismatch".into());
+        }
+        Ok(json!({ "pane": pane, "existing": false }))
     }
     /// Starts a shell in a new pane through the server's structured
     /// `SpawnPane` request. The browser supplies no command line; only an
@@ -196,6 +304,49 @@ impl Api {
         }
         Ok(json!({ "pane": pane }))
     }
+    fn workspace_name(&self) -> String {
+        self.state
+            .file_name()
+            .unwrap_or_default()
+            .to_string_lossy()
+            .into_owned()
+    }
+}
+
+/// Bridge operations, reported by `state`.
+const OPERATIONS: &[&str] = &[
+    "state", "new", "close", "search", "history", "status", "scratch", "closed", "restore",
+];
+
+/// The restore actions a closed entry offers, as the TUI's Recovery dialog
+/// names them: an agent resumes its conversation (or opens the agent's own
+/// picker when the conversation is unknown), a shell whose last program is
+/// known can rerun it, and every shell can reopen its folder.
+fn choices(entry: &history::Entry) -> Vec<&'static str> {
+    if entry.kind.is_some() {
+        vec!["resume"]
+    } else if entry.previous_command().is_some() {
+        vec!["restart", "folder"]
+    } else {
+        vec!["folder"]
+    }
+}
+
+/// The trusted command that resumes an agent conversation, as argv.
+fn resume_argv(entry: &history::Entry) -> Vec<String> {
+    let mut argv: Vec<String> = match entry.kind {
+        Some(Kind::Codex) => vec!["codex".into(), "resume".into()],
+        Some(Kind::Claude) => vec!["claude".into(), "--resume".into()],
+        None => return vec![],
+    };
+    if let Some(id) = entry
+        .session_id
+        .as_deref()
+        .filter(|id| crate::session_id(id))
+    {
+        argv.push(id.into());
+    }
+    argv
 }
 
 fn home() -> Result<PathBuf> {
@@ -203,13 +354,6 @@ fn home() -> Result<PathBuf> {
         .map(PathBuf::from)
         .filter(|path| path.is_absolute())
         .ok_or_else(|| "HOME is not an absolute directory".into())
-}
-
-/// Stream requests a browser may forward. Hello and clipboard opt-in are
-/// connection setup; notification acknowledgements stay with the TUI, whose
-/// read flags they change.
-fn permitted(request: &stream::Request) -> bool {
-    !matches!(request, stream::Request::Acknowledge { .. })
 }
 
 /// Parses `web-bridge` options. The workspace name selects the state
@@ -355,13 +499,10 @@ pub fn run(socket: &Path, state: &Path) -> Result<()> {
             } else if hello {
                 break;
             }
-            if !permitted(&request) {
-                let refused = json!({"Stream": {"type": "error", "message": "this operation is not available to web clients"}});
-                if sender.send(refused).is_err() {
-                    break;
-                }
-                continue;
-            }
+            // Every stream request is forwarded unchanged, notification
+            // acknowledgements included: read flags belong to the workspace,
+            // and the TUI marks a terminal's notifications read when it is
+            // shown, as the browser does.
             let sent = writer
                 .lock()
                 .map_err(|_| "bridge writer unavailable".into())
@@ -438,18 +579,31 @@ mod tests {
             assert!(paths(&args(values)).is_err());
         }
     }
+    fn entry(kind: Option<Kind>, session: Option<&str>, argv: &[&str]) -> history::Entry {
+        history::Entry {
+            key: "k".into(),
+            workspace: "main".into(),
+            pane: 1,
+            cwd: "/tmp".into(),
+            name: "n".into(),
+            kind,
+            session_id: session.map(Into::into),
+            argv: argv.iter().map(|a| (*a).into()).collect(),
+            closed_at: Some(1),
+            reason: "Closed".into(),
+        }
+    }
     #[test]
-    fn notification_acknowledgements_stay_with_the_tui() {
-        assert!(!permitted(&stream::Request::Acknowledge {
-            notification: 1
-        }));
-        assert!(permitted(&stream::Request::Claim {
-            pane: 1,
-            takeover: true
-        }));
-        assert!(permitted(&stream::Request::Input {
-            pane: 1,
-            bytes: vec![b'a']
-        }));
+    fn restore_choices_and_commands_follow_the_tui() {
+        let codex = entry(Some(Kind::Codex), Some("abc-123"), &[]);
+        assert_eq!(choices(&codex), ["resume"]);
+        assert_eq!(resume_argv(&codex), ["codex", "resume", "abc-123"]);
+        let claude = entry(Some(Kind::Claude), Some("x y; rm"), &[]);
+        // An invalid conversation identity opens the agent's own picker.
+        assert_eq!(resume_argv(&claude), ["claude", "--resume"]);
+        let shell = entry(None, None, &["htop", "-d", "5"]);
+        assert_eq!(choices(&shell), ["restart", "folder"]);
+        assert!(resume_argv(&shell).is_empty());
+        assert_eq!(choices(&entry(None, None, &[])), ["folder"]);
     }
 }

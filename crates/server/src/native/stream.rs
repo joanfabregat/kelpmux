@@ -49,6 +49,7 @@ pub const CAPABILITIES: &[&str] = &[
     "controller-theme",
     "clipboard-write",
     "pane-spawn",
+    "scratch-create",
 ];
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

@@ -40,12 +40,14 @@ test("layout is per workspace and epoch and survives missing storage", () => {
     epoch: "a",
     order: [2, 1],
     focus: 2,
+    parked: [],
   });
   // A new server epoch reuses pane IDs for different processes.
   assert.deepEqual(loadLayout("main", "b"), {
     epoch: "b",
     order: [],
     focus: 0,
+    parked: [],
   });
   assert.deepEqual(loadLayout("dev", "a").order, []);
   globalThis.localStorage.setItem("kelpmux-web-layout:main", "{not json");

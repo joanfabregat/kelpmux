@@ -187,6 +187,9 @@ pub enum Action {
     NextFinished,
     Scratch,
     ScratchClose,
+    /// Create the scratch terminal without showing it; offered to stream
+    /// clients through the `scratch-create` capability.
+    ScratchCreate,
     Search {
         query: String,
         all: bool,

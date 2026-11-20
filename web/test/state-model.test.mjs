@@ -1,0 +1,180 @@
+import { test } from "node:test";
+import assert from "node:assert/strict";
+import {
+  agents,
+  isScratch,
+  nextPane,
+  notificationMatches,
+  notificationStatus,
+  paneState,
+  rollup,
+  rollupSummary,
+  tabTitle,
+  unreadCount,
+  unreadFor,
+  visibleNotifications,
+} from "../src/state/model.ts";
+
+const pane = (id, status = "idle", extra = {}) => ({
+  id,
+  number: id,
+  pid: 100 + id,
+  status,
+  parked: false,
+  dead: false,
+  ...extra,
+});
+const note = (id, paneId, status, extra = {}) => ({
+  id,
+  pane: paneId,
+  title: `${status} ${id}`,
+  status,
+  at: 1000 + id,
+  read: false,
+  workspace: "main",
+  origin: { run: "r", pid: 100 + paneId },
+  ...extra,
+});
+
+test("the scratch terminal is the unnumbered pane that is not parked", () => {
+  assert.equal(isScratch({ number: 0, parked: false }), true);
+  assert.equal(isScratch({ number: 0, parked: true }), false);
+  assert.equal(isScratch({ number: 3, parked: false }), false);
+});
+
+test("notifications belong to the live process of their pane", () => {
+  const p = pane(1);
+  assert.equal(notificationMatches(note(1, 1, "turn_finished"), p), true);
+  // A recycled pane runs a different process.
+  assert.equal(
+    notificationMatches(
+      note(2, 1, "failed", { origin: { run: "r", pid: 9 } }),
+      p,
+    ),
+    false,
+  );
+  assert.equal(notificationMatches(note(3, 2, "failed"), p), false);
+  assert.equal(
+    notificationMatches(note(4, 1, "failed"), { ...p, dead: true }),
+    false,
+  );
+  assert.equal(
+    notificationMatches(note(5, 1, "failed", { origin: null }), p),
+    false,
+  );
+});
+
+test("pane state follows the TUI indicator", () => {
+  assert.equal(paneState(pane(1, "input_needed")), "input_needed");
+  assert.equal(paneState(pane(1, "turn_finished")), "finished");
+  assert.equal(paneState(pane(1, "working", { kind: "claude" })), "working");
+  // A shell running a command is not an agent at work.
+  assert.equal(paneState(pane(1, "working")), "running");
+  assert.equal(paneState(pane(1, "failed", { dead: true })), "idle");
+  // An idle pane shows its newest unread typed notification, before bells.
+  const list = [
+    note(1, 1, "turn_finished"),
+    note(2, 1, "unknown", { title: "Bell · x" }),
+  ];
+  assert.equal(paneState(pane(1), list), "finished");
+  assert.equal(paneState(pane(1), [list[1]]), "input_needed");
+  assert.equal(paneState(pane(1), [{ ...list[0], read: true }]), "idle");
+  assert.deepEqual(
+    unreadFor(list, pane(1)).map((n) => n.id),
+    [2, 1],
+  );
+});
+
+test("a bell takes the status of the typed notification it accompanied", () => {
+  const typed = note(1, 1, "input_needed");
+  const bell = note(2, 1, "unknown", {
+    title: "Bell · claude",
+    at: typed.at + 1,
+  });
+  assert.equal(notificationStatus([typed, bell], bell), "input_needed");
+  assert.equal(
+    notificationStatus([typed, { ...bell, at: typed.at + 10 }], {
+      ...bell,
+      at: typed.at + 10,
+    }),
+    "unknown",
+  );
+  assert.equal(notificationStatus([typed], typed), "input_needed");
+});
+
+test("roll-ups count states needing attention in urgency order", () => {
+  const panes = [
+    pane(1, "turn_finished", { kind: "codex" }),
+    pane(2, "input_needed", { kind: "claude" }),
+    pane(3, "working", { kind: "claude" }),
+    pane(4, "working"),
+    pane(5),
+  ];
+  const r = rollup(panes, []);
+  assert.equal(r.state, "input_needed");
+  assert.deepEqual(r.counts, { finished: 1, input_needed: 1, working: 1 });
+  assert.equal(r.total, 3);
+  assert.equal(rollupSummary(r), "1 needs input, 1 finished, 1 working");
+  assert.equal(rollupSummary(rollup([], [])), "Nothing needs attention");
+  assert.equal(tabTitle(0), "KelpMux");
+  assert.equal(tabTitle(3), "(3) KelpMux");
+  assert.equal(tabTitle(120), "(99+) KelpMux");
+});
+
+test("next question / completion cycles from the active pane, skipping scratch", () => {
+  const panes = [
+    pane(1, "input_needed"),
+    pane(2),
+    { ...pane(3, "input_needed"), number: 0 },
+    pane(4, "failed"),
+  ];
+  const attention = (p) => p.status === "input_needed" || p.status === "failed";
+  assert.equal(nextPane(panes, 1, attention)?.id, 4);
+  assert.equal(nextPane(panes, 4, attention)?.id, 1);
+  // Unknown active pane: start from the first.
+  assert.equal(nextPane(panes, 99, attention)?.id, 4);
+  assert.equal(
+    nextPane(panes, 1, (p) => p.status === "exited"),
+    null,
+  );
+  assert.equal(nextPane([], 1, attention), null);
+});
+
+test("agents are filtered like the TUI's agent list", () => {
+  const panes = [
+    pane(1, "input_needed", { kind: "claude" }),
+    pane(2, "exited", { kind: "codex" }),
+    pane(3, "input_needed"),
+    pane(4, "failed", { kind: "codex", dead: true }),
+  ];
+  assert.deepEqual(
+    agents(panes, "all").map((p) => p.id),
+    [1, 2],
+  );
+  assert.deepEqual(
+    agents(panes, "attention").map((p) => p.id),
+    [1],
+  );
+  assert.deepEqual(
+    agents(panes, "finished").map((p) => p.id),
+    [2],
+  );
+});
+
+test("the notification list shows unread ones of live panes, or history", () => {
+  const panes = [pane(1)];
+  const list = [
+    note(1, 1, "turn_finished"),
+    note(2, 1, "failed", { read: true }),
+    note(3, 7, "input_needed"),
+  ];
+  assert.deepEqual(
+    visibleNotifications(list, panes, false).map((n) => n.id),
+    [1],
+  );
+  assert.deepEqual(
+    visibleNotifications(list, panes, true).map((n) => n.id),
+    [3, 2, 1],
+  );
+  assert.equal(unreadCount(list, panes), 1);
+});

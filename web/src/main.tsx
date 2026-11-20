@@ -30,8 +30,9 @@ import {
   terminalVariables,
   themeVariables,
 } from "./appearance";
+import "./styles/state.css";
 import { ToastProvider, useToast } from "./Toast";
-import { activityIcon, stateLabel } from "./activity-icon";
+import { activityIcon } from "./activity-icon";
 import { basename } from "./format";
 import { Stats } from "./Stats";
 import { KeySettings } from "./KeySettings";
@@ -39,21 +40,57 @@ import { LoginScreen, PopupConnecting } from "./Login";
 import { ConfigPanel } from "./ConfigPanel";
 import { OPEN_SETTINGS } from "./Settings";
 import { PaneLabel, StatusBar, TopBar, type SessionMode } from "./Shell";
+import { Sidebar } from "./Sidebar";
+import {
+  AgentsPanel,
+  HelpPanel,
+  MovePanel,
+  NotificationsPanel,
+  OverviewPanel,
+  PaneMenu,
+  ParkedPanel,
+  RecoveryPanel,
+  SearchPanel,
+} from "./Panels";
 import { Icon } from "./status";
 import {
+  SIDEBAR_MAX,
+  SIDEBAR_MIN,
   loadLayout,
+  loadPreferences,
   loadView,
   moveBefore,
+  moveBy,
   orderPanes,
   saveLayout,
+  savePreferences,
   saveView,
 } from "./layout-store";
+import {
+  isFinished,
+  isScratch,
+  needsAttention,
+  nextPane,
+  notificationMatches,
+  paneState,
+  rollup,
+  stateLabel,
+  tabTitle,
+  unreadCount,
+  unreadFor,
+  type AgentFilter,
+  type DisplayState,
+  type Notification,
+} from "./state/model";
+import { gridNeighbour, prefixAction } from "./prefix";
+import { chime, desktopAlert, freshNotifications, newestId } from "./alerts";
 
 /** Grid tiles per page. The stream allows ten subscriptions per connection;
- * eight leaves room for popup windows sharing the connection. */
+ * eight leaves room for the scratch terminal and a popup window sharing the
+ * connection. */
 const PAGE = 8;
 /** The `Web` request API this client speaks (see `kelpmux web-bridge`). */
-const API_VERSION = 1;
+const API_VERSION = 2;
 
 const store: Store = {
   screens: new Map(),
@@ -274,7 +311,24 @@ function App() {
     [vitals, setVitals] = useState<any>({}),
     [stats, setStats] = useState<any>({}),
     [query, setQuery] = useState(""),
-    [page, setPage] = useState(0);
+    [page, setPage] = useState(0),
+    [notifications, setNotifications] = useState<Notification[]>([]),
+    [parked, setParked] = useState<number[]>([]),
+    [preferences, setPreferences] = useState(loadPreferences),
+    [agentFilter, setAgentFilter] = useState<AgentFilter>("all"),
+    [scratchOpen, setScratchOpen] = useState(false),
+    [fullWidth, setFullWidth] = useState(false),
+    [findQuery, setFindQuery] = useState(""),
+    [menu, setMenu] = useState<{ pane: Pane; x: number; y: number } | null>(
+      null,
+    );
+  useEffect(() => savePreferences(preferences), [preferences]);
+  const notificationsRef = useRef(notifications);
+  notificationsRef.current = notifications;
+  /** Newest notification already considered for alerts (-1: not yet). */
+  const alertedId = useRef(-1);
+  /** Notifications this browser already acknowledged. */
+  const acknowledged = useRef(new Set<number>());
   useEffect(() => {
     const open = (event: Event) => {
       setSettingsSection((event as CustomEvent<string>).detail);
@@ -320,7 +374,8 @@ function App() {
       setConfirmAction(null);
     }
   }
-  const overlayOpen = !!dialog || !!confirmAction || keyModal || !!findPane;
+  const overlayOpen =
+    !!dialog || !!confirmAction || keyModal || !!findPane || !!menu;
   useEffect(() => {
     if (overlayWasOpen.current && !overlayOpen)
       requestAnimationFrame(() =>
@@ -378,35 +433,68 @@ function App() {
       if (!live.has(id)) store.closing!.delete(id);
   }, [panes]);
 
-  // This browser's layout: tab order and focus, per workspace and epoch.
-  const live = orderPanes(panes, order);
+  // This browser's layout: order, parking and focus, per workspace and
+  // epoch. `all` is every pane in this browser's order; `live` the tabs and
+  // grid (parked and scratch excluded).
+  const all = orderPanes(panes, order);
+  const parkedSet = new Set(parked);
+  const scratchPane = all.find((p) => isScratch(p) && !p.dead);
+  const live = all.filter((p) => !isScratch(p) && !parkedSet.has(p.id));
+  const parkedPanes = all.filter((p) => !isScratch(p) && parkedSet.has(p.id));
   useEffect(() => {
     if (!online || !panesLoaded || !workspace || !epoch || popupPane) return;
     saveLayout(workspace, {
       epoch,
-      order: live.map((p) => p.id),
+      order: all.map((p) => p.id),
       focus: active,
+      parked,
     });
-  }, [online, workspace, epoch, active, live.map((p) => p.id).join(",")]);
+  }, [
+    online,
+    workspace,
+    epoch,
+    active,
+    all.map((p) => p.id).join(","),
+    parked.join(","),
+  ]);
   useEffect(() => {
-    if (panesLoaded && !live.some((p) => p.id === active))
+    // Closed terminals leave this browser's parked list.
+    if (panesLoaded && parked.some((id) => !panes.some((p) => p.id === id)))
+      setParked(parked.filter((id) => panes.some((p) => p.id === id)));
+  }, [panes, panesLoaded]);
+  useEffect(() => {
+    if (panesLoaded && !popupPane && !live.some((p) => p.id === active))
       setActive(live[0]?.id || 0);
-  }, [panes, order, panesLoaded]);
+  }, [panes, order, panesLoaded, parked.join(",")]);
+  useEffect(() => {
+    if (scratchOpen && panesLoaded && !scratchPane) setScratchOpen(false);
+  }, [scratchOpen, panesLoaded, !!scratchPane]);
 
   const visible = popupPane
-      ? live.filter((p) => p.id === popupPane)
+      ? all.filter((p) => p.id === popupPane)
       : view === "single"
         ? live.filter((p) => p.id === active)
         : live.slice(page * PAGE, page * PAGE + PAGE),
-    visibleKey = visible.map((p) => p.id).join(",");
+    subscribed =
+      scratchOpen && scratchPane && !popupPane
+        ? [...visible, scratchPane]
+        : visible,
+    visibleKey = subscribed.map((p) => p.id).join(",");
   const browserActivity = activityIcon(online ? panes : null);
+  const attention = rollup(
+    panes.filter((p) => !p.dead),
+    notifications,
+  );
+  const attentionTotal =
+    (attention.counts.input_needed || 0) +
+    (attention.counts.failed || 0) +
+    (attention.counts.finished || 0);
   useEffect(() => {
     const icon = document.querySelector<HTMLLinkElement>('link[rel="icon"]');
     if (icon) icon.href = browserActivity.url;
-    document.title = workspace
-      ? `${browserActivity.title} · ${workspace}`
-      : browserActivity.title;
-  }, [browserActivity.url, browserActivity.title, workspace]);
+    const title = tabTitle(attentionTotal);
+    document.title = workspace ? `${title} · ${workspace}` : title;
+  }, [browserActivity.url, attentionTotal, workspace]);
   useEffect(() => {
     storage.set("kelpmux-confirm-close-v2", String(confirmClose));
     if (
@@ -430,7 +518,9 @@ function App() {
   }, [live.length]);
   useEffect(() => {
     if (online)
-      store.session?.request("subscribe", { panes: visible.map((p) => p.id) });
+      store.session?.request("subscribe", {
+        panes: subscribed.map((p) => p.id),
+      });
   }, [online, visibleKey]);
   useEffect(() => {
     if (!connection || resumed.current || !globalThis.SharedWorker) return;
@@ -493,10 +583,7 @@ function App() {
   function cycle(step: number) {
     if (!live.length) return;
     const index = live.findIndex((p) => p.id === active);
-    const next = live[(index + step + live.length) % live.length];
-    if (view === "grid") focusInGrid(next);
-    else activate(next.id);
-    focusTerminal();
+    openPane(live[(index + step + live.length) % live.length]);
   }
   useEffect(() => {
     if (view !== "grid" || !active) return;
@@ -546,12 +633,14 @@ function App() {
     window.addEventListener("keydown", handler, true);
     return () => window.removeEventListener("keydown", handler, true);
   }, [sign, confirmAction, findPane, dialog, keyModal]);
-  const focused =
-    view === "single" || popupPane
-      ? live.find((p) => p.id === (popupPane || active))
+  const focused = popupPane
+    ? all.find((p) => p.id === popupPane)
+    : view === "single" || fullWidth
+      ? live.find((p) => p.id === active)
       : undefined;
-  function openFind(pane: number) {
+  function openFind(pane: number, text = "") {
     if (!pane) return;
+    setFindQuery(text);
     setFindPane(pane);
     requestAnimationFrame(() => {
       const input =
@@ -585,7 +674,7 @@ function App() {
         switchView();
         return;
       }
-      if (e.altKey && !e.ctrlKey && !e.metaKey && !overlayOpen) {
+      if (e.altKey && !e.ctrlKey && !e.metaKey && !overlayOpen && !popupPane) {
         if (e.code === "Tab") {
           e.preventDefault();
           e.stopImmediatePropagation();
@@ -598,8 +687,7 @@ function App() {
           if (pane) {
             e.preventDefault();
             e.stopImmediatePropagation();
-            activate(pane.id);
-            focusTerminal();
+            openPane(pane);
           }
           return;
         }
@@ -621,28 +709,242 @@ function App() {
       prefix.current = false;
       e.preventDefault();
       e.stopImmediatePropagation();
-      const target = focused?.id || active;
-      if (e.ctrlKey && e.key.toLowerCase() === "b") {
+      const action = prefixAction(e);
+      if (!action) return;
+      if (popupPane && action !== "send-prefix" && action !== "disconnect")
+        return;
+      runPrefix(action);
+    };
+    window.addEventListener("keydown", handler, true);
+    return () => window.removeEventListener("keydown", handler, true);
+  }, [
+    online,
+    panes,
+    order,
+    parked,
+    active,
+    view,
+    page,
+    overlayOpen,
+    dialog,
+    confirmAction,
+    scratchOpen,
+    notifications,
+    gridWidth,
+  ]);
+  /** Runs a Ctrl-B prefix action (see shortcuts.ts). */
+  function runPrefix(action: NonNullable<ReturnType<typeof prefixAction>>) {
+    const targetPane = scratchOpen && scratchPane ? scratchPane : focusedPane();
+    const target = targetPane?.id || 0;
+    if (typeof action === "object") {
+      const pane = live[action.select - 1];
+      if (pane) openPane(pane);
+      return;
+    }
+    switch (action) {
+      case "send-prefix":
         // Ctrl-B twice sends one Ctrl-B to the focused terminal.
         if (target && store.session && !store.closing?.has(target)) {
           store.session.control(target);
           store.session.request("input", { pane: target, bytes: [2] });
         }
-      } else if (e.key === "z") switchView();
-      else if (e.key === "g") chooseMode("grid");
-      else if (e.key === "n") cycle(1);
-      else if (e.key === "p") cycle(-1);
-      else if (e.key === "x") {
-        const pane = live.find((p) => p.id === target);
-        if (pane) close(pane);
-      } else if (e.key === "/") openFind(target);
-      else if (e.key === "Enter") newTab();
-      else if (e.key === ",") setDialog("config");
-      else if (e.key === "d") store.session?.close();
-    };
-    window.addEventListener("keydown", handler, true);
-    return () => window.removeEventListener("keydown", handler, true);
-  }, [online, panes, order, active, view, overlayOpen, dialog, confirmAction]);
+        return;
+      case "new":
+        return void newTab();
+      case "reopen-last":
+        return void reopenLast();
+      case "grid":
+        setFullWidth(false);
+        return chooseMode("grid");
+      case "full-width":
+        setFullWidth(!fullWidth);
+        if (!fullWidth && view === "grid" && active) chooseMode("single");
+        return;
+      case "next":
+        return cycle(1);
+      case "previous":
+        return cycle(-1);
+      case "page-previous":
+        return setPage(Math.max(0, page - 1));
+      case "page-next":
+        return setPage(
+          Math.min(Math.max(0, Math.ceil(live.length / PAGE) - 1), page + 1),
+        );
+      case "focus-left":
+        return moveFocus(-1, 0);
+      case "focus-right":
+        return moveFocus(1, 0);
+      case "focus-up":
+        return moveFocus(0, -1);
+      case "focus-down":
+        return moveFocus(0, 1);
+      case "next-attention":
+        return nextState(needsAttention, "No terminal needs attention");
+      case "next-finished":
+        return nextState(isFinished, "No finished terminal");
+      case "agents":
+        setAgentFilter("all");
+        return setDialog("agents");
+      case "agents-attention":
+        setAgentFilter("attention");
+        return setDialog("agents");
+      case "agents-finished":
+        setAgentFilter("finished");
+        return setDialog("agents");
+      case "notifications":
+      case "overview":
+      case "recovery":
+      case "search":
+      case "parked":
+      case "move":
+      case "help":
+        return setDialog(action);
+      case "settings":
+        return setDialog("config");
+      case "scratch":
+        return void toggleScratch();
+      case "park":
+        if (targetPane && !isScratch(targetPane)) park(targetPane);
+        return;
+      case "close":
+        if (targetPane) close(targetPane);
+        return;
+      case "disconnect":
+        return store.session?.close();
+    }
+  }
+  /** The terminal keyboard actions address: the one shown alone, or the
+   * focused tile of the grid. */
+  function focusedPane() {
+    if (popupPane) return all.find((p) => p.id === popupPane);
+    return live.find((p) => p.id === active);
+  }
+  /** Moves grid focus to a neighbouring tile (Ctrl-B h/j/k/l). */
+  function moveFocus(dx: number, dy: number) {
+    if (view !== "grid") return cycle(dx + dy > 0 ? 1 : -1);
+    const tiles = live.slice(page * PAGE, page * PAGE + PAGE);
+    const index = tiles.findIndex((p) => p.id === active);
+    const next =
+      tiles[
+        gridNeighbour(
+          index,
+          tiles.length,
+          gridColumns(tiles.length, gridWidth),
+          dx,
+          dy,
+        )
+      ];
+    if (next) setActive(next.id);
+  }
+  /** Opens a terminal wherever it is: unparks a parked one, shows the
+   * scratch popup for the scratch terminal, and otherwise opens it alone or
+   * focuses it in the grid. */
+  function openPane(pane: Pane) {
+    setMenu(null);
+    if (isScratch(pane)) {
+      setScratchOpen(true);
+      return;
+    }
+    setScratchOpen(false);
+    if (parkedSet.has(pane.id))
+      setParked(parked.filter((id) => id !== pane.id));
+    if (view === "grid" && !parkedSet.has(pane.id)) focusInGrid(pane);
+    else activate(pane.id);
+    focusTerminal();
+  }
+  /** The TUI's next question / next completion: the next terminal after the
+   * focused one in this browser's order (parked ones included). */
+  function nextState(predicate: (pane: Pane) => boolean, none: string) {
+    const candidates = all.filter((p) => !p.dead);
+    const target = nextPane(candidates, active, predicate);
+    if (target) openPane(target);
+    else toast(none, { key: "next" });
+  }
+  /** A sidebar summary mark: next terminal in that state. */
+  function openState(state: DisplayState) {
+    if (state === "working" || state === "running") {
+      setAgentFilter("all");
+      setDialog("agents");
+      return;
+    }
+    nextState(
+      (p) => paneState(p, notificationsRef.current) === state,
+      `No ${stateLabel[state].toLowerCase()} terminal`,
+    );
+  }
+  function park(pane: Pane) {
+    if (parkedSet.has(pane.id) || isScratch(pane)) return;
+    setParked([...parked, pane.id]);
+    toast(`Parked “${pane.title || "shell"}”; it keeps running`, {
+      key: "park",
+    });
+  }
+  function unpark(pane: Pane) {
+    openPane(pane);
+  }
+  /** The TUI's reopen-last: the newest terminal closed in this workspace
+   * (closed before previous runs), restored with its first choice. */
+  async function reopenLast() {
+    const result = await rpc("closed");
+    if (!result) return;
+    const entry = (result.entries || []).find(
+      (e: any) => e.workspace === result.workspace,
+    );
+    if (!entry) {
+      toast("No recently closed terminal", { key: "restore" });
+      return;
+    }
+    const restored = await rpc("restore", {
+      key: entry.key,
+      choice: entry.choices[0],
+      request: crypto.randomUUID(),
+      confirmed: true,
+    });
+    if (!restored?.pane) return;
+    toast(
+      restored.existing
+        ? `“${entry.name}” is already open`
+        : `Reopened “${entry.name}”`,
+      { key: "restore" },
+    );
+    const pane = all.find((p) => p.id === restored.pane);
+    if (pane) openPane(pane);
+    else activate(restored.pane);
+  }
+  async function toggleScratch() {
+    if (scratchOpen) {
+      setScratchOpen(false);
+      focusTerminal();
+      return;
+    }
+    if (!scratchPane) {
+      const result = await rpc("scratch");
+      if (!result?.pane) return;
+    }
+    setScratchOpen(true);
+  }
+  /** Marks notifications read in the workspace (the TUI shares the marks). */
+  function acknowledge(ids: number[]) {
+    for (const id of ids.slice(0, 128)) {
+      if (acknowledged.current.has(id)) continue;
+      acknowledged.current.add(id);
+      store.session?.request("acknowledge", { notification: id });
+    }
+  }
+  // Showing a terminal marks its notifications read, as focusing one does
+  // in the TUI; a terminal that was already shown stays as it is until it is
+  // shown again.
+  const shownPane =
+    scratchOpen && scratchPane
+      ? scratchPane.id
+      : popupPane || (active && (view === "single" || fullWidth) ? active : 0);
+  useEffect(() => {
+    if (!online || !shownPane || document.hidden) return;
+    const pane = panes.find((p) => p.id === shownPane);
+    if (!pane) return;
+    const unread = unreadFor(notificationsRef.current, pane);
+    if (unread.length) acknowledge(unread.map((n) => n.id));
+  }, [online, shownPane, panesLoaded]);
 
   function event(event: any) {
     if (event.SignedInKey) {
@@ -678,6 +980,7 @@ function App() {
         setWorkspace(result.workspace);
         setEpoch(e.epoch);
         setOrder(layout.order);
+        setParked(layout.parked);
         if (layout.focus && !popupPane) setActive(layout.focus);
         setOnline(true);
         setConnecting(false);
@@ -704,12 +1007,14 @@ function App() {
       store.leases = new Map(
         e.leases.map((lease: any) => [lease.pane, lease.owner]),
       );
-      const key = JSON.stringify([e.panes, e.vitals]);
+      const key = JSON.stringify([e.panes, e.vitals, e.notifications]);
       if (key !== metadata.current) {
         metadata.current = key;
         setPanes(e.panes);
         setPanesLoaded(true);
         setVitals(e.vitals);
+        setNotifications(e.notifications || []);
+        alertFresh(e.notifications || [], e.panes);
         if (popupPane) setActive(popupPane);
       }
       store.events.dispatchEvent(new Event("frame"));
@@ -720,6 +1025,28 @@ function App() {
       store.events.dispatchEvent(new Event("frame"));
     }
     if (e.type === "error") setError(e.message);
+  }
+  /** Sound and desktop alerts for notifications that arrived since the
+   * last update (never for those present when this browser connected).
+   * Popups leave alerts to the main window. */
+  function alertFresh(list: Notification[], live: Pane[]) {
+    if (alertedId.current < 0) {
+      alertedId.current = newestId(list);
+      return;
+    }
+    const fresh = freshNotifications(list, alertedId.current).filter((n) =>
+      live.some((p) => notificationMatches(n, p)),
+    );
+    alertedId.current = newestId(list, alertedId.current);
+    if (!fresh.length || popupPane) return;
+    if (preferences.sound) chime();
+    if (preferences.desktop && document.hidden) {
+      const n = fresh[fresh.length - 1];
+      const pane = live.find((p) => notificationMatches(n, p));
+      desktopAlert(`KelpMux · ${workspace}`, n.title, () => {
+        if (pane) openPane(pane);
+      });
+    }
   }
   const latestEvent = useRef(event);
   latestEvent.current = event;
@@ -780,6 +1107,10 @@ function App() {
     store.leases.clear();
     store.closing!.clear();
     metadata.current = "";
+    alertedId.current = -1;
+    acknowledged.current.clear();
+    setNotifications([]);
+    setScratchOpen(false);
     setPanes([]);
     setPanesLoaded(false);
     setActive(0);
@@ -909,7 +1240,7 @@ function App() {
   function move(source: number, before: number | null) {
     setOrder(
       moveBefore(
-        live.map((p) => p.id),
+        all.map((p) => p.id),
         source,
         before,
       ),
@@ -920,10 +1251,10 @@ function App() {
   function dragProps(p: Pane) {
     return {
       onPointerDown: (e: React.PointerEvent) => {
-        // A tab's own open button starts a drag; its other buttons do not.
+        // A row or tile header starts a drag; its action buttons do not.
         if (
           e.button !== 0 ||
-          (e.target as HTMLElement).closest("button:not(.term-tab-open)")
+          (e.target as HTMLElement).closest(".term-row-actions, .pane-actions")
         )
           return;
         dragCleanup.current?.();
@@ -963,18 +1294,22 @@ function App() {
           }
           const target = document
             .elementFromPoint(event.clientX, event.clientY)
-            ?.closest<HTMLElement>(".term-tab[data-drop-pane]");
+            ?.closest<HTMLElement>("[data-drop-pane]");
           const targetId = Number(target?.dataset.dropPane);
           if (target && targetId && targetId !== state.source) {
             const rect = target.getBoundingClientRect();
-            const after = event.clientX >= rect.left + rect.width / 2;
+            // Sidebar rows reorder vertically, grid tiles horizontally.
+            const after =
+              target.dataset.dropAxis === "x"
+                ? event.clientX >= rect.left + rect.width / 2
+                : event.clientY >= rect.top + rect.height / 2;
             const remaining = live.filter((pane) => pane.id !== state.source);
             const index = remaining.findIndex((pane) => pane.id === targetId);
             state.before = after ? remaining[index + 1]?.id || null : targetId;
             setDrop(state.before);
           } else if (
             !target &&
-            (event.target as HTMLElement).closest?.(".term-tabs")
+            (event.target as HTMLElement).closest?.(".term-list")
           ) {
             state.before = null;
             setDrop(null);
@@ -1117,14 +1452,95 @@ function App() {
         store.events.dispatchEvent(new Event("terminal-focus")),
       );
   }
+  const showRail = !bare && !fullWidth;
+  const railWidth = preferences.sidebarFolded ? 56 : preferences.sidebarWidth;
+  /** The sidebar's edge: a click folds or unfolds it, a drag resizes it
+   * (folding below a minimum), like KelpHub's. Saved in this browser. */
+  function resizeStart(e: React.PointerEvent) {
+    e.preventDefault();
+    const x = e.clientX,
+      initial = railWidth;
+    let moved = false,
+      last = initial;
+    const limit = (width: number) =>
+      Math.round(
+        Math.max(SIDEBAR_MIN, Math.min(SIDEBAR_MAX, innerWidth * 0.45, width)),
+      );
+    const move = (event: PointerEvent) => {
+      moved ||= Math.abs(event.clientX - x) > 4;
+      if (!moved) return;
+      last = initial + event.clientX - x;
+      setPreferences((current) =>
+        last < 110
+          ? { ...current, sidebarFolded: true }
+          : { ...current, sidebarFolded: false, sidebarWidth: limit(last) },
+      );
+    };
+    const up = () => {
+      window.removeEventListener("pointermove", move);
+      window.removeEventListener("pointerup", up);
+      if (!moved)
+        setPreferences((current) => ({
+          ...current,
+          sidebarFolded: !current.sidebarFolded,
+        }));
+    };
+    window.addEventListener("pointermove", move);
+    window.addEventListener("pointerup", up);
+  }
   const paneLabel = (p: Pane) => p.title || "shell";
-  const paneHeader = (p: Pane) => (
-    <header>
-      <PaneLabel pane={p} />
+  /** A terminal's context menu (right-click on its row or tile). */
+  function menuItems(p: Pane): [string, () => void, boolean?][] {
+    const isParked = parkedSet.has(p.id);
+    // Reorders among the tabs; parked and scratch keep their places after.
+    const liveIds = live.map((pane) => pane.id);
+    const rest = all
+      .map((pane) => pane.id)
+      .filter((id) => !liveIds.includes(id));
+    const step = (by: -1 | 1) =>
+      setOrder([...moveBy(liveIds, p.id, by), ...rest]);
+    const index = live.findIndex((pane) => pane.id === p.id);
+    return [
+      [isParked ? "Unpark and open" : "Open", () => openPane(p)],
+      ["Open in a window", () => popout(p)],
+      [
+        "Find…",
+        () => {
+          openPane(p);
+          requestAnimationFrame(() => openFind(p.id));
+        },
+      ],
+      ["Move up", () => step(-1), isParked || index <= 0],
+      [
+        "Move down",
+        () => step(1),
+        isParked || index < 0 || index >= live.length - 1,
+      ],
+      isScratch(p)
+        ? ["Hide scratch popup", () => setScratchOpen(false), !scratchOpen]
+        : isParked
+          ? ["Unpark", () => unpark(p)]
+          : ["Park", () => park(p)],
+      ["Close…", () => close(p)],
+    ];
+  }
+  const paneHeader = (p: Pane, extra?: React.ReactNode) => (
+    <header
+      onContextMenu={(event) => {
+        event.preventDefault();
+        setMenu({ pane: p, x: event.clientX, y: event.clientY });
+      }}
+    >
+      <PaneLabel
+        pane={p}
+        state={paneState(p, notifications)}
+        parked={parkedSet.has(p.id)}
+      />
       <span className="grid-folder" title={p.cwd}>
         {basename(p.cwd)}
       </span>
       <div className="pane-actions">
+        {extra}
         <button
           type="button"
           className="icon-btn"
@@ -1137,6 +1553,20 @@ function App() {
         >
           <Icon name="text-search" size="sm" />
         </button>
+        {!bare && !isScratch(p) && (
+          <button
+            type="button"
+            className="icon-btn"
+            title="Park (Ctrl-B p)"
+            aria-label={`Park ${paneLabel(p)}`}
+            onClick={(event) => {
+              event.stopPropagation();
+              park(p);
+            }}
+          >
+            <Icon name="archive" size="sm" />
+          </button>
+        )}
         {!bare && (
           <button
             type="button"
@@ -1166,16 +1596,73 @@ function App() {
       </div>
     </header>
   );
-  const owner = focused ? store.leases.get(focused.id) : undefined;
-  const hint = focused
+  const hintPane = scratchOpen && scratchPane ? scratchPane : focused;
+  const owner = hintPane ? store.leases.get(hintPane.id) : undefined;
+  const hint = hintPane
     ? owner === store.session?.client
       ? "This browser controls the focused terminal's input and size"
       : owner
         ? "Another browser controls this terminal; type or click to take it"
         : "Typing here takes this terminal from the TUI; typing there takes it back"
     : "Live grid · click a terminal to open it";
+  const dialogTitles: Record<string, string> = {
+    config: "Settings",
+    stats: "System status",
+    agents: "Agents",
+    notifications: "Notifications",
+    overview: "Workspace overview",
+    recovery: "Recently closed",
+    search: "Search terminal history",
+    parked: "Parked terminals",
+    move: "Move terminal",
+    help: "Help",
+  };
+  const closeDialog = () => {
+    setDialog("");
+    setQuery("");
+  };
+  const pages = Math.max(1, Math.ceil(live.length / PAGE));
   return (
-    <div className={`kelpmux-shell ${bare ? "bare" : ""}`}>
+    <div
+      className={`kelpmux-shell ${bare ? "bare" : ""}`}
+      style={{ "--rail": `${railWidth}px` } as React.CSSProperties}
+    >
+      {showRail && (
+        <div className="rail-wrap" onClick={focusTerminal}>
+          <Sidebar
+            workspace={workspace}
+            username={connection?.username || ""}
+            dev={!!connection?.dev}
+            folded={preferences.sidebarFolded}
+            terminals={ordered}
+            parked={parkedPanes}
+            scratch={scratchPane}
+            scratchOpen={scratchOpen}
+            notifications={notifications}
+            current={view === "single" || view === "grid" ? active : undefined}
+            unread={unreadCount(notifications, panes)}
+            vitals={vitals}
+            rowProps={dragProps}
+            rowClass={(p) => (drag === p.id && drag !== drop ? "landing" : "")}
+            onOpen={(p) => {
+              if (performance.now() < suppressClick.current) return;
+              openPane(p);
+            }}
+            onClose={close}
+            onPark={park}
+            onUnpark={unpark}
+            onMenu={(pane, x, y) => setMenu({ pane, x, y })}
+            onNew={newTab}
+            onScratch={() => void toggleScratch()}
+            onState={openState}
+            onDialog={(name) => {
+              if (name === "agents") setAgentFilter("all");
+              setDialog(name);
+            }}
+            onResizeStart={resizeStart}
+          />
+        </div>
+      )}
       <div
         className={`app ${view} ${popupPane ? "popup" : ""}`}
         onClick={focusTerminal}
@@ -1183,22 +1670,21 @@ function App() {
         {!bare && (
           <TopBar
             workspace={workspace}
-            dev={!!connection?.dev}
-            terminals={ordered}
-            current={focused?.id || active}
-            mode={view}
-            tabProps={dragProps}
-            tabClass={(p) => (drag === p.id && drag !== drop ? "landing" : "")}
-            onMode={chooseMode}
-            onTerminal={(p) => {
-              if (performance.now() < suppressClick.current) return;
-              if (view === "grid") focusInGrid(p);
-              else activate(p.id);
+            current={focused}
+            state={focused ? paneState(focused, notifications) : undefined}
+            mode={fullWidth ? "single" : view}
+            scratchOpen={scratchOpen}
+            fullWidth={fullWidth}
+            page={page}
+            pages={pages}
+            onMode={(mode) => {
+              setFullWidth(false);
+              chooseMode(mode);
             }}
-            onClose={close}
             onNewTerminal={newTab}
-            onStats={() => setDialog("stats")}
-            onSettings={() => setDialog("config")}
+            onScratch={() => void toggleScratch()}
+            onFullWidth={() => setFullWidth(!fullWidth)}
+            onPage={setPage}
           />
         )}
         {error && (
@@ -1220,11 +1706,12 @@ function App() {
                 <Terminal
                   pane={focused}
                   store={store}
-                  active
+                  active={!(scratchOpen && scratchPane)}
                   layout="tabs"
                   onActivate={() => setActive(focused.id)}
                   onError={fail}
                   find={findPane === focused.id}
+                  findQuery={findQuery}
                   onCloseFind={() => setFindPane(0)}
                 />
               </section>
@@ -1240,35 +1727,49 @@ function App() {
             >
               {Array.from({ length: cols * rows }, (_, i) => {
                 const p = gridPanes[i];
-                return p ? (
+                if (!p)
+                  return i === gridPanes.length ? (
+                    <button
+                      type="button"
+                      className="inactive-pane new-pane"
+                      key={`new-${i}`}
+                      onClick={newTab}
+                    >
+                      <Icon name="plus" size="lg" />
+                      New terminal
+                    </button>
+                  ) : (
+                    <div className="inactive-pane" key={`empty-${i}`} />
+                  );
+                const state = paneState(p, notifications);
+                return (
                   <button
                     type="button"
                     key={p.id}
-                    className={`grid-pane live-tile ${p.status === "input_needed" ? "needs-input" : ""} ${p.id === active ? "focused" : ""}`}
+                    className={`grid-pane live-tile ${state === "input_needed" ? "needs-input" : ""} ${p.id === active ? "focused" : ""} ${drag === p.id && drag !== drop ? "landing" : ""}`}
                     aria-current={p.id === active ? "true" : undefined}
-                    aria-label={`Open terminal ${paneLabel(p)} (${stateLabel[p.status] || p.status})`}
+                    aria-label={`Open terminal ${paneLabel(p)} (${stateLabel[state]})`}
                     data-tile-pane={p.id}
-                    data-state={p.status}
-                    onClick={() => activate(p.id)}
+                    data-drop-pane={p.id}
+                    data-drop-axis="x"
+                    data-state={state}
+                    {...dragProps(p)}
+                    onContextMenu={(event) => {
+                      event.preventDefault();
+                      setMenu({ pane: p, x: event.clientX, y: event.clientY });
+                    }}
+                    onClick={() => {
+                      if (performance.now() < suppressClick.current) return;
+                      setScratchOpen(false);
+                      activate(p.id);
+                    }}
                   >
                     <header>
-                      <PaneLabel pane={p} />
+                      <PaneLabel pane={p} state={state} />
                       <span className="grid-folder">{basename(p.cwd)}</span>
                     </header>
                     <TerminalTile pane={p} store={store} />
                   </button>
-                ) : i === gridPanes.length ? (
-                  <button
-                    type="button"
-                    className="inactive-pane new-pane"
-                    key={`new-${i}`}
-                    onClick={newTab}
-                  >
-                    <Icon name="plus" size="lg" />
-                    New terminal
-                  </button>
-                ) : (
-                  <div className="inactive-pane" key={`empty-${i}`} />
                 );
               })}
             </div>
@@ -1276,32 +1777,53 @@ function App() {
             <div className="empty-state">
               <Icon name="terminal" size="lg" />
               <h3>{live.length ? "Choose a terminal" : "No open terminals"}</h3>
+              {parkedPanes.length > 0 && (
+                <p>
+                  {parkedPanes.length} parked{" "}
+                  {parkedPanes.length === 1 ? "terminal" : "terminals"} in the
+                  sidebar.
+                </p>
+              )}
               <button onClick={newTab}>
                 <Icon name="plus" size="sm" />
                 New terminal
               </button>
             </div>
           ) : null}
-          {view === "grid" && !focused && live.length > PAGE && (
-            <div className="pagination grid-pages">
-              <button
-                className="icon-btn"
-                aria-label="Previous page"
-                disabled={!page}
-                onClick={() => setPage(page - 1)}
-              >
-                <Icon name="chevron-right" size="sm" className="flip" />
-              </button>
-              {page + 1}/{Math.ceil(live.length / PAGE)}
-              <button
-                className="icon-btn"
-                aria-label="Next page"
-                disabled={(page + 1) * PAGE >= live.length}
-                onClick={() => setPage(page + 1)}
-              >
-                <Icon name="chevron-right" size="sm" />
-              </button>
-            </div>
+          {scratchOpen && scratchPane && !bare && (
+            <section
+              className="grid-pane scratch-overlay"
+              role="region"
+              aria-label="Scratch terminal"
+            >
+              {paneHeader(
+                scratchPane,
+                <button
+                  type="button"
+                  className="icon-btn"
+                  title="Hide the scratch popup; it keeps running (Ctrl-B c)"
+                  aria-label="Hide scratch terminal"
+                  onClick={(event) => {
+                    event.stopPropagation();
+                    setScratchOpen(false);
+                    focusTerminal();
+                  }}
+                >
+                  <Icon name="chevron-down" size="sm" />
+                </button>,
+              )}
+              <Terminal
+                pane={scratchPane}
+                store={store}
+                active
+                layout="tabs"
+                onActivate={() => {}}
+                onError={fail}
+                find={findPane === scratchPane.id}
+                findQuery={findQuery}
+                onCloseFind={() => setFindPane(0)}
+              />
+            </section>
           )}
         </div>
         {!bare && (
@@ -1309,36 +1831,44 @@ function App() {
             username={connection?.username || ""}
             workspace={workspace}
             count={live.length}
+            parked={parkedPanes.length}
             vitals={vitals}
             hint={hint}
+            showVitals={!showRail || preferences.sidebarFolded}
             onStats={() => setDialog("stats")}
           />
         )}
         {keyManagement}
+        {menu && (
+          <PaneMenu
+            pane={menu.pane}
+            x={menu.x}
+            y={menu.y}
+            parked={parkedSet.has(menu.pane.id)}
+            items={menuItems(menu.pane)}
+            onClose={() => setMenu(null)}
+          />
+        )}
         {dialog && (
           <div
             className={`modal-shade ${dialog === "config" ? "settings-shade" : ""}`}
             onMouseDown={(e) => {
-              if (e.target === e.currentTarget) setDialog("");
+              if (e.target === e.currentTarget) closeDialog();
             }}
           >
             <section
-              className={`modal ${dialog === "stats" ? "stats-modal" : ""} ${dialog === "config" ? "config-modal" : ""}`}
+              className={`modal ${dialog === "stats" ? "stats-modal" : ""} ${dialog === "config" ? "config-modal" : ""} ${dialog !== "stats" && dialog !== "config" ? "panel-modal" : ""} ${dialog === "overview" ? "wide-modal" : ""}`}
               role="dialog"
               aria-modal="true"
               aria-labelledby="modal-title"
+              data-dialog={dialog}
             >
               <header>
-                <h2 id="modal-title">
-                  {{ config: "Settings", stats: "System status" }[dialog]}
-                </h2>
+                <h2 id="modal-title">{dialogTitles[dialog] || dialog}</h2>
                 <button
                   className="icon-btn"
                   aria-label="Close dialog"
-                  onClick={() => {
-                    setDialog("");
-                    setQuery("");
-                  }}
+                  onClick={closeDialog}
                 >
                   <Icon name="x" />
                 </button>
@@ -1354,6 +1884,8 @@ function App() {
                   confirmClose={confirmClose}
                   setConfirmClose={setConfirmClose}
                   keyContent={keySettings("settings")}
+                  preferences={preferences}
+                  setPreferences={setPreferences}
                 />
               )}
               {dialog === "stats" && (
@@ -1364,6 +1896,103 @@ function App() {
                   setQuery={setQuery}
                 />
               )}
+              {dialog === "agents" && (
+                <AgentsPanel
+                  panes={all}
+                  parked={parkedSet}
+                  notifications={notifications}
+                  filter={agentFilter}
+                  setFilter={setAgentFilter}
+                  onOpen={(p) => {
+                    closeDialog();
+                    openPane(p);
+                  }}
+                />
+              )}
+              {dialog === "notifications" && (
+                <NotificationsPanel
+                  panes={all}
+                  parked={parkedSet}
+                  notifications={notifications}
+                  onAcknowledge={acknowledge}
+                  onOpen={(p) => {
+                    closeDialog();
+                    openPane(p);
+                  }}
+                />
+              )}
+              {dialog === "overview" && (
+                <OverviewPanel
+                  panes={all}
+                  parked={parkedSet}
+                  notifications={notifications}
+                  leases={store.leases}
+                  client={store.session?.client}
+                  onOpen={(p) => {
+                    closeDialog();
+                    openPane(p);
+                  }}
+                />
+              )}
+              {dialog === "recovery" && (
+                <RecoveryPanel
+                  rpc={rpc}
+                  onCopy={(text) =>
+                    navigator.clipboard
+                      ?.writeText(text)
+                      .then(() => toast("Command copied", { key: "copy" }))
+                      .catch(fail)
+                  }
+                  onRestored={(id, existing) => {
+                    closeDialog();
+                    toast(
+                      existing
+                        ? "This conversation is already open"
+                        : "Restored in a new terminal",
+                      { key: "restore" },
+                    );
+                    const pane = all.find((p) => p.id === id);
+                    if (pane) openPane(pane);
+                    else activate(id);
+                  }}
+                />
+              )}
+              {dialog === "search" && (
+                <SearchPanel
+                  panes={all}
+                  focused={focusedPane()}
+                  rpc={rpc}
+                  onOpen={(p, text) => {
+                    closeDialog();
+                    openPane(p);
+                    setFindPane(0);
+                    requestAnimationFrame(() => openFind(p.id, text));
+                  }}
+                />
+              )}
+              {dialog === "parked" && (
+                <ParkedPanel
+                  panes={parkedPanes}
+                  notifications={notifications}
+                  onUnpark={(p) => {
+                    closeDialog();
+                    unpark(p);
+                  }}
+                  onClose={close}
+                />
+              )}
+              {dialog === "move" && (
+                <MovePanel
+                  panes={live}
+                  source={focusedPane()}
+                  onMove={(before) => {
+                    const source = focusedPane();
+                    closeDialog();
+                    if (source) move(source.id, before);
+                  }}
+                />
+              )}
+              {dialog === "help" && <HelpPanel />}
             </section>
           </div>
         )}

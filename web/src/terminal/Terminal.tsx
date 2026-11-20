@@ -126,6 +126,7 @@ export function Terminal({
   onActivate,
   onError,
   find = false,
+  findQuery = "",
   onCloseFind = () => {},
 }: {
   pane: Pane;
@@ -135,6 +136,8 @@ export function Terminal({
   onActivate: () => void;
   onError: (e: any) => void;
   find?: boolean;
+  /** Initial query when find opens. */
+  findQuery?: string;
   onCloseFind?: () => void;
 }) {
   const canvas = useRef<HTMLCanvasElement>(null),
@@ -735,6 +738,7 @@ export function Terminal({
         <PaneFind
           store={store}
           pane={pane.id}
+          initialQuery={findQuery}
           onError={onError}
           onClose={onCloseFind}
           onReveal={(match) => {

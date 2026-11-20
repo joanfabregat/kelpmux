@@ -1,6 +1,6 @@
 # Web client
 
-KelpMux includes an optional browser client for the same persistent workspaces as the TUI. It is terminals only: tabs, a live grid, search, selection and copy, links, and settings for appearance, keyboard shortcuts and security keys. It has no projects, file browser, editor, Git views or uploads; those belong to KelpHub. [ADR 0003](adr/0003-web-client-in-kelpmux.md) records why it lives here and what it must not become.
+KelpMux includes an optional browser client for the same persistent workspaces as the TUI. It is terminals only, with the TUI's feature set adapted to the browser (see [Feature parity with the TUI](#feature-parity-with-the-tui)): a left sidebar of terminals with agent state, a live grid, parking, the scratch terminal, agents, notifications, recently closed terminals, overview, search, selection and copy, links, and settings for appearance, alerts, keyboard shortcuts and security keys. It has no projects, file browser, editor, Git views or uploads; those belong to KelpHub. [ADR 0003](adr/0003-web-client-in-kelpmux.md) records why it lives here and what it must not become.
 
 The browser signs in with a hardware security key (WebAuthn) and runs OpenSSH itself, compiled to WebAssembly. The SSH session ends in the browser; nothing on the server side ever holds the session keys or a private key.
 
@@ -17,7 +17,7 @@ browser ── HTTPS + WSS ──▶ kelpmux web-relay ── TCP ──▶ sshd
 - `kelpmux web-relay --config PATH`: serves the embedded static assets and forwards WebSocket binary bytes to one operator-configured SSH destination. It has no key enrollment API, holds no SSH private key, never terminates SSH and has no code path to a workspace socket. Before forwarding the server's first SSH reply it checks that the host key matches the configured `ssh_host_key`; browser OpenSSH verifies the same key and its signature independently.
 - `kelpmux web-bridge --workspace NAME`: run by OpenSSH as the authenticated Linux user, without a PTY. It connects to that workspace's existing private socket, checks that the peer is a process of the same user and stays bound to that process, then relays the independent pane stream plus a small set of request-correlated operations. It never listens on TCP and never starts, stops or restarts a workspace server. If no workspace server is running, it fails.
 
-The `Web` operations the bridge accepts are `state`, `new` (a shell in a new pane, optionally in a given absolute directory), `close` (explicitly confirmed), `search`, `history` and `status` (system status and processes). Stream requests are forwarded unchanged, except notification acknowledgements, which stay with the TUI. Every other method is refused with `unsupported web operation`.
+The `Web` operations the bridge accepts (API version 2) are `state`, `new` (a shell in a new pane, optionally in a given absolute directory), `close` (explicitly confirmed), `search`, `history`, `status` (system status and processes), `scratch` (create the workspace's scratch terminal without changing the TUI's view; needs the server's `scratch-create` capability), `closed` (the recently closed terminals and previous runs the TUI's Recovery lists, with their restore choices) and `restore` (explicitly confirmed: resume an agent conversation, rerun a command or open a shell in the original folder, in a new pane through the idempotent `pane-spawn` request). Stream requests, notification acknowledgements included, are forwarded unchanged; read marks are shared with the TUI. Every other method is refused with `unsupported web operation`. A version 2 web build refuses a version 1 bridge (and the reverse) with a message asking for matching versions.
 
 ## Security boundaries
 
@@ -101,7 +101,9 @@ Register and authorize each physical key separately. Settings → Security keys 
 
 The TUI and the web client are independent clients of the same KelpServer. You can use the TUI alone, the web alone, or both at once on the same panes and processes:
 
-- Layout is per client. The TUI keeps its grid, tabs, parking and focus; each browser keeps its own view mode, tab order and focused terminal in `localStorage` (per workspace, discarded when the server restarts with a new epoch). Neither changes the other's layout. Panes parked in the TUI appear in the browser with a "parked" badge and stay parked in the TUI.
+- Layout is per client. The TUI keeps its grid, tabs, parking and focus; each browser keeps its own view mode, terminal order, parked terminals, focused terminal, sidebar width and folding in `localStorage` (layout per workspace, discarded when the server restarts with a new epoch). Neither changes the other's layout. Parking in the browser hides a terminal from this browser's list and grid only; it keeps running and stays visible in the TUI. Panes parked in the TUI appear in the browser with a "parked in TUI" badge and stay parked in the TUI.
+- Notification read marks are shared. Showing a terminal in the browser marks its notifications read, as focusing it does in the TUI, and the Notifications dialog's **Mark read** acknowledges them for every client. Sound and desktop alerts are this browser's own preferences (Settings → Notifications), off by default.
+- The scratch terminal is the workspace's one scratch pane, shared with the TUI. The browser shows it as a popup over its terminals; opening it there does not open it in the TUI.
 - Creating or closing a terminal is shared: a new pane appears in every client, and closing one (always confirmed) ends its processes for everyone.
 - Input and size follow whichever client last used a pane. When a browser focuses a terminal or types into it, it claims that pane's input and size lease and resizes the PTY to its own view. When the TUI's controlling client then types, pastes, clicks or focuses that pane, the TUI takes it back and the pane returns to the TUI's geometry. The live grid is a foreground layout too: while the browser window is focused and visible, it sizes each tile's pane to that tile (claiming it), so opening the grid in a browser resizes the panes it shows until the TUI uses them again. Passive rendering in a background window, mouse movement, window blur and focus-out never take a pane. Each pane has exactly one PTY size; a client that does not hold the lease shows the pane clipped or padded. Different panes can be held by different clients at the same time.
 - The status bar says whether this browser holds the focused terminal. Closing the browser or losing the connection releases its leases; terminals keep running and return to the TUI's geometry.
@@ -111,7 +113,50 @@ Other same-origin tabs and **Open in a window** popups reuse the SSH connection 
 
 ## Keyboard
 
-`Ctrl-B` is the browser's prefix, as in the TUI: `Enter` new terminal, `z` toggle one terminal / live grid, `g` live grid, `n`/`p` next/previous terminal, `x` close (confirmed), `/` find, `,` settings, `d` disconnect, and `Ctrl-B` twice sends `Ctrl-B` to the terminal. `Alt+1`…`Alt+0` open terminals 1–10, `Alt+Tab` toggles the view, `Ctrl/Cmd+F` finds in the focused terminal. Every other key goes to the focused terminal with full modifier and Kitty keyboard-protocol support. Settings → Keyboard lists these bindings. The TUI's own bindings and configuration file are unchanged.
+`Ctrl-B` is the browser's prefix, and the keys after it follow the TUI's default bindings wherever the browser has the same action: `Enter` new terminal, `Tab`/`Shift+Tab` next/previous terminal, `1`…`9` terminal by number, `g`/`e` live grid, `f` full width (the focused terminal without the sidebar, the TUI's fullscreen), `h`/`j`/`k`/`l` or arrows move the grid focus, `PgUp`/`PgDn` grid pages, `N` next question, `P` next completion, `a` agents, `!` agents needing attention, `n` finished agents, `b` notifications, `o` overview, `r` recently closed, `z` reopen the last closed terminal, `/` search terminal history, `c` scratch terminal, `p` park, `u` parked terminals, `s` move, `x` close (confirmed), `,` settings, `?` help, `d` disconnect, and `Ctrl-B` twice sends `Ctrl-B` to the terminal. Outside the prefix, `Alt+1`…`Alt+0` open terminals 1–10, `Alt+Tab` or `Ctrl/Cmd+Shift+G` toggle one terminal / live grid, and `Ctrl/Cmd+F` finds in the focused terminal. Every other key goes to the focused terminal with full modifier and Kitty keyboard-protocol support. Settings → Keyboard and Help list these bindings. The TUI's own bindings and configuration file are unchanged; custom TUI bindings are not read by the browser.
+
+The mouse covers the rest: click a sidebar row to open a terminal, drag rows (or grid tile headers) to reorder, right-click a row or tile for its menu (open, open in a window, find, move up/down, park/unpark, close), middle-click a row to close it, click the sidebar's state counts to jump to the next terminal in that state, and click or drag the sidebar's edge to fold or resize it.
+
+## Feature parity with the TUI
+
+The browser has the TUI's feature set adapted to web conventions. Status: **done** existed before this work; **added** is implemented in the parity branch; **deferred** gives the reason.
+
+| TUI feature | Web equivalent | Status |
+| --- | --- | --- |
+| Left tab sidebar with numbers, tab colours, agent state marks, provider and folder | Sidebar terminal list in this browser's order with number, TUI tab colour (read-only), state mark, provider logo, title and folder | added |
+| Sidebar resize and fold | Drag or click the sidebar edge; Settings → Notifications → Sidebar; saved per browser | added |
+| Workspace state counts in the sidebar | State counts beside the workspace name; click to jump to the next terminal in that state | added |
+| Vitals in the sidebar footer, status/process view | Sidebar footer meters (status bar while folded or full width); System status dialog with processes | added (dialog done) |
+| Tabs view / reading one pane (`Ctrl-B 1`…`9`, `Tab`) | One-terminal view; `Ctrl-B` digits, `Tab`/`Shift+Tab`, `Alt` digits | done; TUI keys added |
+| Fullscreen (`Ctrl-B f`) | Full width: focused terminal without the sidebar | added |
+| Grid (`Ctrl-B g`/`e`), grid focus `h`/`j`/`k`/`l`, pages | Live grid with pages, focus ring and `h`/`j`/`k`/`l`/arrow focus | done; focus keys added |
+| Grid swap by dragging | Drag tile headers to reorder | added |
+| Grid tile weights (`Ctrl-B H`/`J`/`K`/`L`) | Equal tiles | deferred: the web grid sizes tiles to the window; per-tile weights are a separate layout model |
+| New tab, close tab (confirmed) | New terminal; close confirmed | done |
+| Park / unpark, parked list (`p`, `u`) | Park from the row, tile header, menu or `Ctrl-B p`; collapsible Parked section and Parked dialog (`Ctrl-B u`) | added (per browser) |
+| Move picker (`s`), drag reorder | Move dialog (`Ctrl-B s`), drag rows, menu Move up/down | added |
+| Agents list with all / attention / finished filters (`a`, `!`, `n`) | Agents dialog with the same filters | added |
+| Next question / next completion (`N`, `P`) | Same keys; also the sidebar state counts | added |
+| Attention markers and finished markers | State marks in rows, tiles, top bar; tab title count | added |
+| Notifications list, acknowledge, acknowledge all, history (`b`) | Notifications dialog: unread / all, mark read, mark all read, open | added |
+| Notification sound toggle | Sound and desktop alerts per browser | added |
+| Focusing a pane marks its notifications read | Showing a terminal acknowledges its unread notifications | added |
+| Scratch popup (`c`) | Scratch popup over the terminals, sidebar row, top bar button | added |
+| Recovery: recently closed and previous runs, copy command, reopen / rerun / folder (`r`) | Recently closed dialog with copy and resume / rerun / folder | added |
+| Reopen last closed (`z`) | `Ctrl-B z` | added |
+| Workspace search with focused / all scope (`/`) | Search dialog (Tab toggles scope); a hit opens the terminal with find prefilled | added |
+| Find in pane | `Ctrl/Cmd+F`, find bar | done |
+| Overview (`o`) | Overview dialog (state, provider, conversation, folder, lease owner) | added |
+| Help (`?`) | Help dialog with the bindings | added |
+| Settings (`,`): accent, tab position, wrap, prefix, bindings | Settings: appearance, theme, font, alerts, sidebar, keyboard list, security keys, browser session | done; alerts added. TUI-only display settings (accent, tab position, wrap, custom prefix) do not apply to the browser |
+| Selection mode (`Space`), scroll mode (`[`), copy (`y`) | Mouse selection and copy, Shift+drag, wheel and Shift+wheel history | done (mouse); keyboard selection/scroll modes deferred: rarely needed with a mouse |
+| Agent link picker (`i`) | None | deferred: it links discovered conversations to panes through TUI dialogs; needs a bridge operation of its own |
+| Tab colour picker | Colour shown read-only | deferred: no stream operation sets it, and it is TUI layout state |
+| Detach (`d`) | Disconnect (`Ctrl-B d`) | done |
+| Takeover (`t`), controller / observer | Per-pane input and size leases | not applicable: browsers never hold the TUI controller role |
+| Templates, startup commands | None | deferred: they are CLI startup options |
+| `ssh-entry` (start the workspace server if needed, then attach) | Sign in, then attach to a running workspace | deferred by design: the bridge must never start or restart a server; start it with `kelpmux` or `kelpmux ssh-entry` on the host first |
+| Mobile layout | None | out of scope |
 
 ## Reusable terminal component
 
@@ -119,7 +164,9 @@ Other same-origin tabs and **Open in a window** popups reuse the SSH connection 
 
 ## Current limits
 
-- Up to eight terminals are shown per grid page (the stream allows ten subscriptions per connection, shared with popups); larger workspaces page.
+- Up to eight terminals are shown per grid page (the stream allows ten subscriptions per connection, shared with the scratch popup and popups); larger workspaces page.
 - Panes cannot be renamed or split from the web: KelpServer has no rename operation, and its layout is automatic. Pane titles follow the running program.
-- History search uses the server's bounded literal search (64 matches); older history pages are plain text.
+- History search uses the server's bounded literal search (64 matches per terminal); the Search dialog searches at most 32 terminals and shows at most 200 hits. Older history pages are plain text.
+- Restoring a closed terminal from the browser does not remove it from the TUI's Recently closed list (the server owns that file); restoring an agent conversation that is already open opens the existing terminal instead.
+- Notification state for a pane is matched by pane and process ID; the browser does not see the server's run identifier, so a notification from a previous server run whose pane and process IDs both recur could be shown until it is read.
 - Real hardware-key and Safari behaviour need manual acceptance; automated tests use virtual authenticators only where noted.

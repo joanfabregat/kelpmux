@@ -25,4 +25,16 @@ ADR 0002 established the browser architecture this decision keeps: browser-termi
 - The public repository now carries a JavaScript dependency graph (React, Vite, TypeScript, Playwright for tests) and pinned third-party WASSH/OpenSSH WASM assets. CI builds the WASM core, fetches and verifies the SSH assets, installs locked npm dependencies without scripts, audits them, runs unit and WASM tests, type-checks, builds and embeds the result. The OpenSSL copy inside the upstream OpenSSH WASM archive still needs its own review before exposure beyond private networks.
 - Creating and closing terminals from the browser affects every client; this is shared state by nature. The browser's close goes through the server's existing confirmation step and returns the pane's lease first.
 - Renaming and splitting panes are not offered: the server has no rename operation and its layout is automatic. Adding them would be a protocol change for a later decision.
-- The bridge's `Web` request API is versioned (`api_version` 1) and deliberately small. KelpHub's management bridge remains separate; the two share only the stream protocol and the terminal component.
+- The bridge's `Web` request API is versioned (`api_version` 1, then 2 after the addendum below) and deliberately small. KelpHub's management bridge remains separate; the two share only the stream protocol and the terminal component.
+
+## Addendum: TUI feature parity in the browser
+
+Date: 2026-11-20 (America/Los_Angeles).
+
+The owner asked for the web client to offer the TUI's feature set, adapted to the browser, with the same general interface (left sidebar, grid). This refines decision 6: the web client gains equivalents of existing TUI features; it still adds no product features of its own, and the TUI is unchanged. The [parity table](../web.md#feature-parity-with-the-tui) lists each TUI feature, its browser equivalent and what is deferred.
+
+- Layout stays per client. Browser parking, terminal order, sidebar width and folding, and alert preferences are stored per browser in `localStorage`; they never change the TUI's layout, and KelpMux still has no database for web state.
+- Notification read marks are workspace state, shared with the TUI. The bridge now forwards the stream's existing notification acknowledgements instead of refusing them.
+- The bridge's `Web` API moves to version 2 with three operations: `scratch`, `closed` and `restore`. Recovery reads the same private history file as the TUI and restores through the existing idempotent `pane-spawn` request; it does not drive TUI dialogs or change the TUI's view.
+- Creating the scratch terminal without showing it needed one server change: a `ScratchCreate` action, advertised to stream clients through a new `scratch-create` capability. It is additive. The composed TUI protocol stays at version 58 and the stream at version 1; TUI clients never send the action, older servers lack the capability and the bridge then refuses `scratch` with a clear error, and KelpHub's pinned revision ignores unknown capabilities.
+- The bridge still never starts or restarts a workspace server, so the TUI's `ssh-entry` behaviour (start the server if needed, then attach) has no browser equivalent; the server must already run.

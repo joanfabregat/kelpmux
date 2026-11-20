@@ -1344,34 +1344,22 @@ impl Server {
                 self.persist_geometry()?;
             }
             Action::Scratch => {
-                let dead = self
-                    .workspace
-                    .ui
-                    .scratch
-                    .is_some_and(|id| self.panes.get(&id).is_none_or(|pane| pane.dead));
-                if dead {
-                    if let Some(id) = self.workspace.ui.scratch.take() {
-                        self.panes.remove(&id);
-                        self.workspace.panes.retain(|pane| pane.id != id);
-                    }
-                    self.workspace.ui.scratch_visible = false;
-                }
-                if self.workspace.ui.scratch.is_none() {
-                    let active = self.workspace.active;
-                    self.spawn_pane(None)?;
-                    let id = self
-                        .workspace
-                        .panes
-                        .last()
-                        .ok_or("scratch creation failed")?
-                        .id;
-                    self.workspace.ui.scratch = Some(id);
-                    if let Some(pane) = self.workspace.panes.last_mut() {
-                        pane.title = "Scratch terminal".into();
-                    }
-                    self.workspace.active = active;
-                }
+                self.create_scratch()?;
                 self.workspace.apply(action)?;
+            }
+            Action::ScratchCreate => {
+                // An independent client creates the scratch terminal without
+                // showing it in, or otherwise changing, the composed view.
+                if self.workspace.ui.scratch_visible
+                    && self
+                        .workspace
+                        .ui
+                        .scratch
+                        .is_some_and(|id| self.panes.get(&id).is_none_or(|pane| pane.dead))
+                {
+                    self.workspace.apply(&Action::ScratchClose)?;
+                }
+                self.create_scratch()?;
             }
             Action::Acknowledge(id) => {
                 self.activity.acknowledge(*id)?;
@@ -1531,6 +1519,38 @@ impl Server {
         self.persist_ui()?;
         self.resize();
         Ok(true)
+    }
+    /// Replaces a dead scratch terminal and creates one when none exists,
+    /// keeping the active pane. Showing it is the caller's decision.
+    fn create_scratch(&mut self) -> Result<()> {
+        let dead = self
+            .workspace
+            .ui
+            .scratch
+            .is_some_and(|id| self.panes.get(&id).is_none_or(|pane| pane.dead));
+        if dead {
+            if let Some(id) = self.workspace.ui.scratch.take() {
+                self.panes.remove(&id);
+                self.workspace.panes.retain(|pane| pane.id != id);
+            }
+            self.workspace.ui.scratch_visible = false;
+        }
+        if self.workspace.ui.scratch.is_none() {
+            let active = self.workspace.active;
+            self.spawn_pane(None)?;
+            let id = self
+                .workspace
+                .panes
+                .last()
+                .ok_or("scratch creation failed")?
+                .id;
+            self.workspace.ui.scratch = Some(id);
+            if let Some(pane) = self.workspace.panes.last_mut() {
+                pane.title = "Scratch terminal".into();
+            }
+            self.workspace.active = active;
+        }
+        Ok(())
     }
     fn close_pane(&mut self, id: PaneId) -> Result<()> {
         self.tui_write_allowed(id)?;
