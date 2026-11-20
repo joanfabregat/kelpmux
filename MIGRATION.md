@@ -18,7 +18,7 @@ Unfiltered original development refs and private web files must never be pushed 
 
 The TUI still uses the composed-screen protocol and server-side layout/rendering compatibility implementation. Moving that implementation client-side would be a separate architecture change. Package names and executable names remain unchanged. The local terminal protocol remains version 58 and terminal stream remains version 1. Existing XDG paths, workspace identities, SSH authentication, ownership and recovery semantics remain unchanged. No runtime state migration, release or deployment is part of source consolidation.
 
-KelpHub owns authenticated management, uploads, browser code and application hosting. It pins a single immutable KelpMux Git revision for its Rust server dependency and WASM source checkout. Its web host supplies embedded assets to the public generic relay. The relay contains no KelpHub asset bundle or enrollment API. Workspace and file operations require SSH authentication.
+KelpHub owns authenticated management, uploads, its browser application and its hosting. KelpMux contains a terminals-only browser client (`web/`, `kelpmux web-bridge`, `kelpmux web-relay`; see [ADR 0003](docs/adr/0003-web-client-in-kelpmux.md)) whose `web/src/terminal/` component KelpHub may consume at a pinned revision. It pins a single immutable KelpMux Git revision for its Rust server dependency and WASM source checkout. Its web host supplies embedded assets to the public generic relay. The relay contains no KelpHub asset bundle or enrollment API. Workspace and file operations require SSH authentication.
 
 ## Build and validation
 
@@ -26,4 +26,4 @@ From this workspace, run `cargo build --workspace --release --locked`, `cargo te
 
 Install `kelpserver` beside `kelpmux`, or set `KELPSERVER_BINARY` explicitly. `kelpmux start` and `ssh-entry` launch the standalone server; `attach` connects without owning its PTY lifetime. Explicit `--server-binary` remains supported. `kelpmux server` remains a compatibility dispatch. For a standalone daemon the client authenticates the live peer and checks protocol compatibility instead of trying to execute the server as a TUI.
 
-KelpHub builds the same client crate to WASM, validates its web assets and embeds them in its executable. Web hosting and `web-bridge` use the KelpHub binary. A compatible web-role restart can preserve terminal processes; a terminal-daemon restart ends its shells/jobs. Permanent hosting and beta promotion remain separate tasks.
+KelpHub builds the same client crate to WASM, validates its web assets and embeds them in its executable. KelpHub web hosting and its management `web-bridge` use the KelpHub binary; the KelpMux web client uses `kelpmux web-relay` and `kelpmux web-bridge`. A compatible web-role restart can preserve terminal processes; a terminal-daemon restart ends its shells/jobs. Permanent hosting and beta promotion remain separate tasks.

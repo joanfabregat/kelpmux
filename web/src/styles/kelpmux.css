@@ -1,0 +1,157 @@
+/* KelpMux web shell: top bar, terminals and a TUI-like status footer. */
+.kelpmux-shell {
+  display: flex;
+  width: 100%;
+  height: 100dvh;
+  overflow: hidden;
+  background: var(--bg);
+}
+.kelpmux-shell.bare .grid-pane {
+  border: 0;
+  border-radius: 0;
+}
+.topbar .logo {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--s2);
+  margin-right: var(--s2);
+}
+.term-tabs {
+  flex: 1;
+}
+.tab-number {
+  color: var(--text-3);
+  font-variant-numeric: tabular-nums;
+}
+
+/* Live KelpServer status of a pane: colour and shape. */
+.status-dot {
+  display: inline-block;
+  flex: none;
+  width: 8px;
+  height: 8px;
+  border: 1.5px solid var(--st-idle);
+  border-radius: 50%;
+}
+.status-dot.status-working {
+  border-color: var(--st-working);
+  border-top-color: transparent;
+  animation: kelpmux-spin 1.2s linear infinite;
+}
+.status-dot.status-waiting_background {
+  border-color: var(--st-working);
+  border-style: dashed;
+}
+.status-dot.status-input_needed {
+  border-color: var(--st-input);
+  background: var(--st-input);
+  border-radius: 2px;
+  transform: rotate(45deg);
+}
+.status-dot.status-turn_finished {
+  border-color: var(--st-done);
+  background: var(--st-done);
+}
+.status-dot.status-failed {
+  border-color: var(--st-failed);
+  background: var(--st-failed);
+  border-radius: 1px;
+}
+.status-dot.status-exited {
+  border-style: dotted;
+}
+@keyframes kelpmux-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .status-dot.status-working {
+    animation: none;
+  }
+}
+.state-badge.state-input_needed {
+  color: var(--st-input);
+}
+.state-badge.state-failed {
+  color: var(--st-failed);
+}
+.state-badge.state-turn_finished {
+  color: var(--st-done);
+}
+.state-badge.state-working,
+.state-badge.state-waiting_background {
+  color: var(--st-working);
+}
+.parked-badge,
+.kind-badge {
+  color: var(--text-3);
+}
+
+.grid-pages {
+  position: absolute;
+  right: var(--s3);
+  bottom: var(--s2);
+  padding: 2px var(--s2);
+  border-radius: var(--r-sm);
+  background: var(--surface-2);
+}
+
+/* Footer: account, terminal count and hint left; vitals right. */
+.status-bar {
+  display: flex;
+  align-items: center;
+  gap: var(--s3);
+  flex: none;
+  min-width: 0;
+  padding: 3px var(--s3);
+  border-top: 1px solid var(--line);
+  background: var(--surface-1);
+  color: var(--text-3);
+  font-size: var(--fs-xs);
+  white-space: nowrap;
+}
+.status-bar .spacer {
+  flex: 1;
+}
+.status-bar .status-hint {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.vitals-line {
+  display: inline-flex;
+  gap: var(--s3);
+  min-height: 0;
+  padding: 0 var(--s1);
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font-size: inherit;
+  font-weight: 400;
+}
+.vitals-line:hover:not(:disabled) {
+  filter: none;
+  background: var(--surface-3);
+}
+.vitals-line .vital {
+  display: inline;
+}
+.vitals-line .vital.warn b {
+  color: var(--st-failed);
+}
+
+.shortcut-table {
+  border-collapse: collapse;
+  font-size: var(--fs-sm);
+}
+.shortcut-table th,
+.shortcut-table td {
+  padding: 4px var(--s3) 4px 0;
+  text-align: left;
+  font-weight: 400;
+  vertical-align: top;
+}
+.shortcut-table kbd {
+  font-family: var(--font-mono);
+  white-space: nowrap;
+}

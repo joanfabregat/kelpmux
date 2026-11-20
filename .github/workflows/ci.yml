@@ -117,6 +117,43 @@ jobs:
       - run: rustup toolchain install 1.99.0 --profile minimal --target wasm32-unknown-unknown
       - run: cargo +1.99.0 fetch --locked
       - run: cargo +1.99.0 build --locked --offline -p kelpclient --release --target wasm32-unknown-unknown
+  web:
+    name: Web client (locked npm, WASM core, embedded relay assets)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38
+        with:
+          node-version: '24'
+      - run: rustup toolchain install 1.99.0 --profile minimal --target wasm32-unknown-unknown
+      - run: cargo +1.99.0 fetch --locked
+      - name: Build the shared terminal core for the browser
+        run: |
+          cargo +1.99.0 build --locked --offline -p kelpclient --release --target wasm32-unknown-unknown
+          cp target/wasm32-unknown-unknown/release/kelpclient.wasm web/public/client-core.wasm
+      - name: Fetch pinned SSH assets without executing them
+        run: bash scripts/fetch-web-ssh.sh
+      - name: Fetch and audit web dependencies
+        working-directory: web
+        run: |
+          npm ci --ignore-scripts
+          npm audit --audit-level=high
+      - name: Validate and build web assets
+        working-directory: web
+        run: |
+          npm test
+          npm run check
+          npm run build
+      - name: Build kelpmux with the embedded web client
+        run: |
+          cargo +1.99.0 build --locked --offline --release --bin kelpmux
+          # The relay must find its assets; it then fails only on the missing configuration.
+          if ./target/release/kelpmux web-relay --config /nonexistent/web.json 2> relay.err; then exit 1; fi
+          cat relay.err
+          ! grep -q 'no web client assets' relay.err
   dependencies:
     runs-on: ubuntu-24.04
     timeout-minutes: 15

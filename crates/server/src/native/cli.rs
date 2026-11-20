@@ -6,7 +6,7 @@ use super::{
 };
 use crate::Result;
 use std::path::{Path, PathBuf};
-pub const HELP: &str = "KelpServer: server | start | status | stop | ctl | recover | diagnostics | templates | benchmark | bridge | stream-inspect | web-relay --config PATH. Use KelpMux for attach and KelpHub for web-bridge.";
+pub const HELP: &str = "KelpServer: server | start | status | stop | ctl | recover | diagnostics | templates | benchmark | bridge | stream-inspect | web-relay --config PATH. Use KelpMux for attach, web-bridge and the browser client relay.";
 struct Options {
     socket: PathBuf,
     state: PathBuf,

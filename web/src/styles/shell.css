@@ -1,0 +1,858 @@
+/* Application shell: navigation rail, top bar and the terminal area. */
+.hub-shell {
+  display: flex;
+  width: 100%;
+  height: 100dvh;
+  overflow: hidden;
+  background: var(--bg);
+}
+.rail-wrap {
+  display: flex;
+  flex: none;
+}
+
+/* ───────── Rail ───────── */
+.rail {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  width: var(--rail);
+  min-height: 0;
+  background: var(--surface-1);
+  border-right: 1px solid var(--line);
+}
+.rail-head {
+  display: flex;
+  align-items: center;
+  gap: var(--s2);
+  height: var(--topbar);
+  flex: none;
+  padding: 0 var(--s3) 0 var(--s4);
+  border-bottom: 1px solid var(--line);
+}
+.logo {
+  display: flex;
+  flex: 1;
+  align-items: center;
+  gap: var(--s2);
+  min-width: 0;
+  font-size: var(--fs-lg);
+  font-weight: 700;
+  letter-spacing: -0.01em;
+}
+.logo-mark {
+  display: grid;
+  place-items: center;
+  flex: none;
+  width: 22px;
+  height: 22px;
+  border-radius: 6px;
+  background: linear-gradient(
+    140deg,
+    var(--accent),
+    color-mix(in srgb, var(--accent) 40%, var(--logo-shade))
+  );
+  color: var(--on-accent);
+}
+.rail-scroll {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: var(--s2) var(--s2) var(--s3);
+}
+.rail-label {
+  padding: var(--s3) var(--s2) var(--s1);
+  color: var(--text-3);
+  font-size: var(--fs-xs);
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+.rail-empty {
+  margin: var(--s1) var(--s2);
+  color: var(--text-3);
+  font-size: var(--fs-sm);
+}
+.nav-item {
+  display: flex;
+  align-items: center;
+  justify-content: flex-start;
+  gap: var(--s2);
+  width: 100%;
+  min-height: 30px;
+  padding: 0 var(--s2);
+  border: 0;
+  border-radius: var(--r-md);
+  background: transparent;
+  color: var(--text-2);
+  font-weight: 400;
+  text-align: left;
+}
+.nav-item:hover:not(:disabled) {
+  filter: none;
+  background: var(--surface-3);
+  color: var(--text);
+}
+.nav-item.current {
+  background: var(--accent-soft);
+  color: var(--text);
+}
+.nav-item .grow {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.nav-item .count {
+  color: var(--text-3);
+  font-size: var(--fs-xs);
+}
+.nav-row {
+  display: flex;
+  align-items: center;
+}
+.tree-toggle.icon-btn {
+  width: 22px;
+  height: 26px;
+  flex: none;
+}
+.project-item {
+  color: var(--text);
+  font-weight: 600;
+}
+.tree-children {
+  margin-left: 11px;
+  padding-left: var(--s2);
+  border-left: 1px solid var(--line);
+}
+/* A workspace (or Scratch) row and its Terminals, Files and Events. */
+.tree-workspace + .tree-workspace {
+  margin-top: 1px;
+}
+.workspace-item {
+  color: var(--text);
+}
+.nav-item.ancestor:not(.current) {
+  color: var(--text);
+  font-weight: 500;
+}
+.tree-entries {
+  display: grid;
+  gap: 1px;
+  margin-left: 11px;
+  padding: 1px 0 4px var(--s2);
+  border-left: 1px solid var(--line);
+}
+.entry-item {
+  min-height: 28px;
+  font-size: var(--fs-sm);
+}
+.entry-item .svg-icon {
+  flex: none;
+  color: var(--text-3);
+}
+.entry-item.current .svg-icon {
+  color: var(--accent);
+}
+.nav-item:disabled {
+  opacity: 0.5;
+}
+.rail-markers {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  gap: var(--s2);
+  margin-left: auto;
+}
+.rail-markers .state-counts {
+  flex-wrap: nowrap;
+  gap: 6px;
+}
+/* A row's button and the state shortcuts beside it, highlighted as one. */
+.nav-cell {
+  display: flex;
+  flex: 1;
+  align-items: center;
+  min-width: 0;
+  border-radius: var(--r-md);
+}
+.nav-cell > .nav-item,
+.nav-cell > .nav-item:hover:not(:disabled) {
+  flex: 1;
+  min-width: 0;
+  background: transparent;
+}
+.nav-cell:has(> .nav-item.current) {
+  background: var(--accent-soft);
+}
+.nav-cell:has(> .nav-item:not(:disabled)):hover {
+  background: var(--surface-3);
+}
+.nav-cell:has(> .nav-item:hover:not(:disabled)) > .nav-item {
+  color: var(--text);
+}
+.nav-cell > .rail-markers {
+  padding-right: var(--s1);
+}
+/* Each state count is a shortcut to the first session in that state. */
+button.rail-mark {
+  min-height: 0;
+  height: 22px;
+  padding: 0 3px;
+  border: 0;
+  border-radius: var(--r-sm);
+  background: transparent;
+  color: inherit;
+  font-weight: 400;
+  gap: 3px;
+}
+button.rail-mark:hover:not(:disabled) {
+  filter: none;
+  background: var(--surface-2);
+}
+.term-tab.landing,
+.grid-pane.landing {
+  outline: 2px dashed var(--accent);
+  outline-offset: -2px;
+  opacity: 0.7;
+}
+.rail-foot {
+  display: grid;
+  flex: none;
+  gap: var(--s2);
+  padding: var(--s3);
+  border-top: 1px solid var(--line);
+}
+.vitals {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: var(--s2);
+  min-height: 0;
+  padding: var(--s1);
+  border: 0;
+  background: transparent;
+  color: var(--text-3);
+  font-weight: 400;
+}
+.vitals:hover:not(:disabled) {
+  filter: none;
+  background: var(--surface-3);
+}
+.vital {
+  display: grid;
+  gap: 3px;
+  font-size: var(--fs-xs);
+  text-align: left;
+}
+.vital b {
+  color: var(--text-2);
+  font-weight: 500;
+}
+.meter {
+  height: 3px;
+  overflow: hidden;
+  border-radius: 2px;
+  background: var(--surface-3);
+}
+.meter i {
+  display: block;
+  height: 100%;
+  background: var(--text-3);
+}
+.meter i.warn {
+  background: var(--st-input);
+}
+.account {
+  display: flex;
+  justify-content: flex-start;
+  gap: var(--s2);
+  min-height: 0;
+  padding: var(--s1);
+  border: 0;
+  background: transparent;
+  color: var(--text);
+  font-weight: 400;
+  text-align: left;
+}
+.account:hover:not(:disabled) {
+  filter: none;
+  background: var(--surface-3);
+}
+.avatar {
+  display: grid;
+  place-items: center;
+  flex: none;
+  width: 26px;
+  height: 26px;
+  border-radius: 50%;
+  background: var(--surface-3);
+  font-size: var(--fs-sm);
+  font-weight: 600;
+}
+.account-name {
+  display: grid;
+  flex: 1;
+  min-width: 0;
+  line-height: 1.2;
+}
+.account-name b {
+  overflow: hidden;
+  font-weight: 600;
+  text-overflow: ellipsis;
+}
+.account-name small {
+  color: var(--text-3);
+}
+.account .key-glyph {
+  width: 20px;
+  height: 20px;
+  font-size: 12px;
+}
+.sidebar-divider {
+  position: absolute;
+  top: 0;
+  right: -4px;
+  bottom: 0;
+  z-index: 3;
+  width: 8px;
+  cursor: col-resize;
+  touch-action: none;
+}
+.sidebar-divider span {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 3px;
+  width: 2px;
+  background: transparent;
+  transition: background 0.12s;
+}
+.sidebar-divider:hover span,
+.sidebar-divider:active span {
+  background: var(--accent);
+}
+
+/* Folded rail: icons and the most urgent marks only. */
+.rail.folded .logo-text,
+.rail.folded .env-badge,
+.rail.folded .nav-item .grow,
+.rail.folded .nav-item .count,
+.rail.folded .rail-label,
+.rail.folded .rail-empty,
+.rail.folded .tree-project,
+.rail.folded .tree-toggle,
+.rail.folded .tree-entries,
+.rail.folded .rail-changes,
+.rail.folded .vitals,
+.rail.folded .account-name,
+.rail.folded .account .key-glyph,
+.rail.folded .account .svg-icon {
+  display: none;
+}
+.rail.folded .rail-head {
+  justify-content: center;
+  padding: 0;
+}
+.rail.folded .logo {
+  flex: none;
+}
+.rail.folded .nav-item {
+  justify-content: center;
+  padding: 0;
+}
+.rail.folded .nav-item .badge {
+  position: absolute;
+  margin: -16px 0 0 18px;
+}
+.rail.folded .account {
+  justify-content: center;
+}
+
+/* ───────── Main column and top bar ───────── */
+.app {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  background: var(--bg);
+}
+.topbar {
+  display: flex;
+  align-items: center;
+  gap: var(--s4);
+  height: var(--topbar);
+  flex: none;
+  padding: 0 var(--s3) 0 var(--s4);
+  background: var(--surface-1);
+  border-bottom: 1px solid var(--line);
+  /* The session bar hides the breadcrumb when both do not fit. */
+  container: topbar / inline-size;
+}
+.topbar .spacer {
+  flex: 1;
+}
+.crumbs {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  min-width: 0;
+  white-space: nowrap;
+}
+.crumb {
+  min-height: 28px;
+  padding: 0 6px;
+  border: 0;
+  border-radius: var(--r-sm);
+  background: transparent;
+  color: var(--text);
+  font-weight: 500;
+}
+.crumb:hover:not(:disabled) {
+  filter: none;
+  background: var(--surface-3);
+}
+.crumb.current-crumb {
+  display: inline-flex;
+  align-items: center;
+  font-weight: 600;
+}
+.crumb-sep {
+  color: var(--text-3);
+}
+.menu-anchor {
+  position: relative;
+}
+/* Sessions: one tab per session. The tabs scroll sideways instead of
+ * wrapping; New session, Recently closed and the view toggle stay put. */
+.term-tabs {
+  display: flex;
+  flex: 1 1 auto;
+  align-items: center;
+  align-self: stretch;
+  gap: 2px;
+  min-width: 0;
+  overflow-x: auto;
+  overflow-y: hidden;
+  scrollbar-width: thin;
+  white-space: nowrap;
+}
+.term-bar-actions + .spacer {
+  display: none;
+}
+.term-tab {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  gap: 2px;
+  max-width: 240px;
+  height: 100%;
+  margin-bottom: -1px;
+  border-bottom: 2px solid transparent;
+  color: var(--text-2);
+  font-size: var(--fs-sm);
+  font-weight: 500;
+  user-select: none;
+  touch-action: pan-x;
+}
+button.term-tab-open {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  min-width: 0;
+  min-height: 0;
+  height: 28px;
+  padding: 0 var(--s2);
+  border: 0;
+  border-radius: var(--r-sm);
+  background: transparent;
+  color: inherit;
+  font-size: var(--fs-sm);
+  font-weight: 500;
+}
+button.term-tab-open:hover:not(:disabled) {
+  filter: none;
+  color: var(--text);
+}
+.term-tab.on {
+  border-bottom-color: var(--accent);
+  color: var(--text);
+}
+.term-tab-open .state-mark,
+.term-tab-open .provider-logo {
+  flex: none;
+}
+.term-tab-title {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+button.icon-btn.term-tab-unseen,
+button.icon-btn.term-tab-close {
+  flex: none;
+  width: 22px;
+  height: 22px;
+}
+/* Like a browser tab: the current tab always shows its ✕, the others on
+ * hover or keyboard focus. A hidden ✕ keeps its place and ignores taps. */
+.term-tab:not(.on):not(:hover):not(:focus-within) .term-tab-close {
+  opacity: 0;
+  pointer-events: none;
+}
+.term-bar-actions {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: 2px;
+  /* Recently closed opens aligned with the end of the bar. */
+  position: relative;
+}
+.term-bar-actions > .menu-anchor {
+  position: static;
+}
+button.icon-btn.term-bar-btn {
+  flex: none;
+  width: 28px;
+  height: 28px;
+}
+.view-toggle {
+  margin-left: var(--s1);
+}
+.view-toggle button {
+  width: 28px;
+  padding: 0;
+}
+/* Recently closed: the workspace's (or Scratch's) closed sessions. */
+.closed-popover {
+  width: min(380px, calc(100vw - 16px));
+  max-height: min(420px, calc(100vh - var(--topbar) - 24px));
+  overflow-y: auto;
+  padding: var(--s1) 0;
+}
+.closed-head {
+  padding: var(--s2) var(--s4) var(--s1);
+  color: var(--text-3);
+  font-size: var(--fs-xs);
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+.closed-empty {
+  margin: 0;
+  padding: var(--s2) var(--s4) var(--s3);
+  color: var(--text-3);
+  font-size: var(--fs-sm);
+}
+.closed-popover .list-row {
+  padding: var(--s2) var(--s4);
+}
+.closed-popover .list-row > .svg-icon,
+.closed-popover .list-row > .provider-logo {
+  flex: none;
+}
+.section-crumb {
+  color: var(--text-2);
+}
+.seg {
+  display: inline-flex;
+  padding: 2px;
+  border-radius: var(--r-md);
+  background: var(--surface-3);
+}
+.seg button {
+  min-height: 24px;
+  padding: 0 var(--s2);
+  border: 0;
+  border-radius: var(--r-sm);
+  background: transparent;
+  color: var(--text-2);
+  font-size: var(--fs-sm);
+  font-weight: 500;
+}
+.seg button:hover:not(:disabled) {
+  filter: none;
+  color: var(--text);
+}
+.seg button[aria-pressed="true"] {
+  background: var(--surface-1);
+  color: var(--text);
+  box-shadow: var(--shadow-sm);
+}
+
+/* Popovers: the workspace switcher. */
+.popover {
+  position: absolute;
+  top: calc(100% + 6px);
+  right: 0;
+  z-index: 30;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--r-lg);
+  background: var(--surface-2);
+  box-shadow: var(--shadow);
+}
+.menu {
+  left: 0;
+  right: auto;
+  min-width: 220px;
+  padding: var(--s1);
+}
+.menu-item {
+  justify-content: flex-start;
+  width: 100%;
+  min-height: 30px;
+  padding: 0 var(--s2);
+  border: 0;
+  background: transparent;
+  color: var(--text);
+  font-weight: 400;
+}
+.menu-item:hover:not(:disabled) {
+  filter: none;
+  background: var(--surface-3);
+}
+.menu-item .grow {
+  flex: 1;
+  text-align: left;
+}
+.menu-sep {
+  height: 1px;
+  margin: var(--s1) 0;
+  background: var(--line);
+}
+
+/* ───────── Terminal area ───────── */
+.workspace {
+  position: relative;
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+}
+.pane-grid {
+  display: grid;
+  flex: 1;
+  min-height: 0;
+  gap: 6px;
+  padding: 6px;
+  background: var(--bg);
+}
+.tab-pane-layout {
+  display: flex;
+  padding: 0;
+}
+.tab-pane-layout > .grid-pane {
+  flex: 1;
+  border: 0;
+  border-radius: 0;
+}
+.grid-pane {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: var(--r-md);
+  background: var(--term-bg);
+}
+/* Terminals grid: live tiles sized to their terminal; a click opens it. */
+button.live-tile {
+  align-items: stretch;
+  justify-content: flex-start;
+  gap: 0;
+  min-height: 0;
+  padding: 0;
+  color: var(--text);
+  font-weight: 400;
+  text-align: left;
+  white-space: normal;
+}
+button.live-tile:hover:not(:disabled),
+button.live-tile:focus-visible {
+  filter: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 1px var(--accent);
+}
+button.live-tile:focus-visible {
+  outline: none;
+}
+.live-tile.needs-input {
+  border-color: color-mix(in srgb, var(--st-input) 70%, transparent);
+}
+/* The session whose tab is current: chosen from the tab bar in grid mode. */
+.live-tile.focused {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 1px var(--accent);
+}
+.live-tile.focused > header {
+  background: var(--accent-soft);
+  color: var(--text-2);
+}
+.live-tile > header {
+  width: 100%;
+}
+.grid-pane > header {
+  display: flex;
+  align-items: center;
+  gap: var(--s2);
+  height: 34px;
+  flex: none;
+  overflow: hidden;
+  padding: 0 var(--s1) 0 var(--s3);
+  border-bottom: 1px solid var(--line);
+  background: var(--surface-1);
+  color: var(--text-2);
+  font-size: var(--fs-sm);
+  cursor: pointer;
+  user-select: none;
+  touch-action: none;
+}
+.grid-pane > header .number {
+  color: var(--text-3);
+  font-size: var(--fs-xs);
+}
+.grid-title {
+  overflow: hidden;
+  color: var(--text);
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.grid-folder {
+  overflow: hidden;
+  color: var(--text-3);
+  font-family: var(--font-mono);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.grid-pane > header .pane-actions {
+  display: flex;
+  gap: 1px;
+  margin-left: auto;
+}
+.grid-pane > header .icon-btn {
+  width: 26px;
+  height: 26px;
+}
+.inactive-pane {
+  border: 1px dashed var(--line);
+  border-radius: var(--r-md);
+  background: transparent;
+}
+button.new-pane {
+  display: grid;
+  place-items: center;
+  align-content: center;
+  gap: var(--s2);
+  min-height: 0;
+  color: var(--text-3);
+  font-weight: 400;
+}
+button.new-pane:hover:not(:disabled) {
+  filter: none;
+  border-color: var(--accent);
+  color: var(--text);
+}
+.landing-label {
+  position: absolute;
+  top: 44px;
+  left: 50%;
+  z-index: 2;
+  padding: 6px 18px;
+  border-radius: var(--r-md);
+  background: var(--accent);
+  color: var(--on-accent);
+  pointer-events: none;
+  transform: translateX(-50%);
+}
+.grid-pane.file-upload-target::after {
+  content: "Drop files to upload";
+  position: absolute;
+  inset: 4px;
+  z-index: 5;
+  display: grid;
+  place-items: center;
+  border: 2px dashed var(--accent);
+  border-radius: var(--r-md);
+  background: color-mix(in srgb, var(--bg) 88%, transparent);
+  color: var(--accent);
+  font-weight: 600;
+  pointer-events: none;
+}
+.grid-foot {
+  display: flex;
+  align-items: center;
+  gap: var(--s3);
+  flex: none;
+  padding: 4px var(--s3);
+  border-top: 1px solid var(--line);
+  background: var(--surface-1);
+  color: var(--text-3);
+  font-size: var(--fs-sm);
+}
+.grid-foot .spacer {
+  flex: 1;
+}
+.pagination {
+  display: flex;
+  align-items: center;
+  gap: var(--s1);
+  color: var(--text-2);
+}
+.svg-icon.flip {
+  transform: scaleX(-1);
+}
+
+/* A popup window shows a single terminal without navigation. */
+.hub-shell.bare .grid-pane {
+  border: 0;
+  border-radius: 0;
+}
+
+/* Narrow screens: the breadcrumb keeps the workspace switcher; the session
+ * tabs take the rest and scroll sideways, beside their pinned actions. */
+@media (max-width: 640px) {
+  .topbar {
+    gap: var(--s2);
+    padding: 0 var(--s2);
+  }
+  .crumbs .project-crumb,
+  .crumbs .project-crumb + .crumb-sep,
+  .crumbs .section-sep,
+  .crumbs .section-crumb {
+    display: none;
+  }
+  /* The breadcrumb gives way first, so the session actions stay whole. */
+  .crumbs {
+    flex: 0 1 auto;
+  }
+  .crumbs .menu-anchor {
+    min-width: 0;
+  }
+  .crumbs .crumb {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .view-toggle {
+    margin-left: 0;
+  }
+  .view-toggle button {
+    width: 24px;
+  }
+}
+/* A narrow session bar drops the breadcrumb (the sidebar shows the
+ * location) instead of overlapping it; the tabs take the room. */
+@container topbar (max-width: 480px) {
+  .topbar:has(.term-bar-actions) .crumbs {
+    display: none;
+  }
+}
+@media (max-width: 640px) {
+  .grid-foot .grid-hint {
+    display: none;
+  }
+}

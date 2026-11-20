@@ -1,0 +1,470 @@
+/* Sign-in screen, tab-reuse screen and security-key management. */
+
+/* ── Sign-in screen ── */
+.login {
+  display: grid;
+  place-items: center;
+  height: 100%;
+  overflow: auto;
+  padding: var(--s5) var(--s4);
+  background:
+    radial-gradient(
+      1200px 600px at 30% -10%,
+      color-mix(in srgb, var(--accent) 12%, transparent),
+      transparent 60%
+    ),
+    var(--bg);
+}
+.login-card {
+  display: grid;
+  gap: var(--s4);
+  width: min(440px, 100%);
+  min-width: 0;
+}
+.login-brand {
+  display: flex;
+  align-items: center;
+  gap: var(--s2);
+  margin-bottom: var(--s2);
+}
+.login-brand .env-badge {
+  text-transform: uppercase;
+}
+.login .logo,
+.popup-connecting .logo {
+  flex: none;
+  font-size: 18px;
+}
+.login .logo-mark,
+.popup-connecting .logo-mark {
+  width: 30px;
+  height: 30px;
+  border-radius: 8px;
+}
+.login-head h1 {
+  margin: 0;
+}
+.login-target {
+  display: flex;
+  align-items: center;
+  gap: var(--s2);
+  min-width: 0;
+  margin: var(--s2) 0 0;
+  color: var(--text-2);
+  font: var(--fs-sm) var(--font-mono);
+}
+.login-target span {
+  overflow-wrap: anywhere;
+}
+.login .notice {
+  margin: 0;
+}
+
+/* Primary sign-in button showing the remembered key. */
+.key-login.connect-primary {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: var(--s3);
+  width: 100%;
+  min-height: 0;
+  padding: var(--s3);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--r-lg);
+  background: var(--surface-2);
+  color: var(--text);
+  font-weight: 400;
+  text-align: left;
+  white-space: normal;
+}
+.key-login.preferred {
+  border-color: color-mix(in srgb, var(--key-color) 55%, var(--line-strong));
+}
+.key-login.connect-primary:hover:not(:disabled) {
+  filter: none;
+  border-color: var(--key-color);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--key-color) 18%, transparent);
+}
+.key-login > .key-glyph {
+  width: 40px;
+  height: 40px;
+  border-radius: var(--r-lg);
+  background: color-mix(in srgb, var(--key-color) 22%, transparent);
+  font-size: 20px;
+}
+.key-login-label {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+.key-login-label strong {
+  font-size: var(--fs-lg);
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+.key-login-label small {
+  color: var(--text-3);
+  font-size: var(--fs-sm);
+}
+.key-login-arrow {
+  display: grid;
+  color: var(--text-3);
+}
+.key-login:hover:not(:disabled) .key-login-arrow {
+  color: var(--key-color);
+}
+
+/* Discovery sign-in when this browser has no remembered key. */
+.connect-primary:not(.key-login) {
+  width: 100%;
+  min-height: 44px;
+  font-size: var(--fs-lg);
+  font-weight: 600;
+}
+.login-key-status {
+  margin: 0;
+  color: var(--text-3);
+  font-size: var(--fs-sm);
+}
+.login-secondary {
+  margin: 0;
+}
+.sign-prompt {
+  display: grid;
+  gap: var(--s3);
+  padding: var(--s4);
+  border: 1px solid color-mix(in srgb, var(--accent) 45%, transparent);
+  border-radius: var(--r-lg);
+  background: var(--accent-soft);
+}
+.sign-prompt p {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--s2);
+  margin: 0;
+}
+.sign-prompt p .svg-icon {
+  margin-top: 2px;
+  color: var(--accent-text);
+}
+.connection-status {
+  max-height: 160px;
+  margin: 0;
+  overflow: auto;
+  padding: var(--s2) var(--s3);
+  border: 1px solid var(--line);
+  border-radius: var(--r-md);
+  background: var(--surface-1);
+  color: var(--text-3);
+  font-size: var(--fs-xs);
+  line-height: 1.6;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.footnote {
+  margin: 0;
+  color: var(--text-3);
+  font-size: var(--fs-sm);
+}
+
+/* ── Tab-reuse screen (popped-out terminal) ── */
+.popup-connecting {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: var(--s4);
+  min-height: 100dvh;
+  padding: var(--s5) var(--s4);
+  background: var(--bg);
+  text-align: center;
+}
+.popup-connecting h1 {
+  margin: 0;
+  font-size: var(--fs-xl);
+}
+.popup-connecting p {
+  margin: 0;
+  color: var(--text-2);
+}
+.connecting-spinner {
+  width: 28px;
+  height: 28px;
+  border: 3px solid var(--line-strong);
+  border-top-color: var(--accent);
+  border-radius: 50%;
+  animation: connect-spin 0.8s linear infinite;
+}
+@keyframes connect-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .connecting-spinner {
+    animation-duration: 2s;
+  }
+}
+
+/* ── Key management dialog (shell rules live in dialogs.css) ── */
+.key-modal {
+  display: flex;
+  flex-direction: column;
+  width: min(760px, 100%);
+}
+.key-modal header h2 {
+  margin: 0;
+  font-size: var(--fs-lg);
+}
+.key-modal-body {
+  overflow: auto;
+  padding: 0 var(--s5);
+}
+.key-modal-actions {
+  display: flex;
+  justify-content: flex-end;
+  padding: var(--s3) var(--s5);
+  border-top: 1px solid var(--line);
+}
+.key-modal .notice {
+  margin-top: var(--s4);
+}
+.login .key-modal {
+  text-align: left;
+}
+
+/* ── Security-key settings (dialog and Settings → Security keys) ── */
+.key-modal-body section {
+  margin: var(--s4) 0;
+}
+.key-modal-body section h2 {
+  margin-bottom: var(--s2);
+}
+.key-modal-body section > p {
+  color: var(--text-2);
+}
+.signed-key-summary {
+  margin-top: var(--s4);
+  padding: var(--s3) var(--s4);
+  border: 1px solid color-mix(in srgb, var(--accent) 35%, transparent);
+  border-radius: var(--r-md);
+  background: var(--accent-soft);
+}
+.signed-key-summary strong {
+  display: flex;
+  align-items: center;
+  gap: var(--s2);
+  font-weight: 600;
+}
+.signed-key-summary strong .svg-icon {
+  color: var(--accent-text);
+}
+.signed-key-summary p {
+  margin: var(--s1) 0 0;
+  color: var(--text-2);
+  font-size: var(--fs-sm);
+}
+.saved-keys {
+  margin-block: var(--s4);
+}
+.saved-keys h3 {
+  margin-bottom: var(--s1);
+}
+.saved-keys > p {
+  font-size: var(--fs-sm);
+}
+.saved-key-list {
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: var(--r-lg);
+  background: var(--surface-1);
+}
+.saved-key.list-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 300px);
+  align-items: start;
+  gap: var(--s3) var(--s4);
+  padding: var(--s3) var(--s4);
+  box-shadow: inset 3px 0 0 var(--key-color);
+}
+.saved-key.list-row:hover {
+  background: transparent;
+}
+.key-settings-main {
+  display: grid;
+  gap: var(--s3);
+  min-width: 0;
+}
+.saved-key label {
+  display: grid;
+  gap: var(--s1);
+  min-width: 0;
+}
+.key-name-caption {
+  display: flex;
+  align-items: center;
+  gap: var(--s2);
+  color: var(--text-2);
+  font-size: var(--fs-sm);
+}
+.key-name-caption .key-glyph {
+  width: 22px;
+  height: 22px;
+  font-size: 16px;
+}
+.key-name-caption .key-glyph svg {
+  width: 18px;
+  height: 18px;
+}
+.saved-key input {
+  width: 100%;
+  min-width: 0;
+}
+.key-badges {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--s1);
+}
+.key-badges:empty {
+  display: none;
+}
+.key-appearance {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: end;
+  gap: var(--s4);
+}
+.key-appearance label {
+  color: var(--text-2);
+  font-size: var(--fs-sm);
+}
+.key-appearance select {
+  min-height: 32px;
+  color: var(--text);
+  font-size: var(--fs-md);
+}
+.key-appearance fieldset {
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+.key-appearance legend {
+  margin-bottom: var(--s1);
+  padding: 0;
+  color: var(--text-2);
+  font-size: var(--fs-sm);
+}
+.key-colors {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--s2);
+  min-height: 32px;
+}
+.key-colors .key-color {
+  width: 22px;
+  height: 22px;
+  min-height: 0;
+  padding: 0;
+  border: 2px solid var(--bg);
+  border-radius: 50%;
+  background: var(--swatch);
+}
+.key-color[aria-pressed="true"] {
+  outline: 2px solid var(--swatch);
+  outline-offset: 2px;
+}
+.key-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-end;
+  gap: var(--s2);
+  min-width: 0;
+}
+.key-delete-confirm {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: var(--s2);
+  padding: var(--s2) var(--s3);
+  border: 1px solid color-mix(in srgb, var(--st-failed) 40%, transparent);
+  border-radius: var(--r-md);
+  background: color-mix(in srgb, var(--st-failed) 8%, var(--surface-1));
+}
+.key-delete-confirm p {
+  flex-basis: 100%;
+  margin: 0;
+  color: var(--text-2);
+  font-size: var(--fs-sm);
+}
+.key-modal-body details {
+  margin-top: var(--s4);
+  padding: var(--s3) var(--s4);
+  border: 1px solid var(--line);
+  border-radius: var(--r-lg);
+  background: var(--surface-1);
+  color: var(--text-2);
+}
+.key-modal-body summary {
+  color: var(--text);
+  font-weight: 500;
+  cursor: pointer;
+}
+.key-modal-body details p {
+  margin: var(--s2) 0 var(--s3);
+  font-size: var(--fs-sm);
+}
+.key-entry {
+  display: block;
+  width: 100%;
+  height: 120px;
+  margin-bottom: var(--s2);
+  resize: vertical;
+  background: var(--surface-1);
+  color: var(--text);
+  font-size: var(--fs-sm);
+  overflow-wrap: anywhere;
+}
+
+/* Key mark glyph (sign-in rows, settings and the rail account). */
+.key-glyph {
+  display: inline-flex;
+  flex-shrink: 0;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  height: 30px;
+  color: var(--key-color, var(--accent));
+  font-size: 24px;
+  line-height: 1;
+}
+.key-glyph svg {
+  width: 24px;
+  height: 24px;
+}
+
+@media (max-width: 700px) {
+  .saved-key.list-row {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .key-actions {
+    justify-content: flex-start;
+    max-width: none;
+  }
+  .key-delete-confirm {
+    justify-content: flex-start;
+  }
+}
+@media (max-width: 500px) {
+  .key-modal-body {
+    padding: 0 var(--s4);
+  }
+  .key-modal-actions {
+    padding: var(--s3) var(--s4);
+  }
+  .key-modal-actions button {
+    width: 100%;
+  }
+}

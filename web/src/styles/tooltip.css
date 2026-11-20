@@ -1,0 +1,30 @@
+/* Custom tooltip (Tooltip.tsx). Positioned by script through CSSOM. */
+.tooltip {
+  position: fixed;
+  top: 0;
+  left: 0;
+  z-index: 60;
+  max-width: min(360px, calc(100vw - 16px));
+  padding: 6px 8px;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--r-md);
+  background: var(--surface-3);
+  box-shadow: var(--shadow);
+  color: var(--text);
+  font-size: var(--fs-sm);
+  line-height: 1.4;
+  pointer-events: none;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  animation: tooltip-in 80ms ease-out;
+}
+@keyframes tooltip-in {
+  from {
+    opacity: 0;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .tooltip {
+    animation: none;
+  }
+}
