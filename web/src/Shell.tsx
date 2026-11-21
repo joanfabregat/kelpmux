@@ -43,7 +43,7 @@ export function PaneLabel({
 }
 
 /** The bar above the terminals, like KelpHub's: where you are (workspace,
- * then the focused terminal) and the view actions: New terminal, Scratch,
+ * then the focused terminal) and the view actions: New terminal,
  * full width and the one terminal / live grid toggle. Everything here is
  * this browser's view; nothing changes the TUI's layout. */
 export function TopBar({
@@ -51,13 +51,11 @@ export function TopBar({
   current,
   state,
   mode,
-  scratchOpen,
   fullWidth,
   page,
   pages,
   onMode,
   onNewTerminal,
-  onScratch,
   onFullWidth,
   onPage,
 }: {
@@ -65,13 +63,11 @@ export function TopBar({
   current?: Pane;
   state?: DisplayState;
   mode: SessionMode;
-  scratchOpen: boolean;
   fullWidth: boolean;
   page: number;
   pages: number;
   onMode: (mode: SessionMode) => void;
   onNewTerminal: () => void;
-  onScratch: () => void;
   onFullWidth: () => void;
   onPage: (page: number) => void;
 }) {
@@ -147,17 +143,6 @@ export function TopBar({
             onClick={onNewTerminal}
           >
             <Icon name="plus" size="sm" />
-          </button>
-        </Tooltip>
-        <Tooltip content="Scratch terminal (Ctrl-B c)">
-          <button
-            type="button"
-            className="icon-btn term-bar-btn"
-            aria-label="Scratch terminal"
-            aria-pressed={scratchOpen}
-            onClick={onScratch}
-          >
-            <Icon name="terminal" size="sm" />
           </button>
         </Tooltip>
         <Tooltip

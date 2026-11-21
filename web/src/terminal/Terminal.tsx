@@ -6,6 +6,7 @@ import { encodeKey, encodeText } from "./keyboard";
 import { mouseButton, mouseBytes } from "./mouse";
 import { WheelAccumulator } from "./wheel";
 import { PaneFind } from "./PaneFind";
+import { modeKey, modeSelection, selectMode, type KeyMode } from "./key-mode";
 export type Store = {
   workspace?: string;
   screens: Map<number, Snapshot>;
@@ -159,6 +160,46 @@ export function Terminal({
   const [searchPreview, setSearchPreview] = useState(false);
   const [clipboardOffer, setClipboardOffer] = useState<string | null>(null);
   const applicationCopy = useRef<string | null>(null);
+  /** Keyboard scroll or select mode (Ctrl-B [ or Ctrl-B Space). */
+  const keyMode = useRef<KeyMode | null>(null);
+  const [modeKind, setModeKind] = useState<KeyMode["kind"] | null>(null);
+  function setMode(mode: KeyMode | null) {
+    keyMode.current = mode;
+    setModeKind(mode?.kind ?? null);
+    selection.current = modeSelection(mode);
+    draw();
+  }
+  useEffect(() => {
+    // The application asks this terminal to enter a keyboard mode.
+    const enter = (event: Event) => {
+      const { pane: id, kind } = (event as CustomEvent).detail || {};
+      if (id !== pane.id) return;
+      const rows = get()?.rows || 24;
+      if (kind === "scroll") setMode({ kind: "scroll" });
+      else if (kind === "select") setMode(selectMode(rows));
+      input.current?.focus({ preventScroll: true });
+    };
+    store.events.addEventListener("terminal-key-mode", enter);
+    return () => store.events.removeEventListener("terminal-key-mode", enter);
+  }, [pane.id, store]);
+  /** Applies a key in keyboard mode; never sends it to the program. */
+  function modeInput(event: React.KeyboardEvent) {
+    const mode = keyMode.current;
+    const screen = get();
+    if (!mode || !screen) return;
+    if (["Shift", "Control", "Alt", "Meta"].includes(event.key)) return;
+    event.preventDefault();
+    const result = modeKey(mode, event, screen.cols, screen.rows);
+    if (result.copy) {
+      void copy();
+      setMode(null);
+      return;
+    }
+    setMode(result.mode);
+    if (result.live) returnLive();
+    else if (result.top) void scroll(-100000, true);
+    else if (result.scroll) void scroll(result.scroll, true);
+  }
   useEffect(() => {
     const received = (event: Event) => {
       const { pane: id, text } = (event as CustomEvent).detail;
@@ -402,6 +443,10 @@ export function Terminal({
   }
   function key(event: React.KeyboardEvent, release = false) {
     if (event.nativeEvent.isComposing) return;
+    if (keyMode.current) {
+      if (!release) modeInput(event);
+      return;
+    }
     const id = event.code || event.key;
     if (release) {
       if (!sentKeys.current.delete(id)) return;
@@ -896,6 +941,13 @@ export function Terminal({
             value={clipboardOffer}
             onFocus={(event) => event.currentTarget.select()}
           />
+        </div>
+      )}
+      {modeKind && (
+        <div className="key-mode-indicator" role="status">
+          {modeKind === "scroll"
+            ? "Scroll · ↑↓ PgUp PgDn g G · Space select · q exit"
+            : "Select · arrows/hjkl move · v mark · y copy · q exit"}
         </div>
       )}
       {history && (

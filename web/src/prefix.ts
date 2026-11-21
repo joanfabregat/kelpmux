@@ -5,6 +5,13 @@
 export type PrefixAction =
   | "new"
   | "reopen-last"
+  | "scroll-mode"
+  | "select-mode"
+  | "grid-resize-left"
+  | "grid-resize-right"
+  | "grid-resize-up"
+  | "grid-resize-down"
+  | "grid-equalize"
   | "grid"
   | "full-width"
   | "next"
@@ -24,7 +31,6 @@ export type PrefixAction =
   | "overview"
   | "recovery"
   | "search"
-  | "scratch"
   | "park"
   | "parked"
   | "move"
@@ -49,6 +55,13 @@ export function prefixAction(event: {
   const map: Record<string, PrefixAction> = {
     Enter: "new",
     z: "reopen-last",
+    "[": "scroll-mode",
+    " ": "select-mode",
+    H: "grid-resize-left",
+    L: "grid-resize-right",
+    K: "grid-resize-up",
+    J: "grid-resize-down",
+    "=": "grid-equalize",
     g: "grid",
     e: "grid",
     f: "full-width",
@@ -71,7 +84,6 @@ export function prefixAction(event: {
     o: "overview",
     r: "recovery",
     "/": "search",
-    c: "scratch",
     p: "park",
     u: "parked",
     s: "move",

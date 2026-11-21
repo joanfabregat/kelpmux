@@ -234,6 +234,47 @@ fn web_relay(config: &Path, assets: super::web_relay::Assets) -> Result<()> {
     }
     super::web_relay::run_with_assets(config, assets)
 }
+/// Starts the workspace server for `kelpmux start` and `ssh-entry`.
+fn start_server(options: &Options) -> Result<()> {
+    let selected_server = options
+        .server_binary
+        .clone()
+        .or_else(|| std::env::var_os("KELPSERVER_BINARY").map(PathBuf::from))
+        .unwrap_or(std::env::current_exe()?.with_file_name("kelpserver"));
+    super::lifecycle::start(super::lifecycle::StartRequest {
+        socket: &options.socket,
+        state: &options.state,
+        shell: &options.shell,
+        cwd: &options.cwd,
+        cols: options.size.0,
+        rows: options.size.1,
+        settings: &options.settings,
+        replace_running: options.replace_running,
+        executable: Some(&selected_server),
+    })
+}
+/// `kelpmux start --state-dir STATE --socket SOCKET`: the web bridge's start
+/// of its own, configured workspace. Same option handling and start path as
+/// the command line, with nothing taken from the browser: never replaces a
+/// running server and never chooses another server binary.
+pub fn start_workspace(state: &Path, socket: &Path) -> Result<()> {
+    let args = [
+        "start".to_owned(),
+        "--state-dir".to_owned(),
+        state
+            .to_str()
+            .ok_or("workspace path must be UTF-8")?
+            .to_owned(),
+        "--socket".to_owned(),
+        socket
+            .to_str()
+            .ok_or("workspace socket must be UTF-8")?
+            .to_owned(),
+    ];
+    let options = options(&args)?;
+    debug_assert!(!options.replace_running && options.server_binary.is_none());
+    start_server(&options)
+}
 fn parse_size(value: &str) -> Result<(u16, u16)> {
     let (cols, rows) = value.split_once('x').ok_or("size must be CxR")?;
     Ok((cols.parse()?, rows.parse()?))
@@ -257,22 +298,7 @@ pub fn run(args: &[String]) -> Result<()> {
     match args[0].as_str() {
         "server" => kelpserver::native::cli::run(args),
         "start" | "ssh-entry" => {
-            let selected_server = options
-                .server_binary
-                .clone()
-                .or_else(|| std::env::var_os("KELPSERVER_BINARY").map(PathBuf::from))
-                .unwrap_or(std::env::current_exe()?.with_file_name("kelpserver"));
-            super::lifecycle::start(super::lifecycle::StartRequest {
-                socket: &options.socket,
-                state: &options.state,
-                shell: &options.shell,
-                cwd: &options.cwd,
-                cols: options.size.0,
-                rows: options.size.1,
-                settings: &options.settings,
-                replace_running: options.replace_running,
-                executable: Some(&selected_server),
-            })?;
+            start_server(&options)?;
             if args[0] == "ssh-entry" {
                 attach(attach_socket(&options)?, options.takeover)
             } else {

@@ -159,3 +159,17 @@
   background: var(--surface-3);
   color: var(--text);
 }
+/* Keyboard scroll / select mode (Ctrl-B [ and Ctrl-B Space). */
+.key-mode-indicator {
+  position: absolute;
+  right: 12px;
+  bottom: 8px;
+  z-index: 2;
+  padding: 4px 8px;
+  border: 1px solid color-mix(in srgb, var(--accent) 50%, transparent);
+  border-radius: var(--r-md);
+  background: color-mix(in srgb, var(--accent) 14%, var(--surface-1));
+  color: var(--text);
+  font-size: var(--fs-xs);
+  pointer-events: none;
+}

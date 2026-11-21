@@ -4,7 +4,7 @@ import { readFileSync } from "node:fs";
 import { stripTypeScriptTypes } from "node:module";
 import vm from "node:vm";
 
-function harness() {
+function harness({ welcome = true } = {}) {
   let now = 1000,
     tick;
   const calls = [],
@@ -41,16 +41,17 @@ function harness() {
         messages.push(structuredClone(value));
         if (value.type === "host_start") {
           sessions.push(session);
-          queueMicrotask(() =>
-            port.onmessage({
-              data: {
-                type: "host_event",
-                event: {
-                  Stream: { type: "welcome", client: 7, capabilities: [] },
+          if (welcome)
+            queueMicrotask(() =>
+              port.onmessage({
+                data: {
+                  type: "host_event",
+                  event: {
+                    Stream: { type: "welcome", client: 7, capabilities: [] },
+                  },
                 },
-              },
-            }),
-          );
+              }),
+            );
         } else if (value.type === "host_send")
           calls.push({ type: value.request, params: value.params });
         else if (value.type === "host_rpc") {
@@ -356,4 +357,62 @@ test("application clipboard writes reach only the owning window and are not repl
     c.messages.filter((m) => m.event?.Stream?.type === "clipboard").length,
     0,
   );
+});
+
+test("notification acknowledgements are forwarded, not refused as pane operations", async () => {
+  const h = harness(),
+    a = h.attach();
+  await h.join(a);
+  await h.send(a, {
+    type: "request",
+    request: "acknowledge",
+    params: { notification: 12 },
+  });
+  assert.equal(
+    JSON.stringify(h.calls.at(-1)),
+    JSON.stringify({ type: "acknowledge", params: { notification: 12 } }),
+  );
+  const count = h.calls.length;
+  await h.send(a, {
+    type: "request",
+    request: "acknowledge",
+    params: { notification: "12; rm" },
+  });
+  assert.equal(h.calls.length, count);
+  assert.equal(
+    a.messages.some((m) =>
+      /Unsupported pane operation/.test(m.event?.Stream?.message || ""),
+    ),
+    false,
+  );
+});
+
+test("a stopped workspace reaches every view and allows only state and start", async () => {
+  const h = harness({ welcome: false }),
+    a = h.attach(),
+    b = h.attach();
+  await h.join(a);
+  const stopped = { Workspace: { running: false, workspace: "test" } };
+  await h.send(a, { type: "host_event", event: stopped });
+  assert.ok(a.messages.some((m) => m.event?.Workspace?.running === false));
+  // A window joining later learns it too.
+  await h.join(b, { resumeOnly: true });
+  assert.ok(b.messages.some((m) => m.event?.Workspace?.running === false));
+  await h.send(b, {
+    type: "rpc",
+    id: 1,
+    method: "start",
+    params: { confirmed: true },
+  });
+  assert.deepEqual(h.calls.at(-1), {
+    method: "start",
+    params: { confirmed: true },
+  });
+  await h.send(b, { type: "rpc", id: 2, method: "new", params: {} });
+  assert.match(
+    b.messages.find((m) => m.id === 2)?.error || "",
+    /still in progress/,
+  );
+  await h.send(b, { type: "request", request: "input", params: { pane: 1 } });
+  assert.notEqual(h.calls.at(-1).type, "input");
 });

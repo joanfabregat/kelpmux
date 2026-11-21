@@ -82,10 +82,18 @@ struct Bridge {
 }
 impl Bridge {
     fn start(server: &Server) -> Self {
+        Self::at(&server.socket(), &server.root)
+    }
+    /// A bridge for this socket, run from `cwd` with kelpmux as its server
+    /// binary (`kelpmux server` serves like `kelpserver`).
+    fn at(socket: &std::path::Path, cwd: &std::path::Path) -> Self {
         let mut child = Command::new(env!("CARGO_BIN_EXE_kelpmux"))
+            .current_dir(cwd)
+            .env("KELPSERVER_BINARY", env!("CARGO_BIN_EXE_kelpmux"))
+            .env("SHELL", "/bin/sh")
             .arg("web-bridge")
             .arg("--socket")
-            .arg(server.socket())
+            .arg(socket)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::null())
@@ -415,93 +423,6 @@ fn tui_controller_and_web_client_alternate_pane_input_and_size() {
     assert_eq!(size(&mut bridge), (50, 10));
 }
 
-/// The browser's scratch terminal is the workspace's one scratch terminal:
-/// created on first use without showing it in the TUI, unnumbered, never
-/// parked, and closed like any other terminal.
-#[test]
-fn scratch_terminal_is_created_once_and_unnumbered() {
-    let server = Server::start();
-    let mut bridge = Bridge::start(&server);
-    let welcome = welcome(&mut bridge);
-    assert!(
-        welcome["capabilities"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .any(|c| c == "scratch-create")
-    );
-    let state = bridge.web(1, "state", json!({}));
-    assert!(
-        state["result"]["operations"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .any(|op| op == "scratch")
-    );
-    let first = bridge.web(2, "scratch", json!({}));
-    let scratch = first["result"]["pane"]
-        .as_u64()
-        .unwrap_or_else(|| panic!("{first}"));
-    // The composed (TUI) view neither shows nor focuses it.
-    {
-        use kelpmux::native::protocol::{
-            ClientMessage, ReadingMode, ServerMessage, read_message, write_message,
-        };
-        let mut inspect = UnixStream::connect(server.socket()).unwrap();
-        inspect
-            .set_read_timeout(Some(Duration::from_secs(5)))
-            .unwrap();
-        write_message(&mut inspect, &ClientMessage::Inspect).unwrap();
-        match read_message::<ServerMessage>(&mut inspect)
-            .unwrap()
-            .unwrap()
-        {
-            ServerMessage::State {
-                active, reading, ..
-            } => {
-                assert_ne!(active, scratch);
-                assert!(!matches!(
-                    reading,
-                    ReadingMode::Tabs(id) | ReadingMode::Fullscreen(id) if id == scratch
-                ));
-            }
-            other => panic!("{other:?}"),
-        }
-    }
-    let again = bridge.web(3, "scratch", json!({}));
-    assert_eq!(again["result"]["pane"], scratch);
-    bridge.send(json!({"Stream": {"type": "subscribe", "panes": []}}));
-    let update = bridge.expect("scratch metadata", |v| {
-        v["Stream"]["type"] == "update"
-            && v["Stream"]["panes"]
-                .as_array()
-                .is_some_and(|panes| panes.iter().any(|p| p["id"] == scratch))
-    });
-    let panes = update["Stream"]["panes"].as_array().unwrap();
-    let info = panes.iter().find(|p| p["id"] == scratch).unwrap();
-    assert_eq!(info["number"], 0);
-    assert_eq!(info["parked"], false);
-    assert_eq!(info["title"], "Scratch terminal");
-    // The ordinary terminal keeps its number.
-    assert!(panes.iter().any(|p| p["id"] != scratch && p["number"] == 1));
-
-    let closed = bridge.web(4, "close", json!({"pane": scratch, "confirmed": true}));
-    assert!(closed["result"].is_object(), "{closed}");
-    bridge.expect("scratch removal", |v| {
-        v["Stream"]["type"] == "update"
-            && v["Stream"]["panes"]
-                .as_array()
-                .is_some_and(|panes| !panes.iter().any(|p| p["id"] == scratch))
-    });
-    // A new scratch terminal replaces the closed one.
-    let next = bridge.web(5, "scratch", json!({}));
-    assert!(
-        next["result"]["pane"]
-            .as_u64()
-            .is_some_and(|p| p != scratch)
-    );
-}
-
 /// Closed terminals are listed with the TUI's restore actions and reopen in
 /// a new pane in their folder; the browser chooses only the entry and the
 /// action, never a command.
@@ -627,4 +548,143 @@ fn closed_terminals_are_listed_and_restored() {
         assert!(Instant::now() < deadline, "rerun not started: {processes}");
         thread::sleep(Duration::from_millis(100));
     }
+}
+
+/// A stopped workspace directory for start tests; shuts down whatever
+/// server a test started in it.
+struct Stopped {
+    root: PathBuf,
+}
+impl Stopped {
+    fn new() -> Self {
+        use std::os::unix::fs::PermissionsExt;
+        static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let root = std::env::temp_dir().join(format!(
+            "kelpmux-web-start-{}-{}",
+            std::process::id(),
+            NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+        ));
+        fs::create_dir(&root).unwrap();
+        fs::create_dir(root.join("state")).unwrap();
+        fs::set_permissions(root.join("state"), fs::Permissions::from_mode(0o700)).unwrap();
+        Self { root }
+    }
+    fn socket(&self) -> PathBuf {
+        self.root.join("state/control.sock")
+    }
+}
+impl Drop for Stopped {
+    fn drop(&mut self) {
+        if let Ok(mut socket) = UnixStream::connect(self.socket()) {
+            let shutdown = serde_json::to_vec(&json!({"Command": "Shutdown"})).unwrap();
+            let _ = socket.write_all(&(shutdown.len() as u32).to_be_bytes());
+            let _ = socket.write_all(&shutdown);
+            let until = Instant::now() + Duration::from_secs(3);
+            while self.socket().exists() && Instant::now() < until {
+                thread::sleep(Duration::from_millis(20));
+            }
+        }
+        let _ = fs::remove_dir_all(&self.root);
+    }
+}
+
+#[test]
+fn start_is_refused_while_the_workspace_server_runs() {
+    let server = Server::start();
+    let mut bridge = Bridge::start(&server);
+    welcome(&mut bridge);
+    let state = bridge.web(1, "state", json!({}));
+    assert!(
+        state["result"]["operations"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|op| op == "start")
+    );
+    let refused = bridge.web(2, "start", json!({"confirmed": true}));
+    assert_eq!(refused["error"], "the workspace server is already running");
+}
+
+#[test]
+fn a_stopped_workspace_starts_on_an_explicit_request_then_connects() {
+    let workspace = Stopped::new();
+    let mut bridge = Bridge::at(&workspace.socket(), &workspace.root);
+    bridge.send(json!({"Stream": {"type": "hello", "version": 1}}));
+    let notice = bridge.expect("stopped notice", |v| v.get("Workspace").is_some());
+    assert_eq!(notice["Workspace"]["running"], false);
+    assert_eq!(notice["Workspace"]["workspace"], "state");
+    let state = bridge.web(1, "state", json!({}));
+    assert_eq!(state["result"]["running"], false);
+    assert_eq!(state["result"]["operations"], json!(["state", "start"]));
+    let other = bridge.web(2, "new", json!({}));
+    assert!(other["error"].as_str().unwrap().contains("not running"));
+    let unconfirmed = bridge.web(3, "start", json!({}));
+    assert!(
+        unconfirmed["error"]
+            .as_str()
+            .unwrap()
+            .contains("confirmation")
+    );
+    assert!(!workspace.socket().exists(), "nothing starts unconfirmed");
+    let started = bridge.web(4, "start", json!({"confirmed": true}));
+    assert_eq!(started["result"]["started"], true, "{started}");
+    // The bridge then connects as usual: the stream welcome follows.
+    let welcome = bridge.expect("welcome", |v| v["Stream"]["type"] == "welcome");
+    assert_eq!(welcome["Stream"]["version"], 1);
+    let state = bridge.web(5, "state", json!({}));
+    assert_eq!(state["result"]["api_version"], 2);
+    let again = bridge.web(6, "start", json!({"confirmed": true}));
+    assert_eq!(again["error"], "the workspace server is already running");
+}
+
+#[test]
+fn start_never_takes_a_workspace_binary_or_replacement_from_the_browser() {
+    let workspace = Stopped::new();
+    let mut bridge = Bridge::at(&workspace.socket(), &workspace.root);
+    bridge.send(json!({"Stream": {"type": "hello", "version": 1}}));
+    bridge.expect("stopped notice", |v| v.get("Workspace").is_some());
+    for (id, params) in [
+        json!({"confirmed": true, "workspace": "other"}),
+        json!({"confirmed": true, "state_dir": "/tmp/other"}),
+        json!({"confirmed": true, "server_binary": "/bin/sh"}),
+        json!({"confirmed": true, "replace_running": true}),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let refused = bridge.web(id as u64 + 1, "start", params);
+        assert!(
+            refused["error"]
+                .as_str()
+                .unwrap()
+                .contains("takes no options"),
+            "{refused}"
+        );
+    }
+    assert!(!workspace.socket().exists(), "no server started");
+}
+
+#[test]
+fn tab_colour_is_set_through_the_tui_palette() {
+    let server = Server::start();
+    let mut bridge = Bridge::start(&server);
+    welcome(&mut bridge);
+    bridge.send(json!({"Stream": {"type": "subscribe", "panes": []}}));
+    let update = bridge.expect("panes", |v| {
+        v["Stream"]["type"] == "update"
+            && v["Stream"]["panes"]
+                .as_array()
+                .is_some_and(|p| !p.is_empty())
+    });
+    let pane = update["Stream"]["panes"][0]["id"].as_u64().unwrap();
+    let set = bridge.web(1, "color", json!({"pane": pane, "color": 3}));
+    assert_eq!(set["result"], json!({}), "{set}");
+    bridge.expect("palette", |v| {
+        v["Stream"]["panes"]
+            .as_array()
+            .is_some_and(|p| p.iter().any(|p| p["id"] == pane && p["palette"] == 3))
+    });
+    let invalid = bridge.web(2, "color", json!({"pane": pane, "color": 9}));
+    assert!(invalid["error"].as_str().unwrap().contains("palette index"));
+    assert!(bridge.web(3, "color", json!({"pane": pane}))["error"].is_string());
 }

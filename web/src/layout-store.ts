@@ -160,3 +160,34 @@ export function moveBy(ids: number[], source: number, step: -1 | 1) {
   [order[index], order[target]] = [order[target], order[index]];
   return order;
 }
+
+/** This browser's grid track weights for one grid shape (`colsxrows`).
+ * Missing entries are 1. */
+export type GridWeights = { shape: string; cols: number[]; rows: number[] };
+export const GRID_WEIGHT_MIN = 0.4;
+export const GRID_WEIGHT_MAX = 3;
+/** A CSS grid template for `count` tracks with these weights. */
+export function gridTemplate(weights: number[], count: number) {
+  return Array.from(
+    { length: count },
+    (_, i) => `minmax(0,${weights[i] ?? 1}fr)`,
+  ).join(" ");
+}
+/** Weights after growing (+1) or shrinking (-1) track `index` by a quarter. */
+export function resizeTrack(
+  weights: number[],
+  count: number,
+  index: number,
+  step: number,
+) {
+  if (index < 0 || index >= count || count < 2) return weights;
+  const next = Array.from({ length: count }, (_, i) => weights[i] ?? 1);
+  next[index] =
+    Math.round(
+      Math.min(
+        GRID_WEIGHT_MAX,
+        Math.max(GRID_WEIGHT_MIN, next[index] + step * 0.25),
+      ) * 100,
+    ) / 100;
+  return next;
+}

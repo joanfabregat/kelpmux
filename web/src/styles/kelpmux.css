@@ -285,19 +285,6 @@
   transform: scaleX(-1);
 }
 
-/* ───────── Scratch terminal popup ───────── */
-.scratch-overlay {
-  position: absolute;
-  inset: 6% 8% 8%;
-  z-index: 20;
-  display: flex;
-  flex-direction: column;
-  border: 1px solid var(--line-strong);
-  border-radius: var(--r-lg);
-  background: var(--bg);
-  box-shadow: var(--shadow);
-}
-
 /* ───────── Context menu ───────── */
 .pane-menu {
   position: fixed;
@@ -425,4 +412,22 @@ button.search-hit {
 .move-position {
   color: var(--text-3);
   font-variant-numeric: tabular-nums;
+}
+.color-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(120px, 1fr));
+  gap: var(--s2);
+}
+.color-swatch {
+  justify-content: flex-start;
+  gap: var(--s2);
+  font-weight: 400;
+}
+.color-swatch[aria-pressed="true"] {
+  outline: 2px solid var(--accent);
+}
+.color-swatch .swatch {
+  width: 14px;
+  height: 14px;
+  border-radius: 4px;
 }

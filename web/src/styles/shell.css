@@ -856,3 +856,30 @@ button.new-pane:hover:not(:disabled) {
     display: none;
   }
 }
+
+/* Always-visible fold handle on the sidebar edge, like the TUI's; it stays
+   on the folded rail so it can unfold it. */
+.sidebar-fold {
+  position: absolute;
+  top: 72px;
+  right: -14px;
+  z-index: 4;
+  display: grid;
+  place-items: center;
+  width: 28px;
+  height: 44px;
+  padding: 0;
+  color: var(--text-2);
+  background: var(--surface-1);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  cursor: pointer;
+}
+.sidebar-fold:hover,
+.sidebar-fold:focus-visible {
+  color: var(--text);
+  border-color: var(--accent);
+}
+.rail:not(.folded) .sidebar-fold svg {
+  transform: rotate(180deg);
+}

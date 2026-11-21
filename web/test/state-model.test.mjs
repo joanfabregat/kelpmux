@@ -2,7 +2,6 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
   agents,
-  isScratch,
   nextPane,
   notificationMatches,
   notificationStatus,
@@ -34,12 +33,6 @@ const note = (id, paneId, status, extra = {}) => ({
   workspace: "main",
   origin: { run: "r", pid: 100 + paneId },
   ...extra,
-});
-
-test("the scratch terminal is the unnumbered pane that is not parked", () => {
-  assert.equal(isScratch({ number: 0, parked: false }), true);
-  assert.equal(isScratch({ number: 0, parked: true }), false);
-  assert.equal(isScratch({ number: 3, parked: false }), false);
 });
 
 test("notifications belong to the live process of their pane", () => {
@@ -121,18 +114,19 @@ test("roll-ups count states needing attention in urgency order", () => {
   assert.equal(tabTitle(120), "(99+) KelpMux");
 });
 
-test("next question / completion cycles from the active pane, skipping scratch", () => {
+test("next question / completion cycles from the active pane", () => {
   const panes = [
     pane(1, "input_needed"),
     pane(2),
-    { ...pane(3, "input_needed"), number: 0 },
+    pane(3, "input_needed"),
     pane(4, "failed"),
   ];
   const attention = (p) => p.status === "input_needed" || p.status === "failed";
-  assert.equal(nextPane(panes, 1, attention)?.id, 4);
+  assert.equal(nextPane(panes, 1, attention)?.id, 3);
+  assert.equal(nextPane(panes, 3, attention)?.id, 4);
   assert.equal(nextPane(panes, 4, attention)?.id, 1);
   // Unknown active pane: start from the first.
-  assert.equal(nextPane(panes, 99, attention)?.id, 4);
+  assert.equal(nextPane(panes, 99, attention)?.id, 3);
   assert.equal(
     nextPane(panes, 1, (p) => p.status === "exited"),
     null,

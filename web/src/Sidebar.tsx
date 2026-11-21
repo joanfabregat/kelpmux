@@ -32,12 +32,10 @@ export type SidebarProps = {
   username: string;
   dev: boolean;
   folded: boolean;
-  /** Terminals in this browser's order, parked and scratch excluded. */
+  /** Terminals in this browser's order, parked ones excluded. */
   terminals: Pane[];
   /** Terminals parked in this browser. */
   parked: Pane[];
-  scratch: Pane | undefined;
-  scratchOpen: boolean;
   notifications: Notification[];
   current?: number;
   unread: number;
@@ -50,14 +48,14 @@ export type SidebarProps = {
   onUnpark: (pane: Pane) => void;
   onMenu: (pane: Pane, x: number, y: number) => void;
   onNew: () => void;
-  onScratch: () => void;
   onState: (state: DisplayState) => void;
   onDialog: (dialog: string) => void;
   onResizeStart: (event: React.PointerEvent) => void;
+  onToggleFold: () => void;
 };
 
 /** The left sidebar, like the TUI's: every terminal of the workspace in this
- * browser's order with its live state, the scratch terminal and parked
+ * browser's order with its live state, parked
  * terminals, the workspace tools (agents, notifications, recently closed,
  * overview, search), system vitals and settings. Order, parking and folding
  * belong to this browser; they never change the TUI's layout. */
@@ -69,8 +67,6 @@ export function Sidebar(props: SidebarProps) {
     folded,
     terminals,
     parked,
-    scratch,
-    scratchOpen,
     notifications,
     current,
     unread,
@@ -251,26 +247,6 @@ export function Sidebar(props: SidebarProps) {
           {terminals.map((p) => row(p, false))}
           {!terminals.length && <p className="rail-empty">No open terminals</p>}
         </div>
-        <div className="nav-cell scratch-row">
-          <button
-            type="button"
-            className={`nav-item term-item ${scratchOpen ? "current" : ""}`}
-            aria-pressed={scratchOpen}
-            aria-label={
-              scratch ? "Scratch terminal" : "Open a scratch terminal"
-            }
-            title="Scratch terminal: a persistent popup terminal (Ctrl-B c)"
-            onClick={props.onScratch}
-          >
-            <span className="term-number" aria-hidden="true">
-              <Icon name="square" size="sm" />
-            </span>
-            {scratch && (
-              <StateMark state={paneState(scratch, notifications)} decorative />
-            )}
-            <span className="grow">Scratch</span>
-          </button>
-        </div>
         {parked.length > 0 && (
           <div className="parked-section">
             <button
@@ -342,6 +318,16 @@ export function Sidebar(props: SidebarProps) {
       >
         <span aria-hidden="true" />
       </div>
+      <button
+        type="button"
+        className="sidebar-fold"
+        onClick={props.onToggleFold}
+        aria-label={folded ? "Unfold sidebar" : "Fold sidebar"}
+        aria-expanded={!folded}
+        title={folded ? "Unfold sidebar" : "Fold sidebar"}
+      >
+        <Icon name="chevron-right" size="sm" />
+      </button>
     </aside>
   );
 }

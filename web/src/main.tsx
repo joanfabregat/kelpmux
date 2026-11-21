@@ -36,7 +36,7 @@ import { activityIcon } from "./activity-icon";
 import { basename } from "./format";
 import { Stats } from "./Stats";
 import { KeySettings } from "./KeySettings";
-import { LoginScreen, PopupConnecting } from "./Login";
+import { LoginScreen, PopupConnecting, StoppedWorkspace } from "./Login";
 import { ConfigPanel } from "./ConfigPanel";
 import { OPEN_SETTINGS } from "./Settings";
 import { PaneLabel, StatusBar, TopBar, type SessionMode } from "./Shell";
@@ -49,6 +49,7 @@ import {
   OverviewPanel,
   PaneMenu,
   ParkedPanel,
+  ColorPanel,
   RecoveryPanel,
   SearchPanel,
 } from "./Panels";
@@ -65,10 +66,12 @@ import {
   saveLayout,
   savePreferences,
   saveView,
+  gridTemplate,
+  resizeTrack,
+  type GridWeights,
 } from "./layout-store";
 import {
   isFinished,
-  isScratch,
   needsAttention,
   nextPane,
   notificationMatches,
@@ -86,8 +89,7 @@ import { gridNeighbour, prefixAction } from "./prefix";
 import { chime, desktopAlert, freshNotifications, newestId } from "./alerts";
 
 /** Grid tiles per page. The stream allows ten subscriptions per connection;
- * eight leaves room for the scratch terminal and a popup window sharing the
- * connection. */
+ * eight leaves room for popup windows sharing the connection. */
 const PAGE = 8;
 /** The `Web` request API this client speaks (see `kelpmux web-bridge`). */
 const API_VERSION = 2;
@@ -178,6 +180,9 @@ function App() {
     [identity, setIdentity] = useState<Identity | null>(null),
     [online, setOnline] = useState(false),
     [connecting, setConnecting] = useState(false);
+  /** The bridge reported this workspace's server stopped (its name). */
+  const [stopped, setStopped] = useState(""),
+    [starting, setStarting] = useState(false);
   const [keyBusy, setKeyBusy] = useState(false);
   const [keyToDelete, setKeyToDelete] = useState("");
   const [settingsSection, setSettingsSection] = useState("appearance");
@@ -316,9 +321,14 @@ function App() {
     [parked, setParked] = useState<number[]>([]),
     [preferences, setPreferences] = useState(loadPreferences),
     [agentFilter, setAgentFilter] = useState<AgentFilter>("all"),
-    [scratchOpen, setScratchOpen] = useState(false),
     [fullWidth, setFullWidth] = useState(false),
     [findQuery, setFindQuery] = useState(""),
+    [colorPane, setColorPane] = useState<Pane | null>(null),
+    [gridWeights, setGridWeights] = useState<GridWeights>({
+      shape: "",
+      cols: [],
+      rows: [],
+    }),
     [menu, setMenu] = useState<{ pane: Pane; x: number; y: number } | null>(
       null,
     );
@@ -435,12 +445,11 @@ function App() {
 
   // This browser's layout: order, parking and focus, per workspace and
   // epoch. `all` is every pane in this browser's order; `live` the tabs and
-  // grid (parked and scratch excluded).
+  // grid (parked excluded).
   const all = orderPanes(panes, order);
   const parkedSet = new Set(parked);
-  const scratchPane = all.find((p) => isScratch(p) && !p.dead);
-  const live = all.filter((p) => !isScratch(p) && !parkedSet.has(p.id));
-  const parkedPanes = all.filter((p) => !isScratch(p) && parkedSet.has(p.id));
+  const live = all.filter((p) => !parkedSet.has(p.id));
+  const parkedPanes = all.filter((p) => parkedSet.has(p.id));
   useEffect(() => {
     if (!online || !panesLoaded || !workspace || !epoch || popupPane) return;
     saveLayout(workspace, {
@@ -466,20 +475,13 @@ function App() {
     if (panesLoaded && !popupPane && !live.some((p) => p.id === active))
       setActive(live[0]?.id || 0);
   }, [panes, order, panesLoaded, parked.join(",")]);
-  useEffect(() => {
-    if (scratchOpen && panesLoaded && !scratchPane) setScratchOpen(false);
-  }, [scratchOpen, panesLoaded, !!scratchPane]);
 
   const visible = popupPane
       ? all.filter((p) => p.id === popupPane)
       : view === "single"
         ? live.filter((p) => p.id === active)
         : live.slice(page * PAGE, page * PAGE + PAGE),
-    subscribed =
-      scratchOpen && scratchPane && !popupPane
-        ? [...visible, scratchPane]
-        : visible,
-    visibleKey = subscribed.map((p) => p.id).join(",");
+    visibleKey = visible.map((p) => p.id).join(",");
   const browserActivity = activityIcon(online ? panes : null);
   const attention = rollup(
     panes.filter((p) => !p.dead),
@@ -519,7 +521,7 @@ function App() {
   useEffect(() => {
     if (online)
       store.session?.request("subscribe", {
-        panes: subscribed.map((p) => p.id),
+        panes: visible.map((p) => p.id),
       });
   }, [online, visibleKey]);
   useEffect(() => {
@@ -728,13 +730,14 @@ function App() {
     overlayOpen,
     dialog,
     confirmAction,
-    scratchOpen,
     notifications,
     gridWidth,
+    gridWeights,
+    fullWidth,
   ]);
   /** Runs a Ctrl-B prefix action (see shortcuts.ts). */
   function runPrefix(action: NonNullable<ReturnType<typeof prefixAction>>) {
-    const targetPane = scratchOpen && scratchPane ? scratchPane : focusedPane();
+    const targetPane = focusedPane();
     const target = targetPane?.id || 0;
     if (typeof action === "object") {
       const pane = live[action.select - 1];
@@ -776,6 +779,37 @@ function App() {
         return moveFocus(1, 0);
       case "focus-up":
         return moveFocus(0, -1);
+      case "grid-resize-left":
+        return resizeGrid(-1, 0);
+      case "grid-resize-right":
+        return resizeGrid(1, 0);
+      case "grid-resize-up":
+        return resizeGrid(0, -1);
+      case "grid-resize-down":
+        return resizeGrid(0, 1);
+      case "grid-equalize":
+        return setGridWeights({ shape: "", cols: [], rows: [] });
+      case "scroll-mode":
+      case "select-mode": {
+        const pane = focusedPane();
+        if (!pane) return;
+        // Keyboard modes act on a terminal shown on its own.
+        const grid = view === "grid" && !fullWidth && !popupPane;
+        if (grid) activate(pane.id);
+        setTimeout(
+          () =>
+            store.events.dispatchEvent(
+              new CustomEvent("terminal-key-mode", {
+                detail: {
+                  pane: pane.id,
+                  kind: action === "scroll-mode" ? "scroll" : "select",
+                },
+              }),
+            ),
+          grid ? 80 : 0,
+        );
+        return;
+      }
       case "focus-down":
         return moveFocus(0, 1);
       case "next-attention":
@@ -801,10 +835,8 @@ function App() {
         return setDialog(action);
       case "settings":
         return setDialog("config");
-      case "scratch":
-        return void toggleScratch();
       case "park":
-        if (targetPane && !isScratch(targetPane)) park(targetPane);
+        if (targetPane) park(targetPane);
         return;
       case "close":
         if (targetPane) close(targetPane);
@@ -818,6 +850,29 @@ function App() {
   function focusedPane() {
     if (popupPane) return all.find((p) => p.id === popupPane);
     return live.find((p) => p.id === active);
+  }
+  /** Grows or shrinks the focused tile's column (dx) or row (dy) in this
+   * browser's grid (Ctrl-B H/J/K/L; Ctrl-B = equalizes), like the TUI's
+   * grid resizing. */
+  function resizeGrid(dx: number, dy: number) {
+    if (view !== "grid" || fullWidth) return;
+    const tiles = live.slice(page * PAGE, page * PAGE + PAGE);
+    const index = tiles.findIndex((p) => p.id === active);
+    if (index < 0) return;
+    const columns = gridColumns(tiles.length, gridWidth);
+    const lines = Math.max(1, Math.ceil(tiles.length / columns));
+    const shape = `${columns}x${lines}`;
+    const current =
+      gridWeights.shape === shape ? gridWeights : { shape, cols: [], rows: [] };
+    setGridWeights({
+      shape,
+      cols: dx
+        ? resizeTrack(current.cols, columns, index % columns, dx)
+        : current.cols,
+      rows: dy
+        ? resizeTrack(current.rows, lines, Math.floor(index / columns), dy)
+        : current.rows,
+    });
   }
   /** Moves grid focus to a neighbouring tile (Ctrl-B h/j/k/l). */
   function moveFocus(dx: number, dy: number) {
@@ -836,16 +891,10 @@ function App() {
       ];
     if (next) setActive(next.id);
   }
-  /** Opens a terminal wherever it is: unparks a parked one, shows the
-   * scratch popup for the scratch terminal, and otherwise opens it alone or
-   * focuses it in the grid. */
+  /** Opens a terminal wherever it is: unparks a parked one, and otherwise
+   * opens it alone or focuses it in the grid. */
   function openPane(pane: Pane) {
     setMenu(null);
-    if (isScratch(pane)) {
-      setScratchOpen(true);
-      return;
-    }
-    setScratchOpen(false);
     if (parkedSet.has(pane.id))
       setParked(parked.filter((id) => id !== pane.id));
     if (view === "grid" && !parkedSet.has(pane.id)) focusInGrid(pane);
@@ -873,7 +922,7 @@ function App() {
     );
   }
   function park(pane: Pane) {
-    if (parkedSet.has(pane.id) || isScratch(pane)) return;
+    if (parkedSet.has(pane.id)) return;
     setParked([...parked, pane.id]);
     toast(`Parked “${pane.title || "shell"}”; it keeps running`, {
       key: "park",
@@ -911,18 +960,6 @@ function App() {
     if (pane) openPane(pane);
     else activate(restored.pane);
   }
-  async function toggleScratch() {
-    if (scratchOpen) {
-      setScratchOpen(false);
-      focusTerminal();
-      return;
-    }
-    if (!scratchPane) {
-      const result = await rpc("scratch");
-      if (!result?.pane) return;
-    }
-    setScratchOpen(true);
-  }
   /** Marks notifications read in the workspace (the TUI shares the marks). */
   function acknowledge(ids: number[]) {
     for (const id of ids.slice(0, 128)) {
@@ -935,9 +972,7 @@ function App() {
   // in the TUI; a terminal that was already shown stays as it is until it is
   // shown again.
   const shownPane =
-    scratchOpen && scratchPane
-      ? scratchPane.id
-      : popupPane || (active && (view === "single" || fullWidth) ? active : 0);
+    popupPane || (active && (view === "single" || fullWidth) ? active : 0);
   useEffect(() => {
     if (!online || !shownPane || document.hidden) return;
     const pane = panes.find((p) => p.id === shownPane);
@@ -951,6 +986,12 @@ function App() {
       setSignedInKey(event.SignedInKey);
       return;
     }
+    if (event.Workspace) {
+      authProgress.current.welcomed = true;
+      setStopped(event.Workspace.running ? "" : event.Workspace.workspace);
+      setConnecting(false);
+      return;
+    }
     const e = event.Stream;
     if (!e) return;
     if (e.type === "clipboard") {
@@ -958,6 +999,7 @@ function App() {
       return;
     }
     if (e.type === "welcome") {
+      setStopped("");
       authProgress.current.welcomed = true;
       setSignedInKey(store.session?.signedInKey || null);
       if (store.session) void afterSignIn(store.session);
@@ -1095,6 +1137,7 @@ function App() {
       canceled: false,
     };
     authProgress.current = progress;
+    setStopped("");
     setKeyModal(false);
     setDialog("");
     setConfirmAction(null);
@@ -1110,7 +1153,6 @@ function App() {
     alertedId.current = -1;
     acknowledged.current.clear();
     setNotifications([]);
-    setScratchOpen(false);
     setPanes([]);
     setPanesLoaded(false);
     setActive(0);
@@ -1344,6 +1386,11 @@ function App() {
   const gridPanes = ordered.slice(page * PAGE, page * PAGE + PAGE);
   const cols = gridColumns(gridPanes.length, gridWidth);
   const rows = Math.max(1, Math.ceil(gridPanes.length / cols));
+  // A weight set belongs to one grid shape; another shape starts equal.
+  const weights =
+    gridWeights.shape === `${cols}x${rows}`
+      ? gridWeights
+      : { shape: `${cols}x${rows}`, cols: [], rows: [] };
   const keySettings = (mode: "register" | "settings") => (
     <KeySettings
       mode={mode}
@@ -1408,6 +1455,25 @@ function App() {
   );
   if (!online && popupPane && !popupFallback && !error && !sign && !keyModal)
     return <PopupConnecting onFallback={() => setPopupFallback(true)} />;
+  if (!online && stopped && store.session)
+    return (
+      <StoppedWorkspace
+        workspace={stopped}
+        starting={starting}
+        error={error}
+        onStart={async () => {
+          setError("");
+          setStarting(true);
+          // The bridge then connects and sends the usual stream welcome.
+          await rpc("start", { confirmed: true });
+          setStarting(false);
+        }}
+        onSignOut={() => {
+          setStopped("");
+          store.session?.close();
+        }}
+      />
+    );
   if (!online)
     return (
       <LoginScreen
@@ -1492,7 +1558,7 @@ function App() {
   /** A terminal's context menu (right-click on its row or tile). */
   function menuItems(p: Pane): [string, () => void, boolean?][] {
     const isParked = parkedSet.has(p.id);
-    // Reorders among the tabs; parked and scratch keep their places after.
+    // Reorders among the tabs; parked terminals keep their places after.
     const liveIds = live.map((pane) => pane.id);
     const rest = all
       .map((pane) => pane.id)
@@ -1516,11 +1582,14 @@ function App() {
         () => step(1),
         isParked || index < 0 || index >= live.length - 1,
       ],
-      isScratch(p)
-        ? ["Hide scratch popup", () => setScratchOpen(false), !scratchOpen]
-        : isParked
-          ? ["Unpark", () => unpark(p)]
-          : ["Park", () => park(p)],
+      isParked ? ["Unpark", () => unpark(p)] : ["Park", () => park(p)],
+      [
+        "Tab colour…",
+        () => {
+          setColorPane(p);
+          setDialog("color");
+        },
+      ],
       ["Close…", () => close(p)],
     ];
   }
@@ -1553,7 +1622,7 @@ function App() {
         >
           <Icon name="text-search" size="sm" />
         </button>
-        {!bare && !isScratch(p) && (
+        {!bare && (
           <button
             type="button"
             className="icon-btn"
@@ -1596,7 +1665,7 @@ function App() {
       </div>
     </header>
   );
-  const hintPane = scratchOpen && scratchPane ? scratchPane : focused;
+  const hintPane = focused;
   const owner = hintPane ? store.leases.get(hintPane.id) : undefined;
   const hint = hintPane
     ? owner === store.session?.client
@@ -1616,6 +1685,7 @@ function App() {
     parked: "Parked terminals",
     move: "Move terminal",
     help: "Help",
+    color: "Tab colour",
   };
   const closeDialog = () => {
     setDialog("");
@@ -1636,8 +1706,6 @@ function App() {
             folded={preferences.sidebarFolded}
             terminals={ordered}
             parked={parkedPanes}
-            scratch={scratchPane}
-            scratchOpen={scratchOpen}
             notifications={notifications}
             current={view === "single" || view === "grid" ? active : undefined}
             unread={unreadCount(notifications, panes)}
@@ -1653,13 +1721,18 @@ function App() {
             onUnpark={unpark}
             onMenu={(pane, x, y) => setMenu({ pane, x, y })}
             onNew={newTab}
-            onScratch={() => void toggleScratch()}
             onState={openState}
             onDialog={(name) => {
               if (name === "agents") setAgentFilter("all");
               setDialog(name);
             }}
             onResizeStart={resizeStart}
+            onToggleFold={() =>
+              setPreferences((current) => ({
+                ...current,
+                sidebarFolded: !current.sidebarFolded,
+              }))
+            }
           />
         </div>
       )}
@@ -1673,7 +1746,6 @@ function App() {
             current={focused}
             state={focused ? paneState(focused, notifications) : undefined}
             mode={fullWidth ? "single" : view}
-            scratchOpen={scratchOpen}
             fullWidth={fullWidth}
             page={page}
             pages={pages}
@@ -1682,7 +1754,6 @@ function App() {
               chooseMode(mode);
             }}
             onNewTerminal={newTab}
-            onScratch={() => void toggleScratch()}
             onFullWidth={() => setFullWidth(!fullWidth)}
             onPage={setPage}
           />
@@ -1706,7 +1777,7 @@ function App() {
                 <Terminal
                   pane={focused}
                   store={store}
-                  active={!(scratchOpen && scratchPane)}
+                  active
                   layout="tabs"
                   onActivate={() => setActive(focused.id)}
                   onError={fail}
@@ -1721,8 +1792,8 @@ function App() {
               className="pane-grid live-grid"
               aria-label="Terminal grid"
               style={{
-                gridTemplateColumns: `repeat(${cols},minmax(0,1fr))`,
-                gridTemplateRows: `repeat(${rows},minmax(0,1fr))`,
+                gridTemplateColumns: gridTemplate(weights.cols, cols),
+                gridTemplateRows: gridTemplate(weights.rows, rows),
               }}
             >
               {Array.from({ length: cols * rows }, (_, i) => {
@@ -1760,7 +1831,6 @@ function App() {
                     }}
                     onClick={() => {
                       if (performance.now() < suppressClick.current) return;
-                      setScratchOpen(false);
                       activate(p.id);
                     }}
                   >
@@ -1790,41 +1860,6 @@ function App() {
               </button>
             </div>
           ) : null}
-          {scratchOpen && scratchPane && !bare && (
-            <section
-              className="grid-pane scratch-overlay"
-              role="region"
-              aria-label="Scratch terminal"
-            >
-              {paneHeader(
-                scratchPane,
-                <button
-                  type="button"
-                  className="icon-btn"
-                  title="Hide the scratch popup; it keeps running (Ctrl-B c)"
-                  aria-label="Hide scratch terminal"
-                  onClick={(event) => {
-                    event.stopPropagation();
-                    setScratchOpen(false);
-                    focusTerminal();
-                  }}
-                >
-                  <Icon name="chevron-down" size="sm" />
-                </button>,
-              )}
-              <Terminal
-                pane={scratchPane}
-                store={store}
-                active
-                layout="tabs"
-                onActivate={() => {}}
-                onError={fail}
-                find={findPane === scratchPane.id}
-                findQuery={findQuery}
-                onCloseFind={() => setFindPane(0)}
-              />
-            </section>
-          )}
         </div>
         {!bare && (
           <StatusBar
@@ -1993,6 +2028,18 @@ function App() {
                 />
               )}
               {dialog === "help" && <HelpPanel />}
+              {dialog === "color" && colorPane && (
+                <ColorPanel
+                  pane={all.find((p) => p.id === colorPane.id) || colorPane}
+                  onPick={async (color) => {
+                    const done = await rpc("color", {
+                      pane: colorPane.id,
+                      color,
+                    });
+                    if (done) closeDialog();
+                  }}
+                />
+              )}
             </section>
           </div>
         )}

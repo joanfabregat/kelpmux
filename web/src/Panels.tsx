@@ -11,7 +11,6 @@ import { ProviderLogo } from "./state/ProviderLogo";
 import {
   agentFilterLabel,
   agents,
-  isScratch,
   notificationMatches,
   notificationStatus,
   paneState,
@@ -23,16 +22,17 @@ import {
   type Notification,
 } from "./state/model";
 import { shortcuts } from "./shortcuts";
+import { paletteColor, paletteNames } from "./palette";
 
 const name = (p: Pane) => p.title || "shell";
 const where = (p: Pane, parked: Set<number>) =>
-  isScratch(p)
-    ? "Scratch"
-    : parked.has(p.id)
-      ? "Parked"
-      : p.number
-        ? `Terminal ${p.number}`
-        : "Parked in the TUI";
+  parked.has(p.id)
+    ? "Parked"
+    : p.number
+      ? `Terminal ${p.number}`
+      : p.parked
+        ? "Parked in the TUI"
+        : "Terminal";
 
 /** A row's "Open" action. */
 function OpenButton({
@@ -255,7 +255,7 @@ export function OverviewPanel({
               const checked = p.observation?.checked_at || 0;
               return (
                 <tr key={p.id} data-pane={p.id}>
-                  <td>{isScratch(p) ? "S" : p.number || "–"}</td>
+                  <td>{p.number || "–"}</td>
                   <th scope="row">
                     <span className="overview-name">
                       <StateMark state={state} />
@@ -752,3 +752,41 @@ export function PaneMenu({
 /** The state label of a pane, for headers and tooltips. */
 export const paneStateLabel = (p: Pane, notifications: Notification[]) =>
   stateLabel[paneState(p, notifications)];
+
+/** The TUI's tab colour picker: one of its nine palette colours, shared by
+ * every client of the workspace. */
+export function ColorPanel({
+  pane,
+  onPick,
+}: {
+  pane: Pane;
+  onPick: (color: number) => void;
+}) {
+  return (
+    <div className="panel-body">
+      <p className="setting-hint">
+        Colour for “{name(pane)}”. It is workspace state: the TUI and other
+        browsers show it too.
+      </p>
+      <div className="color-grid" role="list">
+        {paletteNames.map((label, index) => (
+          <button
+            type="button"
+            key={label}
+            className="color-swatch"
+            aria-pressed={pane.palette === index}
+            aria-label={label}
+            onClick={() => onPick(index)}
+          >
+            <span
+              className="swatch"
+              style={{ background: paletteColor(index) }}
+              aria-hidden="true"
+            />
+            {label}
+          </button>
+        ))}
+      </div>
+    </div>
+  );
+}

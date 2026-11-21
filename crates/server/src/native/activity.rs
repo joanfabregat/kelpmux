@@ -244,6 +244,12 @@ impl Activity {
                     // metadata, not evidence that a new turn just completed.
                     continue;
                 }
+                if !known && new.status == Status::InputNeeded && new.session_id.is_none() {
+                    // An agent first seen waiting before it has a session is at
+                    // a startup dialog (Claude's folder trust, for example),
+                    // not asking about work. It alerts once it asks again later.
+                    continue;
+                }
                 let repeated = self
                     .data
                     .seen

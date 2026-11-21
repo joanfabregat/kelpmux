@@ -181,6 +181,8 @@ impl NativePane {
         }
         let mut command = Command::new(&config.shell);
         super::shell::integrate_shell(&mut command, &config.state_dir, &config.shell)?;
+        // Agent and multiplexer session markers of whoever started the server.
+        super::shell::remove_session_markers(&mut command);
         command.arg("-i");
         if let Some(startup) = startup {
             command.arg("-c").arg(format!(
@@ -201,11 +203,6 @@ impl NativePane {
             .env_remove("SSH_CONNECTION")
             .env_remove("SSH_CLIENT")
             .env_remove("SSH_TTY")
-            .env_remove("TMUX")
-            .env_remove("TMUX_PANE")
-            .env_remove("STY")
-            .env_remove("CODEX_THREAD_ID")
-            .env_remove("CLAUDECODE")
             .env_remove("KELPMUX_DEV_BADGE")
             .stdin(Stdio::from(slave.try_clone()?))
             .stdout(Stdio::from(slave.try_clone()?))
@@ -1344,22 +1341,34 @@ impl Server {
                 self.persist_geometry()?;
             }
             Action::Scratch => {
-                self.create_scratch()?;
-                self.workspace.apply(action)?;
-            }
-            Action::ScratchCreate => {
-                // An independent client creates the scratch terminal without
-                // showing it in, or otherwise changing, the composed view.
-                if self.workspace.ui.scratch_visible
-                    && self
-                        .workspace
-                        .ui
-                        .scratch
-                        .is_some_and(|id| self.panes.get(&id).is_none_or(|pane| pane.dead))
-                {
-                    self.workspace.apply(&Action::ScratchClose)?;
+                let dead = self
+                    .workspace
+                    .ui
+                    .scratch
+                    .is_some_and(|id| self.panes.get(&id).is_none_or(|pane| pane.dead));
+                if dead {
+                    if let Some(id) = self.workspace.ui.scratch.take() {
+                        self.panes.remove(&id);
+                        self.workspace.panes.retain(|pane| pane.id != id);
+                    }
+                    self.workspace.ui.scratch_visible = false;
                 }
-                self.create_scratch()?;
+                if self.workspace.ui.scratch.is_none() {
+                    let active = self.workspace.active;
+                    self.spawn_pane(None)?;
+                    let id = self
+                        .workspace
+                        .panes
+                        .last()
+                        .ok_or("scratch creation failed")?
+                        .id;
+                    self.workspace.ui.scratch = Some(id);
+                    if let Some(pane) = self.workspace.panes.last_mut() {
+                        pane.title = "Scratch terminal".into();
+                    }
+                    self.workspace.active = active;
+                }
+                self.workspace.apply(action)?;
             }
             Action::Acknowledge(id) => {
                 self.activity.acknowledge(*id)?;
@@ -1519,38 +1528,6 @@ impl Server {
         self.persist_ui()?;
         self.resize();
         Ok(true)
-    }
-    /// Replaces a dead scratch terminal and creates one when none exists,
-    /// keeping the active pane. Showing it is the caller's decision.
-    fn create_scratch(&mut self) -> Result<()> {
-        let dead = self
-            .workspace
-            .ui
-            .scratch
-            .is_some_and(|id| self.panes.get(&id).is_none_or(|pane| pane.dead));
-        if dead {
-            if let Some(id) = self.workspace.ui.scratch.take() {
-                self.panes.remove(&id);
-                self.workspace.panes.retain(|pane| pane.id != id);
-            }
-            self.workspace.ui.scratch_visible = false;
-        }
-        if self.workspace.ui.scratch.is_none() {
-            let active = self.workspace.active;
-            self.spawn_pane(None)?;
-            let id = self
-                .workspace
-                .panes
-                .last()
-                .ok_or("scratch creation failed")?
-                .id;
-            self.workspace.ui.scratch = Some(id);
-            if let Some(pane) = self.workspace.panes.last_mut() {
-                pane.title = "Scratch terminal".into();
-            }
-            self.workspace.active = active;
-        }
-        Ok(())
     }
     fn close_pane(&mut self, id: PaneId) -> Result<()> {
         self.tui_write_allowed(id)?;

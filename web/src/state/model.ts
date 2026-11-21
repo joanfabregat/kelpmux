@@ -65,11 +65,6 @@ export type Notification = {
 /** Whether KelpServer identifies the pane's program as a coding agent. */
 export const isAgent = (pane: { kind?: string | null }) => !!pane.kind;
 
-/** The workspace's scratch terminal: the one unnumbered, unparked pane
- * (KelpServer numbers parked panes and the scratch terminal 0). */
-export const isScratch = (pane: Pick<StatePane, "number" | "parked">) =>
-  pane.number === 0 && !pane.parked;
-
 /** Needs attention: a question or a failure (the TUI's `!` filter and
  * next-question target). */
 export const needsAttention = (pane: Pick<StatePane, "status">) =>
@@ -216,14 +211,14 @@ export function rollupSummary(r: Rollup) {
     .join(", ");
 }
 
-/** The next pane after `active` (cyclically, scratch excluded) matching
+/** The next pane after `active` (cyclically) matching
  * `predicate`, or null: the TUI's next question / next completion. */
 export function nextPane<T extends StatePane>(
   panes: T[],
   active: number,
   predicate: (pane: T) => boolean,
 ): T | null {
-  const list = panes.filter((p) => !isScratch(p));
+  const list = panes;
   if (!list.length) return null;
   const start = Math.max(
     0,

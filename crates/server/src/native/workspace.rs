@@ -1144,8 +1144,7 @@ impl Workspace {
                 self.ui.help_offset = 0;
                 self.ui.dialog = None;
             }
-            // The server creates the scratch PTY; the layout is unchanged.
-            Action::Detach | Action::Takeover | Action::Shutdown | Action::ScratchCreate => {}
+            Action::Detach | Action::Takeover | Action::Shutdown => {}
             Action::SelectionStart | Action::SelectionMove { .. } => {
                 self.require_pane(self.active)?;
             }

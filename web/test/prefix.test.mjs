@@ -18,7 +18,7 @@ test("prefix keys follow the TUI's default bindings", () => {
   assert.equal(key("!"), "agents-attention");
   assert.equal(key("p"), "park");
   assert.equal(key("u"), "parked");
-  assert.equal(key("c"), "scratch");
+  assert.equal(key("c"), null);
   assert.equal(key("/"), "search");
   assert.equal(key("ArrowLeft"), "focus-left");
   assert.equal(key("b", { ctrlKey: true }), "send-prefix");
@@ -38,4 +38,12 @@ test("grid focus moves to neighbours and stops at edges", () => {
   assert.equal(gridNeighbour(4, 5, 3, 0, -1), 1);
   assert.equal(gridNeighbour(-1, 5, 3, 1, 0), -1);
   assert.equal(gridNeighbour(0, 0, 3, 1, 0), 0);
+});
+
+test("keyboard modes and grid resizing follow the TUI keys", () => {
+  assert.equal(prefixAction({ key: "[" }), "scroll-mode");
+  assert.equal(prefixAction({ key: " " }), "select-mode");
+  assert.equal(prefixAction({ key: "H", shiftKey: true }), "grid-resize-left");
+  assert.equal(prefixAction({ key: "J", shiftKey: true }), "grid-resize-down");
+  assert.equal(prefixAction({ key: "=" }), "grid-equalize");
 });

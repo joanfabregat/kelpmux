@@ -2,7 +2,9 @@
 //! authenticated Linux account; it relays the independent pane stream and a
 //! small set of request-correlated terminal operations over standard I/O.
 //!
-//! It never listens on TCP, never starts or restarts a workspace server, never
+//! It never listens on TCP and never restarts or replaces a workspace server.
+//! When its own configured workspace is not running it offers one `start`
+//! operation, run only on an explicit browser request. It never
 //! changes SSH authorization and holds no project, file or Git management.
 use super::{connection, history, protocol::*, status, stream};
 use crate::{Result, model::Kind};
@@ -20,7 +22,8 @@ use std::{
 };
 
 /// Version of the `Web` request API spoken by this bridge.
-/// Version 2 added `scratch`, `closed`, `restore` and notification
+/// Version 2 added `color`, `closed`, `restore`, `start` (with the
+/// `Workspace` notice while the server is stopped) and notification
 /// acknowledgements.
 pub const API_VERSION: u64 = 2;
 /// Largest accepted `Web` request, in bytes of JSON.
@@ -161,28 +164,24 @@ impl Api {
                 value["refreshing"] = json!(self.monitor.refreshing());
                 Ok(value)
             }
-            "scratch" => self.scratch(),
+            "color" => {
+                // The TUI's tab colour: an index into its palette. Shared
+                // workspace state, like the TUI's own picker.
+                let color = p["color"]
+                    .as_u64()
+                    .filter(|&c| c < 9)
+                    .ok_or("tab color must be a palette index from 0 to 8")?;
+                self.command(Action::TabColorSet {
+                    pane: pane(p)?,
+                    color: color as u8,
+                })?;
+                Ok(json!({}))
+            }
+            "start" => Err("the workspace server is already running".into()),
             "closed" => self.closed(),
             "restore" => self.restore(p),
             _ => Err("unsupported web operation".into()),
         }
-    }
-    /// The workspace's scratch terminal, created on first use without
-    /// showing it in the TUI. A scratch terminal the TUI already has is
-    /// shared: it is one terminal per workspace, like the TUI's.
-    fn scratch(&self) -> Result<Value> {
-        if !self.capabilities()?.iter().any(|c| c == "scratch-create") {
-            return Err("this terminal server cannot create a scratch terminal for web clients; update and restart it".into());
-        }
-        let ServerMessage::State { panes, .. } = self.command(Action::ScratchCreate)? else {
-            return Err("terminal server did not return its panes".into());
-        };
-        // Parked panes and the scratch terminal are the unnumbered ones.
-        let scratch = panes
-            .iter()
-            .find(|pane| pane.number == 0 && !pane.parked && !pane.dead)
-            .ok_or("terminal server did not create a scratch terminal")?;
-        Ok(json!({ "pane": scratch.id }))
     }
     /// Recently closed terminals and previous runs, the TUI's Recovery list:
     /// this workspace's first, newest first within each group, with the
@@ -315,7 +314,7 @@ impl Api {
 
 /// Bridge operations, reported by `state`.
 const OPERATIONS: &[&str] = &[
-    "state", "new", "close", "search", "history", "status", "scratch", "closed", "restore",
+    "state", "new", "close", "search", "history", "status", "color", "closed", "restore", "start",
 ];
 
 /// The restore actions a closed entry offers, as the TUI's Recovery dialog
@@ -392,6 +391,97 @@ pub fn paths(args: &[String]) -> Result<(PathBuf, PathBuf)> {
     Ok((socket, state))
 }
 
+/// Whether no workspace server is running: no socket, or a socket nothing
+/// listens on. Any other connection failure is reported, not started over.
+fn server_absent(socket: &Path) -> bool {
+    match UnixStream::connect(socket) {
+        Ok(_) => false,
+        Err(error) => matches!(
+            error.kind(),
+            io::ErrorKind::NotFound | io::ErrorKind::ConnectionRefused
+        ),
+    }
+}
+
+/// Starts this bridge's own workspace on an explicit browser request. The
+/// request chooses nothing: no workspace, server binary or replacement.
+fn start(socket: &Path, state: &Path, params: &Value) -> Result<Value> {
+    let options = params
+        .as_object()
+        .ok_or("start parameters must be an object")?;
+    if params["confirmed"] != true {
+        return Err("starting the workspace requires explicit confirmation".into());
+    }
+    if options.keys().any(|key| key != "confirmed") {
+        return Err("start takes no options; it starts this bridge's own workspace".into());
+    }
+    if !server_absent(socket) {
+        return Err("the workspace server is already running".into());
+    }
+    super::cli::start_workspace(state, socket)?;
+    Ok(json!({ "started": true }))
+}
+
+/// Serves the browser while the workspace is not running: answers its hello
+/// with a `Workspace` notice, its `state` and, on request, `start`. Returns
+/// the connection to the started server.
+fn stopped(socket: &Path, state: &Path) -> Result<UnixStream> {
+    let workspace = state.file_name().unwrap_or_default().to_string_lossy();
+    let mut input = io::stdin().lock();
+    let mut output = io::stdout().lock();
+    let mut greeted = false;
+    let mut last_id = 0;
+    loop {
+        let value =
+            read_message::<Value>(&mut input)?.ok_or("browser disconnected before start")?;
+        let Some(web) = value.get("Web") else {
+            match serde_json::from_value::<ClientMessage>(value) {
+                Ok(ClientMessage::Stream(stream::Request::Hello { version: 1 })) if !greeted => {
+                    greeted = true;
+                    write_message(
+                        &mut output,
+                        &json!({"Workspace": {"running": false, "workspace": workspace}}),
+                    )?;
+                }
+                // Other stream requests have no server to reach yet.
+                Ok(ClientMessage::Stream(_)) if greeted => {}
+                _ => return Err("unexpected message while the workspace is stopped".into()),
+            }
+            continue;
+        };
+        let id = web["id"]
+            .as_u64()
+            .filter(|id| *id > last_id && *id <= MAX_ID && greeted)
+            .ok_or("invalid web request")?;
+        last_id = id;
+        let method = web["method"].as_str().unwrap_or("");
+        let result = if serde_json::to_vec(web).is_ok_and(|b| b.len() > REQUEST_LIMIT) {
+            Err("web request too large".into())
+        } else {
+            match method {
+                "state" => Ok(json!({
+                    "api_version": API_VERSION,
+                    "workspace": workspace,
+                    "version": env!("CARGO_PKG_VERSION"),
+                    "running": false,
+                    "operations": ["state", "start"],
+                })),
+                "start" => start(socket, state, &web["params"]),
+                _ => Err("the workspace server is not running; start it first".into()),
+            }
+        };
+        let started = method == "start" && result.is_ok();
+        let reply = match result {
+            Ok(result) => json!({"Web": {"id": id, "result": result}}),
+            Err(error) => json!({"Web": {"id": id, "error": error.to_string()}}),
+        };
+        write_message(&mut output, &reply)?;
+        if started {
+            return connection::connect(socket);
+        }
+    }
+}
+
 /// Runs the bridge until standard input closes or the workspace disconnects.
 /// The command line is fixed by the operator (an SSH forced command or the
 /// relay's configured bridge command); the browser supplies no path.
@@ -399,7 +489,19 @@ pub fn run(socket: &Path, state: &Path) -> Result<()> {
     if unsafe { libc::isatty(0) } == 1 || unsafe { libc::isatty(1) } == 1 {
         return Err("web bridge requires SSH without a PTY".into());
     }
-    let upstream = connection::connect(socket)?;
+    // A workspace that is not running is offered to the browser to start.
+    let (mut upstream, greeted) = match connection::connect(socket) {
+        Ok(stream) => (stream, false),
+        Err(_) if server_absent(socket) => (stopped(socket, state)?, true),
+        Err(error) => return Err(error),
+    };
+    if greeted {
+        // The browser's hello was answered while stopped; greet the server.
+        write_message(
+            &mut upstream,
+            &ClientMessage::Stream(stream::Request::Hello { version: 1 }),
+        )?;
+    }
     let peer = Peer::read(&upstream)?;
     // The stream stays open while idle; only writes are bounded.
     upstream.set_read_timeout(None)?;
@@ -454,7 +556,7 @@ pub fn run(socket: &Path, state: &Path) -> Result<()> {
             state,
             monitor,
         };
-        let mut initialized = false;
+        let mut initialized = greeted;
         let mut last_id = 0;
         let mut input = io::stdin().lock();
         while let Ok(Some(value)) = read_message::<Value>(&mut input) {
