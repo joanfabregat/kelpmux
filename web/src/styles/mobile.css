@@ -1,0 +1,230 @@
+/*
+ * Phones and tablets (device.ts, Mobile.tsx). main.tsx marks the root with
+ * data-layout="phone" | "tablet" | "desktop" and data-touch, and the shell
+ * with .touch and .phone. Safari on iOS first.
+ */
+
+/* ───────── Touch shell ───────── */
+/* The shell is fixed to the visual viewport (useVisualViewport), so it ends
+ * where the on-screen keyboard begins and the key bar sits right above it.
+ * Safe-area insets keep content clear of the notch, the rounded corners and
+ * the home indicator; the keyboard covers the home indicator while open. */
+.kelpmux-shell.touch {
+  position: fixed;
+  top: var(--vv-top, 0px);
+  right: 0;
+  left: 0;
+  height: var(--vv-height, 100dvh);
+  padding: env(safe-area-inset-top) env(safe-area-inset-right)
+    env(safe-area-inset-bottom) env(safe-area-inset-left);
+}
+:root[data-keyboard="open"] .kelpmux-shell.touch {
+  padding-bottom: 0;
+}
+.terminal canvas {
+  -webkit-touch-callout: none;
+}
+
+/* Larger tap targets for fingers (Apple's guideline is 44 pt). */
+.touch .nav-item {
+  min-height: 44px;
+}
+.touch .term-item {
+  min-height: 50px;
+}
+.touch button.icon-btn {
+  width: 40px;
+  height: 40px;
+}
+.touch .rail-new,
+.touch .term-row-actions .icon-btn {
+  width: 36px;
+  height: 36px;
+}
+.touch button.rail-mark {
+  min-height: 32px;
+  padding: 0 var(--s2);
+}
+.touch .view-toggle button {
+  min-width: 40px;
+  min-height: 36px;
+}
+.touch .grid-pane > header {
+  height: 40px;
+  touch-action: manipulation;
+}
+.touch .account,
+.touch .vitals {
+  min-height: 48px;
+}
+/* No hover on touch: row actions (the row menu) are always visible, and a
+ * drag on a row scrolls the list instead of reordering it. */
+.touch .term-row {
+  touch-action: pan-y;
+}
+.touch .term-row-actions {
+  display: inline-flex;
+}
+.touch .rail-scroll {
+  overscroll-behavior: contain;
+}
+.touch .sidebar-fold {
+  right: -18px;
+  width: 36px;
+  height: 56px;
+}
+.touch .sidebar-divider {
+  right: -8px;
+  width: 16px;
+}
+.touch .menu-item {
+  min-height: 44px;
+}
+
+@media (pointer: coarse) {
+  /* Safari zooms into form fields with text smaller than 16px. */
+  input,
+  select,
+  textarea {
+    font-size: 16px;
+  }
+  .login button,
+  .key-modal button:not(.icon-btn),
+  .confirm-dialog button {
+    min-height: 44px;
+  }
+}
+
+/* ───────── Key bar ───────── */
+.key-bar {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: var(--s1);
+  padding: var(--s1);
+  border-top: 1px solid var(--line);
+  background: var(--surface-1);
+}
+.key-bar-keys {
+  display: flex;
+  flex: 1;
+  gap: var(--s1);
+  min-width: 0;
+  overflow-x: auto;
+  overscroll-behavior: contain;
+  scrollbar-width: none;
+  touch-action: pan-x;
+}
+.key-bar-keys::-webkit-scrollbar {
+  display: none;
+}
+button.key-bar-key {
+  flex: none;
+  min-width: 44px;
+  min-height: 40px;
+  padding: 0 var(--s2);
+  border: 1px solid var(--line-strong);
+  background: var(--surface-3);
+  color: var(--text);
+  font: 500 var(--fs-md) var(--font-mono);
+  touch-action: manipulation;
+  -webkit-user-select: none;
+  user-select: none;
+}
+button.key-bar-key[aria-pressed="true"] {
+  border-color: var(--accent);
+  background: var(--accent);
+  color: var(--on-accent);
+}
+button.key-bar-keyboard {
+  gap: var(--s1);
+  font-family: var(--font-ui);
+}
+button.key-bar-keyboard[aria-pressed="true"] {
+  border-color: var(--line-strong);
+  background: var(--surface-2);
+  color: var(--text);
+}
+
+/* ───────── Phone ───────── */
+.phone .workspace {
+  min-height: 0;
+}
+/* The home screen: the sidebar's content, full width. */
+.phone-list {
+  display: flex;
+  flex: 1;
+  min-height: 0;
+  animation: phone-list-in 0.18s ease-out;
+}
+.phone-list .rail {
+  width: 100%;
+  border-right: 0;
+}
+.phone-list .sidebar-divider,
+.phone-list .sidebar-fold {
+  display: none;
+}
+@keyframes phone-list-in {
+  from {
+    opacity: 0.6;
+    transform: translateX(-24px);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .phone-list {
+    animation: none;
+  }
+}
+.phone-bar {
+  gap: var(--s1);
+  padding: 0 var(--s1);
+}
+button.phone-back {
+  flex: none;
+  gap: 2px;
+  min-height: 44px;
+  padding: 0 var(--s2) 0 0;
+  color: var(--accent-text);
+}
+.phone-title {
+  display: flex;
+  flex: 1;
+  align-items: center;
+  gap: var(--s1);
+  min-width: 0;
+  overflow: hidden;
+  font-weight: 600;
+}
+.phone-title-text {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+@media (max-width: 380px) {
+  .phone-back > span:not(.badge) {
+    display: none;
+  }
+}
+/* Dialogs take the whole screen on a phone; confirmations stay centred. */
+:root[data-layout="phone"] .modal-shade {
+  align-items: stretch;
+  padding: env(safe-area-inset-top) env(safe-area-inset-right)
+    env(safe-area-inset-bottom) env(safe-area-inset-left);
+}
+:root[data-layout="phone"] .modal,
+:root[data-layout="phone"] .panel-modal,
+:root[data-layout="phone"] .panel-modal.wide-modal {
+  width: 100%;
+  max-height: none;
+  border: 0;
+  border-radius: 0;
+}
+:root[data-layout="phone"] .panel-body {
+  flex: 1;
+  max-height: none;
+}
+:root[data-layout="phone"] .modal-shade.confirmation {
+  align-items: center;
+  padding: var(--s4);
+}
