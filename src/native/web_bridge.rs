@@ -568,6 +568,7 @@ pub fn run(socket: &Path, state: &Path) -> Result<()> {
                 client,
                 ref epoch,
                 ref capabilities,
+                ..
             }) = event
             {
                 if version != stream::VERSION || client == 0 || epoch.is_empty() {

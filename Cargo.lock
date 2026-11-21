@@ -160,7 +160,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "39cab71617ae0d63f51a36d69f866391735b51691dbda63cf6f96d042b63efeb"
 dependencies = [
  "libc",
- "windows-sys 0.59.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -246,7 +246,7 @@ dependencies = [
 [[package]]
 name = "kelpclient-protocol"
 version = "0.1.0"
-source = "git+https://github.com/joanfabregat/kelpserver?rev=ad961f010b88f0f9362f51baf733008a666d326d#ad961f010b88f0f9362f51baf733008a666d326d"
+source = "git+https://github.com/joanfabregat/kelpserver?rev=ed68625df6204bab59a5bb9842667df2a077096f#ed68625df6204bab59a5bb9842667df2a077096f"
 dependencies = [
  "serde",
  "unicode-width",
@@ -269,7 +269,7 @@ dependencies = [
 [[package]]
 name = "kelpserver"
 version = "0.2.0-beta.7"
-source = "git+https://github.com/joanfabregat/kelpserver?rev=ad961f010b88f0f9362f51baf733008a666d326d#ad961f010b88f0f9362f51baf733008a666d326d"
+source = "git+https://github.com/joanfabregat/kelpserver?rev=ed68625df6204bab59a5bb9842667df2a077096f#ed68625df6204bab59a5bb9842667df2a077096f"
 dependencies = [
  "alacritty_terminal",
  "base64",
@@ -454,7 +454,7 @@ dependencies = [
  "errno",
  "libc",
  "linux-raw-sys",
- "windows-sys 0.59.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
