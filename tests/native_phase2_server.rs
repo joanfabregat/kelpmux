@@ -447,7 +447,9 @@ fn parking_keeps_ptys_output_and_identity_through_all_parked_and_reconnect() {
                 .iter()
                 .any(|v| v.pane.id == first.id && !v.pane.parked && v.body.cols > 0)
     });
-    assert_eq!(peer.panes()[0].pid, first.pid);
+    // An unparked tab rejoins the tab order last, with its process intact.
+    let restored = peer.panes().last().unwrap().clone();
+    assert_eq!((restored.id, restored.pid), (first.id, first.pid));
 }
 
 #[test]
