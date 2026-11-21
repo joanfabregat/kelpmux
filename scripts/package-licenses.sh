@@ -9,8 +9,8 @@ cargo metadata --locked --offline --format-version 1 > "$out/metadata.json"
 jq '[.packages[] | {name, version, license, repository}]' "$out/metadata.json" > "$out/dependencies.json"
 # A separate checked jq command propagates parsing failures; process substitution
 # would otherwise hide a failure and silently create an incomplete distribution.
-jq -er '. as $metadata | .packages[] | select(.id as $id | $metadata.workspace_members | index($id) | not) | [.name, .version, .manifest_path] | @tsv' "$out/metadata.json" > "$out/packages.tsv"
-while IFS=$'\t' read -r name version manifest; do
+jq -er '. as $metadata | .packages[] | select(.id as $id | $metadata.workspace_members | index($id) | not) | [.name, .version, .manifest_path, (.source // "")] | @tsv' "$out/metadata.json" > "$out/packages.tsv"
+while IFS=$'\t' read -r name version manifest source; do
   dir=${manifest%/*}
   dest="$out/$name-$version"
   mkdir -p "$dest"
@@ -25,6 +25,23 @@ while IFS=$'\t' read -r name version manifest; do
   if [[ $name == r-efi && -f $dir/AUTHORS ]] && grep -q '^AUTHORS-MIT:' "$dir/AUTHORS"; then
     cp "$dir/AUTHORS" "$dest/"
     found=1
+  fi
+  # A crate inside a pinned Git repository (kelpclient-protocol from
+  # kelpserver) may rely on the repository's root license files: look up to
+  # Cargo's checkout root, which it marks with .cargo-ok.
+  if [[ "$found" != 1 && $source == git+* ]]; then
+    root=$dir
+    while [[ $root == */* && ! -e $root/.cargo-ok ]]; do
+      root=${root%/*}
+    done
+    if [[ -e $root/.cargo-ok ]]; then
+      for file in "$root"/LICENSE* "$root"/NOTICE*; do
+        if [[ -f "$file" ]]; then
+          cp "$file" "$dest/"
+          found=1
+        fi
+      done
+    fi
   fi
   if [[ "$found" != 1 ]]; then
     printf 'Missing packaged license text for %s %s\n' "$name" "$version" >&2
