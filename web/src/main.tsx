@@ -31,6 +31,7 @@ import {
   themeVariables,
 } from "./appearance";
 import "./styles/state.css";
+import "./styles/mobile.css";
 import { ToastProvider, useToast } from "./Toast";
 import { activityIcon } from "./activity-icon";
 import { basename } from "./format";
@@ -86,6 +87,15 @@ import {
   type Notification,
 } from "./state/model";
 import { gridNeighbour, prefixAction } from "./prefix";
+import { KeyBar, PhoneBar, useDevice, useVisualViewport } from "./Mobile";
+import { sidebarFolded } from "./device";
+import {
+  barKeyBytes,
+  consumesCtrl,
+  nextInputMode,
+  type BarKey,
+  type InputMode,
+} from "./terminal/touch-keys";
 import { chime, desktopAlert, freshNotifications, newestId } from "./alerts";
 
 /** Grid tiles per page. The stream allows ten subscriptions per connection;
@@ -306,7 +316,7 @@ function App() {
     [panes, setPanes] = useState<Pane[]>([]),
     [panesLoaded, setPanesLoaded] = useState(false),
     [active, setActive] = useState(0),
-    [view, setView] = useState<SessionMode>(() =>
+    [savedView, setView] = useState<SessionMode>(() =>
       popupPane ? "single" : loadView(),
     ),
     [dialog, setDialog] = useState(""),
@@ -332,7 +342,41 @@ function App() {
     [menu, setMenu] = useState<{ pane: Pane; x: number; y: number } | null>(
       null,
     );
+  // Phones and tablets (device.ts). A phone shows the terminal list, or one
+  // terminal full screen; it has no grid. Touch devices show output without
+  // the on-screen keyboard until the user enters input mode.
+  const device = useDevice();
+  const phone = device.mode === "phone" && !popupPane,
+    touch = device.touch;
+  const view: SessionMode = phone ? "single" : savedView;
+  /** The phone shows its terminal list (its home screen). */
+  const [phoneList, setPhoneList] = useState(true);
+  const [inputMode, setInputMode] = useState<InputMode>("reading"),
+    [ctrlArmed, setCtrlArmed] = useState(false),
+    [prefixArmed, setPrefixArmed] = useState(false);
+  /** A tablet in portrait starts with the sidebar folded, each time. */
+  const [portraitFolded, setPortraitFolded] = useState(true);
+  const tabletPortrait =
+    device.mode === "tablet" && device.orientation === "portrait";
+  useEffect(() => {
+    if (tabletPortrait) setPortraitFolded(true);
+  }, [tabletPortrait]);
+  const folded = sidebarFolded(
+    device.mode,
+    device.orientation,
+    preferences.sidebarFolded,
+    portraitFolded,
+  );
+  function toggleFold() {
+    if (tabletPortrait) setPortraitFolded(!folded);
+    else
+      setPreferences((current) => ({
+        ...current,
+        sidebarFolded: !current.sidebarFolded,
+      }));
+  }
   useEffect(() => savePreferences(preferences), [preferences]);
+  useVisualViewport(touch && online);
   const notificationsRef = useRef(notifications);
   notificationsRef.current = notifications;
   /** Newest notification already considered for alerts (-1: not yet). */
@@ -478,9 +522,11 @@ function App() {
 
   const visible = popupPane
       ? all.filter((p) => p.id === popupPane)
-      : view === "single"
-        ? live.filter((p) => p.id === active)
-        : live.slice(page * PAGE, page * PAGE + PAGE),
+      : phone && phoneList
+        ? []
+        : view === "single"
+          ? live.filter((p) => p.id === active)
+          : live.slice(page * PAGE, page * PAGE + PAGE),
     visibleKey = visible.map((p) => p.id).join(",");
   const browserActivity = activityIcon(online ? panes : null);
   const attention = rollup(
@@ -562,6 +608,7 @@ function App() {
     if (id !== active) setFindPane(0);
     setView("single");
     setActive(id);
+    setPhoneList(false);
   }
   /** A tab's click in grid mode focuses its tile on its page. */
   function focusInGrid(pane: Pane) {
@@ -704,11 +751,17 @@ function App() {
         e.preventDefault();
         e.stopImmediatePropagation();
         prefix.current = true;
+        setPrefixArmed(true);
         return;
       }
       if (!prefix.current) return;
       if (["Shift", "Control", "Alt", "Meta"].includes(e.key)) return;
+      // An on-screen keyboard key without a value (an IME or predictive
+      // text) leaves the prefix armed for the text that follows it.
+      if (e.key === "Unidentified" || e.isComposing || e.keyCode === 229)
+        return;
       prefix.current = false;
+      setPrefixArmed(false);
       e.preventDefault();
       e.stopImmediatePropagation();
       const action = prefixAction(e);
@@ -972,7 +1025,10 @@ function App() {
   // in the TUI; a terminal that was already shown stays as it is until it is
   // shown again.
   const shownPane =
-    popupPane || (active && (view === "single" || fullWidth) ? active : 0);
+    popupPane ||
+    (active && !(phone && phoneList) && (view === "single" || fullWidth)
+      ? active
+      : 0);
   useEffect(() => {
     if (!online || !shownPane || document.hidden) return;
     const pane = panes.find((p) => p.id === shownPane);
@@ -980,6 +1036,78 @@ function App() {
     const unread = unreadFor(notificationsRef.current, pane);
     if (unread.length) acknowledge(unread.map((n) => n.id));
   }, [online, shownPane, panesLoaded]);
+  // Opening or switching terminals returns to reading: the on-screen
+  // keyboard never appears on its own.
+  useEffect(() => {
+    setInputMode((mode) => nextInputMode(mode, "open-terminal"));
+    setCtrlArmed(false);
+  }, [shownPane]);
+  /** Shows or hides the on-screen keyboard for a terminal. The store event
+   * is synchronous, so the terminal focuses its input inside this tap. */
+  function showKeyboard(pane: number, show: boolean) {
+    store.events.dispatchEvent(
+      new CustomEvent("terminal-keyboard", { detail: { pane, show } }),
+    );
+  }
+  function terminalInput(pane: number, bytes: string, paste = false) {
+    store.events.dispatchEvent(
+      new CustomEvent("terminal-input", { detail: { pane, bytes, paste } }),
+    );
+  }
+  /** The Input control: enter or leave input mode. */
+  function toggleKeyboard() {
+    const pane = focusedPane();
+    if (!pane) return;
+    const next = nextInputMode(inputMode, "input-control");
+    showKeyboard(pane.id, next === "input");
+    setInputMode(next);
+  }
+  /** A key bar tap: sends the key and enters input mode. */
+  function barKey(key: BarKey) {
+    const pane = focusedPane();
+    if (!pane || store.closing?.has(pane.id)) return;
+    showKeyboard(pane.id, true);
+    setInputMode((mode) => nextInputMode(mode, "key-bar"));
+    if (key === "Ctrl") return setCtrlArmed(!ctrlArmed);
+    if (key === "Prefix") {
+      prefix.current = !prefix.current;
+      setPrefixArmed(prefix.current);
+      return;
+    }
+    if (key === "Paste") {
+      if (!navigator.clipboard?.readText) {
+        toast("Paste is not available here; use the keyboard's paste", {
+          key: "paste",
+        });
+        return;
+      }
+      navigator.clipboard
+        .readText()
+        .then((text) => {
+          if (text) terminalInput(pane.id, text, true);
+        })
+        .catch(() =>
+          toast("Paste was not allowed; use the keyboard's paste", {
+            key: "paste",
+          }),
+        );
+      return;
+    }
+    const modes = store.screens.get(pane.id)?.screen.modes || {};
+    const bytes = barKeyBytes(key, ctrlArmed, modes, pane.kind);
+    if (consumesCtrl(key)) setCtrlArmed(false);
+    if (bytes) terminalInput(pane.id, bytes);
+  }
+  /** Text typed on the on-screen keyboard right after the key bar's Ctrl-B
+   * is a prefix key. */
+  function interceptText(text: string) {
+    if (!prefix.current) return false;
+    prefix.current = false;
+    setPrefixArmed(false);
+    const action = prefixAction({ key: Array.from(text)[0] || "" });
+    if (action && (!popupPane || action === "send-prefix")) runPrefix(action);
+    return true;
+  }
 
   function event(event: any) {
     if (event.SignedInKey) {
@@ -1518,8 +1646,10 @@ function App() {
         store.events.dispatchEvent(new Event("terminal-focus")),
       );
   }
-  const showRail = !bare && !fullWidth;
-  const railWidth = preferences.sidebarFolded ? 56 : preferences.sidebarWidth;
+  const showRail = !bare && !fullWidth && !phone;
+  const railWidth = folded ? 56 : preferences.sidebarWidth;
+  /** The phone shows its terminal list instead of a terminal. */
+  const listShown = phone && (phoneList || !focused);
   /** The sidebar's edge: a click folds or unfolds it, a drag resizes it
    * (folding below a minimum), like KelpHub's. Saved in this browser. */
   function resizeStart(e: React.PointerEvent) {
@@ -1536,20 +1666,24 @@ function App() {
       moved ||= Math.abs(event.clientX - x) > 4;
       if (!moved) return;
       last = initial + event.clientX - x;
+      // A tablet in portrait folds for this orientation only.
+      if (tabletPortrait) setPortraitFolded(last < 110);
       setPreferences((current) =>
         last < 110
-          ? { ...current, sidebarFolded: true }
-          : { ...current, sidebarFolded: false, sidebarWidth: limit(last) },
+          ? tabletPortrait
+            ? current
+            : { ...current, sidebarFolded: true }
+          : {
+              ...current,
+              sidebarFolded: tabletPortrait ? current.sidebarFolded : false,
+              sidebarWidth: limit(last),
+            },
       );
     };
     const up = () => {
       window.removeEventListener("pointermove", move);
       window.removeEventListener("pointerup", up);
-      if (!moved)
-        setPreferences((current) => ({
-          ...current,
-          sidebarFolded: !current.sidebarFolded,
-        }));
+      if (!moved) toggleFold();
     };
     window.addEventListener("pointermove", move);
     window.addEventListener("pointerup", up);
@@ -1566,7 +1700,7 @@ function App() {
     const step = (by: -1 | 1) =>
       setOrder([...moveBy(liveIds, p.id, by), ...rest]);
     const index = live.findIndex((pane) => pane.id === p.id);
-    return [
+    const items: [string, () => void, boolean?][] = [
       [isParked ? "Unpark and open" : "Open", () => openPane(p)],
       ["Open in a window", () => popout(p)],
       [
@@ -1592,6 +1726,11 @@ function App() {
       ],
       ["Close…", () => close(p)],
     ];
+    // A touch device has no popup windows: an installed web app would open
+    // them in the browser instead.
+    return touch
+      ? items.filter(([label]) => label !== "Open in a window")
+      : items;
   }
   const paneHeader = (p: Pane, extra?: React.ReactNode) => (
     <header
@@ -1636,7 +1775,7 @@ function App() {
             <Icon name="archive" size="sm" />
           </button>
         )}
-        {!bare && (
+        {!bare && !touch && (
           <button
             type="button"
             className="icon-btn"
@@ -1692,55 +1831,68 @@ function App() {
     setQuery("");
   };
   const pages = Math.max(1, Math.ceil(live.length / PAGE));
+  // Rows reorder by dragging with a mouse; on touch a drag scrolls the list,
+  // and the row menu offers Move up / Move down instead.
+  const sidebar = (
+    <Sidebar
+      workspace={workspace}
+      username={connection?.username || ""}
+      dev={!!connection?.dev}
+      folded={folded}
+      touch={touch}
+      terminals={ordered}
+      parked={parkedPanes}
+      notifications={notifications}
+      current={view === "single" || view === "grid" ? active : undefined}
+      unread={unreadCount(notifications, panes)}
+      vitals={vitals}
+      rowProps={touch ? () => ({}) : dragProps}
+      rowClass={(p) => (drag === p.id && drag !== drop ? "landing" : "")}
+      onOpen={(p) => {
+        if (performance.now() < suppressClick.current) return;
+        openPane(p);
+      }}
+      onClose={close}
+      onPark={park}
+      onUnpark={unpark}
+      onMenu={(pane, x, y) => setMenu({ pane, x, y })}
+      onNew={newTab}
+      onState={openState}
+      onDialog={(name) => {
+        if (name === "agents") setAgentFilter("all");
+        setDialog(name);
+      }}
+      onResizeStart={resizeStart}
+      onToggleFold={toggleFold}
+    />
+  );
   return (
     <div
-      className={`kelpmux-shell ${bare ? "bare" : ""}`}
+      className={`kelpmux-shell ${bare ? "bare" : ""} ${touch ? "touch" : ""} ${phone ? "phone" : ""} ${listShown ? "phone-home" : ""}`}
       style={{ "--rail": `${railWidth}px` } as React.CSSProperties}
     >
       {showRail && (
         <div className="rail-wrap" onClick={focusTerminal}>
-          <Sidebar
-            workspace={workspace}
-            username={connection?.username || ""}
-            dev={!!connection?.dev}
-            folded={preferences.sidebarFolded}
-            terminals={ordered}
-            parked={parkedPanes}
-            notifications={notifications}
-            current={view === "single" || view === "grid" ? active : undefined}
-            unread={unreadCount(notifications, panes)}
-            vitals={vitals}
-            rowProps={dragProps}
-            rowClass={(p) => (drag === p.id && drag !== drop ? "landing" : "")}
-            onOpen={(p) => {
-              if (performance.now() < suppressClick.current) return;
-              openPane(p);
-            }}
-            onClose={close}
-            onPark={park}
-            onUnpark={unpark}
-            onMenu={(pane, x, y) => setMenu({ pane, x, y })}
-            onNew={newTab}
-            onState={openState}
-            onDialog={(name) => {
-              if (name === "agents") setAgentFilter("all");
-              setDialog(name);
-            }}
-            onResizeStart={resizeStart}
-            onToggleFold={() =>
-              setPreferences((current) => ({
-                ...current,
-                sidebarFolded: !current.sidebarFolded,
-              }))
-            }
-          />
+          {sidebar}
         </div>
       )}
       <div
         className={`app ${view} ${popupPane ? "popup" : ""}`}
         onClick={focusTerminal}
       >
-        {!bare && (
+        {phone && focused && !listShown && (
+          <PhoneBar
+            pane={focused}
+            state={paneState(focused, notifications)}
+            attention={attentionTotal}
+            onList={() => {
+              setPhoneList(true);
+              setFindPane(0);
+            }}
+            onMenu={(x, y) => setMenu({ pane: focused, x: Math.max(8, x), y })}
+          />
+        )}
+        {!bare && !phone && (
           <TopBar
             workspace={workspace}
             current={focused}
@@ -1767,13 +1919,15 @@ function App() {
           </div>
         )}
         <div className="workspace" ref={gridRef}>
-          {focused ? (
+          {listShown ? (
+            <div className="phone-list">{sidebar}</div>
+          ) : focused ? (
             <div className="pane-grid tab-pane-layout">
               <section
                 key={focused.id}
                 className={`grid-pane first-row selected ${focused.status === "input_needed" ? "needs-input" : ""}`}
               >
-                {paneHeader(focused)}
+                {!phone && paneHeader(focused)}
                 <Terminal
                   pane={focused}
                   store={store}
@@ -1784,6 +1938,15 @@ function App() {
                   find={findPane === focused.id}
                   findQuery={findQuery}
                   onCloseFind={() => setFindPane(0)}
+                  touchKeyboard={touch}
+                  onInputFocus={(focus) =>
+                    setInputMode((mode) =>
+                      nextInputMode(mode, focus ? "focus" : "blur"),
+                    )
+                  }
+                  stickyCtrl={ctrlArmed}
+                  onCtrlUsed={() => setCtrlArmed(false)}
+                  interceptText={interceptText}
                 />
               </section>
             </div>
@@ -1824,7 +1987,7 @@ function App() {
                     data-drop-pane={p.id}
                     data-drop-axis="x"
                     data-state={state}
-                    {...dragProps(p)}
+                    {...(touch ? {} : dragProps(p))}
                     onContextMenu={(event) => {
                       event.preventDefault();
                       setMenu({ pane: p, x: event.clientX, y: event.clientY });
@@ -1861,7 +2024,16 @@ function App() {
             </div>
           ) : null}
         </div>
-        {!bare && (
+        {touch && focused && !listShown && (
+          <KeyBar
+            ctrl={ctrlArmed}
+            prefix={prefixArmed}
+            input={inputMode === "input"}
+            onKey={barKey}
+            onToggleKeyboard={toggleKeyboard}
+          />
+        )}
+        {!bare && !phone && (
           <StatusBar
             username={connection?.username || ""}
             workspace={workspace}
@@ -1869,7 +2041,7 @@ function App() {
             parked={parkedPanes.length}
             vitals={vitals}
             hint={hint}
-            showVitals={!showRail || preferences.sidebarFolded}
+            showVitals={!showRail || folded}
             onStats={() => setDialog("stats")}
           />
         )}

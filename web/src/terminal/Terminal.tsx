@@ -7,6 +7,7 @@ import { mouseButton, mouseBytes } from "./mouse";
 import { WheelAccumulator } from "./wheel";
 import { PaneFind } from "./PaneFind";
 import { modeKey, modeSelection, selectMode, type KeyMode } from "./key-mode";
+import { stickyText, withCtrl } from "./touch-keys";
 export type Store = {
   workspace?: string;
   screens: Map<number, Snapshot>;
@@ -18,6 +19,10 @@ export type Store = {
 /** Delay after the last tile size change before the PTY is resized, so the
  * first resize uses the tile's final size rather than an intermediate one. */
 const tileSettleMs = 150;
+/** A touch held this long without moving starts a selection. */
+const longPressMs = 450;
+/** A touch moving this far (CSS pixels) before the long press scrolls. */
+const touchSlop = 8;
 /**
  * A live tile of the Terminals grid: the terminal's screen drawn with the
  * same renderer as the interactive view, with the PTY sized to the tile
@@ -129,6 +134,11 @@ export function Terminal({
   find = false,
   findQuery = "",
   onCloseFind = () => {},
+  touchKeyboard = false,
+  onInputFocus,
+  stickyCtrl = false,
+  onCtrlUsed,
+  interceptText,
 }: {
   pane: Pane;
   store: Store;
@@ -140,7 +150,32 @@ export function Terminal({
   /** Initial query when find opens. */
   findQuery?: string;
   onCloseFind?: () => void;
+  /** Touch devices: showing, tapping or activating the terminal never
+   * focuses its input, so the on-screen keyboard appears only when the
+   * application asks (a `terminal-keyboard` store event). */
+  touchKeyboard?: boolean;
+  /** The terminal's input gained (true) or lost (false) focus. */
+  onInputFocus?: (focused: boolean) => void;
+  /** A sticky Ctrl modifier applies to the next typed key. */
+  stickyCtrl?: boolean;
+  /** The sticky Ctrl was applied to a key. */
+  onCtrlUsed?: () => void;
+  /** Sees text typed without a key event first; true consumes it. */
+  interceptText?: (text: string) => boolean;
 }) {
+  const touchKeyboardRef = useRef(touchKeyboard);
+  touchKeyboardRef.current = touchKeyboard;
+  /** A touch on the canvas: a tap, a one-finger scroll or a long-press
+   * selection. */
+  const touch = useRef<{
+    id: number;
+    x: number;
+    y: number;
+    lastY: number;
+    mode: "tap" | "scroll" | "select";
+    timer: ReturnType<typeof setTimeout> | null;
+    keyboard: boolean;
+  } | null>(null);
   const canvas = useRef<HTMLCanvasElement>(null),
     input = useRef<HTMLTextAreaElement>(null),
     renderer = useRef<Renderer | null>(null),
@@ -181,6 +216,30 @@ export function Terminal({
     };
     store.events.addEventListener("terminal-key-mode", enter);
     return () => store.events.removeEventListener("terminal-key-mode", enter);
+  }, [pane.id, store]);
+  useEffect(() => {
+    // The application shows or hides the on-screen keyboard, or sends key
+    // bar input. Dispatched synchronously from a tap, so focus() still runs
+    // inside the user gesture iOS requires to show the keyboard.
+    const keyboard = (event: Event) => {
+      const { pane: id, show } = (event as CustomEvent).detail || {};
+      if (id !== pane.id) return;
+      if (show) {
+        control();
+        input.current?.focus({ preventScroll: true });
+      } else input.current?.blur();
+    };
+    const typed = (event: Event) => {
+      const { pane: id, bytes, paste } = (event as CustomEvent).detail || {};
+      if (id !== pane.id || typeof bytes !== "string" || !bytes) return;
+      send(bytes, !!paste);
+    };
+    store.events.addEventListener("terminal-keyboard", keyboard);
+    store.events.addEventListener("terminal-input", typed);
+    return () => {
+      store.events.removeEventListener("terminal-keyboard", keyboard);
+      store.events.removeEventListener("terminal-input", typed);
+    };
   }, [pane.id, store]);
   /** Applies a key in keyboard mode; never sends it to the program. */
   function modeInput(event: React.KeyboardEvent) {
@@ -361,6 +420,8 @@ export function Terminal({
     return () => {
       cancelAnimationFrame(frame);
       mounted.current = false;
+      if (touch.current?.timer) clearTimeout(touch.current.timer);
+      touch.current = null;
       cancelAnimationFrame(wheelFrame.current);
       if (resizeTimer.current) clearTimeout(resizeTimer.current);
       observer.disconnect();
@@ -414,7 +475,8 @@ export function Terminal({
       )
         return;
       control();
-      input.current?.focus({ preventScroll: true });
+      if (!touchKeyboardRef.current)
+        input.current?.focus({ preventScroll: true });
     };
     focus();
     window.addEventListener("focus", focus);
@@ -453,6 +515,31 @@ export function Terminal({
       const encoded = encodeKey(event, get()?.modes || {}, true);
       if (encoded && owned()) send(encoded);
       return;
+    }
+    if (
+      stickyCtrl &&
+      !["Shift", "Control", "Alt", "Meta"].includes(event.key)
+    ) {
+      // The key bar's sticky Ctrl applies to this key from the on-screen
+      // keyboard.
+      // A key without a usable value (an IME's "Unidentified") leaves the
+      // modifier armed for the text that follows it.
+      const bytes = encodeKey(
+        withCtrl({
+          key: event.key,
+          shiftKey: event.shiftKey,
+          altKey: event.altKey,
+          ctrlKey: event.ctrlKey,
+          metaKey: event.metaKey,
+        }),
+        get()?.modes || {},
+      );
+      if (bytes !== null) {
+        onCtrlUsed?.();
+        event.preventDefault();
+        send(bytes);
+        return;
+      }
     }
     if (
       (event.ctrlKey || event.metaKey) &&
@@ -499,7 +586,131 @@ export function Terminal({
       ? renderer.current.point(event, screen)
       : { x: 0, y: 0 };
   }
+  /** Text from the on-screen keyboard or an IME: the application may take
+   * it (a prefix key), and an armed sticky Ctrl applies to its first
+   * character. */
+  function typed(text: string) {
+    if (interceptText?.(text)) return;
+    const modes = get()?.modes || {};
+    if (stickyCtrl) {
+      onCtrlUsed?.();
+      send(stickyText(text, modes));
+      return;
+    }
+    send(encodeText(text, modes));
+  }
+  function capture(pointer: number) {
+    // A synthetic or already-ended pointer cannot be captured.
+    try {
+      canvas.current?.setPointerCapture(pointer);
+    } catch {}
+  }
+  /** The word under a point (cells up to whitespace on that row). */
+  function wordAt(p: { x: number; y: number }): Selection {
+    const screen = get();
+    if (!screen) return null;
+    const cell = (x: number) => screen.cells[p.y * screen.cols + x]?.text || "";
+    let left = p.x,
+      right = p.x;
+    while (left > 0 && /\S/.test(cell(left - 1))) left--;
+    while (right < screen.cols - 1 && /\S/.test(cell(right + 1))) right++;
+    return { start: { x: left, y: p.y }, end: { x: right, y: p.y } };
+  }
+  /** Touch: a tap activates (and claims) the terminal without showing the
+   * keyboard, a one-finger drag scrolls history like the wheel, and a long
+   * press selects the word under the finger; dragging then extends the
+   * selection, which is copied on release. */
+  function touchDown(event: React.PointerEvent) {
+    event.preventDefault();
+    if (touch.current) return; // A second finger is ignored.
+    capture(event.pointerId);
+    onActivate();
+    control();
+    // Typing stays available when the keyboard was already up.
+    const keyboard = document.activeElement === input.current;
+    if (!touchKeyboard) input.current?.focus({ preventScroll: true });
+    const state = {
+      id: event.pointerId,
+      x: event.clientX,
+      y: event.clientY,
+      lastY: event.clientY,
+      mode: "tap" as "tap" | "scroll" | "select",
+      timer: null as ReturnType<typeof setTimeout> | null,
+      keyboard,
+    };
+    state.timer = setTimeout(() => {
+      state.timer = null;
+      if (touch.current !== state || state.mode !== "tap" || history) return;
+      const screen = get();
+      if (!screen || !renderer.current) return;
+      state.mode = "select";
+      selection.current = wordAt(
+        renderer.current.point({ clientX: state.x, clientY: state.y }, screen),
+      );
+      draw();
+    }, longPressMs);
+    touch.current = state;
+  }
+  function touchMove(event: React.PointerEvent) {
+    const state = touch.current;
+    if (!state || state.id !== event.pointerId) return;
+    event.preventDefault();
+    if (
+      state.mode === "tap" &&
+      Math.hypot(event.clientX - state.x, event.clientY - state.y) >= touchSlop
+    ) {
+      state.mode = "scroll";
+      if (state.timer) clearTimeout(state.timer);
+      state.timer = null;
+    }
+    if (state.mode === "scroll") {
+      // Finger down shows older lines, as the wheel turned up does.
+      const deltaY = state.lastY - event.clientY;
+      state.lastY = event.clientY;
+      if (deltaY)
+        wheelHandler.current({
+          deltaY,
+          deltaMode: 0,
+          shiftKey: false,
+          altKey: false,
+          ctrlKey: false,
+          clientX: event.clientX,
+          clientY: event.clientY,
+        } as WheelEvent);
+    } else if (state.mode === "select" && selection.current) {
+      selection.current.end = point(event);
+      draw();
+    }
+  }
+  function touchEnd(event: React.PointerEvent, canceled = false) {
+    const state = touch.current;
+    if (!state || state.id !== event.pointerId) return;
+    touch.current = null;
+    if (state.timer) clearTimeout(state.timer);
+    if (canceled) return;
+    if (state.mode === "select") {
+      void copy();
+      return;
+    }
+    if (state.mode !== "tap") return;
+    if (selection.current) {
+      selection.current = null;
+      draw();
+    }
+    const uri = linkAt(event);
+    if (uri) {
+      window.open(uri, "_blank", "noopener,noreferrer");
+      return;
+    }
+    if (reportsMouse() && owned() && !history) {
+      mouse(event, "Press");
+      mouse(event, "Release");
+    }
+    // A tap must not take the keyboard away while the user is typing.
+    if (state.keyboard) input.current?.focus({ preventScroll: true });
+  }
   function down(event: React.PointerEvent) {
+    if (event.pointerType === "touch") return touchDown(event);
     pressedMouse.current = false;
     pendingLink.current = null;
     const uri = linkAt(event);
@@ -536,6 +747,7 @@ export function Terminal({
     draw();
   }
   function move(event: React.PointerEvent) {
+    if (event.pointerType === "touch") return touchMove(event);
     const screen = get();
     if (!screen) return;
     const uri = !event.shiftKey ? linkAt(event) : undefined;
@@ -811,7 +1023,8 @@ export function Terminal({
         aria-label={`Terminal ${pane.number}: ${pane.title}`}
         onPointerDown={down}
         onPointerMove={move}
-        onPointerCancel={() => {
+        onPointerCancel={(event) => {
+          if (event.pointerType === "touch") return touchEnd(event, true);
           pendingLink.current = null;
           pressedMouse.current = false;
         }}
@@ -822,6 +1035,7 @@ export function Terminal({
           }
         }}
         onPointerUp={(event) => {
+          if (event.pointerType === "touch") return touchEnd(event);
           if (pendingLink.current) {
             const { uri } = pendingLink.current;
             pendingLink.current = null;
@@ -851,23 +1065,7 @@ export function Terminal({
           const screen = get();
           if (!screen) return;
           if (reportsMouse() && !event.shiftKey && !history) return;
-          const p = renderer.current!.point(event, screen);
-          let left = p.x,
-            right = p.x;
-          while (
-            left > 0 &&
-            /\S/.test(screen.cells[p.y * screen.cols + left - 1].text)
-          )
-            left--;
-          while (
-            right < screen.cols - 1 &&
-            /\S/.test(screen.cells[p.y * screen.cols + right + 1].text)
-          )
-            right++;
-          selection.current = {
-            start: { x: left, y: p.y },
-            end: { x: right, y: p.y },
-          };
+          selection.current = wordAt(renderer.current!.point(event, screen));
           draw();
           copy();
         }}
@@ -890,8 +1088,10 @@ export function Terminal({
           )
             control();
           if (owned() && get()?.modes.focus) send("\x1b[I");
+          onInputFocus?.(true);
         }}
         onBlur={() => {
+          onInputFocus?.(false);
           sentKeys.current.clear();
           if (owned() && get()?.modes.focus) send("\x1b[O");
         }}
@@ -900,12 +1100,12 @@ export function Terminal({
             !(e.nativeEvent as InputEvent).isComposing &&
             e.currentTarget.value
           ) {
-            send(encodeText(e.currentTarget.value, get()?.modes || {}));
+            typed(e.currentTarget.value);
             e.currentTarget.value = "";
           }
         }}
         onCompositionEnd={(e) => {
-          if (e.data) send(encodeText(e.data, get()?.modes || {}));
+          if (e.data) typed(e.data);
           e.currentTarget.value = "";
         }}
         onPaste={(e) => {
@@ -955,7 +1155,7 @@ export function Terminal({
           className={`history-indicator ${searchPreview ? "search-preview" : ""}`}
           onClick={() => {
             returnLive();
-            input.current?.focus({ preventScroll: true });
+            if (!touchKeyboard) input.current?.focus({ preventScroll: true });
           }}
         >
           {searchPreview
