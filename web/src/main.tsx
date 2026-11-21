@@ -43,17 +43,17 @@ import { OPEN_SETTINGS } from "./Settings";
 import { PaneLabel, StatusBar, TopBar, type SessionMode } from "./Shell";
 import { Sidebar } from "./Sidebar";
 import {
-  AgentsPanel,
   HelpPanel,
   MovePanel,
   NotificationsPanel,
-  OverviewPanel,
   PaneMenu,
   ParkedPanel,
   ColorPanel,
   RecoveryPanel,
   SearchPanel,
 } from "./Panels";
+import { TerminalsPanel } from "./Terminals";
+import type { TerminalFilter } from "./state/terminals";
 import { Icon } from "./status";
 import {
   SIDEBAR_MAX,
@@ -82,7 +82,6 @@ import {
   tabTitle,
   unreadCount,
   unreadFor,
-  type AgentFilter,
   type DisplayState,
   type Notification,
 } from "./state/model";
@@ -330,7 +329,8 @@ function App() {
     [notifications, setNotifications] = useState<Notification[]>([]),
     [parked, setParked] = useState<number[]>([]),
     [preferences, setPreferences] = useState(loadPreferences),
-    [agentFilter, setAgentFilter] = useState<AgentFilter>("all"),
+    [terminalFilter, setTerminalFilter] = useState<TerminalFilter>("all"),
+    [operations, setOperations] = useState(() => new Set<string>()),
     [fullWidth, setFullWidth] = useState(false),
     [findQuery, setFindQuery] = useState(""),
     [colorPane, setColorPane] = useState<Pane | null>(null),
@@ -444,6 +444,14 @@ function App() {
       return await store.session?.rpc(method, params);
     } catch (error) {
       fail(error);
+      return null;
+    }
+  }
+  /** A background request whose failure only leaves a view plain. */
+  async function quietRpc(method: string, params: any = {}) {
+    try {
+      return await store.session?.rpc(method, params);
+    } catch {
       return null;
     }
   }
@@ -869,17 +877,17 @@ function App() {
         return nextState(needsAttention, "No terminal needs attention");
       case "next-finished":
         return nextState(isFinished, "No finished terminal");
-      case "agents":
-        setAgentFilter("all");
-        return setDialog("agents");
-      case "agents-attention":
-        setAgentFilter("attention");
-        return setDialog("agents");
-      case "agents-finished":
-        setAgentFilter("finished");
-        return setDialog("agents");
-      case "notifications":
+      // The TUI's agents and overview keys open the Terminals table with
+      // the matching filter.
       case "overview":
+        return openTerminals("all");
+      case "agents":
+        return openTerminals("agents");
+      case "agents-attention":
+        return openTerminals("attention");
+      case "agents-finished":
+        return openTerminals("finished");
+      case "notifications":
       case "recovery":
       case "search":
       case "parked":
@@ -962,11 +970,15 @@ function App() {
     if (target) openPane(target);
     else toast(none, { key: "next" });
   }
+  /** The Terminals table, with a filter preselected. */
+  function openTerminals(filter: TerminalFilter) {
+    setTerminalFilter(filter);
+    setDialog("terminals");
+  }
   /** A sidebar summary mark: next terminal in that state. */
   function openState(state: DisplayState) {
     if (state === "working" || state === "running") {
-      setAgentFilter("all");
-      setDialog("agents");
+      openTerminals(state === "working" ? "agents" : "all");
       return;
     }
     nextState(
@@ -1147,6 +1159,11 @@ function App() {
           return;
         }
         const layout = loadLayout(result.workspace, e.epoch);
+        // Operations added within this API version (repos, commands) are
+        // optional: a bridge without them leaves those columns plain.
+        setOperations(
+          new Set(Array.isArray(result.operations) ? result.operations : []),
+        );
         setWorkspace(result.workspace);
         setEpoch(e.epoch);
         setOrder(layout.order);
@@ -1816,9 +1833,8 @@ function App() {
   const dialogTitles: Record<string, string> = {
     config: "Settings",
     stats: "System status",
-    agents: "Agents",
     notifications: "Notifications",
-    overview: "Workspace overview",
+    terminals: "Terminals",
     recovery: "Recently closed",
     search: "Search terminal history",
     parked: "Parked terminals",
@@ -1858,10 +1874,9 @@ function App() {
       onMenu={(pane, x, y) => setMenu({ pane, x, y })}
       onNew={newTab}
       onState={openState}
-      onDialog={(name) => {
-        if (name === "agents") setAgentFilter("all");
-        setDialog(name);
-      }}
+      onDialog={(name) =>
+        name === "terminals" ? openTerminals("all") : setDialog(name)
+      }
       onResizeStart={resizeStart}
       onToggleFold={toggleFold}
     />
@@ -2064,7 +2079,7 @@ function App() {
             }}
           >
             <section
-              className={`modal ${dialog === "stats" ? "stats-modal" : ""} ${dialog === "config" ? "config-modal" : ""} ${dialog !== "stats" && dialog !== "config" ? "panel-modal" : ""} ${dialog === "overview" ? "wide-modal" : ""}`}
+              className={`modal ${dialog === "stats" ? "stats-modal" : ""} ${dialog === "config" ? "config-modal" : ""} ${dialog !== "stats" && dialog !== "config" ? "panel-modal" : ""} ${dialog === "terminals" ? "wide-modal" : ""}`}
               role="dialog"
               aria-modal="true"
               aria-labelledby="modal-title"
@@ -2103,13 +2118,16 @@ function App() {
                   setQuery={setQuery}
                 />
               )}
-              {dialog === "agents" && (
-                <AgentsPanel
+              {dialog === "terminals" && (
+                <TerminalsPanel
                   panes={all}
                   parked={parkedSet}
                   notifications={notifications}
-                  filter={agentFilter}
-                  setFilter={setAgentFilter}
+                  filter={terminalFilter}
+                  setFilter={setTerminalFilter}
+                  operations={operations}
+                  query={quietRpc}
+                  cards={phone}
                   onOpen={(p) => {
                     closeDialog();
                     openPane(p);
@@ -2122,19 +2140,6 @@ function App() {
                   parked={parkedSet}
                   notifications={notifications}
                   onAcknowledge={acknowledge}
-                  onOpen={(p) => {
-                    closeDialog();
-                    openPane(p);
-                  }}
-                />
-              )}
-              {dialog === "overview" && (
-                <OverviewPanel
-                  panes={all}
-                  parked={parkedSet}
-                  notifications={notifications}
-                  leases={store.leases}
-                  client={store.session?.client}
                   onOpen={(p) => {
                     closeDialog();
                     openPane(p);
