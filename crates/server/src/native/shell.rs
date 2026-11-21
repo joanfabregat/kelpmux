@@ -73,3 +73,77 @@ fi
     }
     Ok(())
 }
+
+/// Session markers that an agent, a multiplexer or a parent KelpMux pane
+/// leaves in the environment of the process that started the server. Panes
+/// are new top-level terminals, so they must not inherit them: Claude Code
+/// would otherwise treat a fresh session as a child of the one that started
+/// the server (and turn off transcript saving), and agents would attach to
+/// the wrong tmux pane or messaging socket. User configuration such as API
+/// keys, `CLAUDE_CONFIG_DIR` and `CODEX_HOME` is kept.
+pub fn inherited_session_marker(name: &std::ffi::OsStr) -> bool {
+    let Some(name) = name.to_str() else {
+        return false;
+    };
+    matches!(
+        name,
+        "CLAUDECODE"
+            | "CLAUDE_PID"
+            | "CLAUDE_EFFORT"
+            | "CODEX_SESSION_ID"
+            | "CODEX_THREAD_ID"
+            | "CODEX_TOOL_CALL_ID"
+            | "CODEX_CI"
+            | "TMUX"
+            | "TMUX_PANE"
+            | "STY"
+    ) || name.starts_with("CLAUDE_CODE_")
+}
+
+/// Removes every inherited session marker from a pane's command.
+pub fn remove_session_markers(command: &mut Command) {
+    for (name, _) in std::env::vars_os() {
+        if inherited_session_marker(&name) {
+            command.env_remove(name);
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::inherited_session_marker;
+    use std::ffi::OsStr;
+
+    #[test]
+    fn agent_and_multiplexer_session_markers_are_not_inherited() {
+        for marker in [
+            "CLAUDECODE",
+            "CLAUDE_CODE_ENTRYPOINT",
+            "CLAUDE_CODE_CHILD_SESSION",
+            "CLAUDE_CODE_MESSAGING_SOCKET",
+            "CLAUDE_PID",
+            "CLAUDE_EFFORT",
+            "CODEX_SESSION_ID",
+            "CODEX_THREAD_ID",
+            "CODEX_TOOL_CALL_ID",
+            "CODEX_CI",
+            "TMUX",
+            "TMUX_PANE",
+        ] {
+            assert!(inherited_session_marker(OsStr::new(marker)), "{marker}");
+        }
+        for kept in [
+            "ANTHROPIC_API_KEY",
+            "OPENAI_API_KEY",
+            "CLAUDE_CONFIG_DIR",
+            "CLAUDE_CODE",
+            "CODEX_HOME",
+            "CODEX_API_KEY",
+            "TMUXINATOR_CONFIG",
+            "PATH",
+            "HOME",
+        ] {
+            assert!(!inherited_session_marker(OsStr::new(kept)), "{kept}");
+        }
+    }
+}

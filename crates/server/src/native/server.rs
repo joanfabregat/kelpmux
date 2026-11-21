@@ -181,6 +181,8 @@ impl NativePane {
         }
         let mut command = Command::new(&config.shell);
         super::shell::integrate_shell(&mut command, &config.state_dir, &config.shell)?;
+        // Agent and multiplexer session markers of whoever started the server.
+        super::shell::remove_session_markers(&mut command);
         command.arg("-i");
         if let Some(startup) = startup {
             command.arg("-c").arg(format!(
@@ -201,11 +203,6 @@ impl NativePane {
             .env_remove("SSH_CONNECTION")
             .env_remove("SSH_CLIENT")
             .env_remove("SSH_TTY")
-            .env_remove("TMUX")
-            .env_remove("TMUX_PANE")
-            .env_remove("STY")
-            .env_remove("CODEX_THREAD_ID")
-            .env_remove("CLAUDECODE")
             .env_remove("KELPMUX_DEV_BADGE")
             .stdin(Stdio::from(slave.try_clone()?))
             .stdout(Stdio::from(slave.try_clone()?))

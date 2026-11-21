@@ -352,3 +352,54 @@ fn fresh_idle_claude_bells_are_silent_but_approvals_and_post_work_bells_still_al
     assert!(!activity.bell(&agent, time + 8).unwrap());
     assert_eq!(activity.all().len(), count);
 }
+
+#[test]
+fn starting_an_agent_at_a_startup_dialog_does_not_notify() {
+    let fixture = Fixture::new();
+    let time = kelpserver::now();
+    let mut activity = Activity::load(&fixture.0, "test").unwrap();
+    let shell = PaneInfo {
+        id: 1,
+        pid: 101,
+        title: "shell".into(),
+        ..Default::default()
+    };
+    activity.observe(&[shell], time).unwrap();
+    // `claude` starts in the shell: first seen waiting at a startup dialog,
+    // before it has a session.
+    let mut agent = pane(1, Status::InputNeeded);
+    agent.kind = Some(Kind::Claude);
+    agent.session_id = None;
+    agent.title = "claude · session unknown".into();
+    assert!(
+        !activity
+            .observe(std::slice::from_ref(&agent), time + 1)
+            .unwrap()
+    );
+    // The dialog is answered and the session appears: still nothing.
+    agent.session_id = Some("session-1".into());
+    agent.status = Status::Idle;
+    assert!(
+        !activity
+            .observe(std::slice::from_ref(&agent), time + 2)
+            .unwrap()
+    );
+    assert!(!activity.bell(&agent, time + 3).unwrap());
+    assert!(activity.all().is_empty());
+    // Real work still alerts: a question, then a completion.
+    agent.status = Status::Working;
+    activity
+        .observe(std::slice::from_ref(&agent), time + 4)
+        .unwrap();
+    agent.status = Status::InputNeeded;
+    assert!(
+        activity
+            .observe(std::slice::from_ref(&agent), time + 5)
+            .unwrap()
+    );
+    agent.status = Status::TurnFinished;
+    assert!(activity.observe(&[agent], time + 6).unwrap());
+    let statuses: Vec<_> = activity.all().iter().map(|n| n.status).collect();
+    assert_eq!(statuses.len(), 2);
+    assert!(statuses.contains(&Status::InputNeeded) && statuses.contains(&Status::TurnFinished));
+}

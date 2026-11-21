@@ -1,4 +1,5 @@
-// Per-browser web layout: the view mode, tab order and focused terminal.
+// Per-browser web layout: the view mode, tab order, focused terminal,
+// parked terminals and sidebar and notification preferences.
 // Layout is client-local by design: the TUI and every browser keep their own
 // tabs, grid and focus over the same KelpServer panes and processes. Nothing
 // here is sent to the server. Pane IDs are scoped to a server epoch, so
@@ -12,7 +13,15 @@ export type ViewMode = "single" | "grid";
 const viewKey = "kelpmux-web-view";
 const layoutKey = (workspace: string) => `kelpmux-web-layout:${workspace}`;
 
-export type Layout = { epoch: string; order: number[]; focus: number };
+/** This browser's layout of one workspace epoch. `parked` terminals are
+ * hidden from this browser's tabs and grid (the TUI's own parking is
+ * separate). */
+export type Layout = {
+  epoch: string;
+  order: number[];
+  focus: number;
+  parked: number[];
+};
 
 function read(key: string): string | null {
   try {
@@ -38,7 +47,7 @@ export function saveView(view: ViewMode) {
 
 /** The stored layout for this workspace, if it belongs to this epoch. */
 export function loadLayout(workspace: string, epoch: string): Layout {
-  const empty = { epoch, order: [], focus: 0 };
+  const empty = { epoch, order: [], focus: 0, parked: [] };
   try {
     const value = JSON.parse(read(layoutKey(workspace)) || "null");
     if (!value || value.epoch !== epoch || !Array.isArray(value.order))
@@ -49,6 +58,7 @@ export function loadLayout(workspace: string, epoch: string): Layout {
         .filter((id: unknown) => Number.isSafeInteger(id) && (id as number) > 0)
         .slice(0, 1024),
       focus: Number.isSafeInteger(value.focus) ? value.focus : 0,
+      parked: ids(value.parked),
     };
   } catch {
     return empty;
@@ -91,4 +101,93 @@ export function moveBefore(
   const to = before === null ? -1 : order.indexOf(before);
   order.splice(to < 0 ? order.length : to, 0, source);
   return order;
+}
+
+const ids = (value: unknown): number[] =>
+  Array.isArray(value)
+    ? value
+        .filter((id: unknown) => Number.isSafeInteger(id) && (id as number) > 0)
+        .slice(0, 1024)
+    : [];
+
+/** This browser's interface preferences (never sent to the server; the
+ * TUI keeps its own configuration). */
+export type Preferences = {
+  /** Sidebar width in CSS pixels. */
+  sidebarWidth: number;
+  sidebarFolded: boolean;
+  /** Play a sound when a terminal newly needs attention or finishes. */
+  sound: boolean;
+  /** Show a desktop notification for the same events while hidden. */
+  desktop: boolean;
+};
+const preferencesKey = "kelpmux-web-preferences";
+export const SIDEBAR_MIN = 200;
+export const SIDEBAR_MAX = 480;
+export const defaultPreferences: Preferences = {
+  sidebarWidth: 248,
+  sidebarFolded: false,
+  sound: false,
+  desktop: false,
+};
+export function loadPreferences(): Preferences {
+  try {
+    const value = JSON.parse(read(preferencesKey) || "{}");
+    if (!value || typeof value !== "object") return { ...defaultPreferences };
+    const width = Number(value.sidebarWidth);
+    return {
+      sidebarWidth: Number.isFinite(width)
+        ? Math.round(Math.min(SIDEBAR_MAX, Math.max(SIDEBAR_MIN, width)))
+        : defaultPreferences.sidebarWidth,
+      sidebarFolded: value.sidebarFolded === true,
+      sound: value.sound === true,
+      desktop: value.desktop === true,
+    };
+  } catch {
+    return { ...defaultPreferences };
+  }
+}
+export function savePreferences(preferences: Preferences) {
+  write(preferencesKey, JSON.stringify(preferences));
+}
+
+/** Moves `source` one place up (-1) or down (+1) among `ids`. */
+export function moveBy(ids: number[], source: number, step: -1 | 1) {
+  const index = ids.indexOf(source);
+  const target = index + step;
+  if (index < 0 || target < 0 || target >= ids.length) return ids;
+  const order = [...ids];
+  [order[index], order[target]] = [order[target], order[index]];
+  return order;
+}
+
+/** This browser's grid track weights for one grid shape (`colsxrows`).
+ * Missing entries are 1. */
+export type GridWeights = { shape: string; cols: number[]; rows: number[] };
+export const GRID_WEIGHT_MIN = 0.4;
+export const GRID_WEIGHT_MAX = 3;
+/** A CSS grid template for `count` tracks with these weights. */
+export function gridTemplate(weights: number[], count: number) {
+  return Array.from(
+    { length: count },
+    (_, i) => `minmax(0,${weights[i] ?? 1}fr)`,
+  ).join(" ");
+}
+/** Weights after growing (+1) or shrinking (-1) track `index` by a quarter. */
+export function resizeTrack(
+  weights: number[],
+  count: number,
+  index: number,
+  step: number,
+) {
+  if (index < 0 || index >= count || count < 2) return weights;
+  const next = Array.from({ length: count }, (_, i) => weights[i] ?? 1);
+  next[index] =
+    Math.round(
+      Math.min(
+        GRID_WEIGHT_MAX,
+        Math.max(GRID_WEIGHT_MIN, next[index] + step * 0.25),
+      ) * 100,
+    ) / 100;
+  return next;
 }

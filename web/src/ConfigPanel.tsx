@@ -8,6 +8,7 @@ import { Settings } from "./Settings";
 import { FontPicker } from "./FontPicker";
 import { Icon } from "./status";
 import { shortcuts } from "./shortcuts";
+import type { Preferences } from "./layout-store";
 
 export type ConfigPanelProps = {
   store: Store;
@@ -19,6 +20,8 @@ export type ConfigPanelProps = {
   confirmClose: boolean;
   setConfirmClose: (value: boolean) => void;
   keyContent: React.ReactNode;
+  preferences: Preferences;
+  setPreferences: (preferences: Preferences) => void;
 };
 
 /** Settings dialog body. Everything here is saved in this browser only;
@@ -33,6 +36,8 @@ export function ConfigPanel({
   confirmClose,
   setConfirmClose,
   keyContent,
+  preferences,
+  setPreferences,
 }: ConfigPanelProps) {
   return (
     <Settings active={settingsSection} onChange={setSettingsSection}>
@@ -104,6 +109,64 @@ export function ConfigPanel({
         <p className="setting-hint">
           Each card shows the theme's dark and light variants. Mode in
           Appearance chooses which one is used.
+        </p>
+      </section>
+      <section hidden={settingsSection !== "alerts"}>
+        <h3>Attention alerts</h3>
+        <label className="close-setting">
+          <input
+            type="checkbox"
+            checked={preferences.sound}
+            onChange={(event) =>
+              setPreferences({ ...preferences, sound: event.target.checked })
+            }
+          />
+          Play a sound when a terminal asks a question, finishes or fails
+        </label>
+        <label className="close-setting">
+          <input
+            type="checkbox"
+            checked={preferences.desktop}
+            onChange={async (event) => {
+              const desktop = event.target.checked;
+              if (
+                desktop &&
+                "Notification" in window &&
+                Notification.permission === "default"
+              )
+                await Notification.requestPermission().catch(() => "denied");
+              setPreferences({ ...preferences, desktop });
+            }}
+          />
+          Show a desktop notification while this tab is in the background
+        </label>
+        {preferences.desktop &&
+          "Notification" in window &&
+          Notification.permission === "denied" && (
+            <p className="setting-hint">
+              This browser blocks notifications for this site; allow them in its
+              site settings.
+            </p>
+          )}
+        <h3>Sidebar</h3>
+        <label className="close-setting">
+          <input
+            type="checkbox"
+            checked={preferences.sidebarFolded}
+            onChange={(event) =>
+              setPreferences({
+                ...preferences,
+                sidebarFolded: event.target.checked,
+              })
+            }
+          />
+          Fold the sidebar to its marks (click or drag its edge too)
+        </label>
+        <p className="setting-hint">
+          These preferences, parked terminals and the terminal order are saved
+          in this browser. Notification read marks are shared with the TUI:
+          opening a terminal marks its notifications read in both, as the TUI
+          does.
         </p>
       </section>
       <section hidden={settingsSection !== "shortcuts"}>

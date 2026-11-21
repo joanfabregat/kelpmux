@@ -1,168 +1,140 @@
-import React, { useEffect, useRef } from "react";
 import type { Pane } from "./terminal/types";
 import type { IconName } from "./icons";
 import { Icon } from "./status";
 import { Tooltip } from "./Tooltip";
-import { stateLabel } from "./activity-icon";
-
-/** Disk usage, in percent, from which the system status meter warns. */
-export const diskWarningPercent = 90;
+import { StateMark } from "./state/StateMark";
+import { ProviderLogo } from "./state/ProviderLogo";
+import { stateLabel, type DisplayState } from "./state/model";
+import { diskWarningPercent } from "./Sidebar";
 
 /** One terminal at a time, or all of them live in a grid. */
 export type SessionMode = "single" | "grid";
 
-/** A pane's live KelpServer status as a small shape-and-colour mark. */
-export function StatusDot({ status }: { status: string }) {
-  return (
-    <span
-      className={`status-dot status-${status}`}
-      role="img"
-      aria-label={stateLabel[status] || status}
-    />
-  );
-}
-
-/** Number, title and status of a pane, shared by tabs and pane headers. */
-export function PaneLabel({ pane }: { pane: Pane }) {
-  const status = pane.status || "unknown";
+/** Number, state, provider and title of a pane, shared by the grid tiles
+ * and the focused terminal's header. */
+export function PaneLabel({
+  pane,
+  state,
+  parked = false,
+}: {
+  pane: Pane;
+  state: DisplayState;
+  parked?: boolean;
+}) {
   return (
     <>
-      <StatusDot status={status} />
+      <StateMark state={state} />
       {pane.number > 0 && <strong className="number">{pane.number}</strong>}
+      <ProviderLogo kind={pane.kind} />
       <span className="grid-title">{pane.title || "shell"}</span>
-      {pane.kind && <span className="badge kind-badge">{pane.kind}</span>}
+      {parked && <span className="badge parked-badge">parked</span>}
       {pane.parked && (
         <span className="badge parked-badge" title="Parked in the TUI">
-          parked
+          parked in TUI
         </span>
       )}
-      {status !== "idle" && status !== "unknown" && (
-        <span className={`badge state-badge state-${status}`}>
-          {stateLabel[status] || status}
+      {state !== "idle" && state !== "running" && (
+        <span className={`badge state-badge state-${state}`}>
+          {stateLabel[state]}
         </span>
       )}
     </>
   );
 }
 
-/** The bar above the terminals: brand, one tab per terminal in this
- * browser's order, New terminal, the view toggle, system status and
- * settings. Tab order, the view and focus are this browser's own; they
- * never change the TUI's layout. */
+/** The bar above the terminals, like KelpHub's: where you are (workspace,
+ * then the focused terminal) and the view actions: New terminal,
+ * full width and the one terminal / live grid toggle. Everything here is
+ * this browser's view; nothing changes the TUI's layout. */
 export function TopBar({
   workspace,
-  dev,
-  terminals,
   current,
+  state,
   mode,
-  tabProps,
-  tabClass,
+  fullWidth,
+  page,
+  pages,
   onMode,
-  onTerminal,
-  onClose,
   onNewTerminal,
-  onStats,
-  onSettings,
+  onFullWidth,
+  onPage,
 }: {
   workspace: string;
-  dev: boolean;
-  terminals: Pane[];
-  current?: number;
+  current?: Pane;
+  state?: DisplayState;
   mode: SessionMode;
-  tabProps: (pane: Pane) => React.HTMLAttributes<HTMLDivElement>;
-  tabClass: (pane: Pane) => string;
+  fullWidth: boolean;
+  page: number;
+  pages: number;
   onMode: (mode: SessionMode) => void;
-  onTerminal: (pane: Pane) => void;
-  onClose: (pane: Pane) => void;
   onNewTerminal: () => void;
-  onStats: () => void;
-  onSettings: () => void;
+  onFullWidth: () => void;
+  onPage: (page: number) => void;
 }) {
-  const tabsRef = useRef<HTMLElement>(null);
-  useEffect(() => {
-    tabsRef.current
-      ?.querySelector<HTMLElement>(".term-tab.on")
-      ?.scrollIntoView?.({ block: "nearest", inline: "nearest" });
-  }, [current, mode, terminals.length]);
   const modes: [SessionMode, string, IconName][] = [
-    ["single", "One terminal", "square"],
-    ["grid", "All terminals, live", "layout-grid"],
+    ["single", "One terminal (Alt+Tab)", "square"],
+    ["grid", "All terminals, live (Ctrl-B g)", "layout-grid"],
   ];
   return (
     <header className="topbar">
       <div className="crumbs">
-        <span className="logo">
-          <span className="logo-mark" aria-hidden="true">
-            <Icon name="layers" size="sm" />
+        {fullWidth && (
+          <span className="logo">
+            <span className="logo-mark" aria-hidden="true">
+              <Icon name="layers" size="sm" />
+            </span>
           </span>
-          <span className="logo-text">KelpMux</span>
-        </span>
-        <span className="crumb current-crumb" title="Workspace">
+        )}
+        <span className="crumb" title="Workspace">
           {workspace}
         </span>
-        {dev && <span className="env-badge">DEV</span>}
+        <span className="crumb-sep" aria-hidden="true">
+          /
+        </span>
+        {mode === "grid" ? (
+          <span className="crumb current-crumb">
+            Live grid
+            {pages > 1 && (
+              <span className="faint">
+                {" "}
+                · page {page + 1}/{pages}
+              </span>
+            )}
+          </span>
+        ) : current ? (
+          <span className="crumb current-crumb" title={current.cwd}>
+            {state && <StateMark state={state} />}
+            {current.number > 0 && (
+              <span className="tab-number">{current.number}</span>
+            )}
+            {current.title || "shell"}
+          </span>
+        ) : (
+          <span className="crumb current-crumb">No terminal</span>
+        )}
       </div>
-      <nav className="term-tabs" aria-label="Terminals" ref={tabsRef}>
-        {terminals.map((p) => {
-          const title = p.title || "shell";
-          const on = current === p.id;
-          return (
-            <div
-              key={p.id}
-              className={`term-tab ${on ? "on" : ""} ${tabClass(p)}`}
-              data-drop-pane={p.id}
-              data-pane={p.id}
-              data-number={p.number}
-              data-state={p.status}
-              title={`${title}\n${p.cwd}`}
-              {...tabProps(p)}
-              // Middle click closes, like a browser tab; pressing the
-              // middle button must not start autoscroll or a paste.
-              onMouseDown={(event) => {
-                if (event.button === 1) event.preventDefault();
-              }}
-              onAuxClick={(event) => {
-                if (event.button !== 1) return;
-                event.preventDefault();
-                event.stopPropagation();
-                onClose(p);
-              }}
-            >
-              <button
-                type="button"
-                className="term-tab-open"
-                aria-current={
-                  on ? (mode === "single" ? "page" : "true") : undefined
-                }
-                aria-label={
-                  mode === "grid"
-                    ? `Focus terminal ${title} in the grid`
-                    : `Open terminal ${title}`
-                }
-                onClick={() => onTerminal(p)}
-              >
-                <StatusDot status={p.status} />
-                {p.number > 0 && <span className="tab-number">{p.number}</span>}
-                <span className="term-tab-title">{title}</span>
-              </button>
-              <Tooltip content="Close terminal (middle-click)">
-                <button
-                  type="button"
-                  className="icon-btn term-tab-close"
-                  aria-label={`Close terminal ${title}`}
-                  onClick={(event) => {
-                    event.stopPropagation();
-                    onClose(p);
-                  }}
-                >
-                  <Icon name="x" size="sm" />
-                </button>
-              </Tooltip>
-            </div>
-          );
-        })}
-      </nav>
+      <div className="spacer" />
       <div className="term-bar-actions">
+        {mode === "grid" && pages > 1 && (
+          <div className="pagination">
+            <button
+              className="icon-btn term-bar-btn"
+              aria-label="Previous page (Ctrl-B PgUp)"
+              disabled={!page}
+              onClick={() => onPage(page - 1)}
+            >
+              <Icon name="chevron-right" size="sm" className="flip" />
+            </button>
+            <button
+              className="icon-btn term-bar-btn"
+              aria-label="Next page (Ctrl-B PgDn)"
+              disabled={page + 1 >= pages}
+              onClick={() => onPage(page + 1)}
+            >
+              <Icon name="chevron-right" size="sm" />
+            </button>
+          </div>
+        )}
         <Tooltip content="New terminal (Ctrl-B Enter)">
           <button
             type="button"
@@ -171,6 +143,24 @@ export function TopBar({
             onClick={onNewTerminal}
           >
             <Icon name="plus" size="sm" />
+          </button>
+        </Tooltip>
+        <Tooltip
+          content={
+            fullWidth ? "Show the sidebar (Ctrl-B f)" : "Full width (Ctrl-B f)"
+          }
+        >
+          <button
+            type="button"
+            className="icon-btn term-bar-btn"
+            aria-label="Full width"
+            aria-pressed={fullWidth}
+            onClick={onFullWidth}
+          >
+            <Icon
+              name={fullWidth ? "panel-left-open" : "panel-left-close"}
+              size="sm"
+            />
           </button>
         </Tooltip>
         <div
@@ -192,46 +182,31 @@ export function TopBar({
             </Tooltip>
           ))}
         </div>
-        <Tooltip content="System status">
-          <button
-            type="button"
-            className="icon-btn term-bar-btn"
-            aria-label="System status"
-            onClick={onStats}
-          >
-            <Icon name="activity" size="sm" />
-          </button>
-        </Tooltip>
-        <Tooltip content="Settings (Ctrl-B ,)">
-          <button
-            type="button"
-            className="icon-btn term-bar-btn"
-            aria-label="Settings"
-            onClick={onSettings}
-          >
-            <Icon name="settings" size="sm" />
-          </button>
-        </Tooltip>
       </div>
     </header>
   );
 }
 
-/** The footer, like the TUI's: account and workspace on the left, live
- * system vitals on the right. */
+/** The footer, like the TUI's: account and workspace on the left, the
+ * control hint, and live vitals on the right while the sidebar (which shows
+ * them otherwise) is hidden or folded. */
 export function StatusBar({
   username,
   workspace,
   count,
+  parked,
   vitals,
   hint,
+  showVitals,
   onStats,
 }: {
   username: string;
   workspace: string;
   count: number;
+  parked: number;
   vitals: any;
   hint: string;
+  showVitals: boolean;
   onStats: () => void;
 }) {
   const disks: number[] = vitals?.disks || [];
@@ -248,20 +223,24 @@ export function StatusBar({
       </span>
       <span>
         {count} {count === 1 ? "terminal" : "terminals"}
+        {parked > 0 && ` · ${parked} parked`}
       </span>
       <span className="faint status-hint">{hint}</span>
       <span className="spacer" />
-      <button
-        type="button"
-        className="vitals-line"
-        onClick={onStats}
-        aria-label="System status"
-      >
-        {vital("CPU", vitals?.cpu)}
-        {vital("Mem", vitals?.memory)}
-        {vital("Disk", disk, diskWarningPercent)}
-        {vitals?.time && <span className="vital">{vitals.time}</span>}
-      </button>
+      <span className="faint">Ctrl-B ? help</span>
+      {showVitals && (
+        <button
+          type="button"
+          className="vitals-line"
+          onClick={onStats}
+          aria-label="System status"
+        >
+          {vital("CPU", vitals?.cpu)}
+          {vital("Mem", vitals?.memory)}
+          {vital("Disk", disk, diskWarningPercent)}
+        </button>
+      )}
+      {vitals?.time && <span className="vital">{vitals.time}</span>}
     </footer>
   );
 }

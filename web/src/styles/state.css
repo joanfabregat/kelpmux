@@ -1,0 +1,122 @@
+/*
+ * State marks, roll-up counts and provider logos, from KelpHub's terminal UI.
+ * Colours come from the status tokens in base.css, which have light and dark
+ * values; mark glyphs use the page background as ink so they contrast in
+ * both modes.
+ */
+.state-mark {
+  flex: none;
+  width: 12px;
+  height: 12px;
+  vertical-align: -2px;
+  color: var(--st-idle);
+  overflow: visible;
+}
+.state-mark-md {
+  width: 14px;
+  height: 14px;
+}
+.state-mark-lg {
+  width: 18px;
+  height: 18px;
+  vertical-align: -3px;
+}
+.state-input_needed {
+  color: var(--st-input);
+}
+.state-failed {
+  color: var(--st-failed);
+}
+.state-finished {
+  color: var(--st-done);
+}
+.state-working {
+  color: var(--st-working);
+}
+.state-running {
+  color: var(--st-idle);
+}
+.state-idle {
+  color: var(--st-idle);
+}
+.state-mark-ink {
+  fill: none;
+  stroke: var(--bg);
+  stroke-width: 1.9;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+.state-mark-ink-fill {
+  fill: var(--bg);
+}
+.state-mark-spin {
+  transform-origin: 8px 8px;
+  animation: state-mark-spin 1s linear infinite;
+}
+.state-mark-slow {
+  animation-duration: 3s;
+}
+@keyframes state-mark-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .state-mark-spin {
+    animation: none;
+  }
+}
+
+.state-counts {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 8px;
+  font-size: var(--fs-sm);
+  font-variant-numeric: tabular-nums;
+}
+.state-count {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+}
+.state-count-n {
+  color: var(--text-2);
+}
+
+.provider-logo {
+  flex: none;
+  width: 14px;
+  height: 14px;
+  vertical-align: -2px;
+  color: var(--text-2);
+}
+
+.badge.state-badge {
+  background: color-mix(in srgb, currentColor 16%, transparent);
+}
+.badge.state-badge.state-running,
+.badge.state-badge.state-idle {
+  background: var(--surface-3);
+  color: var(--text-2);
+}
+.state-text {
+  flex: none;
+  font-size: var(--fs-sm);
+}
+.state-text.state-running,
+.state-text.state-idle {
+  color: var(--text-3);
+}
+.rail-marks {
+  flex: none;
+  margin-left: auto;
+}
+.grid-pane header .provider-logo {
+  width: 12px;
+  height: 12px;
+}
+/* The folded rail keeps only the most urgent mark. */
+.rail.folded .rail-marks .state-count:not(:first-child) {
+  display: none;
+}

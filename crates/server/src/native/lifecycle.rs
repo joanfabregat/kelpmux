@@ -276,7 +276,11 @@ pub fn start(request: StartRequest<'_>) -> Result<()> {
     persisted.cwd = Some(request.cwd.to_path_buf());
     journal::atomic(&request.state.join("workspace.json"), &persisted)?;
     let size = format!("{}x{}", request.cols, request.rows);
-    let mut child = Command::new(&executable)
+    let mut command = Command::new(&executable);
+    // The server and its panes start clean of the starter's agent and
+    // multiplexer session markers (a start from inside Claude Code or tmux).
+    super::shell::remove_session_markers(&mut command);
+    let mut child = command
         .arg("server")
         .arg("--background")
         .arg("--socket")

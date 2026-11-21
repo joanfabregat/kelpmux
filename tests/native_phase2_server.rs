@@ -24,6 +24,10 @@ struct Daemon {
 }
 impl Daemon {
     fn start() -> Self {
+        Self::start_env(&[])
+    }
+    /// A server started from an environment holding these variables.
+    fn start_env(env: &[(&str, &str)]) -> Self {
         let root = std::env::temp_dir().join(format!(
             "kelpmux-phase2-{}-{}",
             std::process::id(),
@@ -37,6 +41,7 @@ impl Daemon {
             .env("CODEX_HOME", root.join("codex-home"))
             .env("CLAUDE_CONFIG_DIR", root.join("claude-home"))
             .env_remove("CODEX_THREAD_ID")
+            .envs(env.iter().copied())
             .args(["server", "--socket"])
             .arg(&socket)
             .arg("--state-dir")
@@ -1379,4 +1384,32 @@ fn double_click_grid_opens_tabs_and_sidebar_keeps_regular_view_and_live_ptys() {
                 .collect::<Vec<_>>()
         );
     }
+}
+
+/// A server started from inside an agent or tmux session gives its panes a
+/// clean environment: session markers are removed, configuration is kept.
+#[test]
+fn panes_do_not_inherit_agent_or_multiplexer_session_markers() {
+    let daemon = Daemon::start_env(&[
+        ("CLAUDECODE", "1"),
+        ("CLAUDE_CODE_CHILD_SESSION", "1"),
+        ("CLAUDE_CODE_MESSAGING_SOCKET", "/tmp/leaked.sock"),
+        ("CLAUDE_PID", "4242"),
+        ("CLAUDE_EFFORT", "high"),
+        ("CODEX_SESSION_ID", "leaked"),
+        ("CODEX_TOOL_CALL_ID", "leaked"),
+        ("CODEX_CI", "1"),
+        ("TMUX", "/tmp/tmux-1000/default,1,0"),
+        ("TMUX_PANE", "%9"),
+        ("ANTHROPIC_API_KEY", "kept-key"),
+        ("CODEX_EXTRA_SETTING", "kept-setting"),
+    ]);
+    let mut peer = daemon.attach();
+    peer.input(
+        "printf 'ENV<%s>\\n' \"$(env | grep -E '^(CLAUDE|CODEX|TMUX|ANTHROPIC)' | cut -d= -f1 | sort | tr '\\n' ' ')\"\n",
+    );
+    peer.wait(|frame| {
+        text(frame)
+            .contains("ENV<ANTHROPIC_API_KEY CLAUDE_CONFIG_DIR CODEX_EXTRA_SETTING CODEX_HOME >")
+    });
 }

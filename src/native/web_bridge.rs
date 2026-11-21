@@ -2,10 +2,12 @@
 //! authenticated Linux account; it relays the independent pane stream and a
 //! small set of request-correlated terminal operations over standard I/O.
 //!
-//! It never listens on TCP, never starts or restarts a workspace server, never
+//! It never listens on TCP and never restarts or replaces a workspace server.
+//! When its own configured workspace is not running it offers one `start`
+//! operation, run only on an explicit browser request. It never
 //! changes SSH authorization and holds no project, file or Git management.
-use super::{connection, protocol::*, status, stream};
-use crate::Result;
+use super::{connection, history, protocol::*, status, stream};
+use crate::{Result, model::Kind};
 use serde_json::{Value, json};
 use std::{
     io,
@@ -20,7 +22,10 @@ use std::{
 };
 
 /// Version of the `Web` request API spoken by this bridge.
-pub const API_VERSION: u64 = 1;
+/// Version 2 added `color`, `closed`, `restore`, `start` (with the
+/// `Workspace` notice while the server is stopped) and notification
+/// acknowledgements.
+pub const API_VERSION: u64 = 2;
 /// Largest accepted `Web` request, in bytes of JSON.
 const REQUEST_LIMIT: usize = 65536;
 /// Largest request identifier a browser can represent exactly.
@@ -112,7 +117,7 @@ impl Api {
                 "workspace": self.state.file_name().unwrap_or_default().to_string_lossy(),
                 "version": env!("CARGO_PKG_VERSION"),
                 "server_capabilities": self.capabilities()?,
-                "operations": ["state", "new", "close", "search", "history", "status"],
+                "operations": OPERATIONS,
             })),
             "new" => self.spawn(p),
             "close" => {
@@ -159,8 +164,110 @@ impl Api {
                 value["refreshing"] = json!(self.monitor.refreshing());
                 Ok(value)
             }
+            "color" => {
+                // The TUI's tab colour: an index into its palette. Shared
+                // workspace state, like the TUI's own picker.
+                let color = p["color"]
+                    .as_u64()
+                    .filter(|&c| c < 9)
+                    .ok_or("tab color must be a palette index from 0 to 8")?;
+                self.command(Action::TabColorSet {
+                    pane: pane(p)?,
+                    color: color as u8,
+                })?;
+                Ok(json!({}))
+            }
+            "start" => Err("the workspace server is already running".into()),
+            "closed" => self.closed(),
+            "restore" => self.restore(p),
             _ => Err("unsupported web operation".into()),
         }
+    }
+    /// Recently closed terminals and previous runs, the TUI's Recovery list:
+    /// this workspace's first, newest first within each group, with the
+    /// restore actions each entry offers.
+    fn closed(&self) -> Result<Value> {
+        let current = self.workspace_name();
+        let mut entries = history::collect(&self.state);
+        entries.sort_by_key(|e| {
+            (
+                e.workspace != current,
+                e.reason != "Closed",
+                std::cmp::Reverse(e.closed_at),
+            )
+        });
+        let entries = entries
+            .iter()
+            .map(|entry| {
+                let mut value = serde_json::to_value(entry)?;
+                value["choices"] = json!(choices(entry));
+                Ok(value)
+            })
+            .collect::<Result<Vec<_>>>()?;
+        Ok(json!({ "workspace": current, "entries": entries }))
+    }
+    /// Reopens a closed terminal in a new pane: `resume` reopens an agent
+    /// conversation, `restart` reruns a shell's last program and `folder`
+    /// opens a shell in its folder. The command line comes from the server's
+    /// own history entry, never from the browser. An agent conversation that
+    /// is already open is returned instead of started twice.
+    fn restore(&self, p: &Value) -> Result<Value> {
+        if p["confirmed"] != true {
+            return Err("restoring a closed terminal requires explicit confirmation".into());
+        }
+        if !self.capabilities()?.iter().any(|c| c == "pane-spawn") {
+            return Err("this terminal server cannot create panes for web clients".into());
+        }
+        let key = p["key"].as_str().ok_or("closed entry required")?;
+        let choice = p["choice"].as_str().ok_or("restore choice required")?;
+        let request = p["request"]
+            .as_str()
+            .ok_or("restore request identity required")?;
+        let entry = history::collect(&self.state)
+            .into_iter()
+            .find(|entry| entry.key == key)
+            .ok_or("this closed terminal is no longer listed")?;
+        if !choices(&entry).contains(&choice) {
+            return Err("choose a restore action this entry offers".into());
+        }
+        if entry.session_id.is_some() {
+            if let ServerMessage::State { panes, .. } = self.exchange(ClientMessage::Inspect)? {
+                if let Some(open) = panes.iter().find(|pane| {
+                    !pane.dead && pane.kind == entry.kind && pane.session_id == entry.session_id
+                }) {
+                    return Ok(json!({ "pane": open.id, "existing": true }));
+                }
+            }
+        }
+        let argv = match choice {
+            "resume" => resume_argv(&entry),
+            "restart" => entry.argv.clone(),
+            _ => vec![],
+        };
+        let original = PathBuf::from(&entry.cwd);
+        let cwd = if original.is_absolute() && original.is_dir() {
+            original
+        } else if argv.is_empty() {
+            home()?
+        } else {
+            // Never resume or rerun a program somewhere it did not run.
+            return Err("the original folder no longer exists".into());
+        };
+        let ServerMessage::SpawnedPane {
+            request: echoed,
+            pane,
+        } = self.exchange(ClientMessage::SpawnPane {
+            request: request.to_owned(),
+            cwd,
+            argv,
+        })?
+        else {
+            return Err("terminal server did not identify the restored pane".into());
+        };
+        if echoed != request {
+            return Err("pane creation identity mismatch".into());
+        }
+        Ok(json!({ "pane": pane, "existing": false }))
     }
     /// Starts a shell in a new pane through the server's structured
     /// `SpawnPane` request. The browser supplies no command line; only an
@@ -196,6 +303,49 @@ impl Api {
         }
         Ok(json!({ "pane": pane }))
     }
+    fn workspace_name(&self) -> String {
+        self.state
+            .file_name()
+            .unwrap_or_default()
+            .to_string_lossy()
+            .into_owned()
+    }
+}
+
+/// Bridge operations, reported by `state`.
+const OPERATIONS: &[&str] = &[
+    "state", "new", "close", "search", "history", "status", "color", "closed", "restore", "start",
+];
+
+/// The restore actions a closed entry offers, as the TUI's Recovery dialog
+/// names them: an agent resumes its conversation (or opens the agent's own
+/// picker when the conversation is unknown), a shell whose last program is
+/// known can rerun it, and every shell can reopen its folder.
+fn choices(entry: &history::Entry) -> Vec<&'static str> {
+    if entry.kind.is_some() {
+        vec!["resume"]
+    } else if entry.previous_command().is_some() {
+        vec!["restart", "folder"]
+    } else {
+        vec!["folder"]
+    }
+}
+
+/// The trusted command that resumes an agent conversation, as argv.
+fn resume_argv(entry: &history::Entry) -> Vec<String> {
+    let mut argv: Vec<String> = match entry.kind {
+        Some(Kind::Codex) => vec!["codex".into(), "resume".into()],
+        Some(Kind::Claude) => vec!["claude".into(), "--resume".into()],
+        None => return vec![],
+    };
+    if let Some(id) = entry
+        .session_id
+        .as_deref()
+        .filter(|id| crate::session_id(id))
+    {
+        argv.push(id.into());
+    }
+    argv
 }
 
 fn home() -> Result<PathBuf> {
@@ -203,13 +353,6 @@ fn home() -> Result<PathBuf> {
         .map(PathBuf::from)
         .filter(|path| path.is_absolute())
         .ok_or_else(|| "HOME is not an absolute directory".into())
-}
-
-/// Stream requests a browser may forward. Hello and clipboard opt-in are
-/// connection setup; notification acknowledgements stay with the TUI, whose
-/// read flags they change.
-fn permitted(request: &stream::Request) -> bool {
-    !matches!(request, stream::Request::Acknowledge { .. })
 }
 
 /// Parses `web-bridge` options. The workspace name selects the state
@@ -248,6 +391,97 @@ pub fn paths(args: &[String]) -> Result<(PathBuf, PathBuf)> {
     Ok((socket, state))
 }
 
+/// Whether no workspace server is running: no socket, or a socket nothing
+/// listens on. Any other connection failure is reported, not started over.
+fn server_absent(socket: &Path) -> bool {
+    match UnixStream::connect(socket) {
+        Ok(_) => false,
+        Err(error) => matches!(
+            error.kind(),
+            io::ErrorKind::NotFound | io::ErrorKind::ConnectionRefused
+        ),
+    }
+}
+
+/// Starts this bridge's own workspace on an explicit browser request. The
+/// request chooses nothing: no workspace, server binary or replacement.
+fn start(socket: &Path, state: &Path, params: &Value) -> Result<Value> {
+    let options = params
+        .as_object()
+        .ok_or("start parameters must be an object")?;
+    if params["confirmed"] != true {
+        return Err("starting the workspace requires explicit confirmation".into());
+    }
+    if options.keys().any(|key| key != "confirmed") {
+        return Err("start takes no options; it starts this bridge's own workspace".into());
+    }
+    if !server_absent(socket) {
+        return Err("the workspace server is already running".into());
+    }
+    super::cli::start_workspace(state, socket)?;
+    Ok(json!({ "started": true }))
+}
+
+/// Serves the browser while the workspace is not running: answers its hello
+/// with a `Workspace` notice, its `state` and, on request, `start`. Returns
+/// the connection to the started server.
+fn stopped(socket: &Path, state: &Path) -> Result<UnixStream> {
+    let workspace = state.file_name().unwrap_or_default().to_string_lossy();
+    let mut input = io::stdin().lock();
+    let mut output = io::stdout().lock();
+    let mut greeted = false;
+    let mut last_id = 0;
+    loop {
+        let value =
+            read_message::<Value>(&mut input)?.ok_or("browser disconnected before start")?;
+        let Some(web) = value.get("Web") else {
+            match serde_json::from_value::<ClientMessage>(value) {
+                Ok(ClientMessage::Stream(stream::Request::Hello { version: 1 })) if !greeted => {
+                    greeted = true;
+                    write_message(
+                        &mut output,
+                        &json!({"Workspace": {"running": false, "workspace": workspace}}),
+                    )?;
+                }
+                // Other stream requests have no server to reach yet.
+                Ok(ClientMessage::Stream(_)) if greeted => {}
+                _ => return Err("unexpected message while the workspace is stopped".into()),
+            }
+            continue;
+        };
+        let id = web["id"]
+            .as_u64()
+            .filter(|id| *id > last_id && *id <= MAX_ID && greeted)
+            .ok_or("invalid web request")?;
+        last_id = id;
+        let method = web["method"].as_str().unwrap_or("");
+        let result = if serde_json::to_vec(web).is_ok_and(|b| b.len() > REQUEST_LIMIT) {
+            Err("web request too large".into())
+        } else {
+            match method {
+                "state" => Ok(json!({
+                    "api_version": API_VERSION,
+                    "workspace": workspace,
+                    "version": env!("CARGO_PKG_VERSION"),
+                    "running": false,
+                    "operations": ["state", "start"],
+                })),
+                "start" => start(socket, state, &web["params"]),
+                _ => Err("the workspace server is not running; start it first".into()),
+            }
+        };
+        let started = method == "start" && result.is_ok();
+        let reply = match result {
+            Ok(result) => json!({"Web": {"id": id, "result": result}}),
+            Err(error) => json!({"Web": {"id": id, "error": error.to_string()}}),
+        };
+        write_message(&mut output, &reply)?;
+        if started {
+            return connection::connect(socket);
+        }
+    }
+}
+
 /// Runs the bridge until standard input closes or the workspace disconnects.
 /// The command line is fixed by the operator (an SSH forced command or the
 /// relay's configured bridge command); the browser supplies no path.
@@ -255,7 +489,19 @@ pub fn run(socket: &Path, state: &Path) -> Result<()> {
     if unsafe { libc::isatty(0) } == 1 || unsafe { libc::isatty(1) } == 1 {
         return Err("web bridge requires SSH without a PTY".into());
     }
-    let upstream = connection::connect(socket)?;
+    // A workspace that is not running is offered to the browser to start.
+    let (mut upstream, greeted) = match connection::connect(socket) {
+        Ok(stream) => (stream, false),
+        Err(_) if server_absent(socket) => (stopped(socket, state)?, true),
+        Err(error) => return Err(error),
+    };
+    if greeted {
+        // The browser's hello was answered while stopped; greet the server.
+        write_message(
+            &mut upstream,
+            &ClientMessage::Stream(stream::Request::Hello { version: 1 }),
+        )?;
+    }
     let peer = Peer::read(&upstream)?;
     // The stream stays open while idle; only writes are bounded.
     upstream.set_read_timeout(None)?;
@@ -310,7 +556,7 @@ pub fn run(socket: &Path, state: &Path) -> Result<()> {
             state,
             monitor,
         };
-        let mut initialized = false;
+        let mut initialized = greeted;
         let mut last_id = 0;
         let mut input = io::stdin().lock();
         while let Ok(Some(value)) = read_message::<Value>(&mut input) {
@@ -355,13 +601,10 @@ pub fn run(socket: &Path, state: &Path) -> Result<()> {
             } else if hello {
                 break;
             }
-            if !permitted(&request) {
-                let refused = json!({"Stream": {"type": "error", "message": "this operation is not available to web clients"}});
-                if sender.send(refused).is_err() {
-                    break;
-                }
-                continue;
-            }
+            // Every stream request is forwarded unchanged, notification
+            // acknowledgements included: read flags belong to the workspace,
+            // and the TUI marks a terminal's notifications read when it is
+            // shown, as the browser does.
             let sent = writer
                 .lock()
                 .map_err(|_| "bridge writer unavailable".into())
@@ -438,18 +681,31 @@ mod tests {
             assert!(paths(&args(values)).is_err());
         }
     }
+    fn entry(kind: Option<Kind>, session: Option<&str>, argv: &[&str]) -> history::Entry {
+        history::Entry {
+            key: "k".into(),
+            workspace: "main".into(),
+            pane: 1,
+            cwd: "/tmp".into(),
+            name: "n".into(),
+            kind,
+            session_id: session.map(Into::into),
+            argv: argv.iter().map(|a| (*a).into()).collect(),
+            closed_at: Some(1),
+            reason: "Closed".into(),
+        }
+    }
     #[test]
-    fn notification_acknowledgements_stay_with_the_tui() {
-        assert!(!permitted(&stream::Request::Acknowledge {
-            notification: 1
-        }));
-        assert!(permitted(&stream::Request::Claim {
-            pane: 1,
-            takeover: true
-        }));
-        assert!(permitted(&stream::Request::Input {
-            pane: 1,
-            bytes: vec![b'a']
-        }));
+    fn restore_choices_and_commands_follow_the_tui() {
+        let codex = entry(Some(Kind::Codex), Some("abc-123"), &[]);
+        assert_eq!(choices(&codex), ["resume"]);
+        assert_eq!(resume_argv(&codex), ["codex", "resume", "abc-123"]);
+        let claude = entry(Some(Kind::Claude), Some("x y; rm"), &[]);
+        // An invalid conversation identity opens the agent's own picker.
+        assert_eq!(resume_argv(&claude), ["claude", "--resume"]);
+        let shell = entry(None, None, &["htop", "-d", "5"]);
+        assert_eq!(choices(&shell), ["restart", "folder"]);
+        assert!(resume_argv(&shell).is_empty());
+        assert_eq!(choices(&entry(None, None, &[])), ["folder"]);
     }
 }

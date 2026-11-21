@@ -176,3 +176,58 @@ export function LoginScreen({
     </main>
   );
 }
+
+/** Shown after sign-in when the workspace server is not running. Starting
+ * it is the user's explicit choice; the bridge starts only this workspace. */
+export function StoppedWorkspace({
+  workspace,
+  starting,
+  error,
+  onStart,
+  onSignOut,
+}: {
+  workspace: string;
+  starting: boolean;
+  error: string;
+  onStart: () => void;
+  onSignOut: () => void;
+}) {
+  return (
+    <main className="login">
+      <div className="login-card">
+        <div className="login-brand">
+          <LoginLogo />
+          <span className="env-badge">{workspace}</span>
+        </div>
+        <div className="login-head">
+          <h1>Workspace not running</h1>
+          <p className="login-target">
+            <Icon name="terminal" size="sm" />
+            <span>
+              The KelpServer for <strong>{workspace}</strong> is stopped.
+            </span>
+          </p>
+        </div>
+        {error && <div className="notice error">{error}</div>}
+        <button
+          className="connect-primary"
+          disabled={starting}
+          onClick={onStart}
+          autoFocus
+        >
+          <Icon name="terminal" />
+          {starting ? "Starting workspace…" : "Start workspace"}
+        </button>
+        <p className="login-key-status">
+          Starts this workspace's server with its saved shell and folder, the
+          same as kelpmux start. It never replaces a running server.
+        </p>
+        <div className="actions login-secondary">
+          <button className="subtle" disabled={starting} onClick={onSignOut}>
+            Sign out
+          </button>
+        </div>
+      </div>
+    </main>
+  );
+}

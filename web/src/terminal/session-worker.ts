@@ -16,6 +16,8 @@ const screens = new Map<number, Snapshot>();
 let ssh: HostSession | undefined,
   configKey = "",
   welcome: any,
+  /** The bridge's notice that the workspace server is not running. */
+  stopped: any,
   latest: any;
 let host: View | undefined;
 let signingKey: { credentialId: string; label?: string } | undefined;
@@ -39,6 +41,7 @@ function stop(message = "Signed out of all KelpMux windows.") {
   ssh = undefined;
   old?.close();
   welcome = undefined;
+  stopped = undefined;
   latest = undefined;
   configKey = "";
   owners.clear();
@@ -75,7 +78,10 @@ function leave(view: View) {
   view.port.close();
 }
 function replay(view: View) {
-  if (!welcome) return;
+  if (!welcome) {
+    if (stopped) send(view, { type: "event", event: stopped });
+    return;
+  }
   if (signingKey) send(view, { type: "signed_in_key", key: signingKey });
   view.revisions.clear();
   send(view, { type: "event", event: { Stream: welcome } });
@@ -89,10 +95,16 @@ function replay(view: View) {
   ownership();
 }
 function event(value: any) {
+  if (value.Workspace) {
+    stopped = value.Workspace.running ? undefined : value;
+    for (const view of views) send(view, { type: "event", event: value });
+    return;
+  }
   const e = value.Stream;
   if (!e) return;
   if (e.type === "welcome") {
     welcome = e;
+    stopped = undefined;
     for (const view of views) replay(view);
     subscribe();
     return;
@@ -304,7 +316,10 @@ async function message(view: View, data: any) {
     stop();
     return;
   }
-  if (!welcome) throw Error("SSH login is still in progress");
+  // A stopped workspace answers only its state and the start request.
+  const startable =
+    stopped && data.type === "rpc" && ["state", "start"].includes(data.method);
+  if (!welcome && !startable) throw Error("SSH login is still in progress");
   if (data.type === "request") {
     const type = data.request,
       params = data.params || {};
@@ -331,6 +346,14 @@ async function message(view: View, data: any) {
         );
       view.subscribed = [...new Set<number>(panes)];
       subscribe();
+      return;
+    }
+    if (type === "acknowledge") {
+      // Notification read marks are workspace state, not a pane lease.
+      if (!Number.isSafeInteger(params.notification) || params.notification < 1)
+        throw Error("Invalid notification");
+      lastActivity = Date.now();
+      ssh.request(type, { notification: params.notification });
       return;
     }
     if (type === "claim") {
