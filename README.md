@@ -34,6 +34,8 @@ kelpmux start --workspace trial
 kelpmux attach --workspace trial
 ```
 
+`kelpmux attach --workspace trial --stream` opts in to the experimental stream TUI, which renders locally from KelpServer's pane stream and keeps its own UI state in `tui-state.json`; `--legacy` (the default) keeps the composed TUI. See [the native guide](docs/native.md#stream-tui-experimental---stream) for the parity table and the one-time migration.
+
 `Ctrl-B`, then `d` detaches. `g` selects grid, `z` reopens the latest useful closed tab, `p` parks a tab and `u` shows parked tabs. Stop a disposable workspace with `kelpmux stop --workspace trial`; stopping ends its processes. Existing settings and XDG state paths are preserved. A server crash or reboot requires recovery/resume; metadata does not preserve live processes.
 
 The local checkout is `~/repos/kelp/mux`. Source operations do not replace running dev or pre-prod installations. The legacy [native guide](docs/native.md) describes the retained interaction model; component ownership/build instructions in MIGRATION.md supersede its combined-binary packaging assumptions.

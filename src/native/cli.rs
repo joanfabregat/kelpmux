@@ -18,7 +18,7 @@ use std::{
 
 pub const HELP: &str = "Owned native terminal workspaces (Linux):
   kelpmux start [--workspace NAME] [--config PATH] [--template PATH] [--shell PATH] [--cwd PATH] [--replace-running] [--server-binary PATH]
-  kelpmux ssh-entry [--workspace NAME] [--takeover]
+  kelpmux ssh-entry [--workspace NAME] [--takeover] [--stream|--legacy]
   kelpmux status|stop|recover|diagnostics|templates [--workspace NAME]
   kelpmux benchmark
   kelpmux bridge [--workspace NAME] [--socket PATH]
@@ -26,12 +26,14 @@ pub const HELP: &str = "Owned native terminal workspaces (Linux):
   kelpmux web-relay --config PATH   (browser client; see docs/web.md)
   kelpmux stream-inspect [--workspace NAME] [PANE_ID ...]
   kelpmux server [--socket PATH] [--state-dir PATH] [--shell PATH] [--cwd PATH] [--size CxR] [--config PATH]
-  kelpmux attach [--workspace NAME] [--socket PATH] [--takeover] [--current-client]
+  kelpmux attach [--workspace NAME] [--socket PATH] [--takeover] [--current-client] [--stream|--legacy]
   kelpmux ctl [--socket PATH] list|new|park ID|restore ID|focus ID|read ID|fullscreen ID|reclaim ID|close|shutdown
 
 start owns a detached server; ssh-entry starts or attaches. stop ends its processes.
 --replace-running ends an outdated server's shells/jobs before starting the selected binary.
 --current-client explicitly skips retained-client selection; the protocol handshake remains mandatory.
+--stream attaches the stream TUI (local rendering and UI state, experimental);
+  --legacy, the default, attaches the composed-protocol TUI.
 Custom sockets infer adjacent state; specify --state-dir when state lives elsewhere.
 Default workspace: main; socket: $XDG_STATE_HOME/kelpmux/workspaces/main/control.sock
   (falls back to ~/.local/state/kelpmux/workspaces/main/control.sock)
@@ -41,12 +43,12 @@ Attach keys: Ctrl-B d detach, z grid/tabs, f full width, g/e automatic grid,
   o overview, b notifications, r recovery, / search, c scratch,
   N next question, P next completion, Space selection, Enter new, p park, u parked.
 Configurable in --config JSON. Scratch is persistent until explicitly closed.";
-const ESCAPE_TIMEOUT: Duration = Duration::from_millis(35);
+pub(crate) const ESCAPE_TIMEOUT: Duration = Duration::from_millis(35);
 // JSON encodes byte arrays as decimal integers: a 64 KiB paste can exceed
 // 256 KiB on the wire even when the raw payload is within its limit.
 const MAX_PENDING: usize = 512 * 1024;
-static INTERRUPTED: AtomicBool = AtomicBool::new(false);
-static RESIZED: AtomicBool = AtomicBool::new(false);
+pub(crate) static INTERRUPTED: AtomicBool = AtomicBool::new(false);
+pub(crate) static RESIZED: AtomicBool = AtomicBool::new(false);
 extern "C" fn signal(signal: libc::c_int) {
     if signal == libc::SIGWINCH {
         RESIZED.store(true, Ordering::Relaxed);
@@ -63,6 +65,8 @@ struct Options {
     size: (u16, u16),
     takeover: bool,
     current_client: bool,
+    /// Attach with the stream TUI instead of the composed protocol.
+    stream: bool,
     replace_running: bool,
     server_binary: Option<PathBuf>,
     command: Vec<String>,
@@ -81,6 +85,7 @@ fn options(args: &[String]) -> Result<Options> {
         size: (120, 40),
         takeover: false,
         current_client: false,
+        stream: false,
         replace_running: false,
         server_binary: None,
         command: vec![],
@@ -96,6 +101,7 @@ fn options(args: &[String]) -> Result<Options> {
     let mut shell_explicit = false;
     let mut cwd_explicit = false;
     let mut template_path = None;
+    let mut stream_choice = None;
     while position < args.len() {
         let arg = &args[position];
         position += 1;
@@ -109,6 +115,17 @@ fn options(args: &[String]) -> Result<Options> {
         }
         if arg == "--current-client" && matches!(verb.as_str(), "attach" | "ssh-entry") {
             result.current_client = true;
+            continue;
+        }
+        // The composed-protocol TUI stays the default until the stream TUI
+        // reaches parity (ADR 0002 step 2); --legacy names it explicitly.
+        if matches!(arg.as_str(), "--stream" | "--legacy")
+            && matches!(verb.as_str(), "attach" | "ssh-entry")
+        {
+            if stream_choice.replace(arg == "--stream").is_some() {
+                return Err("choose one of --stream and --legacy".into());
+            }
+            result.stream = arg == "--stream";
             continue;
         }
         if arg == "--replace-running" && verb == "start" {
@@ -299,7 +316,15 @@ pub fn run(args: &[String]) -> Result<()> {
         "server" => kelpserver::native::cli::run(args),
         "start" | "ssh-entry" => {
             start_server(&options)?;
-            if args[0] == "ssh-entry" {
+            if args[0] == "ssh-entry" && options.stream {
+                let result =
+                    super::tui::attach::run(&options.socket, &options.state, options.takeover);
+                if INTERRUPTED.load(Ordering::Relaxed) {
+                    Ok(())
+                } else {
+                    result
+                }
+            } else if args[0] == "ssh-entry" {
                 attach(attach_socket(&options)?, options.takeover)
             } else {
                 control(&options.socket, &["list".into()])
@@ -358,7 +383,11 @@ pub fn run(args: &[String]) -> Result<()> {
             Ok(())
         }
         "attach" => {
-            let result = attach(attach_socket(&options)?, options.takeover);
+            let result = if options.stream {
+                super::tui::attach::run(&options.socket, &options.state, options.takeover)
+            } else {
+                attach(attach_socket(&options)?, options.takeover)
+            };
             if INTERRUPTED.load(Ordering::Relaxed) {
                 Ok(())
             } else {
@@ -405,7 +434,7 @@ fn control(path: &Path, args: &[String]) -> Result<()> {
         _ => Err("native server did not acknowledge the management command".into()),
     }
 }
-fn tty_size() -> Result<(u16, u16)> {
+pub(crate) fn tty_size() -> Result<(u16, u16)> {
     let mut size: libc::winsize = unsafe { std::mem::zeroed() };
     if unsafe { libc::ioctl(libc::STDOUT_FILENO, libc::TIOCGWINSZ, &mut size) } != 0 {
         return Err(std::io::Error::last_os_error().into());
@@ -415,16 +444,16 @@ fn tty_size() -> Result<(u16, u16)> {
     }
     Ok((size.ws_col, size.ws_row))
 }
-fn backend_size(size: (u16, u16)) -> (u16, u16) {
+pub(crate) fn backend_size(size: (u16, u16)) -> (u16, u16) {
     (size.0.clamp(40, 400), size.1.clamp(10, 160))
 }
-struct RawTty {
+pub(crate) struct RawTty {
     original: libc::termios,
     flags: i32,
     actions: Vec<(i32, libc::sigaction)>,
     entered: bool,
 }
-struct TerminalWriter;
+pub(crate) struct TerminalWriter;
 impl Write for TerminalWriter {
     fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
         if INTERRUPTED.load(Ordering::Relaxed) {
@@ -452,7 +481,7 @@ impl Write for TerminalWriter {
     }
 }
 impl RawTty {
-    fn enter() -> Result<Self> {
+    pub(crate) fn enter() -> Result<Self> {
         INTERRUPTED.store(false, Ordering::Relaxed);
         RESIZED.store(false, Ordering::Relaxed);
         let mut original = unsafe { std::mem::zeroed() };
@@ -553,14 +582,14 @@ impl Drop for RawTty {
         }
     }
 }
-struct Channel {
-    socket: UnixStream,
+pub(crate) struct Channel {
+    pub(crate) socket: UnixStream,
     input: Vec<u8>,
-    output: VecDeque<u8>,
-    eof: bool,
+    pub(crate) output: VecDeque<u8>,
+    pub(crate) eof: bool,
 }
 impl Channel {
-    fn new(socket: UnixStream) -> Result<Self> {
+    pub(crate) fn new(socket: UnixStream) -> Result<Self> {
         socket.set_read_timeout(None)?;
         socket.set_write_timeout(None)?;
         socket.set_nonblocking(true)?;
@@ -571,7 +600,7 @@ impl Channel {
             eof: false,
         })
     }
-    fn send(&mut self, message: &ClientMessage) -> Result<()> {
+    pub(crate) fn send(&mut self, message: &ClientMessage) -> Result<()> {
         let bytes = serde_json::to_vec(message)?;
         if bytes.len() > MAX_MESSAGE || self.output.len() + bytes.len() + 4 > MAX_PENDING {
             return Err("native server is not consuming input".into());
@@ -580,7 +609,7 @@ impl Channel {
         self.output.extend(bytes);
         Ok(())
     }
-    fn flush(&mut self) -> Result<()> {
+    pub(crate) fn flush(&mut self) -> Result<()> {
         while !self.output.is_empty() {
             let (bytes, _) = self.output.as_slices();
             match self.socket.write(bytes) {
@@ -595,7 +624,7 @@ impl Channel {
         }
         Ok(())
     }
-    fn receive(&mut self) -> Result<Vec<ServerMessage>> {
+    pub(crate) fn receive(&mut self) -> Result<Vec<ServerMessage>> {
         let mut result = vec![];
         let mut bytes = [0; 8192];
         // Yield after a bounded batch even if the server writes continuously.
@@ -677,7 +706,7 @@ fn validate_frame(frame: &Frame) -> Result<()> {
     }
     Ok(())
 }
-fn fitted_mouse(frame: &Frame, size: (u16, u16), mut point: Point) -> Option<Point> {
+pub(crate) fn fitted_mouse(frame: &Frame, size: (u16, u16), mut point: Point) -> Option<Point> {
     if frame.sidebar_status() {
         let height = super::workspace::sidebar_status_rows(frame.rows).min(size.1);
         let width = frame.sidebar_width() - 1;
@@ -849,7 +878,10 @@ fn fitted(frame: &Frame, size: (u16, u16), notice: Option<&str>) -> Frame {
     }
     fit
 }
-fn queue_events(pending: &mut VecDeque<InputEvent>, events: Vec<InputEvent>) -> Result<()> {
+pub(crate) fn queue_events(
+    pending: &mut VecDeque<InputEvent>,
+    events: Vec<InputEvent>,
+) -> Result<()> {
     for event in events {
         let idle_move = |event: &InputEvent| matches!(event, InputEvent::Mouse(mouse) if mouse.kind == MouseKind::Move && mouse.button == 3);
         if idle_move(&event) && pending.back().is_some_and(idle_move) {
@@ -869,7 +901,7 @@ fn queue_events(pending: &mut VecDeque<InputEvent>, events: Vec<InputEvent>) -> 
     }
     Ok(())
 }
-fn paint(
+pub(crate) fn paint(
     stdout: &mut impl Write,
     painted: &mut Option<Frame>,
     frame: &Frame,
@@ -1440,5 +1472,23 @@ mod web_tests {
         assert!(error.contains("no web client assets"), "{error}");
         let partial: super::super::web_relay::Assets = &[("/favicon.svg", b"<svg/>")];
         assert!(web_relay(Path::new("/nonexistent"), partial).is_err());
+    }
+}
+#[cfg(test)]
+mod stream_option_tests {
+    use super::*;
+    fn parse(args: &[&str]) -> Result<Options> {
+        options(&args.iter().map(|s| (*s).to_owned()).collect::<Vec<_>>())
+    }
+    #[test]
+    fn stream_is_opt_in_and_exclusive_with_legacy() {
+        assert!(!parse(&["attach"]).unwrap().stream);
+        assert!(!parse(&["attach", "--legacy"]).unwrap().stream);
+        assert!(parse(&["attach", "--stream"]).unwrap().stream);
+        assert!(parse(&["ssh-entry", "--stream"]).unwrap().stream);
+        assert!(parse(&["attach", "--stream", "--legacy"]).is_err());
+        assert!(parse(&["attach", "--stream", "--stream"]).is_err());
+        // Only the attaching verbs take it.
+        assert!(parse(&["status", "--stream"]).is_err());
     }
 }

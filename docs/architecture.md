@@ -20,6 +20,12 @@ A named workspace selects its private state directory and socket. `kelpmux start
 
 UI configuration is bounded JSON, validated before the server starts. It defines a prefix, reading dimensions and explicit key/action bindings. Application bytes outside those bindings pass through; terminal escape/paste framing remains separate from shortcut interpretation. UI selectors share geometry for grouped settings, parked-tab restore targets, agent attention/finished filters and pane movement.
 
+## Stream TUI (opt-in)
+
+Per [KelpServer ADR 0002](https://github.com/joanfabregat/kelpserver/blob/main/crates/server/docs/adr/0002-generic-session-server.md), TUI state is moving out of the server. `kelpmux attach --stream` is a TUI built on the pane stream and session API: KelpServer keeps sessions, PTYs, terminal state, leases, spawn/close/restore, closed-session records, observations, notifications and lifecycle, while KelpMux renders locally and owns tab order, names, colours, parking, focus history, dialogs, grid geometry, the scratch marker and settings. The renderer and workspace model were copied from KelpServer into `src/native/render.rs`, `src/native/workspace.rs` and `src/native/status.rs`, and shadow the server's modules; the shared data types (`Frame`, `UiState`, `Action`) still come from the pinned KelpServer until the composed protocol is retired. `src/native/tui/` holds the controller (stream events and routed input in, stream requests out), the terminal loop and the persisted state (`tui-state.json`, see the [native guide](native.md#persisted-ui-state)). The composed TUI remains the default until the parity table in the native guide shows no daily-use gaps.
+
+`kelpmux web-relay` uses KelpMux's own copy of the web relay (`src/native/web_relay.rs`), moved from KelpServer, which serves PNG, web manifest and JSON assets with their media types under `X-Content-Type-Options: nosniff`.
+
 ## Legacy compatibility and distribution
 
 Legacy commands use an explicitly selected unmodified tmux 3.8+ executable and socket. tmux owns those PTYs, terminal rendering, layout, mouse, key tables and client size policy. Kelpmux supplies metadata, guarded layout helpers, floating reading geometry, optional lifecycle hooks and generated example bindings. Native and legacy state should be isolated; neither path automatically replaces configuration, starts a daemon or migrates an existing workspace.
