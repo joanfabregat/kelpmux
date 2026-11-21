@@ -5,8 +5,11 @@
 //! It never listens on TCP and never restarts or replaces a workspace server.
 //! When its own configured workspace is not running it offers one `start`
 //! operation, run only on an explicit browser request. It never
-//! changes SSH authorization and holds no project, file or Git management.
-use super::{connection, history, protocol::*, status, stream};
+//! changes SSH authorization and holds no project, file or Git management;
+//! it only reads, for display, which repository and branch a pane's folder
+//! is in and which program a pane runs (`web_repos`), without running `git`
+//! or any other process.
+use super::{connection, history, protocol::*, status, stream, web_repos};
 use crate::{Result, model::Kind};
 use serde_json::{Value, json};
 use std::{
@@ -26,6 +29,10 @@ use std::{
 /// `Workspace` notice while the server is stopped) and notification
 /// acknowledgements.
 pub const API_VERSION: u64 = 2;
+/// Additive revision within [`API_VERSION`]: clients of the same version
+/// keep working and detect newer operations from `state`'s `operations`.
+/// Minor 1 added `repos` and `commands`.
+pub const API_MINOR: u64 = 1;
 /// Largest accepted `Web` request, in bytes of JSON.
 const REQUEST_LIMIT: usize = 65536;
 /// Largest request identifier a browser can represent exactly.
@@ -114,6 +121,7 @@ impl Api {
         match method {
             "state" => Ok(json!({
                 "api_version": API_VERSION,
+                "api_minor": API_MINOR,
                 "workspace": self.state.file_name().unwrap_or_default().to_string_lossy(),
                 "version": env!("CARGO_PKG_VERSION"),
                 "server_capabilities": self.capabilities()?,
@@ -178,10 +186,44 @@ impl Api {
                 Ok(json!({}))
             }
             "start" => Err("the workspace server is already running".into()),
+            "repos" => {
+                // Read-only repository facts for the Terminals table; see
+                // web_repos for the bounds. The browser sends pane folders.
+                let paths = p["paths"]
+                    .as_array()
+                    .ok_or("repos takes a list of paths")?
+                    .iter()
+                    .map(|path| path.as_str().map(str::to_owned))
+                    .collect::<Option<Vec<_>>>()
+                    .ok_or("each path must be a string")?;
+                Ok(json!({ "repos": web_repos::lookup(&paths)? }))
+            }
+            "commands" => self.commands(),
             "closed" => self.closed(),
             "restore" => self.restore(p),
             _ => Err("unsupported web operation".into()),
         }
+    }
+    /// Each live pane's foreground program, by pane id, for the Terminals
+    /// table. Process identities come from the server, never the browser;
+    /// only program names are returned, never arguments.
+    fn commands(&self) -> Result<Value> {
+        let ServerMessage::State { panes, .. } = self.exchange(ClientMessage::Inspect)? else {
+            return Err("terminal server did not describe its panes".into());
+        };
+        let proc_root = Path::new("/proc");
+        let commands: serde_json::Map<String, Value> = panes
+            .iter()
+            .filter(|pane| !pane.dead && pane.pid > 0)
+            .take(MAX_COMMAND_PANES)
+            .map(|pane| {
+                (
+                    pane.id.to_string(),
+                    json!(web_repos::foreground_program(proc_root, pane.pid)),
+                )
+            })
+            .collect();
+        Ok(json!({ "commands": commands }))
     }
     /// Recently closed terminals and previous runs, the TUI's Recovery list:
     /// this workspace's first, newest first within each group, with the
@@ -315,7 +357,10 @@ impl Api {
 /// Bridge operations, reported by `state`.
 const OPERATIONS: &[&str] = &[
     "state", "new", "close", "search", "history", "status", "color", "closed", "restore", "start",
+    "repos", "commands",
 ];
+/// Most panes whose foreground program one `commands` call reports.
+const MAX_COMMAND_PANES: usize = 128;
 
 /// The restore actions a closed entry offers, as the TUI's Recovery dialog
 /// names them: an agent resumes its conversation (or opens the agent's own
@@ -461,6 +506,7 @@ fn stopped(socket: &Path, state: &Path) -> Result<UnixStream> {
             match method {
                 "state" => Ok(json!({
                     "api_version": API_VERSION,
+                    "api_minor": API_MINOR,
                     "workspace": workspace,
                     "version": env!("CARGO_PKG_VERSION"),
                     "running": false,

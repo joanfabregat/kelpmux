@@ -688,3 +688,56 @@ fn tab_colour_is_set_through_the_tui_palette() {
     assert!(invalid["error"].as_str().unwrap().contains("palette index"));
     assert!(bridge.web(3, "color", json!({"pane": pane}))["error"].is_string());
 }
+
+#[test]
+fn repos_and_commands_report_read_only_facts_for_the_terminals_table() {
+    let server = Server::start_with(|root| {
+        fs::create_dir_all(root.join("checkout/.git")).unwrap();
+        fs::create_dir_all(root.join("checkout/src")).unwrap();
+        fs::write(root.join("checkout/.git/HEAD"), "ref: refs/heads/main\n").unwrap();
+        fs::write(
+            root.join("checkout/.git/config"),
+            "[remote \"origin\"]\n\turl = git@github.com:owner/project.git\n",
+        )
+        .unwrap();
+    });
+    let mut bridge = Bridge::start(&server);
+    welcome(&mut bridge);
+    let state = bridge.web(1, "state", json!({}));
+    assert_eq!(state["result"]["api_version"], 2);
+    assert_eq!(state["result"]["api_minor"], 1);
+    let operations = state["result"]["operations"].as_array().unwrap();
+    assert!(operations.iter().any(|op| op == "repos"));
+    assert!(operations.iter().any(|op| op == "commands"));
+
+    let checkout = server.root.join("checkout/src");
+    let repos = bridge.web(
+        2,
+        "repos",
+        json!({"paths": [checkout.to_str().unwrap(), server.root.to_str().unwrap(), "relative"]}),
+    );
+    let list = repos["result"]["repos"].as_array().unwrap();
+    assert_eq!(
+        list[0],
+        json!({
+            "root": server.root.join("checkout").to_str().unwrap(),
+            "branch": "main",
+            "detached": null,
+            "github": "owner/project",
+        })
+    );
+    assert_eq!(list[1], Value::Null);
+    assert_eq!(list[2], Value::Null);
+    let many = vec!["/"; 65];
+    let refused = bridge.web(3, "repos", json!({ "paths": many }));
+    assert!(refused["error"].as_str().unwrap().contains("at most"));
+    let wrong = bridge.web(4, "repos", json!({ "paths": [1] }));
+    assert!(wrong["error"].as_str().is_some());
+
+    let created = bridge.web(5, "new", json!({"request": "web-cmd-1"}));
+    let pane = created["result"]["pane"].as_u64().unwrap();
+    let commands = bridge.web(6, "commands", json!({}));
+    let map = commands["result"]["commands"].as_object().unwrap();
+    // A shell at its prompt has no foreground program of its own.
+    assert!(map.contains_key(&pane.to_string()), "{commands}");
+}

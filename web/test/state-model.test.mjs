@@ -1,7 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
-  agents,
   nextPane,
   notificationMatches,
   notificationStatus,
@@ -132,27 +131,6 @@ test("next question / completion cycles from the active pane", () => {
     null,
   );
   assert.equal(nextPane([], 1, attention), null);
-});
-
-test("agents are filtered like the TUI's agent list", () => {
-  const panes = [
-    pane(1, "input_needed", { kind: "claude" }),
-    pane(2, "exited", { kind: "codex" }),
-    pane(3, "input_needed"),
-    pane(4, "failed", { kind: "codex", dead: true }),
-  ];
-  assert.deepEqual(
-    agents(panes, "all").map((p) => p.id),
-    [1, 2],
-  );
-  assert.deepEqual(
-    agents(panes, "attention").map((p) => p.id),
-    [1],
-  );
-  assert.deepEqual(
-    agents(panes, "finished").map((p) => p.id),
-    [2],
-  );
 });
 
 test("the notification list shows unread ones of live panes, or history", () => {

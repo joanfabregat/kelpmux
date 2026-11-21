@@ -393,11 +393,6 @@ button.search-hit {
   text-overflow: ellipsis;
   white-space: pre;
 }
-.overview-name {
-  display: inline-flex;
-  align-items: center;
-  gap: var(--s1);
-}
 .move-grid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
@@ -430,4 +425,119 @@ button.search-hit {
   width: 14px;
   height: 14px;
   border-radius: 4px;
+}
+
+/* ───────── Terminals table ───────── */
+.terminals-wrap {
+  margin-top: 0;
+}
+.terminals-table tbody tr {
+  cursor: pointer;
+}
+.terminals-table tbody tr:hover {
+  background: var(--surface-2);
+}
+.terminals-table tbody tr.parked-row {
+  color: var(--text-2);
+}
+.terminals-table td:nth-child(3) {
+  min-width: 220px;
+}
+.terminals-table td:last-child {
+  white-space: nowrap;
+}
+button.terminal-open,
+button.terminal-card-head {
+  justify-content: flex-start;
+  gap: var(--s2);
+  min-height: 0;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--text);
+  font-weight: 500;
+  text-align: left;
+  white-space: normal;
+}
+.terminal-name {
+  overflow-wrap: anywhere;
+}
+.terminal-agent,
+.terminal-repo,
+.terminal-github,
+.terminal-reponame,
+.terminal-branch {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--s1);
+}
+.terminal-agent {
+  white-space: nowrap;
+}
+.terminal-folder {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+.terminal-path {
+  color: var(--text-2);
+  overflow-wrap: anywhere;
+}
+.terminal-repo {
+  flex-wrap: wrap;
+  column-gap: var(--s3);
+}
+.terminal-github {
+  color: var(--accent);
+  text-decoration: none;
+}
+.terminal-github:hover {
+  text-decoration: underline;
+}
+.terminal-branch {
+  color: var(--text-2);
+  overflow-wrap: anywhere;
+}
+.terminal-command small {
+  color: var(--text-3);
+}
+.github-mark {
+  flex: none;
+  width: 14px;
+  height: 14px;
+}
+.github-mark-eye {
+  fill: var(--bg);
+}
+/* Phones: one card per terminal. */
+.terminal-cards {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s2);
+}
+.terminal-card {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s1);
+  padding: var(--s3);
+  border: 1px solid var(--line);
+  border-radius: var(--r-md);
+  font-size: var(--fs-sm);
+  cursor: pointer;
+}
+.terminal-card:active {
+  background: var(--surface-2);
+}
+button.terminal-card-head {
+  width: 100%;
+  min-height: 32px;
+  font-size: var(--fs-md);
+}
+.terminal-card-head .grow {
+  flex: 1;
+  min-width: 0;
+}
+.terminal-card-head small {
+  font-weight: 400;
 }

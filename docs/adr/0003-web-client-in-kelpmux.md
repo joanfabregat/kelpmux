@@ -54,3 +54,7 @@ The owner asked for the web client to work on iPhone and iPad, Safari first. Thi
 - **Installable, without a service worker.** A web app manifest, icons and the iOS meta tags make the client installable from Safari's Add to Home Screen as a standalone app. There is no service worker: the client is useless offline, and a worker would sit between the page and the relay's cross-origin-isolation and asset headers for no benefit. There are no push notifications.
 - **Sign-in unchanged.** YubiKey WebAuthn over NFC or USB-C, the same flow as desktop. iCloud Keychain passkeys are not accepted as SSH keys.
 - **Relay MIME types.** The relay serves `.png` and `.webmanifest` as `application/octet-stream` with `nosniff`. Browsers still decode the icons and parse the manifest, and the client works with the relay as it is, but the relay should serve `image/png` and `application/manifest+json`; that server change is left to a separate task.
+
+## Addendum 2026-11-20: terminals table with repository facts
+
+Joan approved (decision 132) one Terminals table replacing the Overview and Agents dialogs, showing for each terminal its agent and state, folder, running program and last activity. When a terminal's folder is a Git repository, the table shows the branch and, for a GitHub remote, `owner/repo` linking to GitHub. This narrows point 1: the web client shows read-only repository and branch facts read from `.git` by the bridge; it still has no GitHub API integration, Git operations, file browser or Git views.

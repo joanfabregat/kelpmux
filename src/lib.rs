@@ -10,6 +10,7 @@ pub mod native {
     pub mod input;
     pub mod web_assets;
     pub mod web_bridge;
+    pub mod web_repos;
 }
 pub mod picker;
 pub mod tmux;
