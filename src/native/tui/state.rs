@@ -72,8 +72,8 @@ pub struct EpochState {
 pub struct LayoutTab {
     /// The folder the tab was started in.
     pub cwd: String,
-    /// The shell the server reported for the tab; informational, because the
-    /// stream `spawn` always uses the server's shell.
+    /// The tab's shell when it is not the workspace's; recreating the tab
+    /// passes it to `spawn` (`spawn-shell`). `None` uses the server's shell.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub shell: Option<String>,
     /// `spawn` arguments; empty for an interactive shell.
@@ -566,21 +566,29 @@ impl Store {
 /// One-time migration input from the composed server's files in the
 /// workspace state directory: UI settings from `workspace.json` and the
 /// separate accent/fold preferences, and the tab layout from
-/// `tab-layout.json`. The files are read, never modified.
+/// `tab-layout.json`. The files are read, never modified. KelpServer's
+/// composed settings types are converted through their JSON form, which the
+/// TUI's copies share.
 pub fn legacy_settings(directory: &Path) -> Option<UiConfig> {
     let path = directory.join("workspace.json");
-    let mut settings = path
+    let saved = path
         .is_file()
         .then(|| lifecycle::Settings::load(&path).ok())
-        .flatten()
-        .map(|settings| settings.ui)?;
+        .flatten()?;
+    let mut settings: UiConfig =
+        serde_json::from_value(serde_json::to_value(saved.ui).ok()?).ok()?;
     if let Ok(folded) = lifecycle::sidebar_folded(&directory.join("sidebar-folded.json")) {
         settings.sidebar_folded = folded;
     }
-    if let Ok(accent) = lifecycle::sidebar_accent(&directory.join("sidebar-accent.json")) {
+    if let Some(accent) = lifecycle::sidebar_accent(&directory.join("sidebar-accent.json"))
+        .ok()
+        .and_then(|accent| serde_json::to_value(accent).ok())
+        .and_then(|accent| serde_json::from_value(accent).ok())
+    {
         settings.accent = accent;
     }
     settings.pane_colors.clear();
+    settings.validate().ok()?;
     Some(settings)
 }
 pub fn legacy_layout(directory: &Path) -> Vec<LayoutTab> {
@@ -591,7 +599,10 @@ pub fn legacy_layout(directory: &Path) -> Vec<LayoutTab> {
                 .into_iter()
                 .map(|pane| LayoutTab {
                     cwd: pane.cwd.to_string_lossy().into_owned(),
-                    shell: Some(pane.shell.to_string_lossy().into_owned()),
+                    // The composed layout names every tab's shell; only one
+                    // other than the layout's workspace shell is kept.
+                    shell: (pane.shell != layout.shell)
+                        .then(|| pane.shell.to_string_lossy().into_owned()),
                     argv: Vec::new(),
                     name: pane.name,
                     color: None,
@@ -600,6 +611,44 @@ pub fn legacy_layout(directory: &Path) -> Vec<LayoutTab> {
                 .collect()
         })
         .unwrap_or_default()
+}
+/// The workspace's configured startup template (`kelpmux start --template`,
+/// saved in `workspace.json`) as layout tabs, and the workspace shell, which
+/// `spawn` uses when a tab names none.
+pub fn workspace_template(directory: &Path) -> (Vec<LayoutTab>, Option<String>) {
+    let path = directory.join("workspace.json");
+    let Some(settings) = path
+        .is_file()
+        .then(|| lifecycle::Settings::load(&path).ok())
+        .flatten()
+    else {
+        return (Vec::new(), None);
+    };
+    let shell = settings
+        .shell
+        .as_ref()
+        .map(|shell| shell.to_string_lossy().into_owned());
+    let tabs = settings
+        .template
+        .map(|template| {
+            template
+                .panes
+                .into_iter()
+                .map(|pane| LayoutTab {
+                    cwd: pane.cwd.to_string_lossy().into_owned(),
+                    shell: pane
+                        .shell
+                        .map(|shell| shell.to_string_lossy().into_owned())
+                        .filter(|pane_shell| Some(pane_shell) != shell.as_ref()),
+                    argv: Vec::new(),
+                    name: Some(pane.name),
+                    color: None,
+                    parked: false,
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    (tabs, shell)
 }
 #[cfg(test)]
 mod tests {

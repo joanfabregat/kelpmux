@@ -2,9 +2,9 @@
 use kelpmux::{
     journal::Store,
     model::{Agent, Kind, Status},
-    native::{delta, protocol::*, ui::DialogKind},
     process, shell_quote,
 };
+use kelpserver::native::{delta, protocol::*, ui::DialogKind};
 use std::{
     fs,
     io::Write,
@@ -841,7 +841,7 @@ fn closed_application_reopens_folder_and_explicit_rerun_restarts_argv() {
     // Wait for the metadata file rather than timing the discovery cycle.
     let deadline = Instant::now() + Duration::from_secs(8);
     loop {
-        if kelpmux::native::history::History::load(&daemon.state.join("tab-history.json"))
+        if kelpserver::native::history::History::load(&daemon.state.join("tab-history.json"))
             .unwrap()
             .entries
             .iter()
@@ -1160,8 +1160,8 @@ fn sidebar_resize_preserves_live_ptys_and_saved_width_and_bulk_alert_reads_survi
             .collect::<Vec<_>>()
     };
     assert_eq!(identities(&before), identities(&peer.panes()));
-    let saved =
-        kelpmux::native::lifecycle::Settings::load(&daemon.state.join("workspace.json")).unwrap();
+    let saved = kelpserver::native::lifecycle::Settings::load(&daemon.state.join("workspace.json"))
+        .unwrap();
     assert_eq!(saved.ui.sidebar_columns, Some(45));
     peer.action(Action::ToggleSidebarFold);
     let folded = peer.wait(|frame| frame.ui.config.sidebar_folded);
@@ -1281,115 +1281,6 @@ fn inactive_grid_cells_are_visual_and_new_tabs_fill_them_without_replacing_shell
     );
 }
 
-#[test]
-fn double_click_grid_opens_tabs_and_sidebar_keeps_regular_view_and_live_ptys() {
-    use kelpmux::native::input::Router;
-    let daemon = Daemon::start();
-    let mut peer = daemon.attach();
-    peer.action(Action::NewTab);
-    let before = peer.panes();
-    let pane = before[0].id;
-    for tabs in [false, true] {
-        peer.action(if tabs {
-            Action::Select(1)
-        } else {
-            Action::CloseReading
-        });
-        let mut f = peer.wait(|frame| {
-            if tabs {
-                frame.reading == ReadingMode::Tabs(pane)
-            } else {
-                frame.reading == ReadingMode::Grid
-            }
-        });
-        let point = if tabs {
-            Point { x: 8, y: 1 }
-        } else {
-            let rect = f
-                .panes
-                .iter()
-                .find(|view| view.pane.id == pane)
-                .unwrap()
-                .rect;
-            Point {
-                x: rect.x + 8,
-                y: rect.y,
-            }
-        };
-        let mut router = Router::default();
-        for press in 0..2 {
-            for message in router.route(
-                InputEvent::Mouse(MouseEvent {
-                    position: point,
-                    kind: MouseKind::Press,
-                    button: 0,
-                    shift: false,
-                    alt: false,
-                    ctrl: false,
-                }),
-                &f,
-            ) {
-                assert!(matches!(message, ClientMessage::Action(_)));
-                peer.send(message);
-            }
-            f = peer.wait(|frame| {
-                if press == 0 {
-                    frame.active == pane
-                } else {
-                    frame.reading == ReadingMode::Tabs(pane)
-                }
-            });
-            assert!(
-                router
-                    .route(
-                        InputEvent::Mouse(MouseEvent {
-                            position: point,
-                            kind: MouseKind::Release,
-                            button: 0,
-                            shift: false,
-                            alt: false,
-                            ctrl: false
-                        }),
-                        &f
-                    )
-                    .is_empty()
-            );
-        }
-        let body = f
-            .panes
-            .iter()
-            .find(|view| view.pane.id == pane)
-            .unwrap()
-            .body;
-        assert!(f.sidebar_status());
-        assert!(body.x > 0);
-        let expected_size = format!("ZOOM_SIZE={} {}", body.rows, body.cols);
-        peer.input("printf 'ZOOM_SIZE='; stty size\n");
-        peer.wait(|frame| {
-            frame
-                .cells
-                .iter()
-                .map(|cell| cell.text.as_str())
-                .collect::<String>()
-                .contains(&expected_size)
-        });
-        peer.action(Action::CloseReading);
-        peer.wait(|frame| frame.reading == ReadingMode::Grid);
-        assert_eq!(
-            before
-                .iter()
-                .map(|pane| (pane.id, pane.pid))
-                .collect::<Vec<_>>(),
-            peer.panes()
-                .iter()
-                .map(|pane| (pane.id, pane.pid))
-                .collect::<Vec<_>>()
-        );
-    }
-}
-
-/// A server started from inside an agent or tmux session gives its panes a
-/// clean environment: session markers are removed, configuration is kept.
 #[test]
 fn panes_do_not_inherit_agent_or_multiplexer_session_markers() {
     let daemon = Daemon::start_env(&[

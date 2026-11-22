@@ -10,7 +10,10 @@
 //! is in and which program a pane runs (`web_repos`), without running `git`
 //! or any other process.
 use super::{connection, history, protocol::*, status, stream, web_repos};
+// Management operations still use KelpServer's composed administration
+// (`Command` actions on the server's own UI state); see `close` and `color`.
 use crate::{Result, model::Kind};
+use kelpserver::native::protocol::Action;
 use serde_json::{Value, json};
 use std::{
     io,
@@ -464,7 +467,73 @@ fn start(socket: &Path, state: &Path, params: &Value) -> Result<Value> {
         return Err("the workspace server is already running".into());
     }
     super::cli::start_workspace(state, socket)?;
+    // The server starts without panes (`--startup-panes none`); like the
+    // TUI, the browser that started it gets one shell to work in.
+    first_shell(socket)?;
     Ok(json!({ "started": true }))
+}
+
+/// Creates one shell in a server that started without panes and still has
+/// none. A server that created its own startup tabs is left alone.
+fn first_shell(socket: &Path) -> Result<()> {
+    let mut connection = connection::connect(socket)?;
+    connection.set_read_timeout(Some(Duration::from_secs(5)))?;
+    connection.set_write_timeout(Some(Duration::from_secs(5)))?;
+    write_message(
+        &mut connection,
+        &ClientMessage::Stream(stream::Request::Hello {
+            version: stream::VERSION,
+        }),
+    )?;
+    let mut next = || -> Result<stream::Event> {
+        match read_message::<ServerMessage>(&mut connection)? {
+            Some(ServerMessage::Stream(stream::Event::Error { message, .. }))
+            | Some(ServerMessage::Error(message)) => Err(message.into()),
+            Some(ServerMessage::Stream(event)) => Ok(event),
+            Some(_) => Err("unexpected reply from the terminal server".into()),
+            None => Err("the terminal server disconnected".into()),
+        }
+    };
+    let stream::Event::Welcome {
+        startup_panes,
+        capabilities,
+        ..
+    } = next()?
+    else {
+        return Err("the terminal server did not welcome the stream".into());
+    };
+    if startup_panes != Some(stream::StartupPanes::None)
+        || !capabilities.iter().any(|c| c == "pane-lifecycle")
+    {
+        return Ok(());
+    }
+    // The first update lists the panes that exist.
+    loop {
+        if let stream::Event::Update(update) = next()? {
+            if !update.panes.is_empty() {
+                return Ok(());
+            }
+            break;
+        }
+    }
+    write_message(
+        &mut connection,
+        &ClientMessage::Stream(stream::Request::Spawn {
+            request: "web-start".into(),
+            cwd: None,
+            argv: Vec::new(),
+            shell: None,
+        }),
+    )?;
+    loop {
+        match read_message::<ServerMessage>(&mut connection)? {
+            Some(ServerMessage::Stream(stream::Event::Spawned { .. })) => return Ok(()),
+            Some(ServerMessage::Stream(stream::Event::Error { message, .. }))
+            | Some(ServerMessage::Error(message)) => return Err(message.into()),
+            Some(_) => {}
+            None => return Err("the terminal server disconnected".into()),
+        }
+    }
 }
 
 /// Serves the browser while the workspace is not running: answers its hello

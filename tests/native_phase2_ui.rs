@@ -31,11 +31,11 @@ fn workspace(cols: u16, rows: u16) -> Workspace {
 fn frame(ws: &Workspace) -> Frame {
     compose(ws, &BTreeMap::new(), true, None, 0)
 }
-fn actions(messages: Vec<ClientMessage>) -> Vec<Action> {
+fn actions(messages: Vec<UiMessage>) -> Vec<Action> {
     messages
         .into_iter()
         .map(|message| match message {
-            ClientMessage::Action(action) => action,
+            UiMessage::Action(action) => action,
             _ => panic!("application input leaked"),
         })
         .collect()
@@ -273,13 +273,13 @@ fn viewport_reading_preferences_and_automatic_grid_preserve_all_ids() {
         router
             .route(mouse(separator, MouseKind::Press), &f)
             .iter()
-            .any(|message| matches!(message, ClientMessage::Action(Action::SelectText { .. })))
+            .any(|message| matches!(message, UiMessage::Action(Action::SelectText { .. })))
     );
     assert!(
         router
             .route(mouse(Point { x: 50, y: 20 }, MouseKind::Release), &f)
             .iter()
-            .any(|message| matches!(message, ClientMessage::Action(Action::Copy(_))))
+            .any(|message| matches!(message, UiMessage::Action(Action::Copy(_))))
     );
 }
 #[test]
@@ -393,7 +393,7 @@ fn all_dashboards_and_scratch_compose_unicode_colors_roundtrip() {
                 !Router::default()
                     .route(InputEvent::Paste(b"app leak".to_vec()), &f)
                     .iter()
-                    .any(|m| matches!(m, ClientMessage::Input(_) | ClientMessage::Paste(_)))
+                    .any(|m| matches!(m, UiMessage::Input(_) | UiMessage::Paste(_)))
             );
         }
         assert_eq!(ws.ui.dialog.unwrap().kind, DialogKind::Config);

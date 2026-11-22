@@ -2,14 +2,15 @@
 //! (`target/<profile>/kelpserver`, built with `cargo build -p kelpserver
 //! --bin kelpserver`; `kelpmux server` serves the same code when it is
 //! absent): tabs, parking, closing, scratch and persisted UI state across
-//! reattach and server restarts.
+//! reattach and server restarts, the startup policy, recovery after a crash,
+//! spawning with another shell and the server-advertised limits.
 use kelpmux::native::{
     connection::connect,
     protocol::*,
     stream::{self, Event, Request},
     tui::{
         controller::{Controller, Options},
-        state::{self, Store},
+        state::{self, LayoutTab, Store},
     },
 };
 use std::{
@@ -35,9 +36,14 @@ fn server_binary() -> PathBuf {
 struct Server {
     root: PathBuf,
     child: Option<Child>,
+    /// `--startup-panes`: `layout` (KelpServer's default) or `none`.
+    startup: &'static str,
 }
 impl Server {
     fn new() -> Self {
+        Self::with_startup("layout")
+    }
+    fn with_startup(startup: &'static str) -> Self {
         static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
         let root = std::env::temp_dir().join(format!(
             "kelpmux-stream-tui-{}-{}",
@@ -46,7 +52,11 @@ impl Server {
         ));
         fs::create_dir(&root).unwrap();
         fs::set_permissions(&root, fs::Permissions::from_mode(0o700)).unwrap();
-        let mut server = Self { root, child: None };
+        let mut server = Self {
+            root,
+            child: None,
+            startup,
+        };
         server.start();
         server
     }
@@ -62,6 +72,7 @@ impl Server {
             .arg(self.state())
             .arg("--socket")
             .arg(self.socket())
+            .args(["--startup-panes", self.startup])
             .args(["--shell", "/bin/sh", "--cwd"])
             .arg(&self.root)
             .env("SHELL", "/bin/sh")
@@ -86,7 +97,16 @@ impl Server {
             return;
         };
         if let Ok(mut socket) = UnixStream::connect(self.socket()) {
-            let _ = write_message(&mut socket, &ClientMessage::Command(Action::Shutdown));
+            for request in [
+                Request::Hello {
+                    version: stream::VERSION,
+                },
+                Request::Shutdown {
+                    request: "stop".into(),
+                },
+            ] {
+                let _ = write_message(&mut socket, &ClientMessage::Stream(request));
+            }
         }
         let until = Instant::now() + Duration::from_secs(5);
         while child.try_wait().unwrap().is_none() {
@@ -97,6 +117,15 @@ impl Server {
             thread::sleep(Duration::from_millis(10));
         }
         let _ = child.wait();
+    }
+}
+impl Server {
+    /// Ends the server without an orderly shutdown, as a crash would.
+    fn crash(&mut self) {
+        if let Some(mut child) = self.child.take() {
+            let _ = child.kill();
+            let _ = child.wait();
+        }
     }
 }
 impl Drop for Server {
@@ -114,6 +143,16 @@ struct Tui {
 }
 impl Tui {
     fn attach(server: &Server) -> Self {
+        Self::attach_with(
+            server,
+            Options {
+                workspace: "test".into(),
+                default_shell: Some("/bin/sh".into()),
+                ..Options::default()
+            },
+        )
+    }
+    fn attach_with(server: &Server, options: Options) -> Self {
         let mut socket = connect(&server.socket()).unwrap();
         write_message(
             &mut socket,
@@ -126,16 +165,7 @@ impl Tui {
             .set_read_timeout(Some(Duration::from_millis(20)))
             .unwrap();
         let store = Store::open(&server.state()).unwrap();
-        let mut c = Controller::new(
-            160,
-            48,
-            store,
-            Options {
-                workspace: "test".into(),
-                ..Options::default()
-            },
-        )
-        .unwrap();
+        let mut c = Controller::new(160, 48, store, options).unwrap();
         let mut tui = Self {
             socket,
             buffer: Vec::new(),
@@ -146,16 +176,9 @@ impl Tui {
         };
         let welcome = tui.next(Duration::from_secs(5)).expect("welcome");
         match welcome {
-            ServerMessage::Stream(Event::Welcome {
-                client,
-                epoch,
-                capabilities,
-                server_version,
-                ..
-            }) => tui
-                .c
-                .welcome(client, epoch, capabilities, server_version)
-                .unwrap(),
+            ServerMessage::Stream(welcome @ Event::Welcome { .. }) => {
+                tui.c.welcome(welcome).unwrap()
+            }
             other => panic!("unexpected {other:?}"),
         }
         tui.until("first update", |c| c.synced());
@@ -207,7 +230,7 @@ impl Tui {
         }
     }
     fn act(&mut self, action: Action) {
-        self.c.message(ClientMessage::Action(action));
+        self.c.message(UiMessage::Action(action));
         assert_eq!(self.c.notice, None);
     }
     fn tabs(&self) -> Vec<PaneId> {
@@ -238,7 +261,7 @@ fn tabs_scratch_and_input_over_a_real_server() {
     let one = first[0];
     // Typing claims and sizes the pane; its screen arrives over the stream.
     tui.c
-        .message(ClientMessage::Input(b"echo stream-$((40+2))\r".to_vec()));
+        .message(UiMessage::Input(b"echo stream-$((40+2))\r".to_vec()));
     tui.until("echoed output", |c| {
         c.screens.get(&one).is_some_and(|s| {
             s.cells
@@ -396,4 +419,120 @@ fn two_tuis_share_arrangement_changes_live() {
 
 fn path_exists(path: &Path) -> bool {
     fs::symlink_metadata(path).is_ok()
+}
+
+/// A server started without panes (`--startup-panes none`, as `kelpmux
+/// start` does) gets its tabs from the TUI: one shell without a layout,
+/// then the saved layout after a restart.
+#[test]
+fn startup_none_tui_creates_one_shell_then_its_saved_layout() {
+    let mut server = Server::with_startup("none");
+    let mut tui = Tui::attach(&server);
+    assert_eq!(tui.c.startup_panes, Some(stream::StartupPanes::None));
+    tui.until("the first shell", |c| c.workspace.panes.len() == 1);
+    let first = tui.tabs()[0];
+    tui.until("focus", |c| c.workspace.active == first);
+    tui.act(Action::NewTab);
+    tui.until("second tab", |c| c.workspace.panes.len() == 2);
+    tui.act(Action::Park(tui.tabs()[0]));
+    tui.c.store.flush().unwrap();
+    drop(tui);
+    server.stop();
+    server.start();
+    let mut tui = Tui::attach(&server);
+    tui.until("saved tabs", |c| c.workspace.panes.len() == 2);
+    // No startup shell was adopted: exactly the saved layout, first parked.
+    let tabs = tui.tabs();
+    assert_eq!(tabs.len(), 2);
+    assert!(
+        tui.c
+            .workspace
+            .panes
+            .iter()
+            .any(|p| p.id == tabs[0] && p.parked)
+    );
+}
+
+/// Template tabs that name a shell are created with it (`spawn-shell`); a
+/// shell that no longer works falls back to the workspace's shell.
+#[test]
+fn template_tabs_spawn_their_shell_and_fall_back_without_it() {
+    use std::os::unix::fs::PermissionsExt;
+    let server = Server::with_startup("none");
+    let custom = server.root.join("custom-shell");
+    fs::write(&custom, "#!/bin/sh\nexec /bin/sh \"$@\"\n").unwrap();
+    fs::set_permissions(&custom, fs::Permissions::from_mode(0o700)).unwrap();
+    let custom = custom.to_string_lossy().into_owned();
+    let cwd = server.root.to_string_lossy().into_owned();
+    let tab = |name: &str, shell: &str| LayoutTab {
+        cwd: cwd.clone(),
+        shell: Some(shell.into()),
+        name: Some(name.into()),
+        ..LayoutTab::default()
+    };
+    let mut tui = Tui::attach_with(
+        &server,
+        Options {
+            workspace: "test".into(),
+            default_shell: Some("/bin/sh".into()),
+            template: vec![
+                tab("custom", &custom),
+                tab("gone", "/nonexistent/kelpmux-shell"),
+            ],
+            ..Options::default()
+        },
+    );
+    tui.until("named template tabs", |c| {
+        c.workspace
+            .panes
+            .iter()
+            .map(|p| p.title.as_str())
+            .eq(["custom", "gone"])
+    });
+    let notice = tui.c.notice.clone().unwrap_or_default();
+    assert!(notice.contains("Tab 2"), "{notice}");
+    // The saved layout keeps the custom shell and drops the failed one.
+    tui.until("layout", |c| {
+        c.store.document.layout.len() == 2 && c.store.document.layout[0].shell.is_some()
+    });
+    assert_eq!(tui.c.store.document.layout[0].shell, Some(custom));
+    assert_eq!(tui.c.store.document.layout[1].shell, None);
+}
+
+/// After an unclean shutdown the controlling TUI opens the Closed dialog
+/// once and clears the signal for every client.
+#[test]
+fn recovery_after_a_crash_opens_closed_once() {
+    let mut server = Server::new();
+    let tui = Tui::attach(&server);
+    drop(tui);
+    server.crash();
+    server.start();
+    let mut tui = Tui::attach(&server);
+    assert_eq!(
+        tui.c.workspace.ui.dialog.map(|d| d.kind),
+        Some(kelpmux::native::ui::DialogKind::Recovery)
+    );
+    tui.until("closed sessions", |c| !c.workspace.ui.recovery_loading);
+    drop(tui);
+    let tui = Tui::attach(&server);
+    assert_eq!(
+        tui.c.workspace.ui.dialog, None,
+        "dismissed for every client"
+    );
+}
+
+/// Welcome advertises the subscription limits and the notification run;
+/// the server observes unused shells.
+#[test]
+fn limits_notification_run_and_unused_shells_come_from_the_server() {
+    let server = Server::new();
+    let mut tui = Tui::attach(&server);
+    assert_eq!(tui.c.limits.subscriptions, 64);
+    assert_eq!(tui.c.limits.subscribed_cells, 100_000);
+    assert!(!tui.c.workspace.ui.notification_run.is_empty());
+    let first = tui.tabs()[0];
+    tui.until("unused shell", |c| c.workspace.ui.unused.contains(&first));
+    tui.c.message(UiMessage::Input(b"sleep 30\r".to_vec()));
+    tui.until("shell in use", |c| !c.workspace.ui.unused.contains(&first));
 }

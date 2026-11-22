@@ -12,7 +12,8 @@ use super::super::{
     protocol::*,
     render,
     stream::{
-        CloseReason, Event, PanePatch, PaneSession, PaneSnapshot, Request, StopReason, Update,
+        self, CloseReason, Event, Limits, PanePatch, PaneSession, PaneSnapshot, Request,
+        StartupPanes, StopReason, Update,
     },
     ui::{self, DialogKind, UiConfig},
     vitals,
@@ -22,6 +23,7 @@ use super::state::{LayoutTab, PaneState, Store};
 use crate::{Result, model::Status};
 use std::{
     collections::{BTreeMap, BTreeSet},
+    path::PathBuf,
     time::{Duration, Instant},
 };
 
@@ -41,11 +43,16 @@ pub const REQUIRED: &[&str] = &[
     "server-lifecycle",
 ];
 pub const SCRATCH_TITLE: &str = "Scratch terminal";
-const MAX_SUBSCRIPTIONS: usize = 10;
-const MAX_SUBSCRIBED_CELLS: usize = 100_000;
+/// Subscription bounds of a server that does not advertise them
+/// (`stream-limits`).
+const FALLBACK_LIMITS: Limits = Limits {
+    subscriptions: 10,
+    subscribed_cells: 100_000,
+};
 const MAX_COPY: usize = 64 * 1024;
-/// Panes created within this many seconds of the oldest pane are the
-/// server's startup panes.
+/// With a server's `layout` startup policy, panes created within this many
+/// seconds of the oldest pane, and by no stream client, are the server's
+/// startup panes.
 const STARTUP_WINDOW: u64 = 10;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -60,11 +67,18 @@ enum Pending {
     },
     /// A replacement after the last main tab exited while scratch remains.
     Refill,
-    /// Recreate a tab of the layout template after a server restart.
+    /// The one shell of a workspace without a layout template, on a server
+    /// that started without panes.
+    Initial,
+    /// Recreate a tab of the layout template after a server restart. With
+    /// `shell`, the request named the tab's shell; it is retried without one
+    /// if that shell fails.
     Respawn {
         slot: usize,
+        shell: bool,
     },
     Close,
+    DismissRecovery,
     ClosedSessions {
         reopen: bool,
     },
@@ -85,6 +99,12 @@ pub struct Options {
     /// Name of this workspace, used to prefer its own closed tabs.
     pub workspace: String,
     pub dev_badge: bool,
+    /// The workspace's shell, which `spawn` uses without `shell`. Layout
+    /// tabs name a shell only when theirs differs.
+    pub default_shell: Option<String>,
+    /// Tabs of the workspace's configured template (`start --template`),
+    /// the initial layout when this TUI has none saved.
+    pub template: Vec<LayoutTab>,
 }
 
 /// A text selection in pane-body coordinates.
@@ -103,6 +123,14 @@ pub struct Controller {
     pub client: u64,
     pub capabilities: BTreeSet<String>,
     pub server_version: Option<String>,
+    /// The server's startup policy (Welcome `startup_panes`); `None` for a
+    /// server without `startup-policy`, which always creates startup tabs.
+    pub startup_panes: Option<StartupPanes>,
+    /// The previous server run ended uncleanly (Welcome `recovery_pending`):
+    /// the first sync opens the Closed dialog and dismisses the signal.
+    recovery_pending: bool,
+    /// Subscription bounds (Welcome `limits`).
+    pub limits: Limits,
     infos: BTreeMap<PaneId, PaneInfo>,
     sessions: BTreeMap<PaneId, PaneSession>,
     leases: BTreeMap<PaneId, u64>,
@@ -167,6 +195,9 @@ impl Controller {
             client: 0,
             capabilities: BTreeSet::new(),
             server_version: None,
+            startup_panes: None,
+            recovery_pending: false,
+            limits: FALLBACK_LIMITS,
             infos: BTreeMap::new(),
             sessions: BTreeMap::new(),
             leases: BTreeMap::new(),
@@ -237,18 +268,29 @@ impl Controller {
         &self.subscribed
     }
 
-    /// Accepts Welcome; the caller checked the version.
-    pub fn welcome(
-        &mut self,
-        client: u64,
-        epoch: String,
-        capabilities: Vec<String>,
-        server_version: Option<String>,
-    ) -> Result<()> {
+    /// Accepts the stream Welcome.
+    pub fn welcome(&mut self, welcome: Event) -> Result<()> {
+        let Event::Welcome {
+            version,
+            client,
+            epoch,
+            capabilities,
+            server_version,
+            startup_panes,
+            recovery_pending,
+            limits,
+            notification_run,
+        } = welcome
+        else {
+            return Err("the server did not answer with a stream welcome".into());
+        };
+        if version != stream::VERSION {
+            return Err(format!("unsupported stream version {version}").into());
+        }
         self.capabilities = capabilities.into_iter().collect();
         if let Some(missing) = REQUIRED.iter().find(|name| !self.supports(name)) {
             return Err(format!(
-                "this workspace's server lacks the stream TUI's session API ({missing}); attach with --legacy or restart the workspace with a current server"
+                "this workspace's server lacks the TUI's session API ({missing}); restart the workspace with a current server (kelpmux start --replace-running ends its shells)"
             )
             .into());
         }
@@ -259,6 +301,18 @@ impl Controller {
         self.epoch = epoch.clone();
         self.store.epoch = epoch;
         self.server_version = server_version;
+        self.startup_panes = startup_panes.filter(|_| self.supports("startup-policy"));
+        self.recovery_pending = recovery_pending && self.supports("recovery-signal");
+        self.limits = limits
+            .filter(|l| {
+                self.supports("stream-limits") && l.subscriptions > 0 && l.subscribed_cells > 0
+            })
+            .unwrap_or(FALLBACK_LIMITS);
+        // Notifications refer to a live pane only within the server's current
+        // run; without `notification-run` none is matched to a pane.
+        self.workspace.ui.notification_run = notification_run
+            .filter(|_| self.supports("notification-run"))
+            .unwrap_or_default();
         self.out.push(Request::SessionEvents { enabled: true });
         if self.supports("clipboard-write") {
             self.out.push(Request::Clipboard { enabled: true });
@@ -420,7 +474,15 @@ impl Controller {
                     self.notice = Some(format!("Recovery: {message}"));
                 }
                 Pending::Restore { .. } => self.notice = Some(format!("Restore: {message}")),
-                Pending::Respawn { .. } => {}
+                Pending::Respawn { slot, shell: true } => {
+                    // The tab's shell is gone or not executable: recreate the
+                    // tab with the workspace's shell instead.
+                    self.notice = Some(format!("Tab {}: {message}", slot + 1));
+                    if let Some(tab) = self.store.document.layout.get(slot).cloned() {
+                        self.respawn(slot, &tab, false);
+                    }
+                }
+                Pending::Respawn { .. } | Pending::DismissRecovery => {}
                 _ => self.notice = Some(message),
             }
             return;
@@ -542,6 +604,15 @@ impl Controller {
             if self.options.takeover {
                 self.take_control();
             }
+            if self.recovery_pending && self.controlling {
+                // After an unclean shutdown the controlling TUI opens the
+                // Closed dialog once, as the composed TUI's recovery popup
+                // did, and clears the signal for every client.
+                self.recovery_pending = false;
+                self.apply_action(Action::Recovery);
+                let request = self.request(Pending::DismissRecovery);
+                self.out.push(Request::DismissRecovery { request });
+            }
         } else {
             self.merge_panes();
             let active = self.workspace.active;
@@ -557,16 +628,18 @@ impl Controller {
                 self.controlling = false;
             }
         }
-        self.workspace.ui.notification_run = self.notification_run();
+        // The server's unused-shell observation (`unused-shell`); a server
+        // without it reports no unused shells.
         self.workspace.ui.unused = self
             .workspace
             .panes
             .iter()
             .filter(|pane| {
                 !pane.dead
-                    && pane.kind.is_none()
-                    && pane.command.is_none()
-                    && pane.status == Status::Idle
+                    && self
+                        .sessions
+                        .get(&pane.id)
+                        .is_some_and(|session| session.unused_shell)
             })
             .map(|pane| pane.id)
             .collect();
@@ -579,24 +652,6 @@ impl Controller {
                 .collect(),
         );
         Ok(())
-    }
-
-    /// The server's notification run, inferred from notifications that
-    /// belong to a live pane process. Stream updates do not carry it.
-    fn notification_run(&self) -> String {
-        self.workspace
-            .ui
-            .notifications
-            .iter()
-            .rev()
-            .filter_map(|n| n.origin.as_ref().map(|origin| (n, origin)))
-            .find(|(n, origin)| {
-                self.infos
-                    .get(&n.pane)
-                    .is_some_and(|pane| pane.pid == origin.pid && !pane.dead)
-            })
-            .map(|(_, origin)| origin.run.clone())
-            .unwrap_or_else(|| self.workspace.ui.notification_run.clone())
     }
 
     fn vitals(&mut self, vitals: &vitals::Vitals) {
@@ -663,7 +718,7 @@ impl Controller {
                     order.push(*id);
                 }
             }
-        } else if !self.store.document.migrated {
+        } else if !self.store.document.migrated && !ids.is_empty() {
             // First stream attach to this workspace: keep the arrangement the
             // composed TUI left in the server (order, parking, colours).
             let mut panes: Vec<&PaneInfo> = self.infos.values().collect();
@@ -689,7 +744,10 @@ impl Controller {
             }
             self.store.mark_migrated();
         } else {
-            // A new server run: map the layout template onto its panes.
+            // A new server run: map the layout template onto its panes. A
+            // first attach to an empty server keeps nothing from the
+            // composed TUI but its migrated layout.
+            self.store.mark_migrated();
             order = self.apply_template(&ids);
         }
         self.workspace.panes = order
@@ -710,9 +768,16 @@ impl Controller {
     }
 
     /// Matches template tabs to live panes by folder and arguments, then
-    /// adopts remaining shells in order. When every live pane is one of the
-    /// server's untouched startup panes, missing tabs are spawned.
+    /// adopts remaining shells in order, and spawns the tabs still missing
+    /// when this run's layout is the TUI's to create: always on a server
+    /// started without panes (`--startup-panes none`), else only while every
+    /// live pane is one of the server's untouched startup panes. Without a
+    /// saved layout the workspace's configured template is used, and an
+    /// empty server without either gets one shell.
     fn apply_template(&mut self, ids: &[PaneId]) -> Vec<PaneId> {
+        if self.store.document.layout.is_empty() && !self.options.template.is_empty() {
+            self.store.set_layout(self.options.template.clone());
+        }
         let template = self.store.document.layout.clone();
         let mut free: Vec<PaneId> = ids.to_vec();
         let mut assigned: Vec<(usize, PaneId)> = Vec::new();
@@ -730,15 +795,20 @@ impl Controller {
                 unmatched.push(slot);
             }
         }
-        let earliest = self.sessions.values().map(|s| s.created_at).min();
-        let fresh = self.infos.values().all(|pane| {
-            pane.kind.is_none()
-                && pane.command.is_none()
-                && self
-                    .sessions
-                    .get(&pane.id)
-                    .is_some_and(|s| earliest.is_some_and(|t| s.created_at <= t + STARTUP_WINDOW))
-        });
+        let fresh = if self.startup_panes == Some(StartupPanes::None) {
+            true
+        } else {
+            let earliest = self.sessions.values().map(|s| s.created_at).min();
+            self.infos.values().all(|pane| {
+                pane.kind.is_none()
+                    && pane.command.is_none()
+                    && self.sessions.get(&pane.id).is_some_and(|s| {
+                        s.spawned_by.is_none()
+                            && earliest.is_some_and(|t| s.created_at <= t + STARTUP_WINDOW)
+                    })
+            })
+        };
+        let spawn = fresh && self.supports("pane-lifecycle");
         for slot in unmatched {
             let tab = &template[slot];
             let shell = free.iter().position(|id| {
@@ -746,14 +816,19 @@ impl Controller {
             });
             if let Some(index) = shell {
                 assigned.push((slot, free.remove(index)));
-            } else if fresh && self.supports("pane-lifecycle") {
-                let request = self.request(Pending::Respawn { slot });
-                self.out.push(Request::Spawn {
-                    request,
-                    cwd: Some(tab.cwd.clone().into()),
-                    argv: tab.argv.clone(),
-                });
+            } else if spawn {
+                let tab = tab.clone();
+                self.respawn(slot, &tab, true);
             }
+        }
+        if spawn && template.is_empty() && ids.is_empty() {
+            let request = self.request(Pending::Initial);
+            self.out.push(Request::Spawn {
+                request,
+                cwd: None,
+                argv: Vec::new(),
+                shell: None,
+            });
         }
         assigned.sort();
         for (slot, id) in &assigned {
@@ -770,6 +845,31 @@ impl Controller {
             );
         }
         assigned.into_iter().map(|(_, id)| id).chain(free).collect()
+    }
+
+    /// Requests template tab `slot`. A tab that names a shell other than the
+    /// workspace's is created with it (`spawn-shell`) when `with_shell`.
+    fn respawn(&mut self, slot: usize, tab: &LayoutTab, with_shell: bool) {
+        let shell = tab
+            .shell
+            .as_ref()
+            .filter(|shell| {
+                with_shell
+                    && self.supports("spawn-shell")
+                    && Some(*shell) != self.options.default_shell.as_ref()
+                    && std::path::Path::new(shell).is_absolute()
+            })
+            .map(PathBuf::from);
+        let request = self.request(Pending::Respawn {
+            slot,
+            shell: shell.is_some(),
+        });
+        self.out.push(Request::Spawn {
+            request,
+            cwd: Some(tab.cwd.clone().into()),
+            argv: tab.argv.clone(),
+            shell,
+        });
     }
 
     /// Updates the local tab list from the latest observations.
@@ -800,6 +900,8 @@ impl Controller {
                 argv: Vec::new(),
                 startup: None,
                 terminal_title: None,
+                unused_shell: false,
+                spawned_by: None,
             }));
         }
         let panes: Vec<_> = self
@@ -922,6 +1024,7 @@ impl Controller {
                 request,
                 cwd: None,
                 argv: Vec::new(),
+                shell: None,
             });
         }
         self.persist();
@@ -941,6 +1044,8 @@ impl Controller {
                 argv: Vec::new(),
                 startup: None,
                 terminal_title: None,
+                unused_shell: false,
+                spawned_by: None,
             });
         }
         match pending {
@@ -989,12 +1094,12 @@ impl Controller {
                     pane: close,
                 });
             }
-            Pending::Refill => {
+            Pending::Refill | Pending::Initial => {
                 if self.workspace.active == 0 {
                     self.workspace.active = pane;
                 }
             }
-            Pending::Respawn { slot } => {
+            Pending::Respawn { slot, .. } => {
                 if let Some(tab) = self.store.document.layout.get(slot).cloned() {
                     self.store.set_pane(
                         pane,
@@ -1222,12 +1327,12 @@ impl Controller {
                         .map(|(c, r)| usize::from(*c) * usize::from(*r))
                 })
                 .unwrap_or(0);
-            if cells + size > MAX_SUBSCRIBED_CELLS {
+            if cells + size > self.limits.subscribed_cells {
                 continue;
             }
             cells += size;
             wanted.push(id);
-            if wanted.len() == MAX_SUBSCRIPTIONS {
+            if wanted.len() == self.limits.subscriptions {
                 break;
             }
         }
@@ -1289,7 +1394,11 @@ impl Controller {
                         } else {
                             session.launch_cwd.clone()
                         },
-                        shell: (!session.shell.is_empty()).then(|| session.shell.clone()),
+                        // Only a shell other than the workspace's is recorded, so a
+                        // changed workspace shell applies to recreated tabs.
+                        shell: (!session.shell.is_empty()
+                            && Some(&session.shell) != self.options.default_shell.as_ref())
+                        .then(|| session.shell.clone()),
                         argv: session.argv.clone(),
                         name: self
                             .store
@@ -1484,6 +1593,14 @@ impl Controller {
         }
     }
 
+    /// Runs a TUI action the controller itself decided on; errors become the
+    /// notice.
+    fn apply_action(&mut self, action: Action) {
+        if let Err(error) = self.action(action) {
+            self.notice = Some(error.to_string());
+        }
+    }
+
     fn apply(&mut self, action: &Action) {
         if let Err(error) = self.workspace.apply(action) {
             self.notice = Some(error.to_string());
@@ -1508,18 +1625,17 @@ impl Controller {
     }
 
     /// Handles one routed input message. Errors become the notice.
-    pub fn message(&mut self, message: ClientMessage) {
+    pub fn message(&mut self, message: UiMessage) {
         self.dirty = true;
         let result = match message {
-            ClientMessage::Input(bytes) => self.input(bytes, false),
-            ClientMessage::Paste(bytes) => self.input(bytes, true),
-            ClientMessage::Mouse(mouse) => self.mouse(mouse),
-            ClientMessage::ThemeColor { background, rgb } => {
+            UiMessage::Input(bytes) => self.input(bytes, false),
+            UiMessage::Paste(bytes) => self.input(bytes, true),
+            UiMessage::Mouse(mouse) => self.mouse(mouse),
+            UiMessage::ThemeColor { background, rgb } => {
                 self.workspace.ui.terminal_theme[usize::from(background)] = Some(rgb);
                 Ok(())
             }
-            ClientMessage::Action(action) => self.action(action),
-            _ => Ok(()),
+            UiMessage::Action(action) => self.action(action),
         };
         if let Err(error) = result {
             self.notice = Some(error.to_string());
@@ -1647,6 +1763,7 @@ impl Controller {
                     request,
                     cwd: None,
                     argv: Vec::new(),
+                    shell: None,
                 });
             }
             Action::Scratch => {
@@ -1669,6 +1786,7 @@ impl Controller {
                         request,
                         cwd: None,
                         argv: Vec::new(),
+                        shell: None,
                     });
                 }
             }
@@ -1695,6 +1813,7 @@ impl Controller {
                         request,
                         cwd: None,
                         argv: Vec::new(),
+                        shell: None,
                     });
                 } else {
                     self.claim(pane, true);
