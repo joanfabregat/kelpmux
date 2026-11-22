@@ -18,8 +18,8 @@ pub mod native {
     pub mod tui;
     pub mod web_assets;
     pub mod web_bridge;
-    pub mod web_repos;
     pub mod web_relay;
+    pub mod web_repos;
     pub mod workspace;
 }
 pub mod picker;
