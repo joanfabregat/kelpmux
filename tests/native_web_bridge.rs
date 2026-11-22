@@ -58,9 +58,7 @@ impl Server {
 impl Drop for Server {
     fn drop(&mut self) {
         if let Ok(mut socket) = UnixStream::connect(self.socket()) {
-            let shutdown = serde_json::to_vec(&json!({"Command": "Shutdown"})).unwrap();
-            let _ = socket.write_all(&(shutdown.len() as u32).to_be_bytes());
-            let _ = socket.write_all(&shutdown);
+            shutdown(&mut socket);
         }
         let until = Instant::now() + Duration::from_secs(3);
         while self.child.try_wait().unwrap().is_none() {
@@ -72,6 +70,18 @@ impl Drop for Server {
         }
         let _ = self.child.wait();
         let _ = fs::remove_dir_all(&self.root);
+    }
+}
+
+/// Stops the server through the stream session API (`shutdown`).
+fn shutdown(socket: &mut UnixStream) {
+    for record in [
+        json!({"Stream": {"type": "hello", "version": 1}}),
+        json!({"Stream": {"type": "shutdown", "request": "test-cleanup"}}),
+    ] {
+        let bytes = serde_json::to_vec(&record).unwrap();
+        let _ = socket.write_all(&(bytes.len() as u32).to_be_bytes());
+        let _ = socket.write_all(&bytes);
     }
 }
 
@@ -204,11 +214,11 @@ fn terminal_operations_create_drive_search_and_close_panes() {
             .as_array()
             .unwrap()
             .iter()
-            .any(|c| c == "pane-spawn")
+            .any(|c| c == "pane-lifecycle")
     );
 
     let state = bridge.web(1, "state", json!({}));
-    assert_eq!(state["result"]["api_version"], 2);
+    assert_eq!(state["result"]["api_version"], 3);
     assert_eq!(state["result"]["workspace"], "state");
     // Project, file and Git management do not exist here.
     for (id, method) in [
@@ -589,9 +599,7 @@ impl Stopped {
 impl Drop for Stopped {
     fn drop(&mut self) {
         if let Ok(mut socket) = UnixStream::connect(self.socket()) {
-            let shutdown = serde_json::to_vec(&json!({"Command": "Shutdown"})).unwrap();
-            let _ = socket.write_all(&(shutdown.len() as u32).to_be_bytes());
-            let _ = socket.write_all(&shutdown);
+            shutdown(&mut socket);
             let until = Instant::now() + Duration::from_secs(3);
             while self.socket().exists() && Instant::now() < until {
                 thread::sleep(Duration::from_millis(20));
@@ -656,7 +664,7 @@ fn a_stopped_workspace_starts_on_an_explicit_request_then_connects() {
     });
     assert_eq!(update["Stream"]["panes"].as_array().unwrap().len(), 1);
     let state = bridge.web(5, "state", json!({}));
-    assert_eq!(state["result"]["api_version"], 2);
+    assert_eq!(state["result"]["api_version"], 3);
     let again = bridge.web(6, "start", json!({"confirmed": true}));
     assert_eq!(again["error"], "the workspace server is already running");
 }
@@ -689,28 +697,17 @@ fn start_never_takes_a_workspace_binary_or_replacement_from_the_browser() {
 }
 
 #[test]
-fn tab_colour_is_set_through_the_tui_palette() {
+fn tab_colour_is_browser_state_not_a_bridge_operation() {
+    // Tab colours are each client's own UI state (ADR 0002, 144b): the web
+    // keeps them per browser, so the bridge offers no `color` operation.
     let server = Server::start();
     let mut bridge = Bridge::start(&server);
     welcome(&mut bridge);
-    bridge.send(json!({"Stream": {"type": "subscribe", "panes": []}}));
-    let update = bridge.expect("panes", |v| {
-        v["Stream"]["type"] == "update"
-            && v["Stream"]["panes"]
-                .as_array()
-                .is_some_and(|p| !p.is_empty())
-    });
-    let pane = update["Stream"]["panes"][0]["id"].as_u64().unwrap();
-    let set = bridge.web(1, "color", json!({"pane": pane, "color": 3}));
-    assert_eq!(set["result"], json!({}), "{set}");
-    bridge.expect("palette", |v| {
-        v["Stream"]["panes"]
-            .as_array()
-            .is_some_and(|p| p.iter().any(|p| p["id"] == pane && p["palette"] == 3))
-    });
-    let invalid = bridge.web(2, "color", json!({"pane": pane, "color": 9}));
-    assert!(invalid["error"].as_str().unwrap().contains("palette index"));
-    assert!(bridge.web(3, "color", json!({"pane": pane}))["error"].is_string());
+    let state = bridge.web(1, "state", json!({}));
+    let operations = state["result"]["operations"].as_array().unwrap();
+    assert!(!operations.iter().any(|op| op == "color"), "{state}");
+    let refused = bridge.web(2, "color", json!({"pane": 1, "color": 3}));
+    assert_eq!(refused["error"], "unsupported web operation");
 }
 
 #[test]
@@ -728,8 +725,8 @@ fn repos_and_commands_report_read_only_facts_for_the_terminals_table() {
     let mut bridge = Bridge::start(&server);
     welcome(&mut bridge);
     let state = bridge.web(1, "state", json!({}));
-    assert_eq!(state["result"]["api_version"], 2);
-    assert_eq!(state["result"]["api_minor"], 1);
+    assert_eq!(state["result"]["api_version"], 3);
+    assert_eq!(state["result"]["api_minor"], 0);
     let operations = state["result"]["operations"].as_array().unwrap();
     assert!(operations.iter().any(|op| op == "repos"));
     assert!(operations.iter().any(|op| op == "commands"));

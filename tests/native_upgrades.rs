@@ -1,7 +1,9 @@
 //! Upgrade selection authenticates the live listener and pins its exact executable.
-use kelpserver::native::{
-    lifecycle,
-    protocol::*,
+use kelpmux::native::{
+    connection, lifecycle,
+    protocol::PaneInfo,
+    session::Session,
+    stream,
     upgrade::{self, Identity},
 };
 use std::{
@@ -100,7 +102,6 @@ fn peer_identity_ignores_pid_hint_but_rejects_stale_birth_and_unsafe_metadata() 
     assert_eq!(original.pid, std::process::id());
     upgrade::save(&fixture.root).unwrap();
     let saved = upgrade::identify(&stream, &fixture.root).unwrap();
-    assert_eq!(saved.protocol, VERSION);
     let mut stale = saved;
     stale.birth += 1;
     let path = fixture.root.join("server.identity.json");
@@ -160,7 +161,7 @@ fn retained_client_survives_selection_change(installation: &str) {
     );
     let deadline = Instant::now() + Duration::from_secs(5);
     let before = loop {
-        if let Ok(ServerMessage::State { panes, .. }) = lifecycle::inspect(&socket) {
+        if let Ok(panes) = stream_panes(&socket) {
             break panes;
         }
         assert!(Instant::now() < deadline, "server did not start");
@@ -221,11 +222,11 @@ fn retained_client_survives_selection_change(installation: &str) {
         .output()
         .unwrap();
     assert!(status.status.success());
-    assert!(String::from_utf8_lossy(&status.stderr).contains(&format!("protocol {VERSION}")));
-    assert!(matches!(
-        serde_json::from_slice::<ServerMessage>(&status.stdout).unwrap(),
-        ServerMessage::State { .. }
-    ));
+    assert!(
+        String::from_utf8_lossy(&status.stderr).contains(&format!("(stream {})", stream::VERSION))
+    );
+    let list: serde_json::Value = serde_json::from_slice(&status.stdout).unwrap();
+    assert!(list["panes"].is_array(), "{list}");
     let explicit_workspace = Command::new(env!("CARGO_BIN_EXE_kelpmux"))
         .args(["status", "--socket"])
         .arg(&socket)
@@ -251,9 +252,7 @@ fn retained_client_survives_selection_change(installation: &str) {
         .unwrap();
     assert!(String::from_utf8_lossy(&legacy.stderr).contains("unknown (legacy server)"));
     assert!(server.0.try_wait().unwrap().is_none());
-    let ServerMessage::State { panes: after, .. } = lifecycle::inspect(&socket).unwrap() else {
-        panic!()
-    };
+    let after = stream_panes(&socket).unwrap();
     assert_eq!(before[0].pid, after[0].pid);
     fs::remove_file(&installed).unwrap();
     let output = Command::new(env!("CARGO_BIN_EXE_kelpmux"))
@@ -280,4 +279,8 @@ fn stale_pid_without_live_socket_never_selects_an_executable() {
     assert!(
         upgrade::attach_matching(&fixture.root.join("absent.sock"), &fixture.root, false).is_err()
     );
+}
+/// The server's pane list, read through KelpMux's stream session client.
+fn stream_panes(socket: &std::path::Path) -> kelpmux::Result<Vec<PaneInfo>> {
+    Ok(Session::open(connection::connect(socket)?)?.update()?.panes)
 }

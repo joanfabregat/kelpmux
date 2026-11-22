@@ -2,9 +2,9 @@
 //! same-user fixture socket: the TUI's handshake never leaves the terminal in
 //! raw or alternate-screen mode, and management commands validate their
 //! arguments. The TUI itself is tested in `native_stream_tui.rs`.
-// The fixture imitates KelpServer: `ctl` speaks its composed
-// administration, the TUI its stream.
-use kelpserver::native::{
+// The fixture imitates KelpServer's stream: `ctl` and the TUI both speak
+// its session API.
+use kelpmux::native::{
     protocol::*,
     stream::{Event, Request},
 };
@@ -172,23 +172,43 @@ impl Drop for Pty {
     }
 }
 #[test]
-fn management_uses_command_without_attach_and_validates_arguments() {
+fn management_uses_the_stream_session_api_and_validates_arguments() {
     let fixture = Fixture::new();
     let path = fixture.socket.clone();
     let backend = thread::spawn(move || {
         let mut socket = fixture.accept();
         assert!(matches!(
             read_message::<ClientMessage>(&mut socket).unwrap(),
-            Some(ClientMessage::Command(Action::NewTab))
+            Some(ClientMessage::Stream(Request::Hello { version: 1 }))
         ));
         write_message(
             &mut socket,
-            &ServerMessage::State {
-                panes: vec![],
-                active: 7,
-                reading: ReadingMode::Grid,
-                controller: Some(99),
-            },
+            &ServerMessage::Stream(Event::Welcome {
+                version: 1,
+                client: 3,
+                epoch: "e".into(),
+                capabilities: vec!["pane-lifecycle".into()],
+                server_version: None,
+                startup_panes: None,
+                recovery_pending: false,
+                limits: None,
+                notification_run: None,
+            }),
+        )
+        .unwrap();
+        let Some(ClientMessage::Stream(Request::Spawn {
+            request,
+            cwd: None,
+            argv,
+            shell: None,
+        })) = read_message::<ClientMessage>(&mut socket).unwrap()
+        else {
+            panic!("ctl new must send a stream spawn");
+        };
+        assert!(argv.is_empty());
+        write_message(
+            &mut socket,
+            &ServerMessage::Stream(Event::Spawned { request, pane: 99 }),
         )
         .unwrap();
     });
@@ -205,11 +225,26 @@ fn management_uses_command_without_attach_and_validates_arguments() {
     );
     assert!(String::from_utf8_lossy(&result.stdout).contains("99"));
     backend.join().unwrap();
-    let result = Command::new(env!("CARGO_BIN_EXE_kelpmux"))
-        .args(["ctl", "layout", "3x7"])
-        .output()
-        .unwrap();
-    assert!(!result.status.success());
+    // Composed-UI commands (focus, park, reading modes) are gone, and
+    // arguments are checked before connecting.
+    for args in [
+        &["layout", "3x7"][..],
+        &["park", "1"],
+        &["focus", "1"],
+        &["close"],
+        &["reclaim"],
+    ] {
+        let result = Command::new(env!("CARGO_BIN_EXE_kelpmux"))
+            .arg("ctl")
+            .args(args)
+            .output()
+            .unwrap();
+        assert!(!result.status.success(), "{args:?}");
+        assert!(
+            String::from_utf8_lossy(&result.stderr).contains("invalid ctl command"),
+            "{args:?}"
+        );
+    }
 }
 #[test]
 fn client_refuses_public_socket_and_symlink_before_connecting() {

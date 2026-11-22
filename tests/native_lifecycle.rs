@@ -1,7 +1,8 @@
 //! Real isolated startup transactions, named workspaces and SSH PTY attachment.
-use kelpserver::native::{
+use kelpmux::native::{
     lifecycle::{Settings, workspace_path},
     protocol::*,
+    stream,
 };
 use std::{
     fs::{self, File, OpenOptions},
@@ -89,10 +90,9 @@ fn panes(out: &Output) -> Vec<PaneInfo> {
         "{}",
         String::from_utf8_lossy(&out.stderr)
     );
-    match serde_json::from_slice(&out.stdout).unwrap() {
-        ServerMessage::State { panes, .. } => panes,
-        _ => panic!("missing status"),
-    }
+    // `start` and `status` print `ctl list`: the stream's pane list.
+    let list: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    serde_json::from_value(list["panes"].clone()).expect("missing pane list")
 }
 struct Fixture {
     root: PathBuf,
@@ -242,7 +242,7 @@ fn named_workspaces_reject_path_traversal_and_preserve_effective_restart_setting
 #[test]
 fn dev_example_starts_exactly_one_shell() {
     let config = Path::new(env!("CARGO_MANIFEST_DIR")).join("examples/native-tabs.json");
-    let settings = kelpserver::native::lifecycle::Settings::load(&config).unwrap();
+    let settings = Settings::load(&config).unwrap();
     assert_eq!(settings.tab_count, Some(1));
     let fixture = Fixture::new();
     assert_eq!(
@@ -306,12 +306,7 @@ fn configured_large_startup_and_invalid_config_are_checked() {
     );
     fixture.stop();
     fs::write(&config, r#"{"tab_count":1000}"#).unwrap();
-    assert_eq!(
-        kelpserver::native::lifecycle::Settings::load(&config)
-            .unwrap()
-            .tab_count,
-        Some(1000)
-    );
+    assert_eq!(Settings::load(&config).unwrap().tab_count, Some(1000));
     fs::write(&config, r#"{"grid":[0,4]}"#).unwrap();
     assert!(
         !fixture
@@ -745,35 +740,30 @@ fn explicit_template_override_rebalances_saved_grid_weights() {
     fixture.stop();
 }
 
-// Use the real composed-client handshake so this checks startup presentation,
-// rather than just the existence of an on-disk crash marker.
-fn attach_frame(fixture: &Fixture) -> (std::os::unix::net::UnixStream, Frame) {
-    use std::os::unix::net::UnixStream;
-    let mut stream = UnixStream::connect(&fixture.socket).unwrap();
-    stream
+// A real stream handshake, so this checks the recovery signal the server
+// gives its clients rather than just the on-disk crash marker. Returns the
+// connection and the Welcome's `recovery_pending`.
+fn hello(fixture: &Fixture) -> (std::os::unix::net::UnixStream, bool) {
+    let mut socket = std::os::unix::net::UnixStream::connect(&fixture.socket).unwrap();
+    socket
         .set_read_timeout(Some(Duration::from_secs(5)))
         .unwrap();
     write_message(
-        &mut stream,
-        &ClientMessage::Attach {
-            version: VERSION,
-            cols: 80,
-            rows: 24,
-            takeover: false,
-        },
+        &mut socket,
+        &ClientMessage::Stream(stream::Request::Hello { version: 1 }),
     )
     .unwrap();
     loop {
-        if let ServerMessage::Frame(frame) =
-            read_message::<ServerMessage>(&mut stream).unwrap().unwrap()
+        if let ServerMessage::Stream(stream::Event::Welcome {
+            recovery_pending, ..
+        }) = read_message::<ServerMessage>(&mut socket).unwrap().unwrap()
         {
-            return (stream, frame);
+            return (socket, recovery_pending);
         }
     }
 }
 #[test]
-fn recovery_opens_after_real_server_crash_once_but_not_after_clean_stop() {
-    use kelpserver::native::ui::DialogKind;
+fn recovery_is_signalled_after_real_server_crash_once_but_not_after_clean_stop() {
     let fixture = Fixture::new();
     let mut crashed = fixture
         .command("server")
@@ -786,10 +776,9 @@ fn recovery_opens_after_real_server_crash_once_but_not_after_clean_stop() {
         .unwrap();
     let deadline = Instant::now() + Duration::from_secs(5);
     let original = loop {
-        if let Ok(ServerMessage::State { panes, .. }) =
-            kelpserver::native::lifecycle::inspect(&fixture.socket)
-        {
-            break panes;
+        let out = fixture.cmd("status", &[]);
+        if out.status.success() {
+            break panes(&out);
         }
         assert!(Instant::now() < deadline);
         assert!(crashed.try_wait().unwrap().is_none());
@@ -797,45 +786,40 @@ fn recovery_opens_after_real_server_crash_once_but_not_after_clean_stop() {
     };
     let marker = fixture.state.join("server.running.json");
     assert!(marker.is_file());
-    let (first, frame) = attach_frame(&fixture);
-    assert!(frame.ui.dialog.is_none());
-    drop(first);
+    assert!(!hello(&fixture).1);
     crashed.kill().unwrap();
     crashed.wait().unwrap();
     assert!(marker.is_file());
     let restarted = fixture.start(&[]);
     assert_ne!(original[0].pid, restarted[0].pid);
-    let (mut controller, frame) = attach_frame(&fixture);
-    assert_eq!(frame.ui.dialog.unwrap().kind, DialogKind::Recovery);
+    let (mut client, pending) = hello(&fixture);
+    assert!(pending);
     write_message(
-        &mut controller,
-        &ClientMessage::Command(Action::DialogClose),
+        &mut client,
+        &ClientMessage::Stream(stream::Request::DismissRecovery {
+            request: "dismiss".into(),
+        }),
     )
     .unwrap();
     loop {
         if matches!(
-            read_message::<ServerMessage>(&mut controller)
-                .unwrap()
-                .unwrap(),
-            ServerMessage::State { .. }
+            read_message::<ServerMessage>(&mut client).unwrap().unwrap(),
+            ServerMessage::Stream(stream::Event::Done { .. })
         ) {
             break;
         }
     }
-    drop(controller);
-    let (reconnected, frame) = attach_frame(&fixture);
-    assert!(frame.ui.dialog.is_none());
-    drop(reconnected);
+    drop(client);
+    assert!(!hello(&fixture).1);
     fixture.stop();
     assert!(!marker.exists());
     fixture.start(&[]);
-    let (_controller, frame) = attach_frame(&fixture);
-    assert!(frame.ui.dialog.is_none());
+    assert!(!hello(&fixture).1);
     fixture.stop();
 }
 
 #[test]
-fn dev_feature_flag_reaches_frames_without_changing_saved_settings_or_child_environment() {
+fn dev_feature_flag_stays_out_of_saved_settings_and_child_environment() {
     for flag in ["1", "0"] {
         let fixture = Fixture::new();
         let out = bounded_output(
@@ -846,8 +830,6 @@ fn dev_feature_flag_reaches_frames_without_changing_saved_settings_or_child_envi
                 .arg(&fixture.root),
         );
         let pane = panes(&out)[0].clone();
-        let (_controller, frame) = attach_frame(&fixture);
-        assert_eq!(frame.ui.show_dev_badge, flag == "1");
         let config: serde_json::Value =
             serde_json::from_slice(&fs::read(fixture.state.join("workspace.json")).unwrap())
                 .unwrap();
@@ -879,13 +861,21 @@ fn replacing_outdated_dev_ends_old_jobs_reuses_current_build_and_supports_rollba
             .success()
     );
     let old_path = old_binary.to_str().unwrap();
-    let old = dev.start(&["--server-binary", old_path])[0].pid;
-    let (mut controller, _) = attach_frame(&dev);
-    write_message(
-        &mut controller,
-        &ClientMessage::Input(b"sleep 60 & echo $! > old-job.pid\n".to_vec()),
-    )
-    .unwrap();
+    let first = dev.start(&["--server-binary", old_path])[0].clone();
+    let old = first.pid;
+    let (mut controller, _) = hello(&dev);
+    for request in [
+        stream::Request::Claim {
+            pane: first.id,
+            takeover: true,
+        },
+        stream::Request::Input {
+            pane: first.id,
+            bytes: b"sleep 60 & echo $! > old-job.pid\n".to_vec(),
+        },
+    ] {
+        write_message(&mut controller, &ClientMessage::Stream(request)).unwrap();
+    }
     let deadline = Instant::now() + Duration::from_secs(5);
     let job: u32 = loop {
         if let Ok(text) = fs::read_to_string(dev.root.join("old-job.pid")) {
@@ -896,6 +886,7 @@ fn replacing_outdated_dev_ends_old_jobs_reuses_current_build_and_supports_rollba
         assert!(Instant::now() < deadline);
         thread::sleep(Duration::from_millis(10));
     };
+    drop(controller);
     assert_eq!(
         dev.start(&[])[0].pid,
         old,
@@ -929,11 +920,7 @@ fn replacing_outdated_dev_ends_old_jobs_reuses_current_build_and_supports_rollba
         updated,
         "reconnect must preserve jobs on the selected build"
     );
-    let (_new_controller, frame) = attach_frame(&dev);
-    assert!(
-        frame.ui.dialog.is_none(),
-        "an intentional update is not a crash"
-    );
+    assert!(!hello(&dev).1, "an intentional update is not a crash");
     let rollback = dev.start(&["--replace-running", "--server-binary", old_path])[0].pid;
     assert_ne!(rollback, updated);
     let identities = thread::scope(|scope| {
@@ -949,66 +936,6 @@ fn replacing_outdated_dev_ends_old_jobs_reuses_current_build_and_supports_rollba
     assert_eq!(preprod.status()[0].pid, preserved);
     dev.stop();
     preprod.stop();
-}
-
-#[test]
-fn reordered_tabs_keep_live_pids_and_restart_in_saved_startup_order() {
-    use kelpserver::native::templates::{Template, TemplatePane};
-    let fixture = Fixture::new();
-    let mut template = Template {
-        grid: (3, 1),
-        panes: vec![],
-    };
-    for name in ["first", "second", "third"] {
-        let cwd = fixture.root.join(name);
-        fs::create_dir(&cwd).unwrap();
-        template.panes.push(TemplatePane {
-            name: name.into(),
-            cwd,
-            shell: Some("/bin/sh".into()),
-        });
-    }
-    let file = fixture.root.join("template.json");
-    fs::write(&file, serde_json::to_vec(&template).unwrap()).unwrap();
-    let original = fixture.start(&["--template", file.to_str().unwrap()]);
-    let mut socket = std::os::unix::net::UnixStream::connect(&fixture.socket).unwrap();
-    write_message(
-        &mut socket,
-        &ClientMessage::Command(Action::Reorder {
-            source: original[0].id,
-            before: Some(original[2].id),
-        }),
-    )
-    .unwrap();
-    let response = read_message::<ServerMessage>(&mut socket).unwrap().unwrap();
-    let ServerMessage::State {
-        panes: reordered, ..
-    } = response
-    else {
-        panic!("{response:?}");
-    };
-    assert_eq!(
-        reordered.iter().map(|p| p.pid).collect::<Vec<_>>(),
-        [original[1].pid, original[0].pid, original[2].pid]
-    );
-    assert!(fixture.state.join("tab-layout.json").is_file());
-    fixture.stop();
-    let restarted = fixture.start(&[]);
-    assert_eq!(
-        restarted
-            .iter()
-            .map(|p| p.title.as_str())
-            .collect::<Vec<_>>(),
-        ["second", "first", "third"]
-    );
-    assert_eq!(
-        restarted.iter().map(|p| p.cwd.clone()).collect::<Vec<_>>(),
-        [
-            original[1].cwd.clone(),
-            original[0].cwd.clone(),
-            original[2].cwd.clone()
-        ]
-    );
 }
 
 #[test]
@@ -1043,87 +970,6 @@ fn permissive_caller_umask_reaches_shell_but_state_stays_private() {
     }
     fixture.stop();
 }
-
-#[test]
-fn folded_sidebar_survives_restart_and_keeps_retained_build_settings_compatible() {
-    fn wait_fold(stream: &mut std::os::unix::net::UnixStream, folded: bool) -> Frame {
-        let deadline = Instant::now() + Duration::from_secs(5);
-        loop {
-            assert!(Instant::now() < deadline, "fold state update timed out");
-            let metadata = match read_message::<ServerMessage>(stream).unwrap().unwrap() {
-                ServerMessage::Frame(frame) => Some(frame),
-                ServerMessage::Patch(patch) => Some(patch.frame),
-                _ => None,
-            };
-            if let Some(frame) = metadata {
-                if frame.ui.config.sidebar_folded == folded {
-                    return frame;
-                }
-            }
-        }
-    }
-    let fixture = Fixture::new();
-    let original = fixture.start(&[]);
-    let (mut stream, first) = attach_frame(&fixture);
-    write_message(
-        &mut stream,
-        &ClientMessage::Action(Action::AccentSet(kelpserver::native::ui::Accent::Sage)),
-    )
-    .unwrap();
-    write_message(
-        &mut stream,
-        &ClientMessage::Action(Action::ResizeSidebar(38)),
-    )
-    .unwrap();
-    write_message(
-        &mut stream,
-        &ClientMessage::Action(Action::ToggleSidebarFold),
-    )
-    .unwrap();
-    let folded = wait_fold(&mut stream, true);
-    assert_eq!(folded.panes[0].pane.pid, original[0].pid);
-    assert_eq!(folded.active, first.active);
-    let saved: serde_json::Value =
-        serde_json::from_slice(&fs::read(fixture.state.join("workspace.json")).unwrap()).unwrap();
-    assert!(saved["ui"].get("sidebar_folded").is_none());
-    assert!(saved["ui"].get("accent").is_none());
-    assert_eq!(
-        kelpserver::native::lifecycle::sidebar_accent(&fixture.state.join("sidebar-accent.json"))
-            .unwrap(),
-        kelpserver::native::ui::Accent::Sage
-    );
-    assert_eq!(saved["ui"]["sidebar_columns"], 38);
-    assert!(
-        kelpserver::native::lifecycle::sidebar_folded(&fixture.state.join("sidebar-folded.json"))
-            .unwrap()
-    );
-    drop(stream);
-    fixture.stop();
-    fixture.start(&[]);
-    let (mut stream, restored) = attach_frame(&fixture);
-    assert!(restored.ui.config.sidebar_folded);
-    assert_eq!(
-        restored.ui.config.accent,
-        kelpserver::native::ui::Accent::Sage
-    );
-    assert_eq!(restored.ui.config.sidebar_columns, Some(38));
-    write_message(
-        &mut stream,
-        &ClientMessage::Action(Action::AccentSet(kelpserver::native::ui::Accent::Blue)),
-    )
-    .unwrap();
-    write_message(
-        &mut stream,
-        &ClientMessage::Action(Action::ToggleSidebarFold),
-    )
-    .unwrap();
-    assert_eq!(wait_fold(&mut stream, false).sidebar_width(), 38);
-    assert!(!fixture.state.join("sidebar-folded.json").exists());
-    assert!(!fixture.state.join("sidebar-accent.json").exists());
-    drop(stream);
-    fixture.stop();
-}
-
 /// KelpMux starts its servers without panes (`--startup-panes none`): the
 /// TUI or web client that connects creates the tabs, and the server keeps
 /// running with none until then.

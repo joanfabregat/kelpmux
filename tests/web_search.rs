@@ -1,7 +1,7 @@
 //! Client/server cross-checks: KelpServer's search results rendered by the
 //! shared client core (`kelpclient::history_screen`), as the web client does.
-use kelpserver::native::engine::Terminal;
-fn match_text(hit: &kelpserver::native::protocol::PaneSearchMatch, cols: u16) -> String {
+use kelpmux::native::{engine::Terminal, protocol::PaneSearchMatch};
+fn match_text(hit: &PaneSearchMatch, cols: u16) -> String {
     let screen = kelpclient::history_screen(&hit.lines, cols, 160).unwrap();
     let start = usize::from(hit.start.y) * usize::from(cols) + usize::from(hit.start.x);
     let end = usize::from(hit.end.y) * usize::from(cols) + usize::from(hit.end.x);

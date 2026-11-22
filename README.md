@@ -34,7 +34,7 @@ kelpmux start --workspace trial
 kelpmux attach --workspace trial
 ```
 
-`kelpmux attach` runs the TUI, a client of KelpServer's pane stream that renders locally and keeps its own UI state in `tui-state.json`. `kelpmux start` starts the server without panes (`--startup-panes none`) and the first TUI or web client creates the tabs from its saved layout or template. The former composed TUI was removed: `--legacy` is refused, `--stream` is accepted without effect. See [the native guide](docs/native.md#the-tui-a-pane-stream-client) for the parity table and the one-time migration.
+`kelpmux attach` runs the TUI, a client of KelpServer's pane stream that renders locally and keeps its own UI state in `tui-state.json`. `kelpmux start` starts the server without panes (`--startup-panes none`) and the first TUI or web client creates the tabs from its saved layout or template. The former composed TUI was removed: `--legacy` is refused, `--stream` is accepted without effect. `kelpmux ctl`, `stop` and the web bridge use the same stream session API. See [the native guide](docs/native.md#the-tui-a-pane-stream-client) for the parity table and the one-time migration.
 
 `Ctrl-B`, then `d` detaches. `g` selects grid, `z` reopens the latest useful closed tab, `p` parks a tab and `u` shows parked tabs. Stop a disposable workspace with `kelpmux stop --workspace trial`; stopping ends its processes. Existing settings and XDG state paths are preserved. A server crash or reboot requires recovery/resume; metadata does not preserve live processes.
 

@@ -1,10 +1,29 @@
 //! Host status presentation for the TUI's Status dialog: views, sorting,
 //! column layout and formatting. Moved from KelpServer `status.rs` (ADR 0002
 //! step 2); host sampling (`Monitor`, `Snapshot`, `Process`, `Disk`) stays in
-//! the server and reaches stream clients through `host-status`. `View` and
-//! `Sort` are re-exported because the composed protocol's `Action` still
-//! names KelpServer's types until step 3 removes it.
-pub use kelpserver::native::status::{Disk, Monitor, Process, Snapshot, Sort, View};
+//! the server and reaches stream clients through `host-status`. The web
+//! bridge samples with the same `Monitor` for its `status` operation.
+use serde::{Deserialize, Serialize};
+
+pub use kelpserver::native::status::{Disk, Monitor, Process, Snapshot};
+
+/// The Status dialog's view: the main summary or disk and process I/O.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum View {
+    #[default]
+    Main,
+    Io,
+}
+/// The process table's sort column.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum Sort {
+    Pid,
+    #[default]
+    Cpu,
+    Memory,
+    Read,
+    Write,
+}
 pub fn bytes(value: u64) -> String {
     let units = ["B", "K", "M", "G", "T"];
     let mut n = value as f64;

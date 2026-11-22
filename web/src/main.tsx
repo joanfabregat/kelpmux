@@ -69,8 +69,11 @@ import {
   savePreferences,
   saveView,
   gridTemplate,
+  liveColors,
   resizeTrack,
+  tabColor,
   type GridWeights,
+  type TabColors,
 } from "./layout-store";
 import {
   isFinished,
@@ -102,7 +105,7 @@ import { chime, desktopAlert, freshNotifications, newestId } from "./alerts";
  * eight leaves room for popup windows sharing the connection. */
 const PAGE = 8;
 /** The `Web` request API this client speaks (see `kelpmux web-bridge`). */
-const API_VERSION = 2;
+const API_VERSION = 3;
 
 const store: Store = {
   screens: new Map(),
@@ -331,6 +334,7 @@ function App() {
     [page, setPage] = useState(0),
     [notifications, setNotifications] = useState<Notification[]>([]),
     [parked, setParked] = useState<number[]>([]),
+    [colors, setColors] = useState<TabColors>({}),
     [preferences, setPreferences] = useState(loadPreferences),
     [terminalFilter, setTerminalFilter] = useState<TerminalFilter>("all"),
     [operations, setOperations] = useState(() => new Set<string>()),
@@ -498,8 +502,8 @@ function App() {
       if (!live.has(id)) store.closing!.delete(id);
   }, [panes]);
 
-  // This browser's layout: order, parking and focus, per workspace and
-  // epoch. `all` is every pane in this browser's order; `live` the tabs and
+  // This browser's layout: order, parking, tab colours and focus, per
+  // workspace and epoch. `all` is every pane in this browser's order; `live` the tabs and
   // grid (parked excluded).
   const all = orderPanes(panes, order);
   const parkedSet = new Set(parked);
@@ -512,6 +516,7 @@ function App() {
       order: all.map((p) => p.id),
       focus: active,
       parked,
+      colors,
     });
   }, [
     online,
@@ -520,11 +525,16 @@ function App() {
     active,
     all.map((p) => p.id).join(","),
     parked.join(","),
+    colors,
   ]);
   useEffect(() => {
-    // Closed terminals leave this browser's parked list.
+    // Closed terminals leave this browser's parked list and colours.
     if (panesLoaded && parked.some((id) => !panes.some((p) => p.id === id)))
       setParked(parked.filter((id) => panes.some((p) => p.id === id)));
+    if (panesLoaded)
+      setColors((current) =>
+        liveColors(current, new Set(panes.map((p) => p.id))),
+      );
   }, [panes, panesLoaded]);
   useEffect(() => {
     if (panesLoaded && !popupPane && !live.some((p) => p.id === active))
@@ -1197,6 +1207,7 @@ function App() {
         setEpoch(e.epoch);
         setOrder(layout.order);
         setParked(layout.parked);
+        setColors(layout.colors);
         if (layout.focus && !popupPane) setActive(layout.focus);
         setOnline(true);
         setConnecting(false);
@@ -1927,6 +1938,7 @@ function App() {
       vitals={vitals}
       rowProps={touch ? () => ({}) : dragProps}
       rowClass={(p) => (drag === p.id && drag !== drop ? "landing" : "")}
+      colorOf={(p) => tabColor(colors, p.id)}
       onOpen={(p) => {
         if (performance.now() < suppressClick.current) return;
         openPane(p);
@@ -2263,12 +2275,10 @@ function App() {
               {dialog === "color" && colorPane && (
                 <ColorPanel
                   pane={all.find((p) => p.id === colorPane.id) || colorPane}
-                  onPick={async (color) => {
-                    const done = await rpc("color", {
-                      pane: colorPane.id,
-                      color,
-                    });
-                    if (done) closeDialog();
+                  color={tabColor(colors, colorPane.id)}
+                  onPick={(color) => {
+                    setColors({ ...colors, [colorPane.id]: color });
+                    closeDialog();
                   }}
                 />
               )}

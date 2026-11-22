@@ -54,6 +54,8 @@ export type SidebarProps = {
   onFullWidth: () => void;
   rowProps: (pane: Pane) => React.HTMLAttributes<HTMLDivElement>;
   rowClass: (pane: Pane) => string;
+  /** The pane's tab colour in this browser (a TUI palette index). */
+  colorOf: (pane: Pane) => number;
   onOpen: (pane: Pane) => void;
   onClose: (pane: Pane) => void;
   onPark: (pane: Pane) => void;
@@ -105,7 +107,7 @@ export function Sidebar(props: SidebarProps) {
         data-state={state}
         style={
           {
-            "--tab-color": paletteColor(p.palette),
+            "--tab-color": paletteColor(props.colorOf(p)),
           } as React.CSSProperties
         }
         {...(isParked ? {} : props.rowProps(p))}

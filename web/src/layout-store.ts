@@ -1,9 +1,11 @@
 // Per-browser web layout: the view mode, tab order, focused terminal,
-// parked terminals and sidebar and notification preferences.
+// parked terminals, tab colours and sidebar and notification preferences.
 // Layout is client-local by design: the TUI and every browser keep their own
-// tabs, grid and focus over the same KelpServer panes and processes. Nothing
-// here is sent to the server. Pane IDs are scoped to a server epoch, so
-// stored order and focus are discarded when the epoch changes.
+// tabs, grid, colours and focus over the same KelpServer panes and
+// processes (ADR 0002: client UI state is keyed by server epoch and pane
+// ID). Nothing here is sent to the server. Pane IDs are scoped to a server
+// epoch, so stored order, focus, parking and colours are discarded when the
+// epoch changes.
 //
 // Storage can be unavailable (private windows, blocked site data); every
 // access is wrapped and the UI works without it.
@@ -13,14 +15,20 @@ export type ViewMode = "single" | "grid";
 const viewKey = "kelpmux-web-view";
 const layoutKey = (workspace: string) => `kelpmux-web-layout:${workspace}`;
 
+/** Number of tab colours (the TUI's palette, see `palette.ts`). */
+export const TAB_COLORS = 9;
+/** This browser's tab colour for each pane that has one, by pane ID. */
+export type TabColors = Record<number, number>;
+
 /** This browser's layout of one workspace epoch. `parked` terminals are
  * hidden from this browser's tabs and grid (the TUI's own parking is
- * separate). */
+ * separate); `colors` are the tab colours picked in this browser. */
 export type Layout = {
   epoch: string;
   order: number[];
   focus: number;
   parked: number[];
+  colors: TabColors;
 };
 
 function read(key: string): string | null {
@@ -47,7 +55,7 @@ export function saveView(view: ViewMode) {
 
 /** The stored layout for this workspace, if it belongs to this epoch. */
 export function loadLayout(workspace: string, epoch: string): Layout {
-  const empty = { epoch, order: [], focus: 0, parked: [] };
+  const empty = { epoch, order: [], focus: 0, parked: [], colors: {} };
   try {
     const value = JSON.parse(read(layoutKey(workspace)) || "null");
     if (!value || value.epoch !== epoch || !Array.isArray(value.order))
@@ -59,6 +67,7 @@ export function loadLayout(workspace: string, epoch: string): Layout {
         .slice(0, 1024),
       focus: Number.isSafeInteger(value.focus) ? value.focus : 0,
       parked: ids(value.parked),
+      colors: tabColors(value.colors),
     };
   } catch {
     return empty;
@@ -190,4 +199,39 @@ export function resizeTrack(
       ) * 100,
     ) / 100;
   return next;
+}
+
+/** Stored tab colours, keeping only pane IDs with a valid colour index. */
+function tabColors(value: unknown): TabColors {
+  const colors: TabColors = {};
+  if (!value || typeof value !== "object" || Array.isArray(value))
+    return colors;
+  for (const [key, color] of Object.entries(value).slice(0, 1024)) {
+    const id = Number(key);
+    if (
+      Number.isSafeInteger(id) &&
+      id > 0 &&
+      Number.isInteger(color) &&
+      (color as number) >= 0 &&
+      (color as number) < TAB_COLORS
+    )
+      colors[id] = color as number;
+  }
+  return colors;
+}
+
+/** A pane's tab colour in this browser: the one picked here, otherwise
+ * the TUI's default for its ID (`(id - 1) % 9`), so a fresh browser and
+ * a fresh TUI start from the same colours. */
+export function tabColor(colors: TabColors, pane: number): number {
+  return colors[pane] ?? (Math.max(pane, 1) - 1) % TAB_COLORS;
+}
+
+/** The colours left after closed panes are dropped; the same object when
+ * nothing changed. */
+export function liveColors(colors: TabColors, live: Set<number>): TabColors {
+  const kept = Object.entries(colors).filter(([id]) => live.has(Number(id)));
+  return kept.length === Object.keys(colors).length
+    ? colors
+    : Object.fromEntries(kept);
 }

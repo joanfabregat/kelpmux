@@ -597,20 +597,23 @@ export function PaneMenu({
 export const paneStateLabel = (p: Pane, notifications: Notification[]) =>
   stateLabel[paneState(p, notifications)];
 
-/** The TUI's tab colour picker: one of its nine palette colours, shared by
- * every client of the workspace. */
+/** The tab colour picker: one of the TUI's nine palette colours, kept in
+ * this browser only. */
 export function ColorPanel({
   pane,
+  color,
   onPick,
 }: {
   pane: Pane;
+  /** The pane's current colour in this browser. */
+  color: number;
   onPick: (color: number) => void;
 }) {
   return (
     <div className="panel-body">
       <p className="setting-hint">
-        Colour for “{name(pane)}”. It is workspace state: the TUI and other
-        browsers show it too.
+        Colour for “{name(pane)}” in this browser. The TUI and other browsers
+        keep their own colours.
       </p>
       <div className="color-grid" role="list">
         {paletteNames.map((label, index) => (
@@ -618,7 +621,7 @@ export function ColorPanel({
             type="button"
             key={label}
             className="color-swatch"
-            aria-pressed={pane.palette === index}
+            aria-pressed={color === index}
             aria-label={label}
             onClick={() => onPick(index)}
           >
