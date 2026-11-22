@@ -16,6 +16,8 @@ kelpmux stop --workspace beta-trial
 
 The default name is `main`. State lives under `$XDG_STATE_HOME/kelpmux/workspaces/NAME`, or `~/.local/state/kelpmux/workspaces/NAME`; its socket is `control.sock`. Names contain 1–48 letters, numbers, hyphens or underscores. Persistent effective settings are in `workspace.json` (KelpServer records `shell` and `cwd` there and keeps every other key; KelpMux adds the startup `template` and the `ui` settings of `--config`), startup diagnostics in `server.log`. KelpMux requires KelpServer 0.3 or later, which starts every workspace without panes: the TUI or web client that connects creates them (see [Startup tabs](#startup-tabs)). Private state directories, owned sockets, instance locks and same-user peer checks guard endpoints. Keep independent alpha and tmux instances alive during beta trials; no command migrates their terminals.
 
+`kelpmux start` and `kelpmux server` accept KelpServer's upload options, which set where files dropped onto a terminal in the [web client](web.md#uploads) are kept: `--upload-dir PATH` (the upload root, made absolute; default `$XDG_CACHE_HOME/kelpserver/uploads`, else `~/.cache/kelpserver/uploads`) and `--upload-retention-days DAYS` (how long completed uploads are kept, 0–3650; default 7, 0 keeps them). `start` records them in `workspace.json` as `upload_dir` and `upload_retention_days`, like `kelpserver start`, whether or not the workspace is running: the server reads them when it next starts, so a running workspace needs `stop` and `start` to apply a change. Options on the command line override those of a `--config` file. `server` passes them to the server it runs. Other commands refuse them.
+
 Foreground operation remains available:
 
 ```sh
@@ -328,7 +330,7 @@ What syncs: the tab order, names, colours, parking and scratch marker of the cur
 
 ### Migration from the composed TUI
 
-The first attach to a workspace with no `tui-state.json` migrates once. Settings come from the `ui` section of `workspace.json` and the composed UI's sidebar preference files (`sidebar-folded.json`, `sidebar-accent.json`); the template comes from its `tab-layout.json`. KelpMux parses these KelpServer 0.2 files itself and only reads them. The running server's panes are matched to that template like after a restart; their order, parking and colours are not taken from the server, whose `PaneInfo` `parked`, `number` and `palette` fields are neutral since KelpServer 0.3 (parking is each client's own state).
+The first attach to a workspace with no `tui-state.json` migrates once. Settings come from the `ui` section of `workspace.json` and the composed UI's sidebar preference files (`sidebar-folded.json`, `sidebar-accent.json`); the template comes from its `tab-layout.json`. KelpMux parses these KelpServer 0.2 files itself and only reads them. The running server's panes are matched to that template like after a restart; their order, parking and colours are not taken from the server: they are each client's own state, and since KelpServer 0.3.0-beta.2 (`kelpclient-protocol` 0.3.0) `PaneInfo` no longer has the composed UI's `parked`, `number` and `palette` fields. The TUI's tab type pairs the server's `PaneInfo` with its own number (position among the unparked tabs), parking and colour.
 
 ### Parity with the composed TUI
 

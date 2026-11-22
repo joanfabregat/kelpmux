@@ -1,4 +1,4 @@
-use super::protocol::*;
+use super::{history::RestoreChoices, protocol::*};
 use std::time::{Duration, Instant};
 
 /// Incremental terminal framing. Paste payloads are never interpreted as keys.

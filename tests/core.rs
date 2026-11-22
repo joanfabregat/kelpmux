@@ -792,3 +792,35 @@ fn terminal_program_evidence_wins_over_late_hooks_and_metadata_reconciliation() 
         .unwrap();
     assert_eq!(store.registry.agents[&observed.key()].status, Status::Idle);
 }
+
+/// Status labels and glyphs moved from `kelpclient-protocol` 0.2.0 into
+/// KelpMux unchanged.
+#[test]
+fn status_presentation_matches_the_former_protocol_crate() {
+    use kelpmux::model::{Status, StatusLabel, StatusSource, StatusSourceLabel, WORKING_FRAMES};
+    assert_eq!(Status::Working.marker(), WORKING_FRAMES[0]);
+    assert_eq!(
+        [
+            Status::WaitingBackground,
+            Status::InputNeeded,
+            Status::TurnFinished,
+            Status::Idle,
+            Status::Failed,
+            Status::Exited,
+            Status::Unknown,
+        ]
+        .map(|status| (status.marker(), status.text())),
+        [
+            ("◌", "WAITING IN BACKGROUND"),
+            ("!", "INPUT NEEDED"),
+            ("✓", "TURN FINISHED"),
+            ("○", "IDLE"),
+            ("×", "FAILED"),
+            ("■", "EXITED"),
+            ("?", "UNKNOWN"),
+        ]
+    );
+    assert_eq!(Status::Working.text(), "WORKING");
+    assert_eq!(StatusSource::LiveRecord.label(), "live record");
+    assert_eq!(StatusSource::Terminal.label(), "terminal program status");
+}

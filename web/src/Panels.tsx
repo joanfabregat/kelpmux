@@ -4,7 +4,7 @@
 // Each is a list of rows with mouse actions; nothing here changes the TUI's
 // layout.
 import { useEffect, useRef, useState } from "react";
-import type { Pane, SearchMatch } from "./terminal/types";
+import type { NumberedPane, SearchMatch } from "./terminal/types";
 import { Icon } from "./status";
 import { age } from "./format";
 import { StateMark } from "./state/StateMark";
@@ -20,7 +20,7 @@ import {
 import { shortcuts } from "./shortcuts";
 import { paletteColor, paletteNames } from "./palette";
 
-const name = (p: Pane) => p.title || "shell";
+const name = (p: NumberedPane) => p.title || "shell";
 
 /** One terminal's notifications, opened from the bell in its header (or
  * Ctrl-B b): its whole retained history (the default), or its unread ones;
@@ -31,7 +31,7 @@ export function TerminalNotificationsPanel({
   notifications,
   onAcknowledge,
 }: {
-  pane: Pane;
+  pane: NumberedPane;
   notifications: Notification[];
   onAcknowledge: (ids: number[]) => void;
 }) {
@@ -253,7 +253,7 @@ export function RecoveryPanel({
   );
 }
 
-type Hit = { pane: Pane; match: SearchMatch };
+type Hit = { pane: NumberedPane; match: SearchMatch };
 /** Workspace search, the TUI's search dialog: the focused terminal or every
  * terminal's history, through the server's bounded literal search. */
 export function SearchPanel({
@@ -262,10 +262,10 @@ export function SearchPanel({
   rpc,
   onOpen,
 }: {
-  panes: Pane[];
-  focused?: Pane;
+  panes: NumberedPane[];
+  focused?: NumberedPane;
   rpc: (method: string, params?: any) => Promise<any>;
-  onOpen: (pane: Pane, query: string) => void;
+  onOpen: (pane: NumberedPane, query: string) => void;
 }) {
   const [query, setQuery] = useState("");
   const [all, setAll] = useState(!focused);
@@ -370,10 +370,10 @@ export function ParkedPanel({
   onUnpark,
   onClose,
 }: {
-  panes: Pane[];
+  panes: NumberedPane[];
   notifications: Notification[];
-  onUnpark: (pane: Pane) => void;
-  onClose: (pane: Pane) => void;
+  onUnpark: (pane: NumberedPane) => void;
+  onClose: (pane: NumberedPane) => void;
 }) {
   return (
     <div className="panel-body">
@@ -422,8 +422,8 @@ export function MovePanel({
   source,
   onMove,
 }: {
-  panes: Pane[];
-  source?: Pane;
+  panes: NumberedPane[];
+  source?: NumberedPane;
   onMove: (before: number | null) => void;
 }) {
   if (!source)
@@ -500,7 +500,7 @@ export function PaneMenu({
   items,
   onClose,
 }: {
-  pane: Pane;
+  pane: NumberedPane;
   x: number;
   y: number;
   parked: boolean;
@@ -557,8 +557,10 @@ export function PaneMenu({
 }
 
 /** The state label of a pane, for headers and tooltips. */
-export const paneStateLabel = (p: Pane, notifications: Notification[]) =>
-  stateLabel[paneState(p, notifications)];
+export const paneStateLabel = (
+  p: NumberedPane,
+  notifications: Notification[],
+) => stateLabel[paneState(p, notifications)];
 
 /** The tab colour picker: one of the TUI's nine palette colours, kept in
  * this browser only. */
@@ -567,7 +569,7 @@ export function ColorPanel({
   color,
   onPick,
 }: {
-  pane: Pane;
+  pane: NumberedPane;
   /** The pane's current colour in this browser. */
   color: number;
   onPick: (color: number) => void;

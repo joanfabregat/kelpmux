@@ -14,13 +14,16 @@ fn workspace(cols: u16, rows: u16) -> Workspace {
     let mut ws = Workspace::new(cols, rows).unwrap();
     ws.ui.notification_run = "test-run".into();
     ws.panes = (1..=4)
-        .map(|id| PaneInfo {
-            id,
+        .map(|id| Tab {
+            info: PaneInfo {
+                id,
+                title: format!("task {id}"),
+                cwd: "/project".into(),
+                kind: Some(Kind::Codex),
+                session_id: Some(format!("session-{id}")),
+                ..Default::default()
+            },
             number: id as usize,
-            title: format!("task {id}"),
-            cwd: "/project".into(),
-            kind: Some(Kind::Codex),
-            session_id: Some(format!("session-{id}")),
             ..Default::default()
         })
         .collect();
@@ -56,11 +59,11 @@ fn scratch_retains_identity_and_restores_tabs_without_becoming_a_grid_pane() {
         let mut ws = workspace(cols, rows);
         ws.apply(&Action::Select(2)).unwrap();
         let original = ws.layout();
-        ws.panes.push(PaneInfo {
+        ws.panes.push(Tab::from(PaneInfo {
             id: 100,
             title: "scratch".into(),
             ..Default::default()
-        });
+        }));
         ws.ui.scratch = Some(100);
         ws.apply(&Action::Scratch).unwrap();
         assert_eq!(ws.active, 100);
@@ -404,11 +407,11 @@ fn scratch_is_drawn_above_sidebar_and_preserves_truecolor_wide_terminal_cells() 
     for size in [(40, 10), (120, 40), (240, 70)] {
         let mut ws = workspace(size.0, size.1);
         ws.apply(&Action::Select(2)).unwrap();
-        ws.panes.push(PaneInfo {
+        ws.panes.push(Tab::from(PaneInfo {
             id: 100,
             title: "scratch".into(),
             ..Default::default()
-        });
+        }));
         ws.ui.scratch = Some(100);
         ws.apply(&Action::Scratch).unwrap();
         let screens = ws
@@ -465,11 +468,11 @@ fn invalid_grid_resize_is_transactional_and_scratch_does_not_disable_empty_grid_
         .is_err()
     );
     assert_eq!(ws.ui.column_weights, before);
-    ws.panes.push(PaneInfo {
+    ws.panes.push(Tab::from(PaneInfo {
         id: 100,
         title: "scratch".into(),
         ..Default::default()
-    });
+    }));
     ws.ui.scratch = Some(100);
     ws.ui.unused = vec![1, 2, 3, 4];
     ws.apply(&Action::GridPicker).unwrap();
@@ -482,10 +485,10 @@ fn invalid_grid_resize_is_transactional_and_scratch_does_not_disable_empty_grid_
 #[test]
 fn dialogs_and_help_take_click_priority_above_scratch_on_compact_terminal() {
     let mut ws = workspace(40, 10);
-    ws.panes.push(PaneInfo {
+    ws.panes.push(Tab::from(PaneInfo {
         id: 100,
         ..Default::default()
-    });
+    }));
     ws.ui.scratch = Some(100);
     ws.apply(&Action::Scratch).unwrap();
     ws.apply(&Action::Config).unwrap();
@@ -532,10 +535,10 @@ fn search_query_limit_is_utf8_safe_for_typing_and_paste() {
 fn focusing_hidden_scratch_reveals_it_and_retains_underlying_tab() {
     let mut ws = workspace(160, 50);
     ws.apply(&Action::Select(2)).unwrap();
-    ws.panes.push(PaneInfo {
+    ws.panes.push(Tab::from(PaneInfo {
         id: 100,
         ..Default::default()
-    });
+    }));
     ws.ui.scratch = Some(100);
     ws.apply(&Action::Focus(100)).unwrap();
     assert!(ws.ui.scratch_visible);

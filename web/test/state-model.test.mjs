@@ -15,10 +15,8 @@ import {
 
 const pane = (id, status = "idle", extra = {}) => ({
   id,
-  number: id,
   pid: 100 + id,
   status,
-  parked: false,
   dead: false,
   ...extra,
 });

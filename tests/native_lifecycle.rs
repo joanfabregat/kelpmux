@@ -1067,3 +1067,99 @@ fn default_start_leaves_the_tabs_to_the_connecting_client() {
     assert!(fixture.status().is_empty());
     fixture.stop();
 }
+
+/// Begins an upload of one empty file without a destination and returns the
+/// batch directory the server chose: it lies under the upload root.
+fn upload_batch_dir(fixture: &Fixture) -> PathBuf {
+    use kelpmux::native::uploads::FileSpec;
+    let (mut socket, _) = hello(fixture);
+    write_message(
+        &mut socket,
+        &ClientMessage::Stream(stream::Request::UploadBegin {
+            request: "u1".into(),
+            files: vec![FileSpec {
+                name: "empty".into(),
+                size: 0,
+            }],
+            dest: None,
+        }),
+    )
+    .unwrap();
+    loop {
+        match read_message::<ServerMessage>(&mut socket).unwrap().unwrap() {
+            ServerMessage::Stream(stream::Event::UploadStarted { dir, .. }) => return dir,
+            ServerMessage::Stream(stream::Event::UploadFailed { message, .. }) => {
+                panic!("upload failed: {message}")
+            }
+            _ => {}
+        }
+    }
+}
+
+/// `kelpmux start` passes KelpServer's upload options on: it records them
+/// in `workspace.json` (relative paths made absolute), from which the
+/// server it starts reads them; a later start keeps them.
+#[test]
+fn start_records_upload_options_for_the_server() {
+    let fixture = Fixture::new();
+    fixture.start(&["--upload-dir", "uploads", "--upload-retention-days", "3"]);
+    let path = fixture.state.join("workspace.json");
+    let saved = Settings::load(&path).unwrap();
+    let root = fixture.root.join("uploads");
+    assert_eq!(saved.upload_dir.as_ref(), Some(&root));
+    assert_eq!(saved.upload_retention_days, Some(3));
+    let dir = upload_batch_dir(&fixture);
+    assert!(dir.starts_with(&root), "{}", dir.display());
+    fixture.stop();
+    fixture.start(&[]);
+    let saved = Settings::load(&path).unwrap();
+    assert_eq!(saved.upload_dir.as_ref(), Some(&root));
+    assert_eq!(saved.upload_retention_days, Some(3));
+    fixture.stop();
+}
+
+/// `kelpmux server` hands the upload options to the KelpServer it runs;
+/// invalid values and other verbs are refused before anything starts.
+#[test]
+fn server_passes_upload_options_and_invalid_ones_are_refused() {
+    let fixture = Fixture::new();
+    for (verb, args) in [
+        ("start", ["--upload-retention-days", "3651"]),
+        ("start", ["--upload-retention-days", "week"]),
+        ("server", ["--upload-retention-days", "-1"]),
+        ("attach", ["--upload-dir", "/tmp"]),
+        ("status", ["--upload-retention-days", "1"]),
+    ] {
+        let out = fixture.cmd(verb, &args);
+        assert!(!out.status.success(), "{verb} {args:?}");
+        assert!(
+            String::from_utf8_lossy(&out.stderr).contains("upload"),
+            "{verb} {args:?}: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+    }
+    assert!(!fixture.socket.exists());
+    let root = fixture.root.join("server-uploads");
+    let mut server = fixture
+        .command("server")
+        .args(["--shell", "/bin/sh", "--cwd"])
+        .arg(&fixture.root)
+        .arg("--upload-dir")
+        .arg(&root)
+        .args(["--upload-retention-days", "0"])
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap();
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while !fixture.cmd("status", &[]).status.success() {
+        assert!(Instant::now() < deadline);
+        assert!(server.try_wait().unwrap().is_none());
+        thread::sleep(Duration::from_millis(10));
+    }
+    let dir = upload_batch_dir(&fixture);
+    assert!(dir.starts_with(&root), "{}", dir.display());
+    fixture.stop();
+    server.wait().unwrap();
+}

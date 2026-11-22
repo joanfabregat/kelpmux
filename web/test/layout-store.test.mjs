@@ -5,6 +5,7 @@ import {
   loadLayout,
   loadView,
   moveBefore,
+  numberPanes,
   orderPanes,
   saveLayout,
   saveView,
@@ -103,4 +104,28 @@ test("tab colours are this browser's, per epoch, with the TUI's defaults", () =>
   assert.equal(liveColors(colors, new Set([1, 2, 3])), colors);
   assert.deepEqual(liveColors(colors, new Set([2])), { 2: 4 });
   delete globalThis.localStorage;
+});
+
+test("numbers follow this browser's order, as the server's creation order did", () => {
+  // KelpServer 0.3.0-beta.2 sends no number: without a stored order the
+  // numbers are the creation order, after a move they follow the move.
+  const panes = [4, 7, 9].map((id) => ({ id, title: `t${id}` }));
+  assert.deepEqual(
+    numberPanes(orderPanes(panes, [])).map((p) => [p.id, p.number]),
+    [
+      [4, 1],
+      [7, 2],
+      [9, 3],
+    ],
+  );
+  const moved = numberPanes(orderPanes(panes, [9, 4, 7]));
+  assert.deepEqual(
+    moved.map((p) => [p.id, p.number, p.title]),
+    [
+      [9, 1, "t9"],
+      [4, 2, "t4"],
+      [7, 3, "t7"],
+    ],
+  );
+  assert.equal("number" in panes[0], false);
 });

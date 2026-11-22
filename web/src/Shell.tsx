@@ -1,4 +1,4 @@
-import type { Pane } from "./terminal/types";
+import type { NumberedPane } from "./terminal/types";
 import { StateMark } from "./state/StateMark";
 import { ProviderLogo } from "./state/ProviderLogo";
 import { stateLabel, type DisplayState } from "./state/model";
@@ -14,7 +14,7 @@ export function PaneLabel({
   state,
   parked = false,
 }: {
-  pane: Pane;
+  pane: NumberedPane;
   state: DisplayState;
   parked?: boolean;
 }) {

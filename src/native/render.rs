@@ -1,6 +1,9 @@
 //! Native grid/tab composition and ANSI damage output. Grid header controls
 //! share tab styling; navigation and controls use workspace geometry.
-use super::{engine::safe_text, protocol::*, ui::PALETTE, workspace::Workspace};
+use super::{
+    engine::safe_text, history::RestoreChoices, protocol::*, ui::PALETTE, workspace::Workspace,
+};
+use crate::model::{StatusLabel, StatusSourceLabel};
 use std::{collections::BTreeMap, fmt::Write};
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 const GRID_BORDER: Color = Color::Rgb(71, 113, 153);
@@ -1857,7 +1860,7 @@ fn draw_tabs(frame: &mut Frame, workspace: &Workspace, spinner: usize) {
 fn draw_folded_tab(
     frame: &mut Frame,
     workspace: &Workspace,
-    pane: &PaneInfo,
+    pane: &Tab,
     rect: Rect,
     selected: bool,
     tick: usize,
@@ -1910,7 +1913,7 @@ fn outline(frame: &mut Frame, rect: Rect, fg: Color, bg: Color) {
 fn draw_tab(
     frame: &mut Frame,
     workspace: &Workspace,
-    pane: &PaneInfo,
+    pane: &Tab,
     rect: Rect,
     selected: bool,
     count: &str,
@@ -2165,7 +2168,7 @@ fn draw_tab(
 fn activity_indicator(
     frame: &mut Frame,
     workspace: &Workspace,
-    pane: &PaneInfo,
+    pane: &Tab,
     track: Rect,
     tick: usize,
 ) {
@@ -4058,17 +4061,20 @@ mod tests {
     use crate::{model::Status, native::engine::Terminal};
     fn view(cols: u16, overlay: bool) -> PaneView {
         PaneView {
-            pane: PaneInfo {
-                id: 1,
+            pane: Tab {
+                info: PaneInfo {
+                    id: 1,
+                    pid: 1,
+                    cwd: String::new(),
+                    title: "題名 \x1b[2J #{literal}".into(),
+                    status: Status::Idle,
+                    session_id: None,
+                    dead: false,
+                    ..Default::default()
+                },
                 number: 1,
-                pid: 1,
-                cwd: String::new(),
-                title: "題名 \x1b[2J #{literal}".into(),
                 palette: 0,
-                status: Status::Idle,
-                session_id: None,
-                dead: false,
-                ..Default::default()
+                parked: false,
             },
             rect: Rect {
                 x: 0,

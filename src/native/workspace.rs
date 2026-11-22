@@ -1,3 +1,4 @@
+use super::history::RestoreChoices;
 use super::protocol::*;
 use super::ui::{AgentFilter, Dialog, DialogKind, UiState};
 use crate::Result;
@@ -10,7 +11,7 @@ const FOCUS_HISTORY: usize = 32;
 pub struct Workspace {
     pub cols: u16,
     pub rows: u16,
-    pub panes: Vec<PaneInfo>,
+    pub panes: Vec<Tab>,
     pub active: PaneId,
     pub reading: ReadingMode,
     pub grid_cols: u8,
@@ -289,7 +290,7 @@ impl Workspace {
             };
         }
     }
-    fn view(pane: &PaneInfo, index: usize, rect: Rect, overlay: bool) -> PaneView {
+    fn view(pane: &Tab, index: usize, rect: Rect, overlay: bool) -> PaneView {
         let mut pane = pane.clone();
         pane.number = if pane.parked { 0 } else { index + 1 };
         PaneView {
@@ -1272,7 +1273,7 @@ impl Workspace {
         dialog_entries(&panes, self.ui.dialog)
     }
 }
-pub fn dialog_entries(panes: &[PaneInfo], dialog: Option<Dialog>) -> Vec<PaneId> {
+pub fn dialog_entries(panes: &[Tab], dialog: Option<Dialog>) -> Vec<PaneId> {
     match dialog {
         Some(Dialog {
             kind: DialogKind::Parked,

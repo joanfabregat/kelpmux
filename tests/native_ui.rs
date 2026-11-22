@@ -14,12 +14,15 @@ fn workspace(size: (u16, u16), shape: (u8, u8)) -> Workspace {
     let mut ws = Workspace::new(size.0, size.1).unwrap();
     ws.ui.notification_run = "test-run".into();
     ws.panes = (1..=u64::from(shape.0) * u64::from(shape.1))
-        .map(|id| PaneInfo {
-            id,
+        .map(|id| Tab {
+            info: PaneInfo {
+                id,
+                title: format!("agent 界 {id}"),
+                ..Default::default()
+            },
             number: id as usize,
-            title: format!("agent 界 {id}"),
             palette: id as u8,
-            ..Default::default()
+            parked: false,
         })
         .collect();
     ws.active = 1;

@@ -12,7 +12,13 @@ import {
 } from "./terminal/connection";
 import { SharedSession as Session } from "./terminal/shared-session";
 import { Terminal, TerminalTile, type Store } from "./terminal/Terminal";
-import type { Connection, Identity, Pane, SignInKey } from "./terminal/types";
+import type {
+  Connection,
+  Identity,
+  NumberedPane,
+  Pane,
+  SignInKey,
+} from "./terminal/types";
 import { gridColumns } from "./terminal/layout";
 import { trimScreens } from "./terminal/screen-cache";
 import "./styles/base.css";
@@ -69,6 +75,7 @@ import {
   loadView,
   moveBefore,
   moveBy,
+  numberPanes,
   orderPanes,
   saveLayout,
   savePreferences,
@@ -384,15 +391,17 @@ function App() {
     // The terminal whose notifications the Notifications panel shows.
     [notifyPane, setNotifyPane] = useState(0),
     [findQuery, setFindQuery] = useState(""),
-    [colorPane, setColorPane] = useState<Pane | null>(null),
+    [colorPane, setColorPane] = useState<NumberedPane | null>(null),
     [gridWeights, setGridWeights] = useState<GridWeights>({
       shape: "",
       cols: [],
       rows: [],
     }),
-    [menu, setMenu] = useState<{ pane: Pane; x: number; y: number } | null>(
-      null,
-    );
+    [menu, setMenu] = useState<{
+      pane: NumberedPane;
+      x: number;
+      y: number;
+    } | null>(null);
   // Phones and tablets (device.ts). A phone shows the terminal list, or one
   // terminal full screen; it has no grid. Touch devices show output without
   // the on-screen keyboard until the user enters input mode.
@@ -410,7 +419,7 @@ function App() {
     [dropPane, setDropPane] = useState(0),
     [uploadDestination, setUploadDestination] = useState(loadUploadDestination);
   const filePicker = useRef<HTMLInputElement>(null),
-    pickerPane = useRef<Pane | null>(null);
+    pickerPane = useRef<NumberedPane | null>(null);
   const [phoneList, setPhoneList] = useState(true);
   const [inputMode, setInputMode] = useState<InputMode>("reading"),
     [ctrlArmed, setCtrlArmed] = useState(false),
@@ -585,7 +594,7 @@ function App() {
   // This browser's layout: order, parking, tab colours and focus, per
   // workspace and epoch. `all` is every pane in this browser's order; `live` the tabs and
   // grid (parked excluded).
-  const all = orderPanes(panes, order);
+  const all = numberPanes(orderPanes(panes, order));
   const parkedSet = new Set(parked);
   const live = all.filter((p) => !parkedSet.has(p.id));
   const parkedPanes = all.filter((p) => parkedSet.has(p.id));
@@ -738,7 +747,7 @@ function App() {
     setPhoneList(false);
   }
   /** A tab's click in grid mode focuses its tile on its page. */
-  function focusInGrid(pane: Pane) {
+  function focusInGrid(pane: NumberedPane) {
     const index = live.findIndex((p) => p.id === pane.id);
     if (index < 0) return;
     setActive(pane.id);
@@ -1070,7 +1079,7 @@ function App() {
   }
   /** Opens a terminal wherever it is: unparks a parked one, and otherwise
    * opens it alone or focuses it in the grid. */
-  function openPane(pane: Pane) {
+  function openPane(pane: NumberedPane) {
     setMenu(null);
     if (parkedSet.has(pane.id))
       setParked(parked.filter((id) => id !== pane.id));
@@ -1080,7 +1089,7 @@ function App() {
   }
   /** The TUI's next question / next completion: the next terminal after the
    * focused one in this browser's order (parked ones included). */
-  function nextState(predicate: (pane: Pane) => boolean, none: string) {
+  function nextState(predicate: (pane: NumberedPane) => boolean, none: string) {
     const candidates = all.filter((p) => !p.dead);
     const target = nextPane(candidates, active, predicate);
     if (target) openPane(target);
@@ -1102,14 +1111,14 @@ function App() {
       `No ${stateLabel[state].toLowerCase()} terminal`,
     );
   }
-  function park(pane: Pane) {
+  function park(pane: NumberedPane) {
     if (parkedSet.has(pane.id)) return;
     setParked([...parked, pane.id]);
     toast(`Parked “${pane.title || "shell"}”; it keeps running`, {
       key: "park",
     });
   }
-  function unpark(pane: Pane) {
+  function unpark(pane: NumberedPane) {
     openPane(pane);
   }
   /** The TUI's reopen-last: the newest terminal closed in this workspace
@@ -1151,7 +1160,7 @@ function App() {
   }
   /** Opens a terminal's notifications, mainly their history (its header's
    * bell, Ctrl-B b or its menu). */
-  function openNotifications(pane: Pane) {
+  function openNotifications(pane: NumberedPane) {
     setMenu(null);
     setNotifyPane(pane.id);
     setDialog("notifications");
@@ -1353,7 +1362,7 @@ function App() {
   /** Sound and desktop alerts for notifications that arrived since the
    * last update (never for those present when this browser connected).
    * Popups leave alerts to the main window. */
-  function alertFresh(list: Notification[], live: Pane[]) {
+  function alertFresh(list: Notification[], live: NumberedPane[]) {
     if (alertedId.current < 0) {
       alertedId.current = newestId(list);
       return;
@@ -1496,13 +1505,13 @@ function App() {
       }
     }
   }
-  function popout(pane: Pane) {
+  function popout(pane: NumberedPane) {
     const url = new URL(location.href);
     url.search = "";
     url.searchParams.set("pane", String(pane.id));
     window.open(url, "_blank", "popup,noopener,width=1100,height=760");
   }
-  function close(p: Pane) {
+  function close(p: NumberedPane) {
     setConfirmAction({
       title: "Close terminal",
       text: `End the shell and running jobs in “${p.title || "shell"}”? Every client showing it, the TUI included, loses it.`,
@@ -1572,7 +1581,7 @@ function App() {
     setDrag(null);
     setDrop(null);
   }
-  function dragProps(p: Pane) {
+  function dragProps(p: NumberedPane) {
     return {
       onPointerDown: (e: React.PointerEvent) => {
         // A row or tile header starts a drag; its action buttons do not.
@@ -1842,7 +1851,7 @@ function App() {
     window.addEventListener("pointermove", move);
     window.addEventListener("pointerup", up);
   }
-  const paneLabel = (p: Pane) => p.title || "shell";
+  const paneLabel = (p: NumberedPane) => p.title || "shell";
   /** Why files cannot be uploaded on this connection, if they cannot. */
   const uploadUnavailable = !serverUploads
     ? "This workspace's terminal server cannot receive files (it lacks the uploads capability). Restart the workspace with a current KelpServer to upload files to terminals."
@@ -1853,7 +1862,11 @@ function App() {
         : null;
   /** Opens the upload dialog for files dropped, pasted or picked onto a
    * terminal. */
-  function openUpload(pane: Pane, files: File[], folders: string[] = []) {
+  function openUpload(
+    pane: NumberedPane,
+    files: File[],
+    folders: string[] = [],
+  ) {
     if ((!files.length && !folders.length && !uploadUnavailable) || uploadDrop)
       return;
     setMenu(null);
@@ -1861,7 +1874,7 @@ function App() {
   }
   /** The terminal menu's Upload files…: a file picker (phones and tablets
    * have no drag and drop). It opens inside the menu click's gesture. */
-  function pickFiles(pane: Pane) {
+  function pickFiles(pane: NumberedPane) {
     pickerPane.current = pane;
     const picker = filePicker.current;
     if (!picker) return;
@@ -1869,7 +1882,7 @@ function App() {
     picker.click();
   }
   /** Drop target props for a terminal (its view or grid tile). */
-  function dropProps(p: Pane) {
+  function dropProps(p: NumberedPane) {
     return {
       "data-upload-pane": p.id,
       onDragOver: (event: React.DragEvent) => {
@@ -1892,11 +1905,11 @@ function App() {
       },
     };
   }
-  const panesNow = useRef(panes);
-  panesNow.current = panes;
+  const panesNow = useRef(all);
+  panesNow.current = all;
   /** Pastes uploaded paths into their terminal as a paste (bracketed when
    * the pane has it on), without Enter. Null once pasted, else why not. */
-  function pasteUploaded(target: Pane, paths: string[]): string | null {
+  function pasteUploaded(target: NumberedPane, paths: string[]): string | null {
     const paneId = target.id;
     const pane = panesNow.current.find((p) => p.id === paneId);
     if (!pane || pane.dead || store.closing?.has(paneId) || !store.session)
@@ -1922,7 +1935,7 @@ function App() {
     return null;
   }
   /** A terminal's context menu (right-click on its row or tile). */
-  function menuItems(p: Pane): [string, () => void, boolean?][] {
+  function menuItems(p: NumberedPane): [string, () => void, boolean?][] {
     const isParked = parkedSet.has(p.id);
     const unread = unreadFor(notifications, p).length;
     // Reorders among the tabs; parked terminals keep their places after.
@@ -1975,7 +1988,7 @@ function App() {
   }
   /** Who holds a terminal's input and size when this browser does not (the
    * former status bar's hint), for the terminal's header. */
-  function leaseNote(p: Pane) {
+  function leaseNote(p: NumberedPane) {
     const owner = store.leases.get(p.id);
     if (owner === store.session?.client) return null;
     return owner
@@ -1988,7 +2001,7 @@ function App() {
           text: "The TUI controls this terminal's input and size; typing here takes it, typing there takes it back",
         };
   }
-  const paneHeader = (p: Pane, extra?: React.ReactNode) => {
+  const paneHeader = (p: NumberedPane, extra?: React.ReactNode) => {
     const lease = leaseNote(p);
     return (
       <header
@@ -2020,7 +2033,7 @@ function App() {
       </header>
     );
   };
-  const paneActions = (p: Pane, extra?: React.ReactNode) => (
+  const paneActions = (p: NumberedPane, extra?: React.ReactNode) => (
     <div className="pane-actions">
       {extra}
       <NotificationsButton
