@@ -24,9 +24,43 @@ pub enum ReadingMode {
     Capped(PaneId),
     Fullscreen(PaneId),
 }
+/// One tab of the TUI: the server's metadata for a pane (`info`) plus the
+/// client's own presentation of it. KelpServer 0.3.0-beta.2
+/// (`kelpclient-protocol` 0.3.0) no longer sends `number`, `parked` or
+/// `palette`; the TUI keeps them, keyed by pane ID, in its tab list and
+/// `tui-state.json`. Field reads and writes of `PaneInfo` go through `Deref`.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Tab {
+    pub info: PaneInfo,
+    /// Position among the unparked main tabs, from 1; 0 for a parked tab and
+    /// the scratch terminal. `Workspace::reflow` assigns it.
+    pub number: usize,
+    pub parked: bool,
+    /// Index into the tab palette.
+    pub palette: u8,
+}
+impl From<PaneInfo> for Tab {
+    fn from(info: PaneInfo) -> Self {
+        Self {
+            info,
+            ..Self::default()
+        }
+    }
+}
+impl std::ops::Deref for Tab {
+    type Target = PaneInfo;
+    fn deref(&self) -> &PaneInfo {
+        &self.info
+    }
+}
+impl std::ops::DerefMut for Tab {
+    fn deref_mut(&mut self) -> &mut PaneInfo {
+        &mut self.info
+    }
+}
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PaneView {
-    pub pane: PaneInfo,
+    pub pane: Tab,
     pub rect: Rect,
     pub body: Rect,
     pub overlay: bool,

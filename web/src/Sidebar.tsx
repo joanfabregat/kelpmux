@@ -1,5 +1,5 @@
 import React, { useState } from "react";
-import type { Pane } from "./terminal/types";
+import type { NumberedPane } from "./terminal/types";
 import type { IconName } from "./icons";
 import { Icon } from "./status";
 import { Tooltip } from "./Tooltip";
@@ -40,9 +40,9 @@ export type SidebarProps = {
   page: number;
   pages: number;
   /** Terminals in this browser's order, parked ones excluded. */
-  terminals: Pane[];
+  terminals: NumberedPane[];
   /** Terminals parked in this browser. */
-  parked: Pane[];
+  parked: NumberedPane[];
   notifications: Notification[];
   current?: number;
   vitals: { cpu?: number; memory?: number; disks?: number[] };
@@ -51,15 +51,15 @@ export type SidebarProps = {
   onDisksHover: () => void;
   onMode: (mode: SessionMode) => void;
   onPage: (page: number) => void;
-  rowProps: (pane: Pane) => React.HTMLAttributes<HTMLDivElement>;
-  rowClass: (pane: Pane) => string;
+  rowProps: (pane: NumberedPane) => React.HTMLAttributes<HTMLDivElement>;
+  rowClass: (pane: NumberedPane) => string;
   /** The pane's tab colour in this browser (a TUI palette index). */
-  colorOf: (pane: Pane) => number;
-  onOpen: (pane: Pane) => void;
-  onClose: (pane: Pane) => void;
-  onPark: (pane: Pane) => void;
-  onUnpark: (pane: Pane) => void;
-  onMenu: (pane: Pane, x: number, y: number) => void;
+  colorOf: (pane: NumberedPane) => number;
+  onOpen: (pane: NumberedPane) => void;
+  onClose: (pane: NumberedPane) => void;
+  onPark: (pane: NumberedPane) => void;
+  onUnpark: (pane: NumberedPane) => void;
+  onMenu: (pane: NumberedPane, x: number, y: number) => void;
   onNew: () => void;
   onState: (state: DisplayState) => void;
   onDialog: (dialog: string) => void;
@@ -94,7 +94,7 @@ export function Sidebar(props: SidebarProps) {
   const [parkedOpen, setParkedOpen] = useState(true);
   const summary = rollup(terminals.concat(parked), notifications);
   const grid = mode === "grid";
-  const row = (p: Pane, isParked: boolean) => {
+  const row = (p: NumberedPane, isParked: boolean) => {
     const state = paneState(p, notifications);
     const unread = unreadFor(notifications, p).length;
     const title = p.title || "shell";

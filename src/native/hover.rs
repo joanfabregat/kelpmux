@@ -1,6 +1,6 @@
 //! Client-local hover feedback. Geometry is shared with click routing; probing
 //! an action never sends it or mutates the live router/server.
-use super::{input::Router, protocol::*, ui::DialogKind, workspace as ws};
+use super::{history::RestoreChoices, input::Router, protocol::*, ui::DialogKind, workspace as ws};
 
 pub fn target(frame: &Frame, point: Point) -> Option<Rect> {
     if frame.ui.tab_drop.is_some() || frame.ui.grid_drop.is_some() {

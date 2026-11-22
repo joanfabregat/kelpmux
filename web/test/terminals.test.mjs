@@ -13,12 +13,10 @@ import {
 
 const pane = (id, status = "idle", extra = {}) => ({
   id,
-  number: id,
   pid: 100 + id,
   cwd: `/home/u/p${id}`,
   title: `t${id}`,
   status,
-  parked: false,
   dead: false,
   ...extra,
 });

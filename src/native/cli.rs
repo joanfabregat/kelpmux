@@ -12,14 +12,14 @@ use std::{
 };
 
 pub const HELP: &str = "Owned native terminal workspaces (Linux):
-  kelpmux start [--workspace NAME] [--config PATH] [--template PATH] [--shell PATH] [--cwd PATH] [--replace-running] [--server-binary PATH]
+  kelpmux start [--workspace NAME] [--config PATH] [--template PATH] [--shell PATH] [--cwd PATH] [--replace-running] [--server-binary PATH] [--upload-dir PATH] [--upload-retention-days DAYS]
   kelpmux ssh-entry [--workspace NAME] [--takeover]
   kelpmux status|stop|recover|diagnostics|templates [--workspace NAME]
   kelpmux bridge [--workspace NAME] [--socket PATH]
   kelpmux web-bridge [--workspace NAME] [--socket PATH] [--state-dir PATH]
   kelpmux web-relay --config PATH   (browser client; see docs/web.md)
   kelpmux stream-inspect [--workspace NAME] [PANE_ID ...]
-  kelpmux server [--socket PATH] [--state-dir PATH] [--shell PATH] [--cwd PATH] [--size CxR] [--config PATH]
+  kelpmux server [--socket PATH] [--state-dir PATH] [--shell PATH] [--cwd PATH] [--size CxR] [--config PATH] [--upload-dir PATH] [--upload-retention-days DAYS]
   kelpmux attach [--workspace NAME] [--socket PATH] [--takeover] [--current-client]
   kelpmux ctl [--socket PATH] list|new|reclaim ID|shutdown
 
@@ -27,6 +27,8 @@ start owns a detached server; ssh-entry starts or attaches. stop ends its proces
 The server (KelpServer 0.3 or later) starts without panes; the TUI or web client
   creates the tabs from its saved layout or the workspace's template.
 --replace-running ends an outdated server's shells/jobs before starting the selected binary.
+--upload-dir and --upload-retention-days (default 7, 0 keeps them) set where and how long KelpServer keeps
+  files dropped onto terminals; start records them in workspace.json for the server.
 attach runs the TUI: a client of the server's pane stream that renders
   locally and keeps its UI state in the workspace's tui-state.json.
   A workspace started by another installed kelpmux runs that binary's attach;
@@ -69,6 +71,9 @@ struct Options {
     background: bool,
     /// `workspace.json` or `--config`, with `--template` applied.
     settings: super::config::Settings,
+    /// KelpServer's upload options (`--upload-dir`,
+    /// `--upload-retention-days`) of `start` and `server`.
+    uploads: super::uploads::Settings,
 }
 fn options(args: &[String]) -> Result<Options> {
     let state = super::lifecycle::workspace_path("main")?;
@@ -87,6 +92,7 @@ fn options(args: &[String]) -> Result<Options> {
         command: vec![],
         background: false,
         settings: super::config::Settings::default(),
+        uploads: super::uploads::Settings::default(),
     };
     let verb = args.first().ok_or("missing native command")?;
     let mut position = 1;
@@ -159,6 +165,25 @@ fn options(args: &[String]) -> Result<Options> {
                     result.size = parse_size(value)?;
                     validate_size(result.size.0, result.size.1)?;
                 }
+                // KelpServer's upload options, validated like KelpServer
+                // does: `server` passes them on, `start` records them in
+                // `workspace.json` for the server it starts.
+                "--upload-dir" if matches!(verb.as_str(), "server" | "start") => {
+                    result.uploads.dir = Some(PathBuf::from(value));
+                }
+                "--upload-retention-days" if matches!(verb.as_str(), "server" | "start") => {
+                    let days: u32 = value
+                        .parse()
+                        .map_err(|_| "--upload-retention-days needs a number of days")?;
+                    if days > super::uploads::MAX_RETENTION_DAYS {
+                        return Err(format!(
+                            "--upload-retention-days must be at most {}",
+                            super::uploads::MAX_RETENTION_DAYS
+                        )
+                        .into());
+                    }
+                    result.uploads.retention_days = Some(days);
+                }
                 _ => return Err(format!("unknown {verb} option {arg}").into()),
             }
         } else if matches!(verb.as_str(), "ctl" | "stream-inspect") {
@@ -200,13 +225,31 @@ fn options(args: &[String]) -> Result<Options> {
     if !socket_explicit {
         result.socket = result.state.join("control.sock");
     }
-    if let Some(path) = config_path {
+    let settings_path = if let Some(path) = config_path {
         result.settings = super::config::Settings::load(&path)?;
         result.settings.ui_config()?;
+        Some(path)
     } else if matches!(verb.as_str(), "start" | "ssh-entry")
         && result.state.join(super::config::FILE).is_file()
     {
-        result.settings = super::config::Settings::load(&result.state.join(super::config::FILE))?;
+        let path = result.state.join(super::config::FILE);
+        result.settings = super::config::Settings::load(&path)?;
+        Some(path)
+    } else {
+        None
+    };
+    // Like `kelpserver start`: command-line upload options override the
+    // configuration file's (`upload_dir`, `upload_retention_days`).
+    if verb == "start" {
+        if let Some(path) = &settings_path {
+            let server = super::lifecycle::Settings::load(path)?;
+            if result.uploads.dir.is_none() {
+                result.uploads.dir = server.upload_dir;
+            }
+            if result.uploads.retention_days.is_none() {
+                result.uploads.retention_days = server.upload_retention_days;
+            }
+        }
     }
     if let Some(shell) = &result.settings.shell {
         if !shell_explicit {
@@ -233,6 +276,9 @@ fn options(args: &[String]) -> Result<Options> {
     result.state = absolute(&result.state)?;
     result.shell = absolute(&result.shell)?;
     result.cwd = absolute(&result.cwd)?;
+    if let Some(dir) = &result.uploads.dir {
+        result.uploads.dir = Some(absolute(dir)?);
+    }
     Ok(result)
 }
 /// Serves the embedded browser client through the generic relay. A build
@@ -260,6 +306,16 @@ fn start_server(options: &Options) -> Result<()> {
         if let Some(template) = &options.settings.template {
             template.validate()?;
         }
+    }
+    // Upload options are recorded like `kelpserver start` does, whether or
+    // not a server is running: the server reads them from `workspace.json`
+    // (its `--config`) when it next starts.
+    if options.uploads != super::uploads::Settings::default() {
+        super::lifecycle::private_state(&options.state)?;
+        super::lifecycle::persist_upload_settings(
+            &options.state.join(super::config::FILE),
+            &options.uploads,
+        )?;
     }
     // The server starts without panes: the TUI or web client that connects
     // creates the workspace's tabs.
@@ -994,8 +1050,11 @@ mod fit_tests {
 
     fn grid_workspace() -> super::super::workspace::Workspace {
         let mut workspace = super::super::workspace::Workspace::new(120, 40).unwrap();
-        workspace.panes.push(super::super::protocol::PaneInfo {
-            id: 1,
+        workspace.panes.push(super::super::protocol::Tab {
+            info: super::super::protocol::PaneInfo {
+                id: 1,
+                ..Default::default()
+            },
             number: 1,
             ..Default::default()
         });

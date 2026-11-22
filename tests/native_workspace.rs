@@ -91,18 +91,21 @@ fn adaptive_grid_supports_large_workspaces_and_pages_follow_selection() {
     );
 }
 
-fn pane(id: u64) -> PaneInfo {
-    PaneInfo {
-        id,
+fn pane(id: u64) -> Tab {
+    Tab {
+        info: PaneInfo {
+            id,
+            pid: 1,
+            cwd: "/".into(),
+            title: format!("pane {id}"),
+            status: Status::Unknown,
+            session_id: None,
+            dead: false,
+            ..Default::default()
+        },
         number: id as usize,
-        pid: 1,
-        cwd: "/".into(),
-        title: format!("pane {id}"),
         palette: id as u8,
-        status: Status::Unknown,
-        session_id: None,
-        dead: false,
-        ..Default::default()
+        parked: false,
     }
 }
 

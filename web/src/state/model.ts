@@ -42,10 +42,8 @@ export const statusText: Record<string, string> = {
 /** The pane fields this module reads (a subset of KelpServer PaneInfo). */
 export type StatePane = {
   id: number;
-  number: number;
   pid: number;
   status: string;
-  parked?: boolean;
   dead?: boolean;
   kind?: string | null;
 };

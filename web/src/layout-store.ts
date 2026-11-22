@@ -98,6 +98,16 @@ export function orderPanes<T extends { id: number }>(
     .map(({ pane }) => pane);
 }
 
+/** Panes with the number this browser shows for them: their position in
+ * `ordered` (this browser's order, `orderPanes`), from 1. KelpServer
+ * 0.3.0-beta.2 no longer sends a number; without a stored order this is
+ * the server's creation order, as the server's number was. */
+export function numberPanes<T extends { id: number }>(
+  ordered: T[],
+): (T & { number: number })[] {
+  return ordered.map((pane, index) => ({ ...pane, number: index + 1 }));
+}
+
 /** The order after moving `source` before `before` (null: to the end). */
 export function moveBefore(
   ids: number[],

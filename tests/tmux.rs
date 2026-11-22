@@ -1,6 +1,6 @@
 //! Real tmux tests always use a private socket, empty config, and disposable state.
 use kelpmux::{
-    model::{Agent, Kind, Status},
+    model::{Agent, Kind, Status, StatusLabel},
     process,
     tmux::Tmux,
     workspace::{self, Grid},

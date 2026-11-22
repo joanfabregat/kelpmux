@@ -3,7 +3,7 @@
 // the key bar itself and the phone's top bar. Layout rules are in device.ts;
 // key encoding and input mode in terminal/touch-keys.ts.
 import React, { useEffect, useState } from "react";
-import type { Pane } from "./terminal/types";
+import type { NumberedPane } from "./terminal/types";
 import { barKeys, type BarKey } from "./terminal/touch-keys";
 import {
   keyboardInset,
@@ -198,7 +198,7 @@ export function PhoneBar({
   onNotifications,
   onMenu,
 }: {
-  pane: Pane;
+  pane: NumberedPane;
   state: DisplayState;
   /** Terminals needing attention, shown on the back button. */
   attention: number;

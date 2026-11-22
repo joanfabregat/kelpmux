@@ -365,20 +365,20 @@ fn reattaching_in_the_same_epoch_restores_order_parking_and_colours() {
     assert!(c.workspace.panes.iter().any(|p| p.id == 2 && p.parked));
 }
 
-/// The composed-UI fields of `PaneInfo` (`parked`, `number`, `palette`)
-/// are neutral since KelpServer 0.3; the TUI never takes its arrangement
-/// from them.
+/// KelpServer 0.3.0-beta.2 sends no composed-UI fields (`parked`, `number`,
+/// `palette`); without saved state the first attach numbers the tabs in
+/// pane ID order, unparked and with their default colours.
 #[test]
-fn the_first_attach_ignores_the_servers_composed_fields() {
+fn the_first_attach_arranges_tabs_in_pane_id_order() {
     let mut c = controller_with(Document::default());
-    let mut panes = vec![info(1), info(2), info(3)];
-    panes[0].number = 2;
-    panes[1].parked = true;
-    panes[2].number = 1;
-    panes[2].palette = 7;
-    c.event(Event::Update(update(panes))).unwrap();
+    c.event(Event::Update(update(vec![info(1), info(2), info(3)])))
+        .unwrap();
     assert_eq!(order(&c), vec![1, 2, 3]);
     assert!(c.workspace.panes.iter().all(|p| !p.parked));
+    let numbers: Vec<_> = c.workspace.panes.iter().map(|p| p.number).collect();
+    assert_eq!(numbers, vec![1, 2, 3]);
+    let palettes: Vec<_> = c.workspace.panes.iter().map(|p| p.palette).collect();
+    assert_eq!(palettes, vec![0, 1, 2]);
     assert_eq!(c.store.pane(3).and_then(|p| p.color), None);
     assert!(c.store.document.migrated);
 }
@@ -420,6 +420,40 @@ fn the_first_arrangement_waits_for_session_data() {
     // Pane 1 is tab B by its folder; only tab A is created.
     assert_eq!(spawns(&c.take_requests()), [(Some("/srv/a".into()), None)]);
     assert_eq!(c.workspace.panes[0].title, "B");
+}
+
+/// A running KelpServer 0.2 started with `--startup-panes layout` created
+/// its own startup tabs. Since `kelpclient-protocol` 0.3.0 its Welcome
+/// decodes (`StartupPanes::Layout`), and the TUI adopts those panes rather
+/// than spawning the template's tabs beside them; an unknown policy is
+/// treated the same way.
+#[test]
+fn a_server_that_made_its_own_startup_tabs_gets_no_spawns() {
+    for policy in [StartupPanes::Layout, StartupPanes::Unknown] {
+        let mut c = welcomed(
+            Document {
+                migrated: true,
+                layout: vec![LayoutTab {
+                    cwd: "/srv/a".into(),
+                    name: Some("A".into()),
+                    ..LayoutTab::default()
+                }],
+                ..Document::default()
+            },
+            Options::default(),
+            Extras {
+                capabilities: vec!["startup-policy"],
+                startup_panes: Some(policy),
+                ..Extras::default()
+            },
+        );
+        c.take_requests();
+        c.event(Event::Update(update(vec![info(1), info(2)])))
+            .unwrap();
+        assert!(c.synced(), "{policy:?}");
+        assert!(spawns(&c.take_requests()).is_empty(), "{policy:?}");
+        assert_eq!(order(&c), vec![1, 2], "{policy:?}");
+    }
 }
 
 #[test]
@@ -848,7 +882,7 @@ fn exchange(c: &mut Controller) {
     c.take_requests();
     c.exchange_state().unwrap();
 }
-fn pane(c: &Controller, id: PaneId) -> &PaneInfo {
+fn pane(c: &Controller, id: PaneId) -> &Tab {
     c.workspace.panes.iter().find(|p| p.id == id).unwrap()
 }
 

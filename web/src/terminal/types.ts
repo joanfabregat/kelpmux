@@ -27,14 +27,10 @@ export type Screen = {
 };
 export type Pane = {
   id: number;
-  number: number;
   pid: number;
   cwd: string;
   title: string;
   status: string;
-  /** Always false since KelpServer 0.3: parking is each client's own state
-   * (this browser keeps it in its layout store). */
-  parked: boolean;
   dead: boolean;
   kind?: string;
   session_id?: string;
@@ -50,6 +46,11 @@ export type Pane = {
   /** Last terminal output (seconds; 0 when unknown). */
   last_activity?: number;
 };
+/** A pane as a client shows it: KelpServer's facts plus the number the
+ * client gives it, its position in the client's own order of terminals
+ * (from 1). KelpServer 0.3.0-beta.2 sends neither a number nor parking:
+ * both are client state. */
+export type NumberedPane = Pane & { number: number };
 export type Snapshot = { pane: number; revision: number; screen: Screen };
 export type SearchMatch = {
   source: "primary" | "alternate";

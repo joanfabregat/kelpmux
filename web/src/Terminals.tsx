@@ -5,7 +5,7 @@
 // (`repos`, `commands`) when the bridge offers them; the table works
 // without them.
 import { useEffect, useMemo, useState } from "react";
-import type { Pane } from "./terminal/types";
+import type { NumberedPane } from "./terminal/types";
 import { Icon } from "./status";
 import { age } from "./format";
 import { StateMark } from "./state/StateMark";
@@ -57,7 +57,11 @@ type Query = (method: string, params?: any) => Promise<any>;
 
 /** Repository facts for the panes' folders and their foreground programs,
  * fetched while the dialog is open. Failures leave the columns plain. */
-function useBridgeFacts(panes: Pane[], query: Query, operations: Set<string>) {
+function useBridgeFacts(
+  panes: NumberedPane[],
+  query: Query,
+  operations: Set<string>,
+) {
   const [repos, setRepos] = useState(new Map<string, RepoInfo | null>());
   const [commands, setCommands] = useState<Record<string, string | null>>({});
   const paths = repoQueryPaths(panes);
@@ -96,7 +100,7 @@ function useBridgeFacts(panes: Pane[], query: Query, operations: Set<string>) {
   return { repos, commands };
 }
 
-function Folder({ row }: { row: TerminalRow<Pane> }) {
+function Folder({ row }: { row: TerminalRow<NumberedPane> }) {
   const { repo } = row;
   const url = githubUrl(repo?.github);
   return (
@@ -140,7 +144,7 @@ function Folder({ row }: { row: TerminalRow<Pane> }) {
   );
 }
 
-function Agent({ row }: { row: TerminalRow<Pane> }) {
+function Agent({ row }: { row: TerminalRow<NumberedPane> }) {
   if (!row.agent) return <span className="faint">—</span>;
   return (
     <span className="terminal-agent">
@@ -151,7 +155,7 @@ function Agent({ row }: { row: TerminalRow<Pane> }) {
   );
 }
 
-function Command({ row }: { row: TerminalRow<Pane> }) {
+function Command({ row }: { row: TerminalRow<NumberedPane> }) {
   if (!row.command) return <span className="faint">—</span>;
   const now = Date.now() / 1000;
   return (
@@ -164,7 +168,7 @@ function Command({ row }: { row: TerminalRow<Pane> }) {
   );
 }
 
-const activity = (row: TerminalRow<Pane>) =>
+const activity = (row: TerminalRow<NumberedPane>) =>
   row.lastActivity ? age(row.lastActivity) : "—";
 
 export function TerminalsPanel({
@@ -179,7 +183,7 @@ export function TerminalsPanel({
   onOpen,
 }: {
   /** Every terminal, in this browser's order (parked ones included). */
-  panes: Pane[];
+  panes: NumberedPane[];
   parked: Set<number>;
   notifications: Notification[];
   filter: TerminalFilter;
@@ -190,7 +194,7 @@ export function TerminalsPanel({
   query: Query;
   /** Show cards instead of a table (phones). */
   cards: boolean;
-  onOpen: (pane: Pane) => void;
+  onOpen: (pane: NumberedPane) => void;
 }) {
   const { repos, commands } = useBridgeFacts(panes, query, operations);
   const rows = terminalRows(
@@ -202,12 +206,12 @@ export function TerminalsPanel({
     commands,
   );
   const counts = useMemo(() => filterCounts(panes), [panes]);
-  const label = (row: TerminalRow<Pane>) =>
+  const label = (row: TerminalRow<NumberedPane>) =>
     `Open terminal ${row.pane.number || ""} ${row.name}${row.parked ? " (parked)" : ""}`.replace(
       /\s+/g,
       " ",
     );
-  const number = (row: TerminalRow<Pane>) =>
+  const number = (row: TerminalRow<NumberedPane>) =>
     row.parked ? "–" : row.pane.number || "·";
   return (
     <div className="panel-body">

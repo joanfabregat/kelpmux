@@ -1,6 +1,6 @@
 import React, { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { Renderer, type Selection } from "./renderer";
-import type { Pane, Snapshot, SearchMatch } from "./types";
+import type { NumberedPane, Snapshot, SearchMatch } from "./types";
 import type { Session } from "./connection";
 import { encodeKey, encodeText } from "./keyboard";
 import { mouseButton, mouseBytes } from "./mouse";
@@ -34,7 +34,13 @@ const touchSlop = 8;
  * lease, so among several windows showing the same terminal the most
  * recently active one decides its size; a background window never resizes.
  */
-export function TerminalTile({ pane, store }: { pane: Pane; store: Store }) {
+export function TerminalTile({
+  pane,
+  store,
+}: {
+  pane: NumberedPane;
+  store: Store;
+}) {
   const canvas = useRef<HTMLCanvasElement>(null);
   useLayoutEffect(() => {
     if (!canvas.current) return;
@@ -141,7 +147,7 @@ export function Terminal({
   interceptText,
   onFiles,
 }: {
-  pane: Pane;
+  pane: NumberedPane;
   store: Store;
   active: boolean;
   layout: "grid" | "tabs";

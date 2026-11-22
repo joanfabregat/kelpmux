@@ -1,7 +1,7 @@
 //! The TUI's UI state, palette and configurable prefix bindings. Copied from
 //! KelpServer's composed UI (ADR 0002 step 2); KelpServer deletes its copy in
 //! step 3.
-use crate::Result;
+use crate::{Result, model::StatusLabel};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 pub const FOOTER_BG: u8 = 239;
@@ -61,7 +61,7 @@ fn notification_priority(status: crate::model::Status) -> u8 {
 }
 pub fn notification_icon<'a>(
     ui: &'a UiState,
-    panes: impl IntoIterator<Item = &'a super::protocol::PaneInfo>,
+    panes: impl IntoIterator<Item = &'a super::protocol::Tab>,
 ) -> Option<&'static str> {
     let panes: Vec<_> = panes.into_iter().collect();
     ui.notifications
@@ -113,7 +113,7 @@ pub fn notification_label(icon: &str) -> &'static str {
         _ => "Alerts",
     }
 }
-pub fn pane_indicator(ui: &UiState, pane: &super::protocol::PaneInfo) -> Option<&'static str> {
+pub fn pane_indicator(ui: &UiState, pane: &super::protocol::Tab) -> Option<&'static str> {
     use crate::model::Status;
     match pane.status {
         Status::InputNeeded | Status::TurnFinished | Status::Failed | Status::WaitingBackground => {
@@ -136,7 +136,7 @@ pub fn pane_indicator(ui: &UiState, pane: &super::protocol::PaneInfo) -> Option<
 }
 pub fn visible_notifications<'a>(
     ui: &'a UiState,
-    panes: impl IntoIterator<Item = &'a super::protocol::PaneInfo>,
+    panes: impl IntoIterator<Item = &'a super::protocol::Tab>,
 ) -> impl Iterator<Item = &'a super::protocol::Notification> {
     let panes: Vec<_> = panes.into_iter().collect();
     ui.notifications.iter().rev().filter(move |item| {
@@ -149,7 +149,7 @@ pub fn visible_notifications<'a>(
 }
 pub fn has_unread_notifications<'a>(
     ui: &UiState,
-    panes: impl IntoIterator<Item = &'a super::protocol::PaneInfo>,
+    panes: impl IntoIterator<Item = &'a super::protocol::Tab>,
 ) -> bool {
     panes.into_iter().any(|pane| {
         ui.notifications
@@ -489,7 +489,7 @@ pub fn geometry_bucket(cols: u16) -> usize {
 /// its ID all match.
 pub fn matches(
     event: &super::protocol::Notification,
-    pane: &super::protocol::PaneInfo,
+    pane: &super::protocol::Tab,
     run: &str,
 ) -> bool {
     event.origin.as_ref().is_some_and(|origin| {

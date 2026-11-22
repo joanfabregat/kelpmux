@@ -8,7 +8,7 @@
 // during the upload), `max_file=N` (a smaller per-file limit).
 import React, { useState } from "react";
 import { createRoot } from "react-dom/client";
-import type { Pane } from "../src/terminal/types";
+import type { NumberedPane } from "../src/terminal/types";
 import {
   UploadDialog,
   UploadSettings,
@@ -109,14 +109,13 @@ const transport: UploadTransport = {
     };
   },
 };
-const pane: Pane = {
+const pane: NumberedPane = {
   id: 1,
   number: 1,
   pid: 101,
   cwd: "/home/me/project",
   title: "shell",
   status: "idle",
-  parked: false,
   dead: false,
 };
 

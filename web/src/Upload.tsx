@@ -2,7 +2,7 @@
 // to the host where its shells run, then their shell-quoted paths are pasted
 // into that terminal. The protocol lives in terminal/uploads.ts.
 import React, { useEffect, useRef, useState } from "react";
-import type { Pane } from "./terminal/types";
+import type { NumberedPane } from "./terminal/types";
 import {
   cancelled,
   destinationProblem,
@@ -37,7 +37,7 @@ export function saveUploadDestination(path: string) {
 
 /** Files dropped onto a terminal, before the dialog opens. */
 export type UploadDrop = {
-  pane: Pane;
+  pane: NumberedPane;
   files: File[];
   /** Names of dropped folders, which are not uploaded. */
   folders: string[];

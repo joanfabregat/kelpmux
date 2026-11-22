@@ -248,7 +248,7 @@ impl Controller {
     fn is_scratch(&self, id: PaneId) -> bool {
         self.workspace.ui.scratch == Some(id)
     }
-    fn main_panes(&self) -> impl Iterator<Item = &PaneInfo> {
+    fn main_panes(&self) -> impl Iterator<Item = &Tab> {
         let scratch = self.workspace.ui.scratch;
         self.workspace
             .panes
@@ -695,9 +695,11 @@ impl Controller {
         };
     }
 
-    fn info_for(&self, id: PaneId, base: Option<&PaneInfo>) -> PaneInfo {
+    /// The tab for pane `id`: the server's metadata (`base`) with this TUI's
+    /// parking, colour and name. Its number is assigned by `reflow`.
+    fn info_for(&self, id: PaneId, base: Option<&PaneInfo>) -> Tab {
         let state = self.store.pane(id).cloned().unwrap_or_default();
-        let mut info = base.cloned().unwrap_or_else(|| {
+        let mut info = Tab::from(base.cloned().unwrap_or_else(|| {
             let session = self.sessions.get(&id);
             PaneInfo {
                 id,
@@ -705,7 +707,7 @@ impl Controller {
                 title: "shell".into(),
                 ..PaneInfo::default()
             }
-        });
+        }));
         info.parked = state.parked && !state.scratch;
         info.palette = state.color.unwrap_or_else(|| default_palette(id));
         if let Some(name) = state.name {
@@ -738,10 +740,10 @@ impl Controller {
             }
         } else {
             // A new server run, or the first attach to this workspace: map
-            // the layout template onto its panes. Nothing is taken from the
-            // server's composed-UI fields (`parked`, `number`, `palette`):
-            // KelpServer 0.3 fills them with neutral values, and the
-            // composed TUI's layout was migrated from its files on open.
+            // the layout template onto its panes. Parking, numbers and colours
+            // are this TUI's (KelpServer 0.3.0-beta.2 no longer sends the
+            // composed UI's fields), and the composed TUI's layout was
+            // migrated from its files on open.
             self.store.mark_migrated();
             order = self.apply_template(&ids);
         }
@@ -894,7 +896,7 @@ impl Controller {
             .iter()
             .map(|pane| {
                 let mut info = self.info_for(pane.id, self.infos.get(&pane.id));
-                // Local presentation state wins over the composed fields.
+                // Keep this TUI's parking, colour and number of the tab.
                 info.parked = pane.parked;
                 info.palette = pane.palette;
                 info.number = pane.number;
@@ -1507,7 +1509,7 @@ impl Controller {
         let mut panes = Vec::with_capacity(previous.len());
         for id in order.iter().chain(scratch.iter()) {
             let old = previous.iter().find(|pane| pane.id == *id);
-            let mut info = self.info_for(*id, self.infos.get(id).or(old));
+            let mut info = self.info_for(*id, self.infos.get(id).or(old.map(|old| &old.info)));
             if let Some(old) = old {
                 info.number = old.number;
                 info.dead |= old.dead;

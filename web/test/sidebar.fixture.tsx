@@ -8,7 +8,7 @@
 // the case: `mode=light`, `tabs=N`, `view=grid`, `folded=1`.
 import React, { useEffect, useState } from "react";
 import { createRoot } from "react-dom/client";
-import type { Pane } from "../src/terminal/types";
+import type { NumberedPane } from "../src/terminal/types";
 import { Sidebar } from "../src/Sidebar";
 import { NotificationsButton, PaneLabel, UnreadMark } from "../src/Shell";
 import { TerminalNotificationsPanel } from "../src/Panels";
@@ -51,7 +51,7 @@ const folders = [
   "/home/alice/scratch",
   "/home/alice",
 ];
-const panes: Pane[] = Array.from(
+const panes: NumberedPane[] = Array.from(
   { length: Number(query.get("tabs")) || 10 },
   (_, i) => ({
     id: i + 1,
@@ -60,7 +60,6 @@ const panes: Pane[] = Array.from(
     cwd: folders[i % folders.length],
     title: kinds[i % 3] ? `${kinds[i % 3]} ${i + 1}` : "shell",
     status: statuses[i % statuses.length],
-    parked: false,
     dead: false,
     kind: kinds[i % 3],
   }),
@@ -102,7 +101,7 @@ function Fixture() {
   );
   const grid = query.get("view") === "grid";
   const focused = panes.find((p) => p.id === current)!;
-  const unread = (p: Pane) => unreadFor(notifications, p).length;
+  const unread = (p: NumberedPane) => unreadFor(notifications, p).length;
   const acknowledge = (ids: number[]) => {
     (window as any).acks.push(...ids);
     setNotifications((list) =>

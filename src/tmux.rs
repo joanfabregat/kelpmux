@@ -1,6 +1,6 @@
 use crate::{
     Result, label,
-    model::{Agent, Status, WORKING_FRAMES},
+    model::{Agent, Status, StatusLabel, WORKING_FRAMES},
 };
 use std::{collections::BTreeMap, path::PathBuf, process::Command};
 
