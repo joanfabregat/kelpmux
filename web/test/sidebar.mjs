@@ -1,10 +1,13 @@
 // The sidebar and per-terminal notifications (test/sidebar.fixture.tsx), in
 // Chromium and WebKit, without any network or SSH endpoint:
 // 1. No full width mode: no sidebar entry and no edge handle.
-// 2. A tab with unread notifications shows a bell on its sidebar row and
-//    grid tile; the bell in the terminal's header opens that terminal's
-//    notifications only, where one or all of them are marked read. There is
-//    no global Notifications entry.
+// 2. A tab with unread notifications that is not shown has a bell on its
+//    sidebar row and grid tile; showing the terminal, or focusing its tile,
+//    marks them read (other tiles keep their bells), and one that arrives
+//    while the window is in the background waits until it is looked at
+//    again. The bell in a terminal's header opens that terminal's
+//    notifications only, on History, where one or all are also marked read.
+//    There is no global Notifications entry.
 // 3. The layout: no separator under the logo, the tools in two columns
 //    above the vitals, the account and settings below the vitals at the very
 //    bottom, all fitting 800 px with ten tabs; one column when folded; the
@@ -140,53 +143,86 @@ for (const engine of [chromium, webkit]) {
         await page.locator(".tool-grid .tool-item .grow").allTextContents(),
         ["Grid", "Terminals", "Closed", "Search", "Help"],
       );
-      // 2. Unread bells on tabs 2 (two unread) and 5 (one), none elsewhere.
+      // 2. Terminal 1 is shown. Unread bells on tabs 2 (two unread) and 5
+      // (one), none elsewhere, and nothing marked read yet.
       const row = (id) => page.locator(`.term-row[data-pane="${id}"]`);
+      const acks = () => page.evaluate(() => window.acks);
       assert.equal(await row(2).locator(".unread-mark").count(), 1);
       assert.equal(await row(2).locator(".unread-mark b").textContent(), "2");
       assert.equal(await row(5).locator(".unread-mark").count(), 1);
       assert.equal(await row(5).locator(".unread-mark b").count(), 0);
       assert.equal(await row(1).locator(".unread-mark").count(), 0);
-      // The header's bell opens this terminal's notifications only.
+      assert.deepEqual(await acks(), []);
       const bell = page.locator(".grid-pane > header .pane-notifications");
-      assert.equal(await bell.getAttribute("data-unread"), "2");
-      await bell.click();
+      assert.equal(await bell.getAttribute("data-unread"), null);
+      // A terminal's notifications (its menu's Notifications…) open on
+      // History; Unread and marking one or all read remain.
+      await row(2).click({ button: "right" });
       const dialog = page.locator('[data-dialog="notifications"]');
       await dialog.waitFor();
       assert.match(await dialog.locator("h2").textContent(), /claude 2/);
+      assert.equal(
+        await dialog
+          .getByRole("button", { name: "History" })
+          .getAttribute("aria-pressed"),
+        "true",
+      );
       await shot(page, name, "desktop-notifications");
       const rows = () => dialog.locator(".list-row");
-      assert.deepEqual(
-        await rows().evaluateAll((els) =>
-          els.map((e) => e.dataset.notification),
-        ),
-        ["3", "2"],
-      );
-      // History adds its read one; notification 4 (tab 5) never appears.
-      await dialog.getByRole("button", { name: "History" }).click();
-      assert.deepEqual(
-        await rows().evaluateAll((els) =>
-          els.map((e) => e.dataset.notification),
-        ),
-        ["3", "2", "1"],
-      );
+      const ids = () =>
+        rows().evaluateAll((els) => els.map((e) => e.dataset.notification));
+      // Its read one too; notification 4 (tab 5) never appears.
+      assert.deepEqual(await ids(), ["3", "2", "1"]);
       await dialog.getByRole("button", { name: /^Unread/ }).click();
-      // Mark one read, then all of this terminal's.
+      assert.deepEqual(await ids(), ["3", "2"]);
       const markThree = dialog.locator('[data-notification="3"] .icon-btn');
       assert.equal(
         await markThree.getAttribute("aria-label"),
         "Mark “Needs input · 3” read",
       );
       await markThree.click();
-      assert.deepEqual(await page.evaluate(() => window.acks), [3]);
+      assert.deepEqual(await acks(), [3]);
       assert.equal(await row(2).locator(".unread-mark b").count(), 0);
       await dialog.getByRole("button", { name: "Mark all read" }).click();
-      assert.deepEqual(await page.evaluate(() => window.acks), [3, 2]);
+      assert.deepEqual(await acks(), [3, 2]);
       assert.equal(await rows().count(), 0);
       assert.equal(await row(2).locator(".unread-mark").count(), 0);
-      assert.equal(await bell.getAttribute("data-unread"), null);
-      // Tab 5 keeps its bell: acknowledging is per terminal.
+      await dialog.getByRole("button", { name: "Close dialog" }).click();
+      // Showing terminal 5 marks its notification read; the header's bell
+      // has none left.
       assert.equal(await row(5).locator(".unread-mark").count(), 1);
+      await row(5).locator(".term-item").click();
+      await page.waitForFunction(() => window.acks.length === 3);
+      assert.deepEqual(await acks(), [3, 2, 4]);
+      await row(5).locator(".unread-mark").waitFor({ state: "detached" });
+      assert.equal(await bell.getAttribute("data-unread"), null);
+      // One arriving for the shown terminal is read at once; another
+      // terminal's keeps its bell.
+      await page.evaluate(() => window.notify(5));
+      await page.waitForFunction(() => window.acks.length === 4);
+      assert.deepEqual(await acks(), [3, 2, 4, 100]);
+      await page.evaluate(() => window.notify(1));
+      await page.waitForTimeout(100);
+      assert.deepEqual(await acks(), [3, 2, 4, 100]);
+      assert.equal(await row(1).locator(".unread-mark").count(), 1);
+      // With the window in the background, an arrival keeps the shown
+      // terminal's bell until the window is focused again.
+      await page.evaluate(() => {
+        document.hasFocus = () => false;
+        window.dispatchEvent(new Event("blur"));
+      });
+      await page.evaluate(() => window.notify(5));
+      await page.waitForTimeout(100);
+      assert.equal(await row(5).locator(".unread-mark").count(), 1);
+      assert.equal(await bell.getAttribute("data-unread"), "1");
+      assert.equal((await acks()).length, 4);
+      await page.evaluate(() => {
+        document.hasFocus = () => true;
+        window.dispatchEvent(new Event("focus"));
+      });
+      await page.waitForFunction(() => window.acks.length === 5);
+      assert.deepEqual(await acks(), [3, 2, 4, 100, 102]);
+      await row(5).locator(".unread-mark").waitFor({ state: "detached" });
       assert.deepEqual(errors, []);
       await context.close();
     }
@@ -228,15 +264,22 @@ for (const engine of [chromium, webkit]) {
       );
       await shot(page, name, "desktop-folded-grid");
       await checkBottom(page, 1);
-      // The grid tiles carry the bell too.
-      assert.equal(
-        await page.locator('[data-tile-pane="2"] header .unread-mark').count(),
-        1,
-      );
-      assert.equal(
-        await page.locator('[data-tile-pane="1"] header .unread-mark').count(),
-        0,
-      );
+      // The grid tiles carry the bell too; focusing a tile marks its
+      // notifications read, and the other tiles keep theirs.
+      const tileBell = (id) =>
+        page.locator(`[data-tile-pane="${id}"] header .unread-mark`);
+      assert.equal(await tileBell(2).count(), 1);
+      assert.equal(await tileBell(5).count(), 1);
+      assert.equal(await tileBell(1).count(), 0);
+      assert.deepEqual(await page.evaluate(() => window.acks), []);
+      await page.locator('[data-tile-pane="2"]').click();
+      await page.waitForFunction(() => window.acks.length === 2);
+      assert.deepEqual(await page.evaluate(() => window.acks), [3, 2]);
+      await tileBell(2).waitFor({ state: "detached" });
+      assert.equal(await tileBell(5).count(), 1);
+      await page.evaluate(() => window.notify(5));
+      await page.waitForTimeout(100);
+      assert.equal(await tileBell(5).locator("b").textContent(), "2");
       assert.deepEqual(errors, []);
       await context.close();
     }
@@ -274,18 +317,25 @@ for (const engine of [chromium, webkit]) {
         await page.locator('.term-row[data-pane="2"] .unread-mark').count(),
         1,
       );
+      // The list shows no terminal: nothing is marked read until one opens.
+      assert.deepEqual(await page.evaluate(() => window.acks), []);
       await page.locator('.term-row[data-pane="2"] .term-item').click();
+      await page.waitForFunction(() => window.acks.length === 2);
       const bell = page.locator(".phone-bar .pane-notifications");
-      assert.equal(await bell.getAttribute("data-unread"), "2");
+      await page
+        .locator(".phone-bar .pane-notifications:not([data-unread])")
+        .waitFor();
       await shot(page, name, "phone-terminal");
       await bell.click();
-      await page.locator('[data-dialog="notifications"]').waitFor();
+      const dialog = page.locator('[data-dialog="notifications"]');
+      await dialog.waitFor();
+      assert.equal(await dialog.locator(".list-row").count(), 3);
       await shot(page, name, "phone-notifications");
       assert.deepEqual(errors, []);
       await context.close();
     }
     console.log(
-      `PASS: ${name} sidebar: no full width, per-terminal notifications, two-column tools above the vitals, account at the bottom`,
+      `PASS: ${name} sidebar: no full width, showing a terminal marks it read, per-terminal notifications, two-column tools above the vitals, account at the bottom`,
     );
   } finally {
     await browser.close();

@@ -23,8 +23,9 @@ import { paletteColor, paletteNames } from "./palette";
 const name = (p: Pane) => p.title || "shell";
 
 /** One terminal's notifications, opened from the bell in its header (or
- * Ctrl-B b): its unread ones, or its whole retained history; mark one or
- * all of them read. Read marks are the workspace's, shared with the TUI. */
+ * Ctrl-B b): its whole retained history (the default), or its unread ones;
+ * mark one or all of them read. Read marks are the workspace's, shared with
+ * the TUI. */
 export function TerminalNotificationsPanel({
   pane,
   notifications,
@@ -34,18 +35,20 @@ export function TerminalNotificationsPanel({
   notifications: Notification[];
   onAcknowledge: (ids: number[]) => void;
 }) {
-  const [history, setHistory] = useState(false);
+  // Showing a terminal marks its notifications read, so the panel is
+  // mainly its history; Unread and Mark all read remain.
+  const [history, setHistory] = useState(true);
   const list = paneNotifications(notifications, pane, history);
   const unread = paneNotifications(notifications, pane, false);
   return (
     <div className="panel-body" data-pane={pane.id}>
       <div className="panel-toolbar">
         <div className="seg panel-seg" role="group" aria-label="Notifications">
-          <button aria-pressed={!history} onClick={() => setHistory(false)}>
-            Unread <span className="count">{unread.length}</span>
-          </button>
           <button aria-pressed={history} onClick={() => setHistory(true)}>
             History
+          </button>
+          <button aria-pressed={!history} onClick={() => setHistory(false)}>
+            Unread <span className="count">{unread.length}</span>
           </button>
         </div>
         <span className="spacer" />

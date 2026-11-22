@@ -6,6 +6,7 @@ import {
   notificationStatus,
   paneNotifications,
   paneState,
+  readingPane,
   rollup,
   rollupSummary,
   tabTitle,
@@ -159,4 +160,17 @@ test("a terminal's panel lists its own notifications, unread or history", () => 
     paneNotifications(list, pane(1, "exited", { dead: true }), true),
     [],
   );
+});
+
+test("showing a terminal or focusing its tile is what marks it read", () => {
+  // A terminal shown on its own.
+  assert.equal(readingPane(0, 3, [3]), 3);
+  // The live grid: only the focused tile, when it is on this page.
+  assert.equal(readingPane(0, 2, [1, 2, 3, 4]), 2);
+  assert.equal(readingPane(0, 9, [1, 2, 3, 4]), 0);
+  // Nothing on screen (the phone's terminal list) or nothing focused.
+  assert.equal(readingPane(0, 3, []), 0);
+  assert.equal(readingPane(0, 0, [1, 2]), 0);
+  // A popup window shows its own terminal.
+  assert.equal(readingPane(5, 3, [5]), 5);
 });

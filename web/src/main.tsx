@@ -86,6 +86,7 @@ import {
   nextPane,
   notificationMatches,
   paneState,
+  readingPane,
   rollup,
   stateLabel,
   tabTitle,
@@ -93,6 +94,7 @@ import {
   type DisplayState,
   type Notification,
 } from "./state/model";
+import { useReadShown } from "./state/read";
 import { gridNeighbour, prefixAction } from "./prefix";
 import { KeyBar, PhoneBar, useDevice, useVisualViewport } from "./Mobile";
 import { sidebarFolded } from "./device";
@@ -1074,9 +1076,8 @@ function App() {
       store.session?.request("acknowledge", { notification: id });
     }
   }
-  /** Opens a terminal's notifications (its header's bell, Ctrl-B b or its
-   * menu). Showing a terminal no longer marks them read: its tab keeps the
-   * bell until they are marked read there (or by the TUI). */
+  /** Opens a terminal's notifications, mainly their history (its header's
+   * bell, Ctrl-B b or its menu). */
   function openNotifications(pane: Pane) {
     setMenu(null);
     setNotifyPane(pane.id);
@@ -1086,6 +1087,19 @@ function App() {
   const shownPane =
     popupPane ||
     (active && !(phone && phoneList) && view === "single" ? active : 0);
+  // Showing a terminal marks its notifications read, as focusing one does
+  // in the TUI: the terminal shown on its own or the focused grid tile
+  // (other tiles keep their bells), only while this browser is signed in.
+  const readPane = readingPane(
+    popupPane,
+    active,
+    visible.map((p) => p.id),
+  );
+  useReadShown(
+    online && panesLoaded ? panes.find((p) => p.id === readPane) : undefined,
+    notifications,
+    acknowledge,
+  );
   // Opening or switching terminals returns to reading: the on-screen
   // keyboard never appears on its own.
   useEffect(() => {
