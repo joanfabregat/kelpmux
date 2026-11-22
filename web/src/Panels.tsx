@@ -1,24 +1,20 @@
-// Workspace dialogs, the web equivalents of the TUI's: agents, notifications,
-// overview, recently closed (recovery), search, parked terminals, move and
-// help. Each is a list of rows with mouse actions; nothing here changes the
-// TUI's layout.
+// Workspace dialogs, the web equivalents of the TUI's: notifications,
+// recently closed (recovery), search, parked terminals, move and help. The
+// Terminals table (agents and overview) lives in Terminals.tsx. Each is a
+// list of rows with mouse actions; nothing here changes the TUI's layout.
 import { useEffect, useRef, useState } from "react";
 import type { Pane, SearchMatch } from "./terminal/types";
 import { Icon } from "./status";
-import { age, basename } from "./format";
+import { age } from "./format";
 import { StateMark } from "./state/StateMark";
 import { ProviderLogo } from "./state/ProviderLogo";
 import {
-  agentFilterLabel,
-  agents,
   notificationMatches,
   notificationStatus,
   paneState,
   stateLabel,
   statusState,
-  statusText,
   visibleNotifications,
-  type AgentFilter,
   type Notification,
 } from "./state/model";
 import { shortcuts } from "./shortcuts";
@@ -52,72 +48,6 @@ function OpenButton({
       <Icon name="arrow-right" size="sm" />
       Open
     </button>
-  );
-}
-
-export function AgentsPanel({
-  panes,
-  parked,
-  notifications,
-  filter,
-  setFilter,
-  onOpen,
-}: {
-  panes: Pane[];
-  parked: Set<number>;
-  notifications: Notification[];
-  filter: AgentFilter;
-  setFilter: (filter: AgentFilter) => void;
-  onOpen: (pane: Pane) => void;
-}) {
-  const list = agents(panes, filter);
-  return (
-    <div className="panel-body">
-      <div className="seg panel-seg" role="group" aria-label="Agent filter">
-        {(Object.keys(agentFilterLabel) as AgentFilter[]).map((value) => (
-          <button
-            key={value}
-            aria-pressed={filter === value}
-            onClick={() => setFilter(value)}
-          >
-            {agentFilterLabel[value]}
-            <span className="count">{agents(panes, value).length}</span>
-          </button>
-        ))}
-      </div>
-      <div className="panel-list" role="list">
-        {list.map((p) => {
-          const state = paneState(p, notifications);
-          return (
-            <div
-              className="list-row"
-              role="listitem"
-              key={p.id}
-              data-pane={p.id}
-            >
-              <StateMark state={state} size="md" />
-              <ProviderLogo kind={p.kind} />
-              <div className="grow">
-                <span className="t">{name(p)}</span>
-                <span className="s">
-                  {where(p, parked)} · {statusText[p.status] || p.status} ·{" "}
-                  <span className="mono">{p.cwd}</span>
-                  {p.status_since ? ` · since ${age(p.status_since)}` : ""}
-                </span>
-              </div>
-              <OpenButton label={`Open ${name(p)}`} onClick={() => onOpen(p)} />
-            </div>
-          );
-        })}
-        {!list.length && (
-          <p className="panel-empty">
-            {filter === "all"
-              ? "No Codex or Claude Code agents are running in this workspace."
-              : `No agents ${filter === "attention" ? "need attention" : "have finished"}.`}
-          </p>
-        )}
-      </div>
-    </div>
   );
 }
 
@@ -211,92 +141,6 @@ export function NotificationsPanel({
           </p>
         )}
       </div>
-    </div>
-  );
-}
-
-export function OverviewPanel({
-  panes,
-  parked,
-  notifications,
-  leases,
-  client,
-  onOpen,
-}: {
-  panes: Pane[];
-  parked: Set<number>;
-  notifications: Notification[];
-  leases: Map<number, number>;
-  client?: number;
-  onOpen: (pane: Pane) => void;
-}) {
-  const now = Date.now() / 1000;
-  return (
-    <div className="panel-body">
-      <div className="info-table-wrap">
-        <table className="info-table overview-table">
-          <thead>
-            <tr>
-              <th>#</th>
-              <th>Terminal</th>
-              <th>Status</th>
-              <th>Session</th>
-              <th>Folder</th>
-              <th>Activity</th>
-              <th>Evidence</th>
-              <th>Size</th>
-              <th />
-            </tr>
-          </thead>
-          <tbody>
-            {panes.map((p) => {
-              const state = paneState(p, notifications);
-              const owner = leases.get(p.id);
-              const checked = p.observation?.checked_at || 0;
-              return (
-                <tr key={p.id} data-pane={p.id}>
-                  <td>{p.number || "–"}</td>
-                  <th scope="row">
-                    <span className="overview-name">
-                      <StateMark state={state} />
-                      <ProviderLogo kind={p.kind} />
-                      {name(p)}
-                    </span>
-                    <small>{where(p, parked)}</small>
-                  </th>
-                  <td>{statusText[p.status] || p.status}</td>
-                  <td className="mono">{p.session_id || "—"}</td>
-                  <td className="mono" title={p.cwd}>
-                    {basename(p.cwd)}
-                  </td>
-                  <td>{p.last_activity ? age(p.last_activity) : "unknown"}</td>
-                  <td>
-                    {(p.observation?.source || "unknown").replace(/_/g, " ")}
-                    {!checked || now - checked > 10 ? " (stale)" : ""}
-                  </td>
-                  <td>
-                    {owner == null
-                      ? "TUI"
-                      : owner === client
-                        ? "This browser"
-                        : "Another client"}
-                  </td>
-                  <td>
-                    <OpenButton
-                      label={`Open ${name(p)}`}
-                      onClick={() => onOpen(p)}
-                    />
-                  </td>
-                </tr>
-              );
-            })}
-          </tbody>
-        </table>
-      </div>
-      <p className="setting-hint">
-        Size shows which client sets each terminal's size: the TUI's layout,
-        this browser or another web client.
-      </p>
     </div>
   );
 }

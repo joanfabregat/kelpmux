@@ -24,7 +24,7 @@ const openStateLabel: Partial<Record<DisplayState, string>> = {
   input_needed: "Next terminal that needs input (Ctrl-B N)",
   failed: "Next failed terminal (Ctrl-B N)",
   finished: "Next finished terminal (Ctrl-B P)",
-  working: "Agents (Ctrl-B a)",
+  working: "Terminals: agents (Ctrl-B a)",
 };
 
 export type SidebarProps = {
@@ -57,10 +57,10 @@ export type SidebarProps = {
 };
 
 /** The left sidebar, like the TUI's: every terminal of the workspace in this
- * browser's order with its live state, parked
- * terminals, the workspace tools (agents, notifications, recently closed,
- * overview, search), system vitals and settings. Order, parking and folding
- * belong to this browser; they never change the TUI's layout. */
+ * browser's order with its live state, parked terminals, the workspace
+ * tools (the Terminals table, notifications, recently closed, search), system
+ * vitals and settings. Order, parking and folding belong to this browser; they
+ * never change the TUI's layout. */
 export function Sidebar(props: SidebarProps) {
   const {
     workspace,
@@ -290,10 +290,9 @@ export function Sidebar(props: SidebarProps) {
           <span>Workspace</span>
         </div>
         <div className="tool-list">
-          {tool("agents", "Agents", "bot", "Ctrl-B a")}
+          {tool("terminals", "Terminals", "layout-dashboard", "Ctrl-B o")}
           {tool("notifications", "Notifications", "bell", "Ctrl-B b", unread)}
           {tool("recovery", "Recently closed", "history", "Ctrl-B r")}
-          {tool("overview", "Overview", "layout-dashboard", "Ctrl-B o")}
           {tool("search", "Search", "search", "Ctrl-B /")}
           {tool("help", "Help", "book-open", "Ctrl-B ?")}
         </div>

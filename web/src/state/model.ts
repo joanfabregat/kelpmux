@@ -231,23 +231,6 @@ export function nextPane<T extends StatePane>(
   return null;
 }
 
-export type AgentFilter = "all" | "attention" | "finished";
-export const agentFilterLabel: Record<AgentFilter, string> = {
-  all: "All agents",
-  attention: "Needing attention",
-  finished: "Finished",
-};
-/** Agent panes for the Agents dialog, filtered like the TUI's. */
-export function agents<T extends StatePane>(panes: T[], filter: AgentFilter) {
-  return panes.filter(
-    (p) =>
-      isAgent(p) &&
-      !p.dead &&
-      (filter === "all" ||
-        (filter === "attention" ? needsAttention(p) : isFinished(p))),
-  );
-}
-
 /** Notifications the Notifications dialog lists, newest first: unread ones
  * of live panes, or every retained one with `history`. */
 export function visibleNotifications(
