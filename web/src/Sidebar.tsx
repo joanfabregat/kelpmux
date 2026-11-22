@@ -32,6 +32,8 @@ export type SidebarProps = {
   username: string;
   dev: boolean;
   folded: boolean;
+  /** Touch device: rows show a menu button instead of hover actions. */
+  touch?: boolean;
   /** Terminals in this browser's order, parked ones excluded. */
   terminals: Pane[];
   /** Terminals parked in this browser. */
@@ -138,7 +140,19 @@ export function Sidebar(props: SidebarProps) {
           </span>
         </button>
         <span className="term-row-actions">
-          {isParked ? (
+          {props.touch ? (
+            <button
+              type="button"
+              className="icon-btn term-row-menu"
+              aria-label={`Menu for ${title}`}
+              onClick={(event) => {
+                const rect = event.currentTarget.getBoundingClientRect();
+                props.onMenu(p, Math.max(8, rect.right - 220), rect.bottom);
+              }}
+            >
+              <Icon name="ellipsis" size="sm" />
+            </button>
+          ) : isParked ? (
             <Tooltip content="Unpark">
               <button
                 type="button"
@@ -161,16 +175,18 @@ export function Sidebar(props: SidebarProps) {
               </button>
             </Tooltip>
           )}
-          <Tooltip content="Close (middle-click)">
-            <button
-              type="button"
-              className="icon-btn"
-              aria-label={`Close ${title}`}
-              onClick={() => props.onClose(p)}
-            >
-              <Icon name="x" size="sm" />
-            </button>
-          </Tooltip>
+          {!props.touch && (
+            <Tooltip content="Close (middle-click)">
+              <button
+                type="button"
+                className="icon-btn"
+                aria-label={`Close ${title}`}
+                onClick={() => props.onClose(p)}
+              >
+                <Icon name="x" size="sm" />
+              </button>
+            </Tooltip>
+          )}
         </span>
       </div>
     );

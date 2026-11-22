@@ -56,7 +56,7 @@ cargo build --locked --release --bin kelpmux
 
 Build the web assets before compiling the executable that embeds them; rebuild `kelpmux` after every web change. `node_modules`, `web/dist`, `web/public/vendor` and `web/public/client-core.wasm` are generated and ignored by Git.
 
-Browser-level tests of the terminal component (WebGL/Canvas renderer, inset geometry, trusted copy events) run with Playwright in Chromium and WebKit and need no network: `node test/renderer.mjs` and `node test/terminal.mjs` in `web/`, plus `node test/app.mjs` after `npm run build` (the built client boots cross-origin isolated to the sign-in page with its worker and WASM core), using the `mcr.microsoft.com/playwright:v1.64.0-noble` image or locally installed Playwright browsers. Rust integration tests drive `kelpmux web-bridge` over real pipes against a disposable server (`cargo test --test native_web_bridge`).
+Browser-level tests of the terminal component (WebGL/Canvas renderer, inset geometry, trusted copy events) run with Playwright in Chromium and WebKit and need no network: `node test/renderer.mjs` and `node test/terminal.mjs` in `web/`, plus `node test/app.mjs` and `node test/mobile.mjs` after `npm run build` (the built client boots cross-origin isolated to the sign-in page with its worker and WASM core; with iPhone and iPad emulation in both orientations it fits without horizontal scrolling, picks the phone or tablet layout and serves a valid manifest and icons under the relay's exact headers; the touch terminal and key bar keep reading mode, enter input mode, apply the sticky Ctrl, scroll history and copy a long-press selection), using the `mcr.microsoft.com/playwright:v1.64.0-noble` image or locally installed Playwright browsers. Rust integration tests drive `kelpmux web-bridge` over real pipes against a disposable server (`cargo test --test native_web_bridge`).
 
 ## Relay configuration
 
@@ -117,6 +117,19 @@ Other same-origin tabs and **Open in a window** popups reuse the SSH connection 
 
 The mouse covers the rest: click a sidebar row to open a terminal, drag rows (or grid tile headers) to reorder, right-click a row or tile for its menu (open, open in a window, find, move up/down, park/unpark, close), middle-click a row to close it, click the sidebar's state counts to jump to the next terminal in that state, and click or drag the sidebar's edge to fold or resize it.
 
+## Phones and tablets
+
+The same client adapts to iPhone and iPad (Safari first; [ADR 0003](adr/0003-web-client-in-kelpmux.md#addendum-phones-and-tablets) records the decisions). The layout follows the viewport and the primary pointer (`web/src/device.ts`): a touch screen whose short side is under 600 CSS pixels is a **phone** (every iPhone, both orientations), any other touch screen a **tablet** (every iPad), and a mouse-driven window narrower than 600 pixels also gets the phone layout.
+
+- **Phone.** The home screen is the terminal list: the sidebar's content (state counts, terminals, parked terminals, workspace tools, vitals and settings) at full width. Tapping a terminal opens it full screen; **‹ Terminals** returns to the list, and **⋯** opens the terminal's menu (find, move, park, tab colour, close). There is no grid. The terminal shown is sized to the phone through the normal per-pane lease, exactly as a desktop browser's focused terminal is.
+- **Tablet.** The desktop layout, sidebar and grid, with larger tap targets. Landscape and portrait are both supported; in portrait the sidebar starts folded each time the tablet turns to portrait (that fold is not saved), and the fold handle on the sidebar's edge unfolds it. Landscape uses the saved sidebar preference.
+- **Touch on a terminal.** A tap selects the terminal and takes its lease without showing the keyboard (an application that requested mouse reporting receives the tap as a click; a link opens). One finger dragged up or down scrolls the history, as the wheel does. A long press selects the word under the finger; dragging extends the selection, and lifting copies it. Pinch zoom is not supported. Sidebar rows scroll on touch instead of reordering; their **⋯** menu has Move up / Move down.
+- **Keyboard.** Opening a terminal never brings up the on-screen keyboard: reading is the default. The key bar under the terminal has **Input**, which shows the keyboard (and becomes a hide-keyboard button while it is up); tapping any key on the bar also enters input mode. The bar holds Esc, Tab, Ctrl, the arrows, `^B`, Paste, Enter, Yes and No. Ctrl is sticky: it applies to the next key from the bar or the keyboard, then releases. `^B` arms the KelpMux prefix, so the next key typed is a prefix key as on a desktop. Paste reads the clipboard (Safari asks first). Yes and No send `1` and Escape to Claude Code, whose questions are numbered menus, and `y` and `n` to anything else; they do not add Enter. The bar follows the `visualViewport`, so it stays directly above the iOS keyboard, and the layout respects the safe-area insets. These rules apply to the iPad too, including with a hardware keyboard (tap Input first).
+- **Installable web app.** `manifest.webmanifest` (standalone display, theme colours, 192 and 512 pixel icons, a maskable icon) plus the iOS meta tags and a 180 pixel `apple-touch-icon` let Safari's **Add to Home Screen** install KelpMux as its own app. There is no service worker: nothing is cached offline (the client needs its relay anyway), and the cross-origin-isolation and asset headers stay exactly as the relay sets them. There are no push notifications. The PNG icons are rendered from `web/public/icons/icon.svg` by `web/scripts/render-icons.mjs` and committed.
+- **Sign-in** is the same YubiKey WebAuthn flow, over NFC or USB-C; iCloud Keychain passkeys are not supported as SSH keys. The sign-in and key-registration screens fit a phone and scroll instead of overflowing.
+
+The relay serves the new files with its existing rules: `.svg` as `image/svg+xml`, but `.png` and `.webmanifest` as `application/octet-stream` with `nosniff`. Browsers still decode the icons and parse the manifest (the Playwright test checks this against the relay's exact headers), but the relay should add `image/png` and `application/manifest+json`; that is a server change outside `web/`.
+
 ## Feature parity with the TUI
 
 The browser has the TUI's feature set adapted to web conventions. Status: **done** existed before this work; **added** is implemented in the parity branch; **deferred** gives the reason.
@@ -156,11 +169,38 @@ The browser has the TUI's feature set adapted to web conventions. Status: **done
 | Takeover (`t`), controller / observer | Per-pane input and size leases | not applicable: browsers never hold the TUI controller role |
 | Templates, startup commands | None | deferred: a template is a `kelpmux start --template` option loaded into the workspace settings when the server starts; there is no runtime operation to apply one, so it does not fit a bridge operation cleanly |
 | `ssh-entry` (start the workspace server if needed, then attach) | Sign in; if the workspace is stopped, **Start workspace** (explicit click) starts it the same way as `kelpmux start`, then attaches | added: never replaces a running server and starts only the bridge's configured workspace |
-| Mobile layout | None | out of scope |
+| Mobile layout | Phone and tablet layouts; see [Mobile](#mobile) below | added |
+
+### Mobile
+
+The TUI has no mobile counterpart; this table lists how each desktop browser feature maps to the phone and tablet layouts ([Phones and tablets](#phones-and-tablets)).
+
+| Desktop browser | Phone | Tablet | Status |
+| --- | --- | --- | --- |
+| Sidebar terminal list | Home screen: the sidebar's content at full width | Sidebar; folded at first in portrait | added |
+| Sidebar fold handle and resize | Not applicable (no side-by-side sidebar) | Same handle, larger; a portrait fold lasts for that orientation | added |
+| One-terminal view | Full screen with **‹ Terminals** and a **⋯** menu | As desktop | added |
+| Live grid, grid keys and tile weights | None (owner decision) | As desktop; tiles are tapped to open | added |
+| Drag to reorder rows and tiles | Row menu Move up / Move down | Row menu Move up / Move down | added |
+| Right-click menu, middle-click close | **⋯** button on each row and in the terminal bar | **⋯** button on each row; tile headers keep their buttons | added |
+| Keyboard focus on click | Tap selects and takes the lease, keyboard hidden; **Input** or the key bar shows it | Same | added |
+| Modifier and special keys | Key bar: Esc, Tab, sticky Ctrl, arrows, `^B`, Paste, Enter, Yes, No, hide keyboard | Same | added |
+| `Ctrl-B` prefix | `^B` on the key bar, then a key | Same, or a hardware keyboard | added |
+| Wheel history scrolling | One-finger drag | One-finger drag | added |
+| Mouse selection and copy | Long press, drag, lift to copy | Same | added |
+| Find, park, tab colour, close | **⋯** menu | Tile header buttons and menu | added |
+| Open in a window | None: an installed web app has no popup windows | None | not applicable |
+| Dialogs (agents, notifications, search, settings…) | Full screen | As desktop | added |
+| System status in the footer | Sidebar footer on the home screen | Status bar and sidebar footer | added |
+| Browser tab title and favicon state | Not shown by an installed app; state marks in the list | Same | not applicable |
+| Desktop notifications | None: no push notifications (owner decision) | Same | deferred |
+| Sign-in with a YubiKey | Same flow over NFC or USB-C; screens fit the phone | Same | added |
+| Install as an app | Add to Home Screen: standalone, own icon, no service worker | Same | added |
+| Pinch zoom | None; font size in Settings → Appearance | Same | not planned |
 
 ## Reusable terminal component
 
-`web/src/terminal/` contains the pieces a different web application (KelpHub) can consume at a pinned KelpMux revision: SSH/WebAuthn connection and key discovery, the SharedWorker session broker, WASM client-core loading, the WebGL/Canvas renderer, keyboard, mouse and wheel encoding, selection and copy, the screen cache, grid column layout, the `Terminal`/`TerminalTile` React components and pane find. Nothing in that directory imports application code. It is not published to npm yet; consumers copy or vendor it at a fixed revision together with the matching `client-core.wasm` built from the same revision.
+`web/src/terminal/` contains the pieces a different web application (KelpHub) can consume at a pinned KelpMux revision: SSH/WebAuthn connection and key discovery, the SharedWorker session broker, WASM client-core loading, the WebGL/Canvas renderer, keyboard, mouse and wheel encoding, the touch key bar encoding and input mode (`touch-keys.ts`), selection and copy, the screen cache, grid column layout, the `Terminal`/`TerminalTile` React components and pane find. Nothing in that directory imports application code. It is not published to npm yet; consumers copy or vendor it at a fixed revision together with the matching `client-core.wasm` built from the same revision.
 
 ## Current limits
 
@@ -170,3 +210,4 @@ The browser has the TUI's feature set adapted to web conventions. Status: **done
 - Restoring a closed terminal from the browser does not remove it from the TUI's Recently closed list (the server owns that file); restoring an agent conversation that is already open opens the existing terminal instead.
 - Notification state for a pane is matched by pane and process ID; the browser does not see the server's run identifier, so a notification from a previous server run whose pane and process IDs both recur could be shown until it is read.
 - Real hardware-key and Safari behaviour need manual acceptance; automated tests use virtual authenticators only where noted.
+- Phones and tablets are tested with Playwright device emulation only. The on-screen keyboard, the key bar's position above it, safe areas, Add to Home Screen, NFC and USB-C security keys and the connected phone and tablet layouts need acceptance on a real iPhone and iPad. On iOS an installed web app has its own storage, separate from Safari's: its first sign-in asks the authenticator which key to use, as a new browser does, and its layout and settings start fresh. Closing it, or iOS suspending it in the background, ends the SSH connection like closing a tab; terminals keep running.

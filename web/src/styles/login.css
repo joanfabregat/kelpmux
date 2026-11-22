@@ -2,11 +2,15 @@
 
 /* ── Sign-in screen ── */
 .login {
-  display: grid;
-  place-items: center;
+  display: flex;
   height: 100%;
   overflow: auto;
-  padding: var(--s5) var(--s4);
+  /* Safe-area insets keep an installed web app clear of the notch and the
+   * home indicator. */
+  padding: max(var(--s5), env(safe-area-inset-top))
+    max(var(--s4), env(safe-area-inset-right))
+    max(var(--s5), env(safe-area-inset-bottom))
+    max(var(--s4), env(safe-area-inset-left));
   background:
     radial-gradient(
       1200px 600px at 30% -10%,
@@ -20,6 +24,8 @@
   gap: var(--s4);
   width: min(440px, 100%);
   min-width: 0;
+  /* Centred, yet scrollable from the top when taller than the screen. */
+  margin: auto;
 }
 .login-brand {
   display: flex;
