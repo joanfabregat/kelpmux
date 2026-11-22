@@ -1208,7 +1208,7 @@ impl Workspace {
                     .iter()
                     .find(|pane| pane.id == self.active)
                     .is_some_and(|pane| {
-                        super::activity::matches(notification, pane, &self.ui.notification_run)
+                        super::ui::matches(notification, pane, &self.ui.notification_run)
                     })
                 {
                     notification.read = true;

@@ -1,4 +1,4 @@
-use kelpmux::native::{
+use kelpserver::native::{
     protocol::*,
     server::{ServerConfig, serve},
 };
@@ -36,6 +36,7 @@ impl Daemon {
             ui: Default::default(),
             initial_grid: (1, 1),
             initial_tabs: None,
+            startup_panes: Default::default(),
         };
         let handle = thread::spawn(move || serve(config));
         let daemon = Self {
@@ -121,7 +122,7 @@ fn next(stream: &mut UnixStream) -> ServerMessage {
             ServerMessage::Patch(patch) => {
                 let (revision, previous) =
                     frames.get(&stream.as_raw_fd()).expect("patch before frame");
-                let frame = kelpmux::native::delta::apply(previous, *revision, &patch).unwrap();
+                let frame = kelpserver::native::delta::apply(previous, *revision, &patch).unwrap();
                 frames.insert(stream.as_raw_fd(), (patch.revision, frame.clone()));
                 ServerMessage::Frame(frame)
             }
@@ -286,6 +287,7 @@ fn active_server_lock_and_symlink_socket_are_rejected() {
         ui: Default::default(),
         initial_grid: (1, 1),
         initial_tabs: None,
+        startup_panes: Default::default(),
     };
     assert!(serve(config).is_err());
     let target = daemon.root.join("foreign");
@@ -304,6 +306,7 @@ fn active_server_lock_and_symlink_socket_are_rejected() {
         ui: Default::default(),
         initial_grid: (1, 1),
         initial_tabs: None,
+        startup_panes: Default::default(),
     };
     assert!(serve(config).is_err());
     assert_eq!(fs::read(target).unwrap(), b"preserve");
@@ -919,15 +922,15 @@ fn configuration_tab_position_persists_for_the_named_workspace() {
     command(&mut stream, Action::Config).unwrap();
     command(
         &mut stream,
-        Action::TabPositionSet(kelpmux::native::ui::TabPosition::Left),
+        Action::TabPositionSet(kelpserver::native::ui::TabPosition::Left),
     )
     .unwrap();
     let settings =
-        kelpmux::native::lifecycle::Settings::load(&daemon.root.join("state/workspace.json"))
+        kelpserver::native::lifecycle::Settings::load(&daemon.root.join("state/workspace.json"))
             .unwrap();
     assert_eq!(
         settings.ui.tab_position,
-        kelpmux::native::ui::TabPosition::Left
+        kelpserver::native::ui::TabPosition::Left
     );
     command(&mut stream, Action::DialogClose).unwrap();
     command(&mut stream, Action::Select(1)).unwrap();
@@ -1055,93 +1058,12 @@ fn new_tabs_create_more_than_nine_ptys_and_preserve_existing_jobs() {
 }
 
 #[test]
-fn scrolling_tab_bars_preserves_active_shell_and_real_pty_size() {
-    use kelpmux::native::{ui::TabPosition, workspace::tab_bar_area};
-    let daemon = Daemon::start();
-    let (mut controller, _, _) = daemon.attach();
-    let panes = create_tabs(&mut controller, 4, 3);
-    let identities: Vec<_> = panes.iter().map(|pane| (pane.id, pane.pid)).collect();
-    let position = TabPosition::Left;
-    command(&mut controller, Action::TabPositionSet(position)).unwrap();
-    command(&mut controller, Action::Select(1)).unwrap();
-    let before = wait_frame(&mut controller, |frame| {
-        frame.active == panes[0].id
-            && frame.ui.config.tab_position == position
-            && frame.ui.tab_scroll_anchor.is_none()
-    });
-    let body = before
-        .panes
-        .iter()
-        .find(|view| view.pane.id == before.active)
-        .unwrap()
-        .body;
-    let bar = tab_bar_area(before.cols, before.rows, &before.ui.config);
-    let messages = kelpmux::native::input::Router::default().route(
-        InputEvent::Mouse(MouseEvent {
-            position: Point {
-                x: bar.x + 1,
-                y: bar.y,
-            },
-            kind: MouseKind::WheelDown,
-            button: 0,
-            shift: false,
-            alt: false,
-            ctrl: false,
-        }),
-        &before,
-    );
-    assert!(matches!(
-        messages.as_slice(),
-        [ClientMessage::Action(Action::ScrollTabs(1))]
-    ));
-    for message in messages {
-        write_message(&mut controller, &message).unwrap();
-    }
-    let after = wait_frame(&mut controller, |frame| {
-        frame.ui.tab_scroll_anchor.is_some()
-    });
-    assert_eq!(after.active, before.active);
-    assert_eq!(after.reading, before.reading);
-    assert_eq!(
-        after
-            .panes
-            .iter()
-            .map(|view| (view.pane.id, view.pane.pid))
-            .collect::<Vec<_>>(),
-        identities
-    );
-    assert_eq!(
-        after
-            .panes
-            .iter()
-            .find(|view| view.pane.id == after.active)
-            .unwrap()
-            .body,
-        body
-    );
-    write_message(
-        &mut controller,
-        &ClientMessage::Input(b"printf 'SCROLLED_'; stty size\n".to_vec()),
-    )
-    .unwrap();
-    let expected = format!("SCROLLED_{} {}", body.rows, body.cols);
-    wait_frame(&mut controller, |frame| {
-        frame
-            .cells
-            .iter()
-            .map(|cell| cell.text.as_str())
-            .collect::<String>()
-            .contains(&expected)
-    });
-}
-
-#[test]
 fn controller_and_observer_sidebar_surfaces_use_their_own_reported_themes() {
     let daemon = Daemon::start();
     let (mut controller, _, _) = daemon.attach();
     command(
         &mut controller,
-        Action::TabPositionSet(kelpmux::native::ui::TabPosition::Left),
+        Action::TabPositionSet(kelpserver::native::ui::TabPosition::Left),
     )
     .unwrap();
     write_message(&mut controller, &ClientMessage::Action(Action::Read(1))).unwrap();
@@ -1180,7 +1102,7 @@ fn controller_and_observer_sidebar_surfaces_use_their_own_reported_themes() {
 
 #[test]
 fn status_popup_samples_live_processes_and_closes_without_changing_the_shell() {
-    use kelpmux::native::{
+    use kelpserver::native::{
         status::{Sort, View},
         ui::DialogKind,
     };

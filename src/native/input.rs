@@ -265,7 +265,7 @@ pub struct Router {
     suppressed_releases: Vec<Vec<u8>>,
 }
 impl Router {
-    pub fn route(&mut self, event: InputEvent, frame: &Frame) -> Vec<ClientMessage> {
+    pub fn route(&mut self, event: InputEvent, frame: &Frame) -> Vec<UiMessage> {
         if matches!(&event, InputEvent::Bytes(bytes) if bytes == b"\x1b")
             && self.header_drag.take().is_some()
         {
@@ -274,7 +274,7 @@ impl Router {
             self.header_press = None;
             self.header_click = None;
             return if frame.controller {
-                vec![ClientMessage::Action(Action::GridDrag(None))]
+                vec![UiMessage::Action(Action::GridDrag(None))]
             } else {
                 vec![]
             };
@@ -289,7 +289,7 @@ impl Router {
             self.grid_hint = None;
             self.focus_click = true;
             return if frame.controller {
-                vec![ClientMessage::Action(Action::GridDrag(None))]
+                vec![UiMessage::Action(Action::GridDrag(None))]
             } else {
                 vec![]
             };
@@ -306,14 +306,14 @@ impl Router {
             self.header_press = None;
             self.header_click = None;
             return if frame.controller {
-                vec![ClientMessage::Action(Action::TabDrag(None))]
+                vec![UiMessage::Action(Action::TabDrag(None))]
             } else {
                 vec![]
             };
         }
         if !self.tab_drag_allowed(frame) && self.tab_drag.take().is_some() {
             return if frame.controller {
-                vec![ClientMessage::Action(Action::TabDrag(None))]
+                vec![UiMessage::Action(Action::TabDrag(None))]
             } else {
                 vec![]
             };
@@ -361,13 +361,13 @@ impl Router {
                                     || Some(view.pane.id) == frame.ui.scratch)
                         })
                 {
-                    return vec![ClientMessage::Mouse(*mouse)];
+                    return vec![UiMessage::Mouse(*mouse)];
                 }
                 return vec![];
             }
         }
         if let InputEvent::ThemeColor { background, rgb } = event {
-            return vec![ClientMessage::ThemeColor { background, rgb }];
+            return vec![UiMessage::ThemeColor { background, rgb }];
         }
         if frame.ui.dialog.is_some() {
             self.suppressed_releases.clear();
@@ -412,14 +412,14 @@ impl Router {
                     && frame.ui.dialog.is_none()
                     && !self.pending_modal =>
             {
-                vec![ClientMessage::Paste(bytes)]
+                vec![UiMessage::Paste(bytes)]
             }
             InputEvent::Paste(_) => vec![],
             InputEvent::Mouse(mouse) => self.mouse(mouse, frame),
             InputEvent::Bytes(bytes) => self.keys(&bytes, frame),
         }
     }
-    fn keys(&mut self, bytes: &[u8], frame: &Frame) -> Vec<ClientMessage> {
+    fn keys(&mut self, bytes: &[u8], frame: &Frame) -> Vec<UiMessage> {
         let mut output = Vec::new();
         let mut position = 0;
         while position < bytes.len() {
@@ -533,7 +533,7 @@ impl Router {
                         b"s" => Some(Action::MovePicker),
                         [digit @ b'1'..=b'9'] => Some(Action::Select((digit - b'0') as usize)),
                         [byte] if *byte == frame.ui.config.prefix && frame.controller => {
-                            output.push(ClientMessage::Input(vec![*byte]));
+                            output.push(UiMessage::Input(vec![*byte]));
                             None
                         }
                         _ => None,
@@ -807,14 +807,14 @@ impl Router {
                     .any(|v| v.pane.id == drag.source && !v.pane.parked)
             })
     }
-    pub fn tick(&mut self, frame: &Frame) -> Vec<ClientMessage> {
+    pub fn tick(&mut self, frame: &Frame) -> Vec<UiMessage> {
         self.tick_at(frame, Instant::now())
     }
-    pub fn tick_at(&mut self, frame: &Frame, now: Instant) -> Vec<ClientMessage> {
+    pub fn tick_at(&mut self, frame: &Frame, now: Instant) -> Vec<UiMessage> {
         if !self.tab_drag_allowed(frame) {
             return self.tab_drag.take().map_or_else(Vec::new, |_| {
                 if frame.controller {
-                    vec![ClientMessage::Action(Action::TabDrag(None))]
+                    vec![UiMessage::Action(Action::TabDrag(None))]
                 } else {
                     vec![]
                 }
@@ -827,7 +827,7 @@ impl Router {
         let hint = sidebar_drop(frame, drag.point).map(|before| (drag.source, before));
         if hint != drag.hint {
             drag.hint = hint;
-            output.push(ClientMessage::Action(Action::TabDrag(hint)));
+            output.push(UiMessage::Action(Action::TabDrag(hint)));
         }
         if hint.is_some()
             && now.saturating_duration_since(drag.scrolled) >= Duration::from_millis(180)
@@ -852,13 +852,13 @@ impl Router {
                 0
             };
             if direction != 0 {
-                output.push(ClientMessage::Action(Action::ScrollTabs(direction)));
+                output.push(UiMessage::Action(Action::ScrollTabs(direction)));
                 drag.scrolled = now;
             }
         }
         output
     }
-    fn mouse(&mut self, event: MouseEvent, frame: &Frame) -> Vec<ClientMessage> {
+    fn mouse(&mut self, event: MouseEvent, frame: &Frame) -> Vec<UiMessage> {
         let mut output = Vec::new();
         if !frame.controller {
             return output;
@@ -880,7 +880,7 @@ impl Router {
                 if event.kind == MouseKind::Release {
                     let drag = self.tab_drag.take().unwrap();
                     if drag.active {
-                        output.push(ClientMessage::Action(
+                        output.push(UiMessage::Action(
                             match sidebar_drop(frame, event.position) {
                                 Some(before) => Action::Reorder {
                                     source: drag.source,
@@ -1520,7 +1520,7 @@ impl Router {
                 emit(&mut output, Action::Focus(id), true);
             }
             if app_mouse && !event.shift {
-                output.push(ClientMessage::Mouse(event));
+                output.push(UiMessage::Mouse(event));
             }
         }
         output
@@ -1573,14 +1573,14 @@ impl Router {
             _ => return None,
         })
     }
-    fn pick_dialog(&self, frame: &Frame, index: usize) -> Vec<ClientMessage> {
+    fn pick_dialog(&self, frame: &Frame, index: usize) -> Vec<UiMessage> {
         if frame
             .ui
             .dialog
             .is_some_and(|dialog| dialog.kind == super::ui::DialogKind::AgentLink)
         {
             return if !frame.ui.agent_link_loading && index <= frame.ui.agent_sessions.len() {
-                vec![ClientMessage::Action(Action::AgentLinkChoose(index))]
+                vec![UiMessage::Action(Action::AgentLinkChoose(index))]
             } else {
                 vec![]
             };
@@ -1593,7 +1593,7 @@ impl Router {
         if dialog.kind == DialogKind::Parked {
             return frame_entries(frame)
                 .get(index)
-                .map(|id| vec![ClientMessage::Action(Action::RestoreRequest(*id))])
+                .map(|id| vec![UiMessage::Action(Action::RestoreRequest(*id))])
                 .unwrap_or_default();
         }
         if dialog.kind == DialogKind::Color {
@@ -1602,11 +1602,11 @@ impl Router {
                 .filter(|_| index < super::ui::PALETTE.len())
                 .map(|pane| {
                     vec![
-                        ClientMessage::Action(Action::TabColorSet {
+                        UiMessage::Action(Action::TabColorSet {
                             pane,
                             color: index as u8,
                         }),
-                        ClientMessage::Action(Action::DialogClose),
+                        UiMessage::Action(Action::DialogClose),
                     ]
                 })
                 .unwrap_or_default();
@@ -1625,15 +1625,15 @@ impl Router {
             .nth(index) else {
                 return vec![];
             };
-            let mut actions = vec![ClientMessage::Action(Action::Acknowledge(item.id))];
+            let mut actions = vec![UiMessage::Action(Action::Acknowledge(item.id))];
             if frame
                 .panes
                 .iter()
-                .any(|view| super::activity::matches(item, &view.pane, &frame.ui.notification_run))
+                .any(|view| super::ui::matches(item, &view.pane, &frame.ui.notification_run))
             {
                 actions.extend(dialog_focus(frame, item.pane));
             } else {
-                actions.push(ClientMessage::Action(Action::DialogClose));
+                actions.push(UiMessage::Action(Action::DialogClose));
             }
             return actions;
         }
@@ -1642,7 +1642,7 @@ impl Router {
                 .ui
                 .closed_tabs
                 .get(index)
-                .map(|_| vec![ClientMessage::Action(Action::ReopenRequest(index))])
+                .map(|_| vec![UiMessage::Action(Action::ReopenRequest(index))])
                 .unwrap_or_default();
         }
         if dialog.kind == DialogKind::ReopenConfirm {
@@ -1657,7 +1657,7 @@ impl Router {
                 .restore_choices()
                 .get(index)
                 .map(|choice| {
-                    vec![ClientMessage::Action(match choice {
+                    vec![UiMessage::Action(match choice {
                         RestoreChoice::Resume | RestoreChoice::Picker | RestoreChoice::Folder => {
                             Action::ReopenTab(source)
                         }
@@ -1674,19 +1674,19 @@ impl Router {
                 .get(index)
                 .map(|_| {
                     vec![
-                        ClientMessage::Action(Action::SearchSelect(index)),
-                        ClientMessage::Action(Action::DialogClose),
+                        UiMessage::Action(Action::SearchSelect(index)),
+                        UiMessage::Action(Action::DialogClose),
                     ]
                 })
                 .unwrap_or_default();
         }
         if dialog.kind == DialogKind::Config {
             if index == 0 {
-                return vec![ClientMessage::Action(Action::NotificationSoundToggle)];
+                return vec![UiMessage::Action(Action::NotificationSoundToggle)];
             }
             return super::ui::Accent::ALL
                 .get(index - 1)
-                .map(|accent| vec![ClientMessage::Action(Action::AccentSet(*accent))])
+                .map(|accent| vec![UiMessage::Action(Action::AccentSet(*accent))])
                 .unwrap_or_default();
         }
         if matches!(
@@ -1694,14 +1694,14 @@ impl Router {
             DialogKind::CloseConfirm | DialogKind::ParkConfirm | DialogKind::RestoreConfirm
         ) {
             return match (index, dialog.source) {
-                (0, _) => vec![ClientMessage::Action(Action::DialogClose)],
+                (0, _) => vec![UiMessage::Action(Action::DialogClose)],
                 (1, Some(id)) => vec![
-                    ClientMessage::Action(match dialog.kind {
+                    UiMessage::Action(match dialog.kind {
                         DialogKind::ParkConfirm => Action::Park(id),
                         DialogKind::RestoreConfirm => Action::Restore(id),
                         _ => Action::ClosePaneConfirm(id),
                     }),
-                    ClientMessage::Action(Action::DialogClose),
+                    UiMessage::Action(Action::DialogClose),
                 ],
                 _ => vec![],
             };
@@ -1741,7 +1741,7 @@ impl Router {
             }
         }
         actions.push(Action::DialogClose);
-        actions.into_iter().map(ClientMessage::Action).collect()
+        actions.into_iter().map(UiMessage::Action).collect()
     }
 }
 /// Normalize negotiated CSI-u and xterm modifyOtherKeys for mux controls and
@@ -1794,13 +1794,13 @@ fn enhanced_key(bytes: &[u8]) -> Option<(Vec<u8>, u8)> {
     }
     Some((key, event))
 }
-fn dialog_focus(frame: &Frame, id: PaneId) -> Vec<ClientMessage> {
+fn dialog_focus(frame: &Frame, id: PaneId) -> Vec<UiMessage> {
     if frame.panes.iter().any(|v| v.pane.id == id && v.pane.parked) {
-        vec![ClientMessage::Action(Action::RestoreRequest(id))]
+        vec![UiMessage::Action(Action::RestoreRequest(id))]
     } else {
         vec![
-            ClientMessage::Action(Action::Focus(id)),
-            ClientMessage::Action(Action::DialogClose),
+            UiMessage::Action(Action::Focus(id)),
+            UiMessage::Action(Action::DialogClose),
         ]
     }
 }
@@ -1840,19 +1840,19 @@ fn tab_navigation(frame: &Frame, direction: isize, page: bool) -> Option<Action>
     };
     Some(Action::Focus(panes[index].pane.id))
 }
-fn emit(output: &mut Vec<ClientMessage>, action: Action, controller: bool) {
+fn emit(output: &mut Vec<UiMessage>, action: Action, controller: bool) {
     if controller || matches!(action, Action::Detach | Action::Takeover) {
-        output.push(ClientMessage::Action(action));
+        output.push(UiMessage::Action(action));
     }
 }
-fn push_input(output: &mut Vec<ClientMessage>, bytes: &[u8]) {
-    if let Some(ClientMessage::Input(previous)) = output.last_mut() {
+fn push_input(output: &mut Vec<UiMessage>, bytes: &[u8]) {
+    if let Some(UiMessage::Input(previous)) = output.last_mut() {
         if previous.len() + bytes.len() <= MAX_INPUT {
             previous.extend_from_slice(bytes);
             return;
         }
     }
-    output.push(ClientMessage::Input(bytes.to_vec()));
+    output.push(UiMessage::Input(bytes.to_vec()));
 }
 /// Matches the renderer's centered help panel in the work area above the footer.
 pub use super::workspace::help_bounds;
@@ -1887,7 +1887,7 @@ fn frame_entries(frame: &Frame) -> Vec<u64> {
     }
 }
 impl Router {
-    fn search_event(&mut self, event: InputEvent, frame: &Frame) -> Vec<ClientMessage> {
+    fn search_event(&mut self, event: InputEvent, frame: &Frame) -> Vec<UiMessage> {
         if let InputEvent::Bytes(bytes) = &event {
             if !frame.controller || self.prefix || bytes.first() == Some(&frame.ui.config.prefix) {
                 return self.keys(bytes, frame);
@@ -2026,16 +2026,16 @@ impl Router {
         }
         output
     }
-    fn search_submit(&self, frame: &Frame) -> Vec<ClientMessage> {
+    fn search_submit(&self, frame: &Frame) -> Vec<UiMessage> {
         let (query, all) = self.search.as_ref().unwrap();
         if query != &frame.ui.search_query || *all != frame.ui.search_all {
             vec![
-                ClientMessage::Action(Action::Search {
+                UiMessage::Action(Action::Search {
                     query: query.clone(),
                     all: *all,
                 }),
-                ClientMessage::Action(Action::SearchSelect(frame.ui.dialog.unwrap().selection)),
-                ClientMessage::Action(Action::DialogClose),
+                UiMessage::Action(Action::SearchSelect(frame.ui.dialog.unwrap().selection)),
+                UiMessage::Action(Action::DialogClose),
             ]
         } else {
             self.pick_dialog(frame, frame.ui.dialog.unwrap().selection)
@@ -2047,7 +2047,7 @@ impl Router {
 }
 
 impl Router {
-    fn status_event(&mut self, event: InputEvent, frame: &Frame) -> Vec<ClientMessage> {
+    fn status_event(&mut self, event: InputEvent, frame: &Frame) -> Vec<UiMessage> {
         use super::status::{self, Sort, View};
         if !frame.controller {
             return vec![];
@@ -2185,7 +2185,7 @@ impl Router {
             self.status_query = Some(query.clone());
         }
         action
-            .map(|action| vec![ClientMessage::Action(action)])
+            .map(|action| vec![UiMessage::Action(action)])
             .unwrap_or_default()
     }
 }

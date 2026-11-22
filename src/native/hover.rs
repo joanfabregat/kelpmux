@@ -203,7 +203,7 @@ pub fn target(frame: &Frame, point: Point) -> Option<Rect> {
     let actionable = Router::default()
         .route(click, frame)
         .iter()
-        .any(|message| matches!(message, ClientMessage::Action(_)));
+        .any(|message| matches!(message, UiMessage::Action(_)));
     actionable.then_some(rect)
 }
 
@@ -225,7 +225,7 @@ pub fn strength(frame: &Frame, region: Rect) -> u8 {
     if Router::default()
         .route(click, frame)
         .iter()
-        .any(|message| matches!(message, ClientMessage::Action(Action::NewTab)))
+        .any(|message| matches!(message, UiMessage::Action(Action::NewTab)))
     {
         8
     } else {

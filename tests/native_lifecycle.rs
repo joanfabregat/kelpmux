@@ -1,5 +1,5 @@
 //! Real isolated startup transactions, named workspaces and SSH PTY attachment.
-use kelpmux::native::{
+use kelpserver::native::{
     lifecycle::{Settings, workspace_path},
     protocol::*,
 };
@@ -115,6 +115,10 @@ impl Fixture {
             socket,
         }
     }
+    /// `verb` for this fixture's workspace. `start` and `ssh-entry` keep
+    /// KelpServer's startup tabs (`--startup-panes layout`): these tests
+    /// cover the server's startup transactions, templates and saved layout.
+    /// KelpMux's own default, `none`, is tested separately.
     fn command(&self, verb: &str) -> Command {
         let mut cmd = Command::new(env!("CARGO_BIN_EXE_kelpmux"));
         cmd.arg(verb)
@@ -123,6 +127,9 @@ impl Fixture {
             .arg("--socket")
             .arg(&self.socket)
             .current_dir(&self.root);
+        if matches!(verb, "start" | "ssh-entry") {
+            cmd.args(["--startup-panes", "layout"]);
+        }
         cmd
     }
     fn cmd(&self, verb: &str, extra: &[&str]) -> Output {
@@ -235,7 +242,7 @@ fn named_workspaces_reject_path_traversal_and_preserve_effective_restart_setting
 #[test]
 fn dev_example_starts_exactly_one_shell() {
     let config = Path::new(env!("CARGO_MANIFEST_DIR")).join("examples/native-tabs.json");
-    let settings = kelpmux::native::lifecycle::Settings::load(&config).unwrap();
+    let settings = kelpserver::native::lifecycle::Settings::load(&config).unwrap();
     assert_eq!(settings.tab_count, Some(1));
     let fixture = Fixture::new();
     assert_eq!(
@@ -300,7 +307,7 @@ fn configured_large_startup_and_invalid_config_are_checked() {
     fixture.stop();
     fs::write(&config, r#"{"tab_count":1000}"#).unwrap();
     assert_eq!(
-        kelpmux::native::lifecycle::Settings::load(&config)
+        kelpserver::native::lifecycle::Settings::load(&config)
             .unwrap()
             .tab_count,
         Some(1000)
@@ -501,7 +508,7 @@ fn stopping_one_named_workspace_preserves_the_other_process() {
             .env("XDG_STATE_HOME", &fixture.root)
             .current_dir(&fixture.root);
         if verb == "start" {
-            command.args(["--shell", "/bin/sh"]);
+            command.args(["--shell", "/bin/sh", "--startup-panes", "layout"]);
         }
         bounded_output(&mut command)
     };
@@ -766,7 +773,7 @@ fn attach_frame(fixture: &Fixture) -> (std::os::unix::net::UnixStream, Frame) {
 }
 #[test]
 fn recovery_opens_after_real_server_crash_once_but_not_after_clean_stop() {
-    use kelpmux::native::ui::DialogKind;
+    use kelpserver::native::ui::DialogKind;
     let fixture = Fixture::new();
     let mut crashed = fixture
         .command("server")
@@ -780,7 +787,7 @@ fn recovery_opens_after_real_server_crash_once_but_not_after_clean_stop() {
     let deadline = Instant::now() + Duration::from_secs(5);
     let original = loop {
         if let Ok(ServerMessage::State { panes, .. }) =
-            kelpmux::native::lifecycle::inspect(&fixture.socket)
+            kelpserver::native::lifecycle::inspect(&fixture.socket)
         {
             break panes;
         }
@@ -946,7 +953,7 @@ fn replacing_outdated_dev_ends_old_jobs_reuses_current_build_and_supports_rollba
 
 #[test]
 fn reordered_tabs_keep_live_pids_and_restart_in_saved_startup_order() {
-    use kelpmux::native::templates::{Template, TemplatePane};
+    use kelpserver::native::templates::{Template, TemplatePane};
     let fixture = Fixture::new();
     let mut template = Template {
         grid: (3, 1),
@@ -1060,7 +1067,7 @@ fn folded_sidebar_survives_restart_and_keeps_retained_build_settings_compatible(
     let (mut stream, first) = attach_frame(&fixture);
     write_message(
         &mut stream,
-        &ClientMessage::Action(Action::AccentSet(kelpmux::native::ui::Accent::Sage)),
+        &ClientMessage::Action(Action::AccentSet(kelpserver::native::ui::Accent::Sage)),
     )
     .unwrap();
     write_message(
@@ -1081,13 +1088,13 @@ fn folded_sidebar_survives_restart_and_keeps_retained_build_settings_compatible(
     assert!(saved["ui"].get("sidebar_folded").is_none());
     assert!(saved["ui"].get("accent").is_none());
     assert_eq!(
-        kelpmux::native::lifecycle::sidebar_accent(&fixture.state.join("sidebar-accent.json"))
+        kelpserver::native::lifecycle::sidebar_accent(&fixture.state.join("sidebar-accent.json"))
             .unwrap(),
-        kelpmux::native::ui::Accent::Sage
+        kelpserver::native::ui::Accent::Sage
     );
     assert_eq!(saved["ui"]["sidebar_columns"], 38);
     assert!(
-        kelpmux::native::lifecycle::sidebar_folded(&fixture.state.join("sidebar-folded.json"))
+        kelpserver::native::lifecycle::sidebar_folded(&fixture.state.join("sidebar-folded.json"))
             .unwrap()
     );
     drop(stream);
@@ -1095,11 +1102,14 @@ fn folded_sidebar_survives_restart_and_keeps_retained_build_settings_compatible(
     fixture.start(&[]);
     let (mut stream, restored) = attach_frame(&fixture);
     assert!(restored.ui.config.sidebar_folded);
-    assert_eq!(restored.ui.config.accent, kelpmux::native::ui::Accent::Sage);
+    assert_eq!(
+        restored.ui.config.accent,
+        kelpserver::native::ui::Accent::Sage
+    );
     assert_eq!(restored.ui.config.sidebar_columns, Some(38));
     write_message(
         &mut stream,
-        &ClientMessage::Action(Action::AccentSet(kelpmux::native::ui::Accent::Blue)),
+        &ClientMessage::Action(Action::AccentSet(kelpserver::native::ui::Accent::Blue)),
     )
     .unwrap();
     write_message(
@@ -1111,5 +1121,48 @@ fn folded_sidebar_survives_restart_and_keeps_retained_build_settings_compatible(
     assert!(!fixture.state.join("sidebar-folded.json").exists());
     assert!(!fixture.state.join("sidebar-accent.json").exists());
     drop(stream);
+    fixture.stop();
+}
+
+/// KelpMux starts its servers without panes (`--startup-panes none`): the
+/// TUI or web client that connects creates the tabs, and the server keeps
+/// running with none until then.
+#[test]
+fn default_start_leaves_the_tabs_to_the_connecting_client() {
+    use kelpmux::native::stream::{Event, Request, StartupPanes};
+    let fixture = Fixture::new();
+    let out = bounded_output(
+        Command::new(env!("CARGO_BIN_EXE_kelpmux"))
+            .args(["start", "--state-dir"])
+            .arg(&fixture.state)
+            .arg("--socket")
+            .arg(&fixture.socket)
+            .args(["--shell", "/bin/sh", "--cwd"])
+            .arg(&fixture.root)
+            .current_dir(&fixture.root),
+    );
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(panes(&out).is_empty());
+    let mut stream = std::os::unix::net::UnixStream::connect(&fixture.socket).unwrap();
+    stream
+        .set_read_timeout(Some(Duration::from_secs(5)))
+        .unwrap();
+    write_message(
+        &mut stream,
+        &ClientMessage::Stream(Request::Hello { version: 1 }),
+    )
+    .unwrap();
+    match read_message::<ServerMessage>(&mut stream).unwrap().unwrap() {
+        ServerMessage::Stream(Event::Welcome { startup_panes, .. }) => {
+            assert_eq!(startup_panes, Some(StartupPanes::None))
+        }
+        other => panic!("{other:?}"),
+    }
+    drop(stream);
+    assert!(fixture.status().is_empty());
     fixture.stop();
 }

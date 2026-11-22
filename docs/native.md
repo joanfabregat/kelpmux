@@ -295,19 +295,25 @@ Grid header drags preview the swap before release: the dragged pane appears at i
 
 The closed-tab restore confirmation arranges its choices side by side in the same taller button style as other confirmations. Resume, picker and restart actions are green; Open folder is blue; Cancel is gray. Labels wrap on compact terminals. Only relevant choices are shown: agent entries have a resume/picker action plus Cancel, while captured programs have Restart program, Open folder and Cancel.
 
-## Stream TUI (experimental, `--stream`)
+## The TUI: a pane-stream client
 
-`kelpmux attach --stream` (and `kelpmux ssh-entry --stream`) attaches a TUI that is a client of KelpServer's pane stream and session API instead of its composed protocol ([ADR 0002](https://github.com/joanfabregat/kelpserver/blob/main/crates/server/docs/adr/0002-generic-session-server.md), step 2). The server keeps sessions, PTYs, terminal state, leases, spawn/close/restore, closed-session records, observations, notifications and lifecycle. The TUI renders locally with the renderer moved from KelpServer (`src/native/render.rs`, `src/native/workspace.rs`, `src/native/status.rs`) and owns its UI state: tab order, names, colours, parking, focus history, dialogs, reading and grid geometry, the scratch marker and settings. The composed TUI stays the default; `--legacy` names it explicitly. A server without the session API (`pane-lifecycle`, `closed-sessions`, `pane-history`, `pane-scroll`, `notification-ack-all`, `server-lifecycle`) is refused before the terminal enters raw mode, with a pointer to `--legacy`.
+`kelpmux attach` (and `kelpmux ssh-entry`) attaches a TUI that is a client of KelpServer's pane stream and session API ([ADR 0002](https://github.com/joanfabregat/kelpserver/blob/main/crates/server/docs/adr/0002-generic-session-server.md), step 2). The server keeps sessions, PTYs, terminal state, leases, spawn/close/restore, closed-session records, observations, notifications and lifecycle. The TUI renders locally (`src/native/render.rs`, `src/native/workspace.rs`, `src/native/status.rs`, `src/native/ui.rs`) and owns its UI state: tab order, names, colours, parking, focus history, dialogs, reading and grid geometry, the scratch marker and settings. The former composed TUI, drawn by the server over protocol 58, was removed from KelpMux: `--legacy` is refused with an explanation, and `--stream` is accepted without effect for existing scripts. A workspace started by another installed kelpmux still runs that binary's own `attach` through retained-client selection (see above), so older workspaces keep their TUI until they are restarted.
+
+A server without the session API (`pane-lifecycle`, `closed-sessions`, `pane-history`, `pane-scroll`, `notification-ack-all`, `server-lifecycle`) is refused before the terminal enters raw mode, with a pointer to restarting the workspace on a current server. The TUI also uses these optional capabilities when the server advertises them: `startup-policy`, `recovery-signal`, `spawn-shell`, `unused-shell`, `stream-limits`, `notification-run` and `spawned-by`.
 
 ```sh
-kelpmux attach --workspace NAME --stream
+kelpmux attach --workspace NAME
 ```
 
-Keys and mouse are those of the composed TUI: the same input router turns them into actions, which the stream TUI applies to its local workspace or turns into session requests. New tab, scratch, close, reopen and restart use `spawn`, `close`, `closed_sessions` and `restore`; search uses `search` and `reveal`; scrolling uses `scroll`. Selection and copy run on the locally held screens and reach the outer terminal as OSC 52.
+Keys and mouse are those of the former composed TUI: the input router turns them into actions, which the TUI applies to its local workspace or turns into session requests. New tab, scratch, close, reopen and restart use `spawn`, `close`, `closed_sessions` and `restore`; search uses `search` and `reveal`; scrolling uses `scroll`. Selection and copy run on the locally held screens and reach the outer terminal as OSC 52.
 
-Tab behaviour follows the composed TUI. Restoring a parked tab puts it last. Closing or parking the current tab focuses the previously selected tab, skipping closed and parked tabs, and falls back to the first tab. Closing the last tab spawns its replacement before closing it, so a failed spawn never leaves the workspace without a tab. If the last tab's shell exits while a scratch terminal remains, the TUI opens a new shell, because the server only counts panes.
+Tab behaviour follows the former composed TUI. Restoring a parked tab puts it last. Closing or parking the current tab focuses the previously selected tab, skipping closed and parked tabs, and falls back to the first tab. Closing the last tab spawns its replacement before closing it, so a failed spawn never leaves the workspace without a tab. If the last tab's shell exits while a scratch terminal remains, the TUI opens a new shell, because the server only counts panes.
 
 Control is per pane. While this TUI controls, it claims every displayed pane no other client holds, sizes them from its own layout, and sends the terminal theme. Focusing the terminal (focus-in report), clicking, scrolling or typing takes the affected panes over. When another client takes the active pane, this TUI observes until it is used again.
+
+### Startup tabs
+
+`kelpmux start` and `ssh-entry` start the server with `--startup-panes none`: the server runs with no pane, and the first TUI that connects creates the tabs from its saved layout (`tui-state.json`), else from the workspace's template (the `--template` or `--config` tabs saved in `workspace.json`), else one shell. Template tabs that name a shell other than the workspace's are created with it (`spawn`'s `shell`); a shell that no longer exists falls back to the workspace's shell, with a notice. The web bridge's `start` operation creates one shell in the same situation, so the browser never opens on an empty workspace; with zero panes the web client also shows its New terminal button. `--startup-panes layout` keeps KelpServer's own startup tabs, and a TUI attached to such a server maps its layout onto them as before: untouched startup shells (`spawned_by` empty, created together) are adopted, and missing template tabs are respawned only when every live pane is one of them.
 
 ### Persisted UI state
 
@@ -315,22 +321,22 @@ UI state lives in one private file per workspace, `tui-state.json`, in the works
 
 - `settings`: the TUI settings (accent, notifications, sound, sidebar, view modes, bindings and other `UiConfig` fields).
 - `epochs`: per server run (the stream epoch), the tab order and per-pane state keyed by pane ID: name, colour, parked and scratch. State of panes the server no longer has is pruned on write, and a new epoch drops the previous run's entries, since pane IDs do not survive a restart.
-- `layout`: an epoch-independent template of the tabs (launch folder, shell, arguments, name, colour, parked). After a server restart, the TUI maps the template onto the new panes: by launch folder and arguments first, then plain shells in order. When every live pane is one of the server's untouched startup shells, missing template tabs are respawned in their folders.
+- `layout`: an epoch-independent template of the tabs (launch folder, arguments, name, colour, parked, and the shell when it is not the workspace's). After a server restart, the TUI maps the template onto the new panes: by launch folder and arguments first, then plain shells in order, and creates the missing tabs (see [Startup tabs](#startup-tabs)).
 - `migrated`: whether the one-time migration ran.
 
-### Live sync between stream TUIs
+### Live sync between TUIs
 
-Stream TUIs attached to the same workspace follow each other's arrangement through this file; the server is not involved. Every 500 ms each TUI writes its pending changes and checks the file's identity (inode, size, modification and change times, one `lstat`). When another TUI replaced the file, it reloads it, merges its own unwritten changes on top (its changes win for the panes, order, settings or template it changed) and repaints. A change therefore shows in the other TUIs within about a second. A TUI recognizes its own writes and does not reload them.
+TUIs attached to the same workspace follow each other's arrangement through this file; the server is not involved. Every 500 ms each TUI writes its pending changes and checks the file's identity (inode, size, modification and change times, one `lstat`). When another TUI replaced the file, it reloads it, merges its own unwritten changes on top (its changes win for the panes, order, settings or template it changed) and repaints. A change therefore shows in the other TUIs within about a second. A TUI recognizes its own writes and does not reload them.
 
 What syncs: the tab order, names, colours, parking and scratch marker of the current server run, the layout template and the settings. What stays per TUI: focus and focus history, open dialogs and help, reading mode and grid view, and the text selection. When another TUI parks the tab focused here (or turns it into the scratch terminal), focus moves as if it had been parked here: to the previously selected open tab, else the first. A tab restored elsewhere reappears where that TUI put it, without taking focus here. Settings changed elsewhere wait while a dialog or help is open here, because they can change the key bindings or the dialog being edited; they apply once it closes, unless a setting was changed here meanwhile, in which case the local settings win and are written.
 
 ### Migration from the composed TUI
 
-The first stream attach to a workspace migrates once. Settings come from the composed server's `workspace.json` UI section and its sidebar preference files; the template comes from its `tab-layout.json`. The tab order, parking and colours of the running server's panes are taken from the composed workspace. The migration only reads those files; the composed TUI keeps using them, so switching back with `--legacy` shows the composed server's own arrangement, which the stream TUI does not update.
+The first attach to a workspace with no `tui-state.json` migrates once. Settings come from the composed server's `workspace.json` UI section and its sidebar preference files; the template comes from its `tab-layout.json`. The tab order, parking and colours of the running server's panes are taken from the composed workspace. The migration only reads those files. A server started without panes has no panes to take an arrangement from; its template is still migrated.
 
 ### Parity with the composed TUI
 
-| Composed TUI feature | Stream TUI |
+| Composed TUI feature | TUI |
 | --- | --- |
 | Grid, tabs, sidebar, fullscreen, adaptive view modes | Same renderer, local state |
 | Tab select, cycle, focus by direction, attention/finished jumps | Yes |
@@ -351,11 +357,13 @@ The first stream attach to a workspace migrates once. Settings come from the com
 | Tab names and colours, move picker, drag reorder | Yes, client state |
 | Takeover, observe | Per-pane leases; takeover on focus, input or Ctrl-B t |
 | Shutdown | Yes, `shutdown` |
-| Tab layout across server restarts | Yes, client template (see above) |
-| Unused-shell hint | Approximated: idle shells with no command or agent |
-| Recovery popup after an unclean shutdown | Not yet: the server marker is not exposed on the stream |
-| New tab with another shell | Not yet: `spawn` takes arguments, not a shell |
+| Tab layout across server restarts | Yes, client template; the TUI creates the tabs (`--startup-panes none`) |
+| Notification-to-pane matching | Yes, Welcome's `notification_run` |
+| Subscription bounds | From Welcome's `limits` (64 panes, 100,000 cells); 10 panes without `stream-limits` |
+| Unused-shell hint | Yes, the server's `unused_shell` observation |
+| Recovery popup after an unclean shutdown | Yes: Welcome's `recovery_pending` opens Closed once in the controlling TUI, which then sends `dismiss_recovery` |
+| Template tabs with another shell | Yes, `spawn` with `shell`; falls back to the workspace's shell |
 | Codex conversation picker | Dropped |
 | Grid shape picker | Not applicable: grid layout is automatic in both |
 
-Known differences that keep the stream TUI opt-in: changes made in the stream TUI are not visible to composed TUIs and the reverse; a server started without a stream TUI still recreates its own startup tabs from `tab-layout.json`; and very large grids are limited by the stream's 10-pane, 100,000-cell subscription bound, so further panes show their header without content.
+Known differences from the composed TUI: the composed TUI's own arrangement (`tab-layout.json`, its sidebar files) is read once at migration and never written back; grids larger than the server's subscription bound (64 panes or 100,000 cells) show their extra panes' headers without content; two TUIs attaching at the same moment to a server started without panes can both create the layout (close the duplicates); and `kelpmux ctl`, `stop`, and the web bridge's `close`, `color`, `commands` and `restore` operations still use KelpServer's composed administration messages, which ADR 0002 step 3 will replace.

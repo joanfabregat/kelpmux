@@ -46,11 +46,11 @@ fn grid_toggle_is_first_and_config_second_in_both_toolbars() {
         assert_eq!(config.x, mode.cols);
     }
 }
-fn actions(messages: Vec<ClientMessage>) -> Vec<Action> {
+fn actions(messages: Vec<UiMessage>) -> Vec<Action> {
     messages
         .into_iter()
         .map(|m| match m {
-            ClientMessage::Action(action) => action,
+            UiMessage::Action(action) => action,
             _ => panic!("input leaked into application"),
         })
         .collect()
@@ -125,12 +125,12 @@ fn enhanced_enter_prefix_and_releases_route_without_leaking_mux_commands() {
             .flat_map(|b| decoder.feed(&[*b]))
             .flat_map(|e| router.route(e, &f))
             .collect();
-        assert!(matches!(&output[..], [ClientMessage::Input(bytes)] if bytes == b"\n"));
+        assert!(matches!(&output[..], [UiMessage::Input(bytes)] if bytes == b"\n"));
     }
     f.panes[0].modes.keyboard_flags = 3;
     let mut router = Router::default();
     assert!(
-        matches!(&router.route(InputEvent::Bytes(b"\x1b[13;2u".to_vec()), &f)[..], [ClientMessage::Input(bytes)] if bytes == b"\x1b[13;2u")
+        matches!(&router.route(InputEvent::Bytes(b"\x1b[13;2u".to_vec()), &f)[..], [UiMessage::Input(bytes)] if bytes == b"\x1b[13;2u")
     );
     assert_eq!(
         actions(router.route(
@@ -140,11 +140,11 @@ fn enhanced_enter_prefix_and_releases_route_without_leaking_mux_commands() {
         vec![Action::Fullscreen(1)]
     );
     assert!(
-        matches!(&router.route(InputEvent::Bytes(b"\x1b[13u".to_vec()), &f)[..], [ClientMessage::Input(bytes)] if bytes == b"\x1b[13u")
+        matches!(&router.route(InputEvent::Bytes(b"\x1b[13u".to_vec()), &f)[..], [UiMessage::Input(bytes)] if bytes == b"\x1b[13u")
     );
     let paste = b"\x1b[13;2u\x02f".to_vec();
     assert!(
-        matches!(&router.route(InputEvent::Paste(paste.clone()), &f)[..], [ClientMessage::Paste(bytes)] if bytes == &paste)
+        matches!(&router.route(InputEvent::Paste(paste.clone()), &f)[..], [UiMessage::Paste(bytes)] if bytes == &paste)
     );
 }
 
@@ -548,7 +548,7 @@ fn custom_prefix_preserves_alt_editing_and_observers() {
     let f = frame(&ws);
     let mut router = Router::default();
     assert!(
-        matches!(&router.route(InputEvent::Bytes(b"\x1bf\x1bb\x1b[1;3D".to_vec()),&f)[..],[ClientMessage::Input(bytes)] if bytes==b"\x1bf\x1bb\x1b[1;3D")
+        matches!(&router.route(InputEvent::Bytes(b"\x1bf\x1bb\x1b[1;3D".to_vec()),&f)[..],[UiMessage::Input(bytes)] if bytes==b"\x1bf\x1bb\x1b[1;3D")
     );
     assert_eq!(
         actions(router.route(InputEvent::Bytes(b"\x01x".to_vec()), &f)),
@@ -642,7 +642,7 @@ fn tab_body_mouse_and_dialog_close_have_separate_hit_targets() {
                 &f
             )
             .last(),
-        Some(ClientMessage::Mouse(_))
+        Some(UiMessage::Mouse(_))
     ));
     let event = InputEvent::Mouse(MouseEvent {
         position: Point {
@@ -1255,7 +1255,7 @@ fn terminal_content_has_no_blank_side_margins_in_tabs_or_grid() {
             Router::default()
                 .route(click(point), &f)
                 .iter()
-                .any(|message| matches!(message, ClientMessage::Mouse { .. }))
+                .any(|message| matches!(message, UiMessage::Mouse { .. }))
         );
     }
     ws.apply(&Action::CloseReading).unwrap();
@@ -2629,7 +2629,7 @@ fn status_popup_metrics_clicks_views_search_and_small_screen_replay() {
                     router
                         .route(InputEvent::Bytes(key.to_vec()), &f)
                         .iter()
-                        .all(|message| matches!(message, ClientMessage::Action(_)))
+                        .all(|message| matches!(message, UiMessage::Action(_)))
                 );
             }
             let query_actions = actions(router.route(InputEvent::Bytes(b"/worker99".to_vec()), &f));
@@ -3411,7 +3411,7 @@ fn metrics_hover_as_one_block_and_new_tab_highlights_more_subtly() {
             assert_eq!(hover::target(&f, point), Some(block));
             assert!(matches!(
                 Router::default().route(click(point), &f).as_slice(),
-                [ClientMessage::Action(Action::StatusOpen(_))]
+                [UiMessage::Action(Action::StatusOpen(_))]
             ));
         }
     }
@@ -3551,7 +3551,7 @@ fn passive_motion_preserves_dialog_selection_and_requires_application_all_motion
     f.panes[0].modes.mouse_motion = true;
     assert!(matches!(
         Router::default().route(motion(point), &f).as_slice(),
-        [ClientMessage::Mouse(_)]
+        [UiMessage::Mouse(_)]
     ));
 }
 

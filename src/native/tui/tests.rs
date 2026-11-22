@@ -11,7 +11,10 @@ use crate::{
     native::{
         input::Router,
         protocol::*,
-        stream::{CloseReason, Event, Lease, PaneSession, PaneSnapshot, Request, Update},
+        stream::{
+            CloseReason, Event, Lease, Limits, PaneSession, PaneSnapshot, Request, StartupPanes,
+            Update,
+        },
         ui::DialogKind,
     },
 };
@@ -38,6 +41,22 @@ fn session(id: PaneId, cwd: &str) -> PaneSession {
         argv: Vec::new(),
         startup: None,
         terminal_title: None,
+        unused_shell: false,
+        spawned_by: None,
+    }
+}
+/// A Welcome from a server without the step 2 additions.
+fn welcome(client: u64, epoch: &str, capabilities: Vec<String>) -> Event {
+    Event::Welcome {
+        version: 1,
+        client,
+        epoch: epoch.into(),
+        capabilities,
+        server_version: Some("test".into()),
+        startup_panes: None,
+        recovery_pending: false,
+        limits: None,
+        notification_run: None,
     }
 }
 fn update(panes: Vec<PaneInfo>) -> Update {
@@ -87,8 +106,35 @@ fn controller_from(store: Store) -> Controller {
     .unwrap();
     let mut capabilities: Vec<String> = REQUIRED.iter().map(|s| (*s).into()).collect();
     capabilities.push("clipboard-write".into());
+    controller.welcome(welcome(ME, "e1", capabilities)).unwrap();
     controller
-        .welcome(ME, "e1".into(), capabilities, Some("test".into()))
+}
+/// Step 2 additions of a Welcome, for `welcomed`.
+#[derive(Default)]
+struct Extras {
+    capabilities: Vec<&'static str>,
+    startup_panes: Option<StartupPanes>,
+    recovery_pending: bool,
+    limits: Option<Limits>,
+    notification_run: Option<String>,
+}
+/// A controller welcomed by a server with the step 2 `extras`.
+fn welcomed(document: Document, options: Options, extras: Extras) -> Controller {
+    let mut controller = Controller::new(120, 40, Store::memory(document), options).unwrap();
+    let mut capabilities: Vec<String> = REQUIRED.iter().map(|s| (*s).into()).collect();
+    capabilities.extend(extras.capabilities.iter().map(|s| (*s).to_owned()));
+    controller
+        .welcome(Event::Welcome {
+            version: 1,
+            client: ME,
+            epoch: "e1".into(),
+            capabilities,
+            server_version: Some("test".into()),
+            startup_panes: extras.startup_panes,
+            recovery_pending: extras.recovery_pending,
+            limits: extras.limits,
+            notification_run: extras.notification_run,
+        })
         .unwrap();
     controller
 }
@@ -112,7 +158,7 @@ fn order(controller: &Controller) -> Vec<PaneId> {
     controller.workspace.panes.iter().map(|p| p.id).collect()
 }
 fn act(controller: &mut Controller, action: Action) {
-    controller.message(ClientMessage::Action(action));
+    controller.message(UiMessage::Action(action));
     assert_eq!(controller.notice, None);
 }
 fn closed(controller: &mut Controller, pane: PaneId) {
@@ -261,7 +307,7 @@ fn closing_the_last_tab_spawns_its_replacement_first() {
 #[test]
 fn closing_needs_the_confirmation_dialog() {
     let mut c = attached(&[1, 2]);
-    c.message(ClientMessage::Action(Action::ClosePaneConfirm(1)));
+    c.message(UiMessage::Action(Action::ClosePaneConfirm(1)));
     assert!(c.notice.is_some());
     assert!(
         !c.take_requests()
@@ -455,7 +501,7 @@ fn another_client_taking_the_active_pane_makes_this_one_observe() {
     assert!(!c.controlling);
     assert!(!c.frame().controller);
     // Typing takes it back.
-    c.message(ClientMessage::Input(b"x".to_vec()));
+    c.message(UiMessage::Input(b"x".to_vec()));
     let requests = c.take_requests();
     let claim = requests
         .iter()
@@ -516,7 +562,22 @@ fn prefix_keys_drive_the_session_api() {
 
 #[test]
 fn focusing_a_pane_acknowledges_its_notifications() {
-    let mut c = attached(&[1, 2]);
+    let mut c = welcomed(
+        Document {
+            migrated: true,
+            epochs: [("e1".to_owned(), EpochState::default())].into(),
+            ..Document::default()
+        },
+        Options::default(),
+        Extras {
+            capabilities: vec!["notification-run"],
+            notification_run: Some("run".into()),
+            ..Extras::default()
+        },
+    );
+    c.event(Event::Update(update(vec![info(1), info(2)])))
+        .unwrap();
+    c.take_requests();
     let mut next = update(vec![info(1), info(2)]);
     next.notifications = vec![Notification {
         origin: Some(NotificationOrigin {
@@ -621,10 +682,10 @@ fn servers_without_the_session_api_are_refused() {
     )
     .unwrap();
     let error = c
-        .welcome(1, "e".into(), vec!["pane-snapshots".into()], None)
+        .welcome(welcome(1, "e", vec!["pane-snapshots".into()]))
         .unwrap_err()
         .to_string();
-    assert!(error.contains("--legacy"), "{error}");
+    assert!(error.contains("restart the workspace"), "{error}");
 }
 
 #[test]
@@ -905,4 +966,252 @@ fn settings_changes_are_client_state() {
             .notification_sound
     );
     assert!(c.store.changes.settings);
+}
+
+fn migrated() -> Document {
+    Document {
+        migrated: true,
+        ..Document::default()
+    }
+}
+fn spawns(requests: &[Request]) -> Vec<(Option<String>, Option<String>)> {
+    requests
+        .iter()
+        .filter_map(|r| match r {
+            Request::Spawn { cwd, shell, .. } => Some((
+                cwd.as_ref().map(|c| c.to_string_lossy().into_owned()),
+                shell.as_ref().map(|s| s.to_string_lossy().into_owned()),
+            )),
+            _ => None,
+        })
+        .collect()
+}
+fn empty_update() -> Update {
+    update(Vec::new())
+}
+
+#[test]
+fn an_empty_server_started_without_panes_gets_the_saved_layout() {
+    let tab = |cwd: &str, shell: Option<&str>| LayoutTab {
+        cwd: cwd.into(),
+        shell: shell.map(Into::into),
+        ..LayoutTab::default()
+    };
+    let mut c = welcomed(
+        Document {
+            layout: vec![
+                tab("/srv/a", Some("/usr/bin/fish")),
+                tab("/srv/b", Some("/bin/sh")),
+            ],
+            ..migrated()
+        },
+        Options {
+            default_shell: Some("/bin/sh".into()),
+            ..Options::default()
+        },
+        Extras {
+            capabilities: vec!["startup-policy", "spawn-shell"],
+            startup_panes: Some(StartupPanes::None),
+            ..Extras::default()
+        },
+    );
+    c.event(Event::Update(empty_update())).unwrap();
+    // The workspace's own shell is never named; another shell is.
+    assert_eq!(
+        spawns(&c.take_requests()),
+        [
+            (Some("/srv/a".into()), Some("/usr/bin/fish".into())),
+            (Some("/srv/b".into()), None),
+        ]
+    );
+}
+
+#[test]
+fn without_spawn_shell_template_shells_are_not_requested() {
+    let mut c = welcomed(
+        migrated(),
+        Options {
+            template: vec![LayoutTab {
+                cwd: "/srv/t".into(),
+                shell: Some("/usr/bin/fish".into()),
+                name: Some("Fish".into()),
+                ..LayoutTab::default()
+            }],
+            ..Options::default()
+        },
+        Extras {
+            capabilities: vec!["startup-policy"],
+            startup_panes: Some(StartupPanes::None),
+            ..Extras::default()
+        },
+    );
+    c.event(Event::Update(empty_update())).unwrap();
+    assert_eq!(spawns(&c.take_requests()), [(Some("/srv/t".into()), None)]);
+    // The configured template became the saved layout.
+    assert_eq!(c.store.document.layout[0].name.as_deref(), Some("Fish"));
+}
+
+#[test]
+fn an_empty_server_without_a_layout_gets_one_shell() {
+    for document in [migrated(), Document::default()] {
+        let mut c = welcomed(
+            document,
+            Options::default(),
+            Extras {
+                capabilities: vec!["startup-policy"],
+                startup_panes: Some(StartupPanes::None),
+                ..Extras::default()
+            },
+        );
+        c.event(Event::Update(empty_update())).unwrap();
+        assert_eq!(spawns(&c.take_requests()), [(None, None)]);
+        assert!(c.store.document.migrated);
+        let mut created = update(vec![info(1)]);
+        created.sessions[0].spawned_by = Some(ME);
+        c.event(Event::Update(created)).unwrap();
+        assert_eq!(order(&c), [1]);
+    }
+}
+
+#[test]
+fn layout_servers_only_respawn_over_untouched_startup_shells() {
+    let document = || Document {
+        layout: vec![
+            LayoutTab {
+                cwd: "/srv/x".into(),
+                ..LayoutTab::default()
+            },
+            LayoutTab {
+                cwd: "/srv/y".into(),
+                argv: vec!["htop".into()],
+                ..LayoutTab::default()
+            },
+        ],
+        ..migrated()
+    };
+    // A startup shell is adopted and the missing program tab respawned.
+    let mut c = welcomed(document(), Options::default(), Extras::default());
+    c.event(Event::Update(update(vec![info(1)]))).unwrap();
+    assert_eq!(spawns(&c.take_requests()), [(Some("/srv/y".into()), None)]);
+    // A pane another client created is not a startup pane: nothing respawns.
+    let mut c = welcomed(document(), Options::default(), Extras::default());
+    let mut spawned = update(vec![info(1)]);
+    spawned.sessions[0].spawned_by = Some(OTHER);
+    c.event(Event::Update(spawned)).unwrap();
+    assert!(spawns(&c.take_requests()).is_empty());
+}
+
+#[test]
+fn recovery_pending_opens_closed_and_dismisses_the_signal_once() {
+    let mut c = welcomed(
+        Document {
+            epochs: [("e1".to_owned(), EpochState::default())].into(),
+            ..migrated()
+        },
+        Options::default(),
+        Extras {
+            capabilities: vec!["recovery-signal"],
+            recovery_pending: true,
+            ..Extras::default()
+        },
+    );
+    c.event(Event::Update(update(vec![info(1)]))).unwrap();
+    assert_eq!(
+        c.workspace.ui.dialog.map(|d| d.kind),
+        Some(DialogKind::Recovery)
+    );
+    let requests = c.take_requests();
+    assert!(
+        requests
+            .iter()
+            .any(|r| matches!(r, Request::ClosedSessions { .. }))
+    );
+    let dismiss = requests
+        .iter()
+        .filter_map(|r| match r {
+            Request::DismissRecovery { request } => Some(request.clone()),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(dismiss.len(), 1);
+    c.event(Event::Done {
+        request: dismiss[0].clone(),
+    })
+    .unwrap();
+    c.event(Event::Update(update(vec![info(1)]))).unwrap();
+    assert!(
+        !c.take_requests()
+            .iter()
+            .any(|r| matches!(r, Request::DismissRecovery { .. }))
+    );
+    // Without the capability the field is ignored.
+    let mut c = welcomed(
+        migrated(),
+        Options::default(),
+        Extras {
+            recovery_pending: true,
+            ..Extras::default()
+        },
+    );
+    c.event(Event::Update(update(vec![info(1)]))).unwrap();
+    assert_eq!(c.workspace.ui.dialog, None);
+}
+
+#[test]
+fn subscription_limits_come_from_welcome_with_a_fallback() {
+    let subscribed = |extras: Extras| {
+        let mut c = welcomed(
+            Document {
+                epochs: [("e1".to_owned(), EpochState::default())].into(),
+                ..migrated()
+            },
+            Options::default(),
+            extras,
+        );
+        c.event(Event::Update(update(vec![info(1), info(2), info(3)])))
+            .unwrap();
+        act(&mut c, Action::CloseReading);
+        c.take_requests();
+        c.subscribed().len()
+    };
+    let limits = Some(Limits {
+        subscriptions: 2,
+        subscribed_cells: 100_000,
+    });
+    assert_eq!(
+        subscribed(Extras {
+            capabilities: vec!["stream-limits"],
+            limits,
+            ..Extras::default()
+        }),
+        2
+    );
+    // Absent or unadvertised limits fall back to the old ten panes.
+    assert_eq!(subscribed(Extras::default()), 3);
+    assert_eq!(
+        subscribed(Extras {
+            limits,
+            ..Extras::default()
+        }),
+        3
+    );
+}
+
+#[test]
+fn unused_shells_are_the_servers_observation() {
+    let mut c = attached(&[1, 2]);
+    let mut next = update(vec![info(1), info(2)]);
+    next.sessions[1].unused_shell = true;
+    c.event(Event::Update(next)).unwrap();
+    assert_eq!(c.workspace.ui.unused, [2]);
+    // Idle panes without the observation are not guessed to be unused.
+    c.event(Event::Update(update(vec![info(1), info(2)])))
+        .unwrap();
+    assert!(c.workspace.ui.unused.is_empty());
+}
+
+#[test]
+fn without_a_notification_run_notifications_match_no_pane() {
+    let c = attached(&[1]);
+    assert_eq!(c.workspace.ui.notification_run, "");
 }

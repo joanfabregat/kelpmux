@@ -1,11 +1,11 @@
-//! `kelpmux attach --stream`: the terminal loop of the stream TUI. It owns
+//! `kelpmux attach`: the terminal loop of the stream TUI. It owns
 //! the TTY and the stream connection; the controller owns all UI state.
 use super::super::{
     cli::{
         Channel, ESCAPE_TIMEOUT, INTERRUPTED, RESIZED, RawTty, TerminalWriter, backend_size,
         fitted_mouse, paint, queue_events, tty_size,
     },
-    connection::{connect, response},
+    connection::response,
     input::{Decoder, Router},
     protocol::*,
     stream::{self, Event, Request},
@@ -19,7 +19,7 @@ use base64::{Engine, engine::general_purpose::STANDARD};
 use std::{
     collections::VecDeque,
     io::Write,
-    os::fd::AsRawFd,
+    os::{fd::AsRawFd, unix::net::UnixStream},
     path::Path,
     sync::atomic::Ordering,
     time::{Duration, Instant},
@@ -54,36 +54,39 @@ fn send(channel: &mut Channel, requests: Vec<Request>) -> Result<()> {
     Ok(())
 }
 
-pub fn run(socket: &Path, state: &Path, takeover: bool) -> Result<()> {
+pub fn run(mut socket: UnixStream, state: &Path, takeover: bool) -> Result<()> {
     if unsafe { libc::isatty(0) } != 1 || unsafe { libc::isatty(1) } != 1 {
         return Err("attach requires stdin and stdout to be TTYs".into());
     }
-    let mut socket = connect(socket)?;
     write_message(
         &mut socket,
         &ClientMessage::Stream(Request::Hello {
             version: stream::VERSION,
         }),
     )?;
-    let (client, epoch, capabilities, server_version) = match response(&mut socket)? {
-        ServerMessage::Stream(Event::Welcome {
-            version,
-            client,
-            epoch,
-            capabilities,
-            server_version,
-        }) if version == stream::VERSION => (client, epoch, capabilities, server_version),
+    let welcome = match response(&mut socket)? {
+        ServerMessage::Stream(welcome @ Event::Welcome { .. }) => welcome,
         ServerMessage::Stream(Event::Error { message, .. }) | ServerMessage::Error(message) => {
             return Err(format!("stream attach failed: {message}").into());
         }
         _ => {
             return Err(
-                "the workspace server does not offer the pane stream; attach with --legacy".into(),
+                "the workspace server does not offer the pane stream; restart the workspace with a current server".into(),
             );
         }
     };
     let size = tty_size()?;
     let (cols, rows) = backend_size(size);
+    // The workspace's own template and shell, as `kelpmux start` resolves
+    // them: the TUI creates the tabs of a server started without panes.
+    let (template, shell) = state::workspace_template(state);
+    let default_shell = shell.or_else(|| {
+        Some(
+            std::env::var_os("SHELL")
+                .map(|shell| shell.to_string_lossy().into_owned())
+                .unwrap_or_else(|| "/bin/bash".into()),
+        )
+    });
     let options = Options {
         takeover,
         workspace: state
@@ -92,9 +95,11 @@ pub fn run(socket: &Path, state: &Path, takeover: bool) -> Result<()> {
             .to_string_lossy()
             .into_owned(),
         dev_badge: std::env::var_os("KELPMUX_DEV_BADGE").is_some_and(|value| value == "1"),
+        default_shell,
+        template,
     };
     let mut controller = Controller::new(cols, rows, open_store(state)?, options)?;
-    controller.welcome(client, epoch, capabilities, server_version)?;
+    controller.welcome(welcome)?;
     let mut channel = Channel::new(socket)?;
     send(&mut channel, controller.take_requests())?;
     channel.flush()?;

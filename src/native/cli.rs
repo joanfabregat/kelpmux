@@ -1,39 +1,38 @@
-//! Foreground Linux frontend. TTY state belongs to an attach client, never to
-//! the server or its persistent PTYs.
-use super::{
-    input::{Decoder, Router},
-    protocol::*,
-    render::terminal_diff,
-};
+//! Command line and the TUI's terminal plumbing. TTY state belongs to an
+//! attach client, never to the server or its persistent PTYs.
+use super::{protocol::*, render::terminal_diff};
 use crate::Result;
-use base64::{Engine, engine::general_purpose::STANDARD};
 use std::{
     collections::VecDeque,
     io::{Read, Write},
-    os::{fd::AsRawFd, unix::net::UnixStream},
+    os::unix::net::UnixStream,
     path::{Path, PathBuf},
     sync::atomic::{AtomicBool, Ordering},
     time::{Duration, Instant},
 };
 
 pub const HELP: &str = "Owned native terminal workspaces (Linux):
-  kelpmux start [--workspace NAME] [--config PATH] [--template PATH] [--shell PATH] [--cwd PATH] [--replace-running] [--server-binary PATH]
-  kelpmux ssh-entry [--workspace NAME] [--takeover] [--stream|--legacy]
+  kelpmux start [--workspace NAME] [--config PATH] [--template PATH] [--shell PATH] [--cwd PATH] [--replace-running] [--server-binary PATH] [--startup-panes none|layout]
+  kelpmux ssh-entry [--workspace NAME] [--takeover]
   kelpmux status|stop|recover|diagnostics|templates [--workspace NAME]
   kelpmux benchmark
   kelpmux bridge [--workspace NAME] [--socket PATH]
   kelpmux web-bridge [--workspace NAME] [--socket PATH] [--state-dir PATH]
   kelpmux web-relay --config PATH   (browser client; see docs/web.md)
   kelpmux stream-inspect [--workspace NAME] [PANE_ID ...]
-  kelpmux server [--socket PATH] [--state-dir PATH] [--shell PATH] [--cwd PATH] [--size CxR] [--config PATH]
-  kelpmux attach [--workspace NAME] [--socket PATH] [--takeover] [--current-client] [--stream|--legacy]
+  kelpmux server [--socket PATH] [--state-dir PATH] [--shell PATH] [--cwd PATH] [--size CxR] [--config PATH] [--startup-panes layout|none]
+  kelpmux attach [--workspace NAME] [--socket PATH] [--takeover] [--current-client]
   kelpmux ctl [--socket PATH] list|new|park ID|restore ID|focus ID|read ID|fullscreen ID|reclaim ID|close|shutdown
 
 start owns a detached server; ssh-entry starts or attaches. stop ends its processes.
+start and ssh-entry start the server without panes (--startup-panes none); the TUI
+  or web client creates the tabs from its saved layout or template. --startup-panes
+  layout keeps the server's own startup tabs.
 --replace-running ends an outdated server's shells/jobs before starting the selected binary.
---current-client explicitly skips retained-client selection; the protocol handshake remains mandatory.
---stream attaches the stream TUI (local rendering and UI state, experimental);
-  --legacy, the default, attaches the composed-protocol TUI.
+attach runs the TUI: a client of the server's pane stream that renders
+  locally and keeps its UI state in the workspace's tui-state.json.
+  A workspace started by another installed kelpmux runs that binary's attach;
+  --current-client skips this retained-client selection.
 Custom sockets infer adjacent state; specify --state-dir when state lives elsewhere.
 Default workspace: main; socket: $XDG_STATE_HOME/kelpmux/workspaces/main/control.sock
   (falls back to ~/.local/state/kelpmux/workspaces/main/control.sock)
@@ -64,14 +63,15 @@ struct Options {
     cwd: PathBuf,
     size: (u16, u16),
     takeover: bool,
+    /// Skips retained-client selection; the handshake stays mandatory.
     current_client: bool,
-    /// Attach with the stream TUI instead of the composed protocol.
-    stream: bool,
     replace_running: bool,
     server_binary: Option<PathBuf>,
     command: Vec<String>,
     background: bool,
     settings: super::lifecycle::Settings,
+    /// `none` (the default here): the TUI or web client creates the tabs.
+    startup_panes: super::stream::StartupPanes,
 }
 fn options(args: &[String]) -> Result<Options> {
     let state = super::lifecycle::workspace_path("main")?;
@@ -85,12 +85,12 @@ fn options(args: &[String]) -> Result<Options> {
         size: (120, 40),
         takeover: false,
         current_client: false,
-        stream: false,
         replace_running: false,
         server_binary: None,
         command: vec![],
         background: false,
         settings: super::lifecycle::Settings::default(),
+        startup_panes: super::stream::StartupPanes::None,
     };
     let verb = args.first().ok_or("missing native command")?;
     let mut position = 1;
@@ -101,7 +101,6 @@ fn options(args: &[String]) -> Result<Options> {
     let mut shell_explicit = false;
     let mut cwd_explicit = false;
     let mut template_path = None;
-    let mut stream_choice = None;
     while position < args.len() {
         let arg = &args[position];
         position += 1;
@@ -113,20 +112,17 @@ fn options(args: &[String]) -> Result<Options> {
             result.takeover = true;
             continue;
         }
+        // Accepted without effect for one release, so existing scripts and
+        // SSH forced commands keep working: the stream TUI is the only TUI.
+        if arg == "--stream" && matches!(verb.as_str(), "attach" | "ssh-entry") {
+            continue;
+        }
         if arg == "--current-client" && matches!(verb.as_str(), "attach" | "ssh-entry") {
             result.current_client = true;
             continue;
         }
-        // The composed-protocol TUI stays the default until the stream TUI
-        // reaches parity (ADR 0002 step 2); --legacy names it explicitly.
-        if matches!(arg.as_str(), "--stream" | "--legacy")
-            && matches!(verb.as_str(), "attach" | "ssh-entry")
-        {
-            if stream_choice.replace(arg == "--stream").is_some() {
-                return Err("choose one of --stream and --legacy".into());
-            }
-            result.stream = arg == "--stream";
-            continue;
+        if arg == "--legacy" && matches!(verb.as_str(), "attach" | "ssh-entry") {
+            return Err("the composed TUI was removed; attach without --legacy (a workspace's own registered kelpmux keeps its TUI)".into());
         }
         if arg == "--replace-running" && verb == "start" {
             result.replace_running = true;
@@ -157,6 +153,9 @@ fn options(args: &[String]) -> Result<Options> {
                 "--cwd" if matches!(verb.as_str(), "server" | "start" | "ssh-entry") => {
                     result.cwd = PathBuf::from(value);
                     cwd_explicit = true;
+                }
+                "--startup-panes" if matches!(verb.as_str(), "server" | "start" | "ssh-entry") => {
+                    result.startup_panes = value.parse()?;
                 }
                 "--size" if matches!(verb.as_str(), "server" | "start" | "ssh-entry") => {
                     result.size = parse_size(value)?;
@@ -268,7 +267,27 @@ fn start_server(options: &Options) -> Result<()> {
         settings: &options.settings,
         replace_running: options.replace_running,
         executable: Some(&selected_server),
+        // By default (`none`) the TUI or web client that connects creates the
+        // workspace's tabs (ADR 0002 step 2), not KelpServer's startup tabs.
+        startup_panes: options.startup_panes,
     })
+}
+/// Runs the TUI until it detaches, the server stops or a signal ends it.
+fn attach(options: &Options) -> Result<()> {
+    // Before raw mode: a workspace started by another installed kelpmux
+    // runs that binary's own attach (exec, does not return).
+    let socket = if options.current_client {
+        connect(&options.socket)
+    } else {
+        super::upgrade::attach_matching(&options.socket, &options.state, options.takeover)
+    };
+    let result =
+        socket.and_then(|socket| super::tui::attach::run(socket, &options.state, options.takeover));
+    if INTERRUPTED.load(Ordering::Relaxed) {
+        Ok(())
+    } else {
+        result
+    }
 }
 /// `kelpmux start --state-dir STATE --socket SOCKET`: the web bridge's start
 /// of its own, configured workspace. Same option handling and start path as
@@ -316,16 +335,8 @@ pub fn run(args: &[String]) -> Result<()> {
         "server" => kelpserver::native::cli::run(args),
         "start" | "ssh-entry" => {
             start_server(&options)?;
-            if args[0] == "ssh-entry" && options.stream {
-                let result =
-                    super::tui::attach::run(&options.socket, &options.state, options.takeover);
-                if INTERRUPTED.load(Ordering::Relaxed) {
-                    Ok(())
-                } else {
-                    result
-                }
-            } else if args[0] == "ssh-entry" {
-                attach(attach_socket(&options)?, options.takeover)
+            if args[0] == "ssh-entry" {
+                attach(&options)
             } else {
                 control(&options.socket, &["list".into()])
             }
@@ -334,7 +345,7 @@ pub fn run(args: &[String]) -> Result<()> {
             let stream = connect(&options.socket)?;
             let identity = super::upgrade::identify(&stream, &options.state)?;
             eprintln!(
-                "Kelpmux workspace {}: server {} (protocol {}), client {} (protocol {}), PID {}",
+                "Kelpmux workspace {}: server {} (protocol {}), client {} (stream {}), PID {}",
                 options
                     .state
                     .file_name()
@@ -343,7 +354,7 @@ pub fn run(args: &[String]) -> Result<()> {
                 identity.version,
                 identity.protocol_label(),
                 env!("CARGO_PKG_VERSION"),
-                VERSION,
+                super::stream::VERSION,
                 identity.pid
             );
             control(&options.socket, &["list".into()])
@@ -382,18 +393,7 @@ pub fn run(args: &[String]) -> Result<()> {
             );
             Ok(())
         }
-        "attach" => {
-            let result = if options.stream {
-                super::tui::attach::run(&options.socket, &options.state, options.takeover)
-            } else {
-                attach(attach_socket(&options)?, options.takeover)
-            };
-            if INTERRUPTED.load(Ordering::Relaxed) {
-                Ok(())
-            } else {
-                result
-            }
-        }
+        "attach" => attach(&options),
         "ctl" => control(&options.socket, &options.command),
         _ => Err("unknown native command".into()),
     }
@@ -409,6 +409,9 @@ fn control(path: &Path, args: &[String]) -> Result<()> {
         }
         Ok(rest[0].parse()?)
     };
+    // Same-user administration of the server (protocol 58 `Command`). The
+    // composed actions it names are KelpServer's, not the TUI's.
+    use kelpserver::native::protocol::Action;
     let message = match command.as_str() {
         "list" if rest.is_empty() => ClientMessage::Inspect,
         "diagnostics" if rest.is_empty() => ClientMessage::Diagnostics,
@@ -665,47 +668,6 @@ impl Channel {
         Ok(result)
     }
 }
-fn validate_frame(frame: &Frame) -> Result<()> {
-    frame.ui.config.validate()?;
-    validate_size(frame.cols, frame.rows)?;
-    if frame.cells.len() != usize::from(frame.cols) * usize::from(frame.rows) {
-        return Err("invalid native frame dimensions".into());
-    }
-    for cell in &frame.cells {
-        if cell.width > 2 || cell.text.len() > 1024 || cell.text.chars().any(char::is_control) {
-            return Err("invalid native cell".into());
-        }
-        let mut chars = cell.text.chars();
-        if cell.width == 0 {
-            if !cell.text.is_empty() {
-                return Err("invalid native continuation".into());
-            }
-        } else if let Some(first) = chars.next() {
-            if (unicode_width::UnicodeWidthChar::width(first).unwrap_or(0)
-                != usize::from(cell.width)
-                && !(cell.text.contains('\u{fe0f}')
-                    && unicode_width::UnicodeWidthStr::width(cell.text.as_str())
-                        == usize::from(cell.width)))
-                || chars.any(|c| unicode_width::UnicodeWidthChar::width(c).unwrap_or(0) != 0)
-            {
-                return Err("invalid native glyph width".into());
-            }
-        }
-    }
-    for view in &frame.panes {
-        if view.modes.keyboard_flags & !31 != 0 {
-            return Err("unsupported native keyboard flags".into());
-        }
-        for rect in [view.rect, view.body] {
-            if u32::from(rect.x) + u32::from(rect.cols) > u32::from(frame.cols)
-                || u32::from(rect.y) + u32::from(rect.rows) > u32::from(frame.rows)
-            {
-                return Err("native pane is outside its frame".into());
-            }
-        }
-    }
-    Ok(())
-}
 pub(crate) fn fitted_mouse(frame: &Frame, size: (u16, u16), mut point: Point) -> Option<Point> {
     if frame.sidebar_status() {
         let height = super::workspace::sidebar_status_rows(frame.rows).min(size.1);
@@ -947,300 +909,6 @@ pub(crate) fn paint(
     *painted = Some(fit);
     Ok(())
 }
-fn attach_socket(options: &Options) -> Result<UnixStream> {
-    if options.current_client {
-        connect(&options.socket)
-    } else {
-        super::upgrade::attach_matching(&options.socket, &options.state, options.takeover)
-    }
-}
-#[derive(PartialEq)]
-enum FocusHandoff {
-    AwaitingPong,
-    AwaitingFrame,
-}
-
-fn attach(mut socket: UnixStream, takeover: bool) -> Result<()> {
-    if unsafe { libc::isatty(0) } != 1 || unsafe { libc::isatty(1) } != 1 {
-        return Err("attach requires stdin and stdout to be TTYs".into());
-    }
-    let mut size = tty_size()?;
-    let (cols, rows) = backend_size(size);
-    write_message(
-        &mut socket,
-        &ClientMessage::Attach {
-            version: VERSION,
-            cols,
-            rows,
-            takeover,
-        },
-    )?;
-    match response(&mut socket)? {
-        ServerMessage::Welcome { version, .. } if version == VERSION => {}
-        ServerMessage::Welcome { version, .. } => return Err(format!(
-            "workspace uses native protocol {version}, client uses {VERSION}; attach with the workspace's retained matching client; existing sessions are unchanged"
-        ).into()),
-        ServerMessage::Error(error) => return Err(format!(
-            "native attach failed: {error}; client protocol {VERSION}; existing sessions are unchanged"
-        ).into()),
-        _ => return Err("incompatible native server handshake".into()),
-    }
-    // All connection/handshake failures precede raw and alternate-screen mode.
-    let mut channel = Channel::new(socket)?;
-    let _tty = RawTty::enter()?;
-    let mut decoder = Decoder::default();
-    let mut router = Router::default();
-    let mut latest: Option<Frame> = None;
-    let mut painted: Option<Frame> = None;
-    let mut escape = None;
-    let mut stdout = TerminalWriter;
-    let mut notice: Option<String> = None;
-    let mut pending = VecDeque::new();
-    let mut focus_handoff = None;
-    let mut focus_report_pending = false;
-    let mut revision = 0;
-    let mut keyboard_mode = 1;
-    let mut pointer = None;
-    let mut hovered = None;
-    let mut hover_dirty = false;
-    let mut hover_painted_at = Instant::now() - Duration::from_secs(1);
-    loop {
-        if INTERRUPTED.load(Ordering::Relaxed) {
-            return Ok(());
-        }
-        if RESIZED.swap(false, Ordering::Relaxed) {
-            size = tty_size()?;
-            painted = None;
-            pointer = None;
-            hovered = None;
-            hover_dirty = false;
-            // Server stores observer geometry without resizing the workspace.
-            let (cols, rows) = backend_size(size);
-            channel.send(&ClientMessage::Resize { cols, rows })?;
-            channel.flush()?;
-            if let Some(frame) = latest.as_ref() {
-                paint(
-                    &mut stdout,
-                    &mut painted,
-                    frame,
-                    size,
-                    notice.as_deref(),
-                    None,
-                )?;
-            }
-        }
-        let mut newest = None;
-        let mut error_changed = false;
-        for message in channel.receive()? {
-            match message {
-                ServerMessage::Frame(frame) => {
-                    validate_frame(&frame)?;
-                    if focus_handoff == Some(FocusHandoff::AwaitingFrame) {
-                        focus_handoff = None;
-                    }
-                    revision = 1;
-                    newest = Some(frame);
-                }
-                ServerMessage::Patch(patch) => {
-                    let previous = newest
-                        .as_ref()
-                        .or(latest.as_ref())
-                        .ok_or("frame patch arrived before a snapshot")?;
-                    let frame = super::delta::apply(previous, revision, &patch)?;
-                    validate_frame(&frame)?;
-                    if focus_handoff == Some(FocusHandoff::AwaitingFrame) {
-                        focus_handoff = None;
-                    }
-                    revision = patch.revision;
-                    newest = Some(frame);
-                }
-                ServerMessage::Clipboard(text) => {
-                    if text.len() <= MAX_INPUT {
-                        write!(stdout, "\x1b]52;c;{}\x07", STANDARD.encode(text.as_bytes()))?;
-                        stdout.flush()?;
-                    }
-                }
-                // Routine action errors keep the frontend and its PTYs alive.
-                ServerMessage::Error(error) => {
-                    notice = Some(error.chars().take(1024).collect());
-                    error_changed = true;
-                }
-                ServerMessage::Detached => return Ok(()),
-                ServerMessage::Pong if focus_handoff == Some(FocusHandoff::AwaitingPong) => {
-                    focus_handoff = Some(FocusHandoff::AwaitingFrame);
-                }
-                _ => {}
-            }
-        }
-        if let Some(frame) = newest {
-            hovered = pointer.and_then(|point| super::hover::target(&frame, point));
-            let mode = if frame.controller && !frame.help && frame.ui.dialog.is_none() {
-                frame
-                    .panes
-                    .iter()
-                    .find(|p| p.pane.id == frame.active)
-                    .map_or(1, |p| p.modes.keyboard_flags | 1)
-            } else {
-                1
-            };
-            if mode != keyboard_mode {
-                write!(stdout, "\x1b[={mode}u")?;
-                stdout.flush()?;
-                keyboard_mode = mode;
-            }
-            let sound = frame.controller
-                && frame.ui.config.notification_sound
-                && latest.as_ref().is_some_and(|old| {
-                    frame.ui.notifications.iter().any(|event| {
-                        !event.read && !old.ui.notifications.iter().any(|seen| seen.id == event.id)
-                    })
-                });
-            paint(
-                &mut stdout,
-                &mut painted,
-                &frame,
-                size,
-                notice.as_deref(),
-                hovered,
-            )?;
-            hover_dirty = false;
-            if sound {
-                stdout.write_all(b"\x07")?;
-                stdout.flush()?;
-            }
-            latest = Some(frame);
-        } else if error_changed {
-            if let Some(frame) = latest.as_ref() {
-                paint(
-                    &mut stdout,
-                    &mut painted,
-                    frame,
-                    size,
-                    notice.as_deref(),
-                    hovered,
-                )?;
-            }
-        }
-        if channel.eof {
-            return Ok(());
-        }
-        if escape.is_some_and(|time: Instant| time.elapsed() >= ESCAPE_TIMEOUT) {
-            queue_events(&mut pending, decoder.flush())?;
-            escape = None;
-        }
-        if let Some(frame) = latest.as_ref() {
-            while let Some(mut event) = pending.pop_front() {
-                if focus_handoff.is_some() {
-                    pending.push_front(event);
-                    break;
-                }
-                if !focus_report_pending
-                    && matches!(&event, InputEvent::Bytes(bytes) if bytes == b"\x1b[I")
-                {
-                    channel.send(&ClientMessage::Action(Action::Takeover))?;
-                    // The barrier distinguishes the handoff's frame from older
-                    // queued observer frames. Claim only once per focus report:
-                    // another connection may have gained focus in the meantime.
-                    channel.send(&ClientMessage::Ping)?;
-                    pending.push_front(event);
-                    focus_handoff = Some(FocusHandoff::AwaitingPong);
-                    focus_report_pending = true;
-                    break;
-                }
-                focus_report_pending = false;
-                // Footer controls stay at the left edge when fitted.
-                // Pane and help-panel coordinates stay in backend geometry.
-                if let InputEvent::Mouse(mouse) = &mut event {
-                    let Some(point) = fitted_mouse(frame, size, mouse.position) else {
-                        pointer = None;
-                        hover_dirty |= hovered.take().is_some();
-                        continue;
-                    };
-                    mouse.position = point;
-                    if mouse.kind == MouseKind::Move {
-                        pointer = if mouse.button == 3 { Some(point) } else { None };
-                    } else if pointer.is_some() {
-                        pointer = Some(point);
-                    }
-                    let next = pointer.and_then(|point| super::hover::target(frame, point));
-                    hover_dirty |= next != hovered;
-                    hovered = next;
-                } else if matches!(&event, InputEvent::Bytes(bytes) if bytes == b"\x1b[O") {
-                    pointer = None;
-                    hover_dirty |= hovered.take().is_some();
-                }
-                let messages = router.route(event, frame);
-                if !messages.is_empty() && notice.take().is_some() {
-                    paint(&mut stdout, &mut painted, frame, size, None, hovered)?;
-                }
-                for message in messages {
-                    channel.send(&message)?;
-                }
-            }
-            for message in router.tick(frame) {
-                channel.send(&message)?;
-            }
-            if hover_dirty && hover_painted_at.elapsed() >= Duration::from_millis(33) {
-                paint(
-                    &mut stdout,
-                    &mut painted,
-                    frame,
-                    size,
-                    notice.as_deref(),
-                    hovered,
-                )?;
-                hover_dirty = false;
-                hover_painted_at = Instant::now();
-            }
-        }
-        channel.flush()?;
-        let mut polls = [
-            libc::pollfd {
-                fd: 0,
-                events: libc::POLLIN,
-                revents: 0,
-            },
-            libc::pollfd {
-                fd: channel.socket.as_raw_fd(),
-                events: libc::POLLIN
-                    | if channel.output.is_empty() {
-                        0
-                    } else {
-                        libc::POLLOUT
-                    },
-                revents: 0,
-            },
-        ];
-        let result = unsafe { libc::poll(polls.as_mut_ptr(), 2, 10) };
-        if result < 0 {
-            if std::io::Error::last_os_error().kind() == std::io::ErrorKind::Interrupted {
-                continue;
-            }
-            return Err(std::io::Error::last_os_error().into());
-        }
-        if polls[0].revents & (libc::POLLIN | libc::POLLHUP) != 0 {
-            // Leave the shared TTY file description blocking: stdin/stdout may
-            // be dup'd from one descriptor. One read follows a readiness poll.
-            let mut bytes = [0; 8192];
-            let count = unsafe { libc::read(0, bytes.as_mut_ptr().cast(), bytes.len()) };
-            if count == 0 {
-                return Ok(());
-            }
-            if count < 0 {
-                let error = std::io::Error::last_os_error();
-                if matches!(
-                    error.kind(),
-                    std::io::ErrorKind::WouldBlock | std::io::ErrorKind::Interrupted
-                ) {
-                    continue;
-                }
-                return Err(error.into());
-            }
-            queue_events(&mut pending, decoder.feed(&bytes[..count as usize]))?;
-            escape = Some(Instant::now());
-        }
-    }
-}
 
 #[cfg(test)]
 mod fit_tests {
@@ -1366,7 +1034,7 @@ mod fit_tests {
     fn fitted_grid_footer_metrics_open_status() {
         use super::super::{
             input::Router,
-            protocol::{Action, ClientMessage, InputEvent, MouseEvent, MouseKind},
+            protocol::{Action, InputEvent, MouseEvent, MouseKind, UiMessage},
             status::Sort,
             ui::TabPosition,
         };
@@ -1411,7 +1079,7 @@ mod fit_tests {
                 assert_eq!(
                     messages.iter().any(|message| matches!(
                         message,
-                        ClientMessage::Action(Action::StatusOpen(Sort::Cpu))
+                        UiMessage::Action(Action::StatusOpen(Sort::Cpu))
                     )),
                     controller
                 );
@@ -1475,19 +1143,20 @@ mod web_tests {
     }
 }
 #[cfg(test)]
-mod stream_option_tests {
+mod attach_option_tests {
     use super::*;
     fn parse(args: &[&str]) -> Result<Options> {
         options(&args.iter().map(|s| (*s).to_owned()).collect::<Vec<_>>())
     }
     #[test]
-    fn stream_is_opt_in_and_exclusive_with_legacy() {
-        assert!(!parse(&["attach"]).unwrap().stream);
-        assert!(!parse(&["attach", "--legacy"]).unwrap().stream);
-        assert!(parse(&["attach", "--stream"]).unwrap().stream);
-        assert!(parse(&["ssh-entry", "--stream"]).unwrap().stream);
-        assert!(parse(&["attach", "--stream", "--legacy"]).is_err());
-        assert!(parse(&["attach", "--stream", "--stream"]).is_err());
+    fn stream_is_an_accepted_no_op_and_legacy_is_gone() {
+        assert!(parse(&["attach"]).is_ok());
+        assert!(parse(&["attach", "--stream"]).is_ok());
+        assert!(parse(&["ssh-entry", "--stream"]).is_ok());
+        assert!(parse(&["attach", "--current-client"]).is_ok());
+        let error = parse(&["attach", "--legacy"]).err().unwrap().to_string();
+        assert!(error.contains("composed TUI was removed"), "{error}");
+        assert!(parse(&["ssh-entry", "--legacy"]).is_err());
         // Only the attaching verbs take it.
         assert!(parse(&["status", "--stream"]).is_err());
     }

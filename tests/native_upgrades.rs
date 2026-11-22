@@ -1,5 +1,5 @@
 //! Upgrade selection authenticates the live listener and pins its exact executable.
-use kelpmux::native::{
+use kelpserver::native::{
     lifecycle,
     protocol::*,
     upgrade::{self, Identity},

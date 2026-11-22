@@ -3440,7 +3440,7 @@ fn draw_dashboard(
             super::ui::visible_notifications(&workspace.ui, &workspace.panes)
                 .map(|item| {
                     let target = workspace.panes.iter().find(|pane| {
-                        super::activity::matches(item, pane, &workspace.ui.notification_run)
+                        super::ui::matches(item, pane, &workspace.ui.notification_run)
                     });
                     let location = target.map_or_else(
                         || format!("historical · former pane {}", item.pane),

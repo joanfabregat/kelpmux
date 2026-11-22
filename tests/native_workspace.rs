@@ -190,11 +190,11 @@ fn frame(workspace: &Workspace) -> Frame {
         ui: workspace.ui.clone(),
     }
 }
-fn action(messages: &[ClientMessage]) -> Vec<Action> {
+fn action(messages: &[UiMessage]) -> Vec<Action> {
     messages
         .iter()
         .filter_map(|m| {
-            if let ClientMessage::Action(a) = m {
+            if let UiMessage::Action(a) = m {
                 Some(a.clone())
             } else {
                 None
@@ -281,7 +281,7 @@ fn terminal_theme_replies_are_bounded_fragment_safe_and_never_application_input(
         for event in &expected {
             assert!(matches!(
                 &Router::default().route(event.clone(), &frame(&ws))[..],
-                [ClientMessage::ThemeColor { .. }]
+                [UiMessage::ThemeColor { .. }]
             ));
         }
     }
@@ -459,9 +459,7 @@ fn application_cursor_mode_translates_arrows_but_preserves_word_shortcuts() {
     f.panes[0].modes.application_cursor = true;
     let mut router = Router::default();
     let messages = router.route(InputEvent::Bytes(b"\x1b[A\x1bf\x1b[1;3C".to_vec()), &f);
-    assert!(
-        matches!(&messages[..], [ClientMessage::Input(bytes)] if bytes == b"\x1bOA\x1bf\x1b[1;3C")
-    );
+    assert!(matches!(&messages[..], [UiMessage::Input(bytes)] if bytes == b"\x1bOA\x1bf\x1b[1;3C"));
 }
 
 #[test]
@@ -476,7 +474,7 @@ fn focus_reports_only_reach_applications_that_requested_them() {
     );
     f.panes[0].modes.focus = true;
     assert!(
-        matches!(&router.route(InputEvent::Bytes(b"\x1b[I\x1b[O".to_vec()), &f)[..], [ClientMessage::Input(bytes)] if bytes == b"\x1b[I\x1b[O")
+        matches!(&router.route(InputEvent::Bytes(b"\x1b[I\x1b[O".to_vec()), &f)[..], [UiMessage::Input(bytes)] if bytes == b"\x1b[I\x1b[O")
     );
 }
 
@@ -486,7 +484,7 @@ fn help_keys_do_not_leak_into_the_application_before_a_new_frame_arrives() {
     let mut router = Router::default();
     let messages = router.route(InputEvent::Bytes(b"\x02?qhello".to_vec()), &f);
     assert_eq!(action(&messages), vec![Action::Help, Action::Help]);
-    assert!(matches!(messages.last(), Some(ClientMessage::Input(bytes)) if bytes == b"hello"));
+    assert!(matches!(messages.last(), Some(UiMessage::Input(bytes)) if bytes == b"hello"));
     assert_eq!(
         action(&router.route(InputEvent::Bytes(b"\x02?".to_vec()), &f)),
         vec![Action::Help]
@@ -558,7 +556,7 @@ fn prefix_sequences_and_application_editing_keys_are_separate() {
     let passthrough: Vec<_> = messages
         .iter()
         .flat_map(|m| {
-            if let ClientMessage::Input(b) = m {
+            if let UiMessage::Input(b) = m {
                 b.clone()
             } else {
                 panic!("application keys became action")
@@ -703,7 +701,7 @@ fn first_grid_click_consumes_the_whole_gesture_then_active_clicks_reach_the_app(
         );
     }
     assert!(
-        matches!(router.route(InputEvent::Mouse(press), &f).last(), Some(ClientMessage::Mouse(event)) if *event == press)
+        matches!(router.route(InputEvent::Mouse(press), &f).last(), Some(UiMessage::Mouse(event)) if *event == press)
     );
 }
 
@@ -769,14 +767,14 @@ fn app_mouse_forwarding_shift_selection_wheel_and_help() {
     };
     let messages = router.route(InputEvent::Mouse(press), &f);
     assert_eq!(action(&messages), vec![Action::Focus(1)]);
-    assert!(matches!(messages.last(), Some(ClientMessage::Mouse(m)) if *m == press));
+    assert!(matches!(messages.last(), Some(UiMessage::Mouse(m)) if *m == press));
     let wheel = MouseEvent {
         kind: MouseKind::WheelUp,
         ..press
     };
     assert!(matches!(
         &router.route(InputEvent::Mouse(wheel), &f)[..],
-        [ClientMessage::Mouse(_)]
+        [UiMessage::Mouse(_)]
     ));
     assert_eq!(
         action(&router.route(
@@ -831,7 +829,7 @@ fn decoder_preserves_utf8_and_fragmented_word_navigation() {
     for byte in original {
         for event in decoder.feed(&[*byte]) {
             for message in router.route(event, &f) {
-                if let ClientMessage::Input(bytes) = message {
+                if let UiMessage::Input(bytes) = message {
                     result.extend(bytes);
                 } else {
                     panic!("word navigation routed to a workspace action");
