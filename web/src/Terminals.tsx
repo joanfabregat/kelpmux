@@ -298,9 +298,9 @@ export function TerminalsPanel({
       {!rows.length && (
         <p className="panel-empty">
           {filter === "all"
-            ? "No terminals are open in this workspace."
+            ? "No terminals are open."
             : filter === "agents"
-              ? "No Codex or Claude Code agents are running in this workspace."
+              ? "No Codex or Claude Code agents are running."
               : `No agents ${filter === "attention" ? "need attention" : "have finished"}.`}
         </p>
       )}

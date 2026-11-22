@@ -36,7 +36,6 @@
   width: 40px;
   height: 40px;
 }
-.touch .rail-new,
 .touch .term-row-actions .icon-btn {
   width: 36px;
   height: 36px;
@@ -44,10 +43,6 @@
 .touch button.rail-mark {
   min-height: 32px;
   padding: 0 var(--s2);
-}
-.touch .view-toggle button {
-  min-width: 40px;
-  min-height: 36px;
 }
 .touch .grid-pane > header {
   height: 40px;
@@ -68,10 +63,18 @@
 .touch .rail-scroll {
   overscroll-behavior: contain;
 }
-.touch .sidebar-fold {
-  right: -18px;
-  width: 36px;
+/* The fold handle stays narrow; a taller tab is easier to hit. */
+.touch .sidebar-fold,
+.touch .sidebar-restore {
+  width: 16px;
   height: 56px;
+}
+.touch .sidebar-fold {
+  right: -8px;
+}
+.touch .view-cell .grid-pages .icon-btn {
+  width: 36px;
+  height: 36px;
 }
 .touch .sidebar-divider {
   right: -8px;
@@ -160,6 +163,20 @@ button.key-bar-keyboard[aria-pressed="true"] {
 .phone-list .rail {
   width: 100%;
   border-right: 0;
+}
+/* The whole list scrolls on a phone, the bottom entries and vitals after
+ * the terminals, so a short screen still shows the terminals first. */
+.phone-list .rail {
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+.phone-list .rail-scroll {
+  flex: none;
+  overflow: visible;
+}
+.phone-list .rail-bottom {
+  max-height: none;
+  overflow: visible;
 }
 .phone-list .sidebar-divider,
 .phone-list .sidebar-fold {

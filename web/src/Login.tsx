@@ -74,16 +74,14 @@ export function LoginScreen({
       <div className="login-card">
         <div className="login-brand">
           <LoginLogo />
-          {connection?.workspace && (
-            <span className="env-badge">{connection.workspace}</span>
-          )}
+          {connection?.dev && <span className="env-badge">DEV</span>}
         </div>
         <div className="login-head">
           <h1>Sign in</h1>
           <p className="login-target">
             <Icon name="terminal" size="sm" />
             <span>
-              {connection?.username || "…"}@{connection?.workspace || "dev"}
+              {connection?.username || "…"}@{location.host}
             </span>
           </p>
         </div>

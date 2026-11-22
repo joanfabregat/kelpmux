@@ -1,4 +1,4 @@
-/* KelpMux web shell: top bar, terminals and a TUI-like status footer. */
+/* KelpMux web shell: the sidebar, terminals and their headers. */
 .kelpmux-shell {
   display: flex;
   width: 100%;
@@ -9,12 +9,6 @@
 .kelpmux-shell.bare .grid-pane {
   border: 0;
   border-radius: 0;
-}
-.topbar .logo {
-  display: inline-flex;
-  align-items: center;
-  gap: var(--s2);
-  margin-right: var(--s2);
 }
 .tab-number {
   color: var(--text-3);
@@ -85,58 +79,6 @@
   color: var(--text-3);
 }
 
-.grid-pages {
-  position: absolute;
-  right: var(--s3);
-  bottom: var(--s2);
-  padding: 2px var(--s2);
-  border-radius: var(--r-sm);
-  background: var(--surface-2);
-}
-
-/* Footer: account, terminal count and hint left; vitals right. */
-.status-bar {
-  display: flex;
-  align-items: center;
-  gap: var(--s3);
-  flex: none;
-  min-width: 0;
-  padding: 3px var(--s3);
-  border-top: 1px solid var(--line);
-  background: var(--surface-1);
-  color: var(--text-3);
-  font-size: var(--fs-xs);
-  white-space: nowrap;
-}
-.status-bar .spacer {
-  flex: 1;
-}
-.status-bar .status-hint {
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-.vitals-line {
-  display: inline-flex;
-  gap: var(--s3);
-  min-height: 0;
-  padding: 0 var(--s1);
-  border: 0;
-  background: transparent;
-  color: inherit;
-  font-size: inherit;
-  font-weight: 400;
-}
-.vitals-line:hover:not(:disabled) {
-  filter: none;
-  background: var(--surface-3);
-}
-.vitals-line .vital {
-  display: inline;
-}
-.vitals-line .vital.warn b {
-  color: var(--st-failed);
-}
-
 .shortcut-table {
   border-collapse: collapse;
   font-size: var(--fs-sm);
@@ -154,19 +96,18 @@
 }
 
 /* ───────── Sidebar terminal list ───────── */
-.rail-terminals-label {
-  gap: var(--s1);
+/* The new-terminal row right under the tabs, like the TUI's "+". */
+.nav-item.rail-new {
+  margin-top: 2px;
+  color: var(--text-3);
 }
-.rail-terminals-label .grow {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+.nav-item.rail-new:hover:not(:disabled) {
+  color: var(--text);
 }
-.rail-new {
-  width: 22px;
-  height: 22px;
-  min-height: 0;
-  padding: 0;
+.rail-head .rail-marks {
+  flex: none;
+  flex-wrap: nowrap;
+  gap: 2px;
 }
 .term-list {
   display: flex;
@@ -232,6 +173,7 @@
 .rail-fold {
   display: flex;
   align-items: center;
+  justify-content: flex-start;
   gap: var(--s1);
   width: 100%;
   border: 0;
@@ -253,7 +195,6 @@
 }
 .rail.folded .term-names,
 .rail.folded .term-row-actions,
-.rail.folded .rail-new,
 .rail.folded .rail-marks,
 .rail.folded .rail-fold .count,
 .rail.folded .tool-item .grow {
@@ -266,23 +207,6 @@
 }
 .rail.folded .term-item .provider-logo {
   display: none;
-}
-
-/* ───────── Top bar ───────── */
-.topbar .tab-number {
-  margin-right: var(--s1);
-}
-.topbar .current-crumb {
-  gap: var(--s1);
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-.topbar .pagination {
-  display: inline-flex;
-  gap: 2px;
-}
-.flip {
-  transform: scaleX(-1);
 }
 
 /* ───────── Context menu ───────── */
@@ -540,4 +464,12 @@ button.terminal-card-head {
 }
 .terminal-card-head small {
   font-weight: 400;
+}
+
+/* The focused terminal's header says when the TUI or another browser holds
+ * the terminal's input and size (main.tsx leaseNote). */
+.lease-badge {
+  flex: none;
+  color: var(--text-3);
+  cursor: help;
 }

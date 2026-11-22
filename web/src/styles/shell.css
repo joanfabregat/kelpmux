@@ -217,40 +217,99 @@ button.rail-mark:hover:not(:disabled) {
   outline-offset: -2px;
   opacity: 0.7;
 }
-.rail-foot {
-  display: grid;
+/* The bottom of the sidebar: view, tools and settings, then the vitals.
+ * The terminal list above takes the remaining height and scrolls; on a
+ * short screen the bottom entries scroll too instead of crowding it out. */
+.rail-bottom {
   flex: none;
-  gap: var(--s2);
-  padding: var(--s3);
+  max-height: 45%;
+  overflow-y: auto;
+  padding: var(--s1) var(--s2);
   border-top: 1px solid var(--line);
 }
+.view-cell .grid-pages {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  gap: 2px;
+  padding-right: 2px;
+  color: var(--text-3);
+  font-size: var(--fs-xs);
+  font-variant-numeric: tabular-nums;
+}
+.view-cell .grid-pages .icon-btn {
+  width: 22px;
+  height: 22px;
+  min-height: 0;
+  padding: 0;
+}
+.tool-item[aria-pressed="true"] {
+  color: var(--text);
+}
+.tool-item[aria-pressed="true"] > .svg-icon {
+  color: var(--accent);
+}
+.rail-foot {
+  flex: none;
+  padding: var(--s2);
+  border-top: 1px solid var(--line);
+}
+
+/* Vitals, like the TUI's sidebar status: CPU and RAM meters, then the first
+ * two disks as pies filled by usage (Vitals.tsx). Colours are the TUI's
+ * (--vital-* tokens in base.css). */
 .vitals {
   display: grid;
-  grid-template-columns: repeat(3, 1fr);
-  gap: var(--s2);
+  grid-template-columns: minmax(0, 1fr);
+  justify-content: stretch;
+  gap: 3px;
+  width: 100%;
   min-height: 0;
-  padding: var(--s1);
+  padding: var(--s1) var(--s2);
   border: 0;
+  border-radius: var(--r-md);
   background: transparent;
   color: var(--text-3);
   font-weight: 400;
+  text-align: left;
 }
 .vitals:hover:not(:disabled) {
   filter: none;
   background: var(--surface-3);
 }
 .vital {
-  display: grid;
-  gap: 3px;
+  display: flex;
+  align-items: center;
+  gap: var(--s2);
+  min-width: 0;
   font-size: var(--fs-xs);
-  text-align: left;
+  line-height: 16px;
 }
-.vital b {
-  color: var(--text-2);
+.vital-label {
+  flex: none;
+  width: 34px;
+  color: var(--text-3);
+}
+.vital-value {
+  flex: none;
+  min-width: 30px;
   font-weight: 500;
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+}
+.vital-cpu {
+  --vital: var(--vital-cpu);
+}
+.vital-memory {
+  --vital: var(--vital-memory);
+}
+.vital-cpu .vital-value,
+.vital-memory .vital-value {
+  color: var(--vital);
 }
 .meter {
-  height: 3px;
+  flex: 1;
+  height: 4px;
   overflow: hidden;
   border-radius: 2px;
   background: var(--surface-3);
@@ -258,56 +317,54 @@ button.rail-mark:hover:not(:disabled) {
 .meter i {
   display: block;
   height: 100%;
-  background: var(--text-3);
+  background: var(--vital, var(--text-3));
 }
-.meter i.warn {
-  background: var(--st-input);
+.vital-disks .disk-pies {
+  display: inline-flex;
+  flex: 1;
+  justify-content: flex-end;
+  gap: var(--s3);
 }
-.account {
-  display: flex;
-  justify-content: flex-start;
-  gap: var(--s2);
-  min-height: 0;
-  padding: var(--s1);
-  border: 0;
-  background: transparent;
-  color: var(--text);
-  font-weight: 400;
-  text-align: left;
+.disk {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--s1);
+  color: var(--vital-disk);
 }
-.account:hover:not(:disabled) {
-  filter: none;
-  background: var(--surface-3);
+.disk.critical {
+  color: var(--vital-critical);
 }
-.avatar {
+.disk .vital-value {
+  min-width: 0;
+}
+.disk-pie {
+  flex: none;
+  width: 12px;
+  height: 12px;
+}
+.disk-pie-ring {
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.4;
+}
+.disk-pie-fill {
+  fill: currentColor;
+}
+/* Settings: the account's initial, name and the settings icon. */
+.nav-item.account .avatar {
   display: grid;
   place-items: center;
   flex: none;
-  width: 26px;
-  height: 26px;
+  width: 18px;
+  height: 18px;
   border-radius: 50%;
   background: var(--surface-3);
-  font-size: var(--fs-sm);
+  color: var(--text);
+  font-size: var(--fs-xs);
   font-weight: 600;
-}
-.account-name {
-  display: grid;
-  flex: 1;
-  min-width: 0;
-  line-height: 1.2;
 }
 .account-name b {
-  overflow: hidden;
-  font-weight: 600;
-  text-overflow: ellipsis;
-}
-.account-name small {
-  color: var(--text-3);
-}
-.account .key-glyph {
-  width: 20px;
-  height: 20px;
-  font-size: 12px;
+  font-weight: 500;
 }
 .sidebar-divider {
   position: absolute;
@@ -344,7 +401,6 @@ button.rail-mark:hover:not(:disabled) {
 .rail.folded .tree-toggle,
 .rail.folded .tree-entries,
 .rail.folded .rail-changes,
-.rail.folded .vitals,
 .rail.folded .account-name,
 .rail.folded .account .key-glyph,
 .rail.folded .account .svg-icon {
@@ -368,8 +424,31 @@ button.rail-mark:hover:not(:disabled) {
 .rail.folded .account {
   justify-content: center;
 }
+/* Folded vitals: short labels and values, and the two disk pies. */
+.rail.folded .rail-foot {
+  padding: var(--s1);
+}
+.rail.folded .vitals {
+  padding: var(--s1) 0;
+}
+.rail.folded .vital {
+  justify-content: center;
+  gap: 3px;
+}
+.rail.folded .vital-label,
+.rail.folded .vital-value {
+  width: auto;
+  min-width: 0;
+}
+.rail.folded .vital-disks .disk-pies {
+  justify-content: center;
+  gap: var(--s1);
+}
+.rail.folded .grid-pages {
+  display: none;
+}
 
-/* ───────── Main column and top bar ───────── */
+/* ───────── Main column and the phone's top bar ───────── */
 .app {
   display: flex;
   flex: 1;
@@ -387,39 +466,9 @@ button.rail-mark:hover:not(:disabled) {
   padding: 0 var(--s3) 0 var(--s4);
   background: var(--surface-1);
   border-bottom: 1px solid var(--line);
-  /* The session bar hides the breadcrumb when both do not fit. */
-  container: topbar / inline-size;
 }
 .topbar .spacer {
   flex: 1;
-}
-.crumbs {
-  display: flex;
-  align-items: center;
-  gap: 2px;
-  min-width: 0;
-  white-space: nowrap;
-}
-.crumb {
-  min-height: 28px;
-  padding: 0 6px;
-  border: 0;
-  border-radius: var(--r-sm);
-  background: transparent;
-  color: var(--text);
-  font-weight: 500;
-}
-.crumb:hover:not(:disabled) {
-  filter: none;
-  background: var(--surface-3);
-}
-.crumb.current-crumb {
-  display: inline-flex;
-  align-items: center;
-  font-weight: 600;
-}
-.crumb-sep {
-  color: var(--text-3);
 }
 .menu-anchor {
   position: relative;
@@ -437,9 +486,6 @@ button.rail-mark:hover:not(:disabled) {
   overflow-y: hidden;
   scrollbar-width: thin;
   white-space: nowrap;
-}
-.term-bar-actions + .spacer {
-  display: none;
 }
 .term-tab {
   display: inline-flex;
@@ -500,29 +546,6 @@ button.icon-btn.term-tab-close {
   opacity: 0;
   pointer-events: none;
 }
-.term-bar-actions {
-  display: flex;
-  flex: none;
-  align-items: center;
-  gap: 2px;
-  /* Recently closed opens aligned with the end of the bar. */
-  position: relative;
-}
-.term-bar-actions > .menu-anchor {
-  position: static;
-}
-button.icon-btn.term-bar-btn {
-  flex: none;
-  width: 28px;
-  height: 28px;
-}
-.view-toggle {
-  margin-left: var(--s1);
-}
-.view-toggle button {
-  width: 28px;
-  padding: 0;
-}
 /* Recently closed: the workspace's (or Scratch's) closed sessions. */
 .closed-popover {
   width: min(380px, calc(100vw - 16px));
@@ -550,9 +573,6 @@ button.icon-btn.term-bar-btn {
 .closed-popover .list-row > .svg-icon,
 .closed-popover .list-row > .provider-logo {
   flex: none;
-}
-.section-crumb {
-  color: var(--text-2);
 }
 .seg {
   display: inline-flex;
@@ -812,74 +832,55 @@ button.new-pane:hover:not(:disabled) {
   border-radius: 0;
 }
 
-/* Narrow screens: the breadcrumb keeps the workspace switcher; the session
- * tabs take the rest and scroll sideways, beside their pinned actions. */
-@media (max-width: 640px) {
-  .topbar {
-    gap: var(--s2);
-    padding: 0 var(--s2);
-  }
-  .crumbs .project-crumb,
-  .crumbs .project-crumb + .crumb-sep,
-  .crumbs .section-sep,
-  .crumbs .section-crumb {
-    display: none;
-  }
-  /* The breadcrumb gives way first, so the session actions stay whole. */
-  .crumbs {
-    flex: 0 1 auto;
-  }
-  .crumbs .menu-anchor {
-    min-width: 0;
-  }
-  .crumbs .crumb {
-    min-width: 0;
-    overflow: hidden;
-    text-overflow: ellipsis;
-  }
-  .view-toggle {
-    margin-left: 0;
-  }
-  .view-toggle button {
-    width: 24px;
-  }
-}
-/* A narrow session bar drops the breadcrumb (the sidebar shows the
- * location) instead of overlapping it; the tabs take the room. */
-@container topbar (max-width: 480px) {
-  .topbar:has(.term-bar-actions) .crumbs {
-    display: none;
-  }
-}
 @media (max-width: 640px) {
   .grid-foot .grid-hint {
     display: none;
   }
 }
 
-/* Always-visible fold handle on the sidebar edge, like the TUI's; it stays
-   on the folded rail so it can unfold it. */
-.sidebar-fold {
+/* Fold handle: a narrow tab vertically centred on the sidebar's edge, like
+ * the TUI's; it stays on the folded rail so it can unfold it. The same tab
+ * on the window's left edge brings the sidebar back from full width. */
+.sidebar-fold,
+.sidebar-restore {
   position: absolute;
-  top: 72px;
-  right: -14px;
+  top: 50%;
   z-index: 4;
   display: grid;
   place-items: center;
-  width: 28px;
-  height: 44px;
+  width: 12px;
+  height: 40px;
+  min-height: 0;
   padding: 0;
-  color: var(--text-2);
+  color: var(--text-3);
   background: var(--surface-1);
   border: 1px solid var(--line);
-  border-radius: 8px;
+  border-radius: 6px;
   cursor: pointer;
+  transform: translateY(-50%);
 }
-.sidebar-fold:hover,
-.sidebar-fold:focus-visible {
+.sidebar-fold {
+  right: -6px;
+}
+.sidebar-fold .svg-icon,
+.sidebar-restore .svg-icon {
+  width: 10px;
+  height: 10px;
+}
+.sidebar-fold:hover:not(:disabled),
+.sidebar-fold:focus-visible,
+.sidebar-restore:hover:not(:disabled),
+.sidebar-restore:focus-visible {
+  filter: none;
   color: var(--text);
   border-color: var(--accent);
 }
 .rail:not(.folded) .sidebar-fold svg {
   transform: rotate(180deg);
+}
+.sidebar-restore {
+  position: fixed;
+  left: 0;
+  border-left: 0;
+  border-radius: 0 6px 6px 0;
 }
