@@ -339,7 +339,7 @@ test("interface surfaces derive from the theme background for the mode", () => {
   assert.equal(libContrast("#ffffff", "#000000"), 21);
 });
 
-test("UI text, status and Git tokens are readable in both modes", () => {
+test("UI text, status, Git and vitals tokens are readable in both modes", () => {
   for (const name of names)
     for (const mode of modes) {
       for (const surface of ["--bg", "--surface-2"])
@@ -362,6 +362,10 @@ test("UI text, status and Git tokens are readable in both modes", () => {
         "--git-added",
         "--git-modified",
         "--git-deleted",
+        "--vital-cpu",
+        "--vital-memory",
+        "--vital-disk",
+        "--vital-critical",
       ]) {
         const ratio = contrast(
           token(status, name, mode),

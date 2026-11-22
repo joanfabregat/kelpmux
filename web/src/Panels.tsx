@@ -109,7 +109,7 @@ export function NotificationsPanel({
                 <span className="t">{n.title}</span>
                 <span className="s">
                   {pane ? where(pane, parked) : `Former pane ${n.pane}`} ·{" "}
-                  {n.workspace} · {age(n.at)}
+                  {age(n.at)}
                 </span>
               </div>
               {!n.read && (

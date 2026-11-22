@@ -15,9 +15,8 @@ import {
   type Notification,
 } from "./state/model";
 import { paletteColor } from "./palette";
-
-/** Disk usage, in percent, from which the system status meter warns. */
-export const diskWarningPercent = 90;
+import { Vitals } from "./Vitals";
+import type { SessionMode } from "./Shell";
 
 /** What a state shortcut in the sidebar summary opens. */
 const openStateLabel: Partial<Record<DisplayState, string>> = {
@@ -28,12 +27,17 @@ const openStateLabel: Partial<Record<DisplayState, string>> = {
 };
 
 export type SidebarProps = {
-  workspace: string;
   username: string;
   dev: boolean;
   folded: boolean;
   /** Touch device: rows show a menu button instead of hover actions. */
   touch?: boolean;
+  /** Phone home screen: no grid and no full width. */
+  phone?: boolean;
+  /** The terminal view, its grid page and page count. */
+  mode: SessionMode;
+  page: number;
+  pages: number;
   /** Terminals in this browser's order, parked ones excluded. */
   terminals: Pane[];
   /** Terminals parked in this browser. */
@@ -42,6 +46,12 @@ export type SidebarProps = {
   current?: number;
   unread: number;
   vitals: { cpu?: number; memory?: number; disks?: number[] };
+  /** Mount points of the vitals' disks, in order, once known. */
+  diskMounts: string[];
+  onDisksHover: () => void;
+  onMode: (mode: SessionMode) => void;
+  onPage: (page: number) => void;
+  onFullWidth: () => void;
   rowProps: (pane: Pane) => React.HTMLAttributes<HTMLDivElement>;
   rowClass: (pane: Pane) => string;
   onOpen: (pane: Pane) => void;
@@ -56,17 +66,22 @@ export type SidebarProps = {
   onToggleFold: () => void;
 };
 
-/** The left sidebar, like the TUI's: every terminal of the workspace in this
- * browser's order with its live state, parked terminals, the workspace
- * tools (the Terminals table, notifications, recently closed, search), system
- * vitals and settings. Order, parking and folding belong to this browser; they
- * never change the TUI's layout. */
+/** The left sidebar, like the TUI's, and the only navigation: the state
+ * counts, every terminal in this browser's order with its live state, the
+ * new-terminal row right under them and the parked terminals; at the bottom
+ * the view and tools (live grid, full width, the Terminals table,
+ * notifications, recently closed, search, help, settings), then the system
+ * vitals. Order, parking and folding belong to this browser; they never
+ * change the TUI's layout. */
 export function Sidebar(props: SidebarProps) {
   const {
-    workspace,
     username,
     dev,
     folded,
+    phone,
+    mode,
+    page,
+    pages,
     terminals,
     parked,
     notifications,
@@ -76,21 +91,7 @@ export function Sidebar(props: SidebarProps) {
   } = props;
   const [parkedOpen, setParkedOpen] = useState(true);
   const summary = rollup(terminals.concat(parked), notifications);
-  const disks = vitals.disks || [];
-  const disk = disks.length ? Math.max(...disks) : undefined;
-  const vital = (label: string, value?: number, warn = 87) => (
-    <div className="vital">
-      <span>
-        {label} <b>{value == null ? "—" : `${value}%`}</b>
-      </span>
-      <div className="meter">
-        <i
-          className={value != null && value >= warn ? "warn" : ""}
-          style={{ width: `${Math.min(100, value || 0)}%` }}
-        />
-      </div>
-    </div>
-  );
+  const grid = mode === "grid";
   const row = (p: Pane, isParked: boolean) => {
     const state = paneState(p, notifications);
     const title = p.title || "shell";
@@ -191,27 +192,40 @@ export function Sidebar(props: SidebarProps) {
       </div>
     );
   };
+  /** A bottom entry: an action with its icon, label and shortcut. */
+  const entry = (
+    key: string,
+    label: string,
+    icon: IconName,
+    keys: string,
+    onClick: () => void,
+    extra: { count?: number; pressed?: boolean } = {},
+  ) => (
+    <Tooltip key={key} content={`${label} (${keys})`}>
+      <button
+        type="button"
+        className="nav-item tool-item"
+        aria-label={label}
+        aria-pressed={extra.pressed}
+        data-tool={key}
+        onClick={onClick}
+      >
+        <Icon name={icon} size="sm" />
+        <span className="grow">{label}</span>
+        {!!extra.count && (
+          <span className="badge accent count">{extra.count}</span>
+        )}
+      </button>
+    </Tooltip>
+  );
   const tool = (
     dialog: string,
     label: string,
     icon: IconName,
     keys: string,
     count?: number,
-  ) => (
-    <Tooltip key={dialog} content={`${label} (${keys})`}>
-      <button
-        type="button"
-        className="nav-item tool-item"
-        aria-label={label}
-        data-tool={dialog}
-        onClick={() => props.onDialog(dialog)}
-      >
-        <Icon name={icon} size="sm" />
-        <span className="grow">{label}</span>
-        {!!count && <span className="badge accent count">{count}</span>}
-      </button>
-    </Tooltip>
-  );
+  ) =>
+    entry(dialog, label, icon, keys, () => props.onDialog(dialog), { count });
   return (
     <aside className={`rail ${folded ? "folded" : ""}`} aria-label="Terminals">
       <div className="rail-head">
@@ -222,47 +236,46 @@ export function Sidebar(props: SidebarProps) {
           <span className="logo-text">KelpMux</span>
         </span>
         {dev && <span className="env-badge">DEV</span>}
-      </div>
-      <nav className="rail-scroll">
-        <div className="rail-label rail-terminals-label">
-          <span className="grow">{workspace || "Terminals"}</span>
-          {summary.total > 0 && (
-            <span className="state-counts rail-marks">
-              {rollupEntries(summary).map(([state, count]) => (
-                <Tooltip
-                  key={state}
-                  content={openStateLabel[state] || stateLabel[state]}
+        {summary.total > 0 && (
+          <span className="state-counts rail-marks">
+            {rollupEntries(summary).map(([state, count]) => (
+              <Tooltip
+                key={state}
+                content={openStateLabel[state] || stateLabel[state]}
+              >
+                <button
+                  type="button"
+                  className={`state-count state-${state} rail-mark`}
+                  aria-label={openStateLabel[state] || stateLabel[state]}
+                  onClick={() => props.onState(state)}
                 >
-                  <button
-                    type="button"
-                    className={`state-count state-${state} rail-mark`}
-                    aria-label={openStateLabel[state] || stateLabel[state]}
-                    onClick={() => props.onState(state)}
-                  >
-                    <StateMark state={state} decorative />
-                    <span className="state-count-n" aria-hidden="true">
-                      {count}
-                    </span>
-                  </button>
-                </Tooltip>
-              ))}
-            </span>
-          )}
-          <Tooltip content="New terminal (Ctrl-B Enter)">
-            <button
-              type="button"
-              className="icon-btn rail-new"
-              aria-label="New terminal"
-              onClick={props.onNew}
-            >
-              <Icon name="plus" size="sm" />
-            </button>
-          </Tooltip>
-        </div>
+                  <StateMark state={state} decorative />
+                  <span className="state-count-n" aria-hidden="true">
+                    {count}
+                  </span>
+                </button>
+              </Tooltip>
+            ))}
+          </span>
+        )}
+      </div>
+      <nav className="rail-scroll" aria-label="Terminal tabs">
         <div className="term-list" role="list" aria-label="Terminals">
           {terminals.map((p) => row(p, false))}
           {!terminals.length && <p className="rail-empty">No open terminals</p>}
         </div>
+        {/* Like the TUI's "+" row, right under the tabs. */}
+        <Tooltip content="New terminal (Ctrl-B Enter)">
+          <button
+            type="button"
+            className="nav-item rail-new"
+            aria-label="New terminal"
+            onClick={props.onNew}
+          >
+            <Icon name="plus" size="sm" />
+            <span className="grow">New terminal</span>
+          </button>
+        </Tooltip>
         {parked.length > 0 && (
           <div className="parked-section">
             <button
@@ -286,45 +299,90 @@ export function Sidebar(props: SidebarProps) {
             )}
           </div>
         )}
-        <div className="rail-label">
-          <span>Workspace</span>
-        </div>
+      </nav>
+      <div className="rail-bottom">
         <div className="tool-list">
+          {!phone && (
+            <div className="nav-cell view-cell">
+              {entry(
+                "grid",
+                "Live grid",
+                "layout-grid",
+                "Ctrl-B g; Alt+Tab toggles",
+                () => props.onMode(grid ? "single" : "grid"),
+                { pressed: grid },
+              )}
+              {grid && pages > 1 && (
+                <span className="grid-pages">
+                  <Tooltip content="Previous page (Ctrl-B PgUp)">
+                    <button
+                      type="button"
+                      className="icon-btn"
+                      aria-label="Previous grid page"
+                      disabled={!page}
+                      onClick={() => props.onPage(page - 1)}
+                    >
+                      <Icon name="chevron-left" size="sm" />
+                    </button>
+                  </Tooltip>
+                  <span className="grid-page" aria-live="polite">
+                    {page + 1}/{pages}
+                  </span>
+                  <Tooltip content="Next page (Ctrl-B PgDn)">
+                    <button
+                      type="button"
+                      className="icon-btn"
+                      aria-label="Next grid page"
+                      disabled={page + 1 >= pages}
+                      onClick={() => props.onPage(page + 1)}
+                    >
+                      <Icon name="chevron-right" size="sm" />
+                    </button>
+                  </Tooltip>
+                </span>
+              )}
+            </div>
+          )}
+          {!phone &&
+            entry(
+              "full-width",
+              "Full width",
+              "panel-left-close",
+              "Ctrl-B f",
+              props.onFullWidth,
+            )}
           {tool("terminals", "Terminals", "layout-dashboard", "Ctrl-B o")}
           {tool("notifications", "Notifications", "bell", "Ctrl-B b", unread)}
           {tool("recovery", "Recently closed", "history", "Ctrl-B r")}
           {tool("search", "Search", "search", "Ctrl-B /")}
           {tool("help", "Help", "book-open", "Ctrl-B ?")}
+          <Tooltip content="Settings (Ctrl-B ,)">
+            <button
+              type="button"
+              className="nav-item tool-item account"
+              onClick={() => props.onDialog("config")}
+              aria-label="Settings"
+              data-tool="config"
+            >
+              <span className="avatar" aria-hidden="true">
+                {(username || "?").slice(0, 1).toUpperCase()}
+              </span>
+              <span className="grow account-name">
+                <b>{username || "…"}</b>
+              </span>
+              <Icon name="settings" size="sm" className="faint" />
+            </button>
+          </Tooltip>
         </div>
-      </nav>
+      </div>
       <div className="rail-foot">
-        <button
-          type="button"
-          className="vitals metrics"
-          onClick={() => props.onDialog("stats")}
-          aria-label="System status"
-          title="System status"
-        >
-          {vital("CPU", vitals.cpu)}
-          {vital("Mem", vitals.memory)}
-          {vital("Disk", disk, diskWarningPercent)}
-        </button>
-        <button
-          type="button"
-          className="account"
-          onClick={() => props.onDialog("config")}
-          aria-label="Settings"
-          title="Settings (Ctrl-B ,)"
-        >
-          <span className="avatar" aria-hidden="true">
-            {(username || "?").slice(0, 1).toUpperCase()}
-          </span>
-          <span className="account-name">
-            <b>{username || "…"}</b>
-            <small>{workspace}</small>
-          </span>
-          <Icon name="settings" size="sm" className="faint" />
-        </button>
+        <Vitals
+          vitals={vitals}
+          mounts={props.diskMounts}
+          folded={folded && !phone}
+          onOpen={() => props.onDialog("stats")}
+          onDisksHover={props.onDisksHover}
+        />
       </div>
       <div
         className="sidebar-divider"

@@ -77,6 +77,14 @@
   --git-modified: #f2b84b;
   --git-deleted: #f06a6a;
   --git-untracked: var(--text-2);
+  /* Sidebar vitals in the TUI's colours (kelpserver native/vitals.rs):
+   * CPU 114, memory 141, disks 222, a disk from 90 % used 196 (a little
+   * lighter, to stay readable on every dark theme). Light mode
+   * darkens the same hues (checked by test/appearance.test.mjs). */
+  --vital-cpu: #87d787;
+  --vital-memory: #af87ff;
+  --vital-disk: #ffd787;
+  --vital-critical: #ff4d4d;
 
   --font-ui:
     system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
@@ -128,6 +136,10 @@
   --git-added: #1b7a44;
   --git-modified: #9a5b00;
   --git-deleted: #c22f36;
+  --vital-cpu: #2f7d32;
+  --vital-memory: #7448c8;
+  --vital-disk: #8a6100;
+  --vital-critical: #c40000;
 
   color-scheme: light;
 }

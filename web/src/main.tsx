@@ -40,7 +40,7 @@ import { KeySettings } from "./KeySettings";
 import { LoginScreen, PopupConnecting, StoppedWorkspace } from "./Login";
 import { ConfigPanel } from "./ConfigPanel";
 import { OPEN_SETTINGS } from "./Settings";
-import { PaneLabel, StatusBar, TopBar, type SessionMode } from "./Shell";
+import { PaneLabel, type SessionMode } from "./Shell";
 import { Sidebar } from "./Sidebar";
 import {
   HelpPanel,
@@ -55,6 +55,7 @@ import {
 import { TerminalsPanel } from "./Terminals";
 import type { TerminalFilter } from "./state/terminals";
 import { Icon } from "./status";
+import { Tooltip } from "./Tooltip";
 import {
   SIDEBAR_MAX,
   SIDEBAR_MIN,
@@ -324,6 +325,8 @@ function App() {
     [order, setOrder] = useState<number[]>([]),
     [vitals, setVitals] = useState<any>({}),
     [stats, setStats] = useState<any>({}),
+    /** Mount points of the vitals' disks, from the status request. */
+    [diskMounts, setDiskMounts] = useState<string[]>([]),
     [query, setQuery] = useState(""),
     [page, setPage] = useState(0),
     [notifications, setNotifications] = useState<Notification[]>([]),
@@ -548,9 +551,8 @@ function App() {
   useEffect(() => {
     const icon = document.querySelector<HTMLLinkElement>('link[rel="icon"]');
     if (icon) icon.href = browserActivity.url;
-    const title = tabTitle(attentionTotal);
-    document.title = workspace ? `${title} · ${workspace}` : title;
-  }, [browserActivity.url, attentionTotal, workspace]);
+    document.title = tabTitle(attentionTotal);
+  }, [browserActivity.url, attentionTotal]);
   useEffect(() => {
     storage.set("kelpmux-confirm-close-v2", String(confirmClose));
     if (
@@ -583,6 +585,33 @@ function App() {
     resumed.current = true;
     if (identity && !keyModal) void connect(true);
   }, [connection, identity]);
+  // The vitals carry disk percentages only; the status request has the
+  // same disks, in the same order, with their mount points.
+  const vitalDisks: number = (vitals.disks || []).length;
+  const knownMounts = diskMounts.length === vitalDisks ? diskMounts : [];
+  useEffect(() => {
+    const mounts = (stats.disks || []).map((d: any) => String(d.mount));
+    if (mounts.length) setDiskMounts(mounts);
+  }, [stats]);
+  const mountsLoading = useRef(false);
+  /** Loads the disks' mount points for the sidebar's disk tooltips. */
+  async function loadDiskMounts() {
+    if (!online || !vitalDisks || knownMounts.length || mountsLoading.current)
+      return;
+    mountsLoading.current = true;
+    try {
+      // A first request may find the monitor still sampling.
+      for (let attempt = 0; attempt < 10; attempt++) {
+        const result = await quietRpc("status");
+        const mounts = (result?.disks || []).map((d: any) => String(d.mount));
+        if (mounts.length) return setDiskMounts(mounts);
+        if (!result || result.ready) return;
+        await new Promise((resolve) => setTimeout(resolve, 100));
+      }
+    } finally {
+      mountsLoading.current = false;
+    }
+  }
   useEffect(() => {
     if (dialog !== "stats" || !online) return;
     let alive = true;
@@ -1230,7 +1259,7 @@ function App() {
     if (preferences.desktop && document.hidden) {
       const n = fresh[fresh.length - 1];
       const pane = live.find((p) => notificationMatches(n, p));
-      desktopAlert(`KelpMux · ${workspace}`, n.title, () => {
+      desktopAlert("KelpMux", n.title, () => {
         if (pane) openPane(pane);
       });
     }
@@ -1749,87 +1778,110 @@ function App() {
       ? items.filter(([label]) => label !== "Open in a window")
       : items;
   }
-  const paneHeader = (p: Pane, extra?: React.ReactNode) => (
-    <header
-      onContextMenu={(event) => {
-        event.preventDefault();
-        setMenu({ pane: p, x: event.clientX, y: event.clientY });
-      }}
-    >
-      <PaneLabel
-        pane={p}
-        state={paneState(p, notifications)}
-        parked={parkedSet.has(p.id)}
-      />
-      <span className="grid-folder" title={p.cwd}>
-        {basename(p.cwd)}
-      </span>
-      <div className="pane-actions">
-        {extra}
+  /** Who holds a terminal's input and size when this browser does not (the
+   * former status bar's hint), for the terminal's header. */
+  function leaseNote(p: Pane) {
+    const owner = store.leases.get(p.id);
+    if (owner === store.session?.client) return null;
+    return owner
+      ? {
+          label: "Other browser",
+          text: "Another browser controls this terminal's input and size; type or click here to take it",
+        }
+      : {
+          label: "TUI",
+          text: "The TUI controls this terminal's input and size; typing here takes it, typing there takes it back",
+        };
+  }
+  const paneHeader = (p: Pane, extra?: React.ReactNode) => {
+    const lease = leaseNote(p);
+    return (
+      <header
+        onContextMenu={(event) => {
+          event.preventDefault();
+          setMenu({ pane: p, x: event.clientX, y: event.clientY });
+        }}
+      >
+        <PaneLabel
+          pane={p}
+          state={paneState(p, notifications)}
+          parked={parkedSet.has(p.id)}
+        />
+        <span className="grid-folder" title={p.cwd}>
+          {basename(p.cwd)}
+        </span>
+        {lease && (
+          <Tooltip content={lease.text}>
+            <span
+              className="badge lease-badge"
+              tabIndex={0}
+              aria-label={lease.text}
+            >
+              {lease.label}
+            </span>
+          </Tooltip>
+        )}
+        {paneActions(p, extra)}
+      </header>
+    );
+  };
+  const paneActions = (p: Pane, extra?: React.ReactNode) => (
+    <div className="pane-actions">
+      {extra}
+      <button
+        type="button"
+        className="icon-btn"
+        title="Find (Ctrl/Cmd+F)"
+        aria-label={`Find in ${paneLabel(p)}`}
+        onClick={(event) => {
+          event.stopPropagation();
+          openFind(p.id);
+        }}
+      >
+        <Icon name="text-search" size="sm" />
+      </button>
+      {!bare && (
         <button
           type="button"
           className="icon-btn"
-          title="Find (Ctrl/Cmd+F)"
-          aria-label={`Find in ${paneLabel(p)}`}
+          title="Park (Ctrl-B p)"
+          aria-label={`Park ${paneLabel(p)}`}
           onClick={(event) => {
             event.stopPropagation();
-            openFind(p.id);
+            park(p);
           }}
         >
-          <Icon name="text-search" size="sm" />
+          <Icon name="archive" size="sm" />
         </button>
-        {!bare && (
-          <button
-            type="button"
-            className="icon-btn"
-            title="Park (Ctrl-B p)"
-            aria-label={`Park ${paneLabel(p)}`}
-            onClick={(event) => {
-              event.stopPropagation();
-              park(p);
-            }}
-          >
-            <Icon name="archive" size="sm" />
-          </button>
-        )}
-        {!bare && !touch && (
-          <button
-            type="button"
-            className="icon-btn"
-            title="Open in a window"
-            aria-label={`Open ${paneLabel(p)} in a window`}
-            onClick={(event) => {
-              event.stopPropagation();
-              popout(p);
-            }}
-          >
-            <Icon name="external-link" size="sm" />
-          </button>
-        )}
+      )}
+      {!bare && !touch && (
         <button
           type="button"
           className="icon-btn"
-          title="Close"
-          aria-label={`Close ${paneLabel(p)}`}
+          title="Open in a window"
+          aria-label={`Open ${paneLabel(p)} in a window`}
           onClick={(event) => {
             event.stopPropagation();
-            close(p);
+            popout(p);
           }}
         >
-          <Icon name="x" size="sm" />
+          <Icon name="external-link" size="sm" />
         </button>
-      </div>
-    </header>
+      )}
+      <button
+        type="button"
+        className="icon-btn"
+        title="Close"
+        aria-label={`Close ${paneLabel(p)}`}
+        onClick={(event) => {
+          event.stopPropagation();
+          close(p);
+        }}
+      >
+        <Icon name="x" size="sm" />
+      </button>
+    </div>
   );
-  const hintPane = focused;
-  const owner = hintPane ? store.leases.get(hintPane.id) : undefined;
-  const hint = hintPane
-    ? owner === store.session?.client
-      ? "This browser controls the focused terminal's input and size"
-      : owner
-        ? "Another browser controls this terminal; type or click to take it"
-        : "Typing here takes this terminal from the TUI; typing there takes it back"
-    : "Live grid · click a terminal to open it";
   const dialogTitles: Record<string, string> = {
     config: "Settings",
     stats: "System status",
@@ -1851,11 +1903,22 @@ function App() {
   // and the row menu offers Move up / Move down instead.
   const sidebar = (
     <Sidebar
-      workspace={workspace}
       username={connection?.username || ""}
       dev={!!connection?.dev}
       folded={folded}
       touch={touch}
+      phone={phone}
+      mode={view}
+      page={page}
+      pages={pages}
+      diskMounts={knownMounts}
+      onDisksHover={() => void loadDiskMounts()}
+      onMode={(mode) => {
+        setFullWidth(false);
+        chooseMode(mode);
+      }}
+      onPage={setPage}
+      onFullWidth={() => runPrefix("full-width")}
       terminals={ordered}
       parked={parkedPanes}
       notifications={notifications}
@@ -1907,23 +1970,20 @@ function App() {
             onMenu={(x, y) => setMenu({ pane: focused, x: Math.max(8, x), y })}
           />
         )}
-        {!bare && !phone && (
-          <TopBar
-            workspace={workspace}
-            current={focused}
-            state={focused ? paneState(focused, notifications) : undefined}
-            mode={fullWidth ? "single" : view}
-            fullWidth={fullWidth}
-            page={page}
-            pages={pages}
-            onMode={(mode) => {
-              setFullWidth(false);
-              chooseMode(mode);
-            }}
-            onNewTerminal={newTab}
-            onFullWidth={() => setFullWidth(!fullWidth)}
-            onPage={setPage}
-          />
+        {!bare && !phone && fullWidth && (
+          <Tooltip content="Show the sidebar (Ctrl-B f)">
+            <button
+              type="button"
+              className="sidebar-restore"
+              aria-label="Show the sidebar"
+              onClick={(event) => {
+                event.stopPropagation();
+                runPrefix("full-width");
+              }}
+            >
+              <Icon name="chevron-right" size="sm" />
+            </button>
+          </Tooltip>
         )}
         {error && (
           <div className="notice error compact" role="alert">
@@ -2002,9 +2062,16 @@ function App() {
                     data-drop-pane={p.id}
                     data-drop-axis="x"
                     data-state={state}
-                    {...(touch ? {} : dragProps(p))}
+                    // Pressing, focusing or opening the menu of a tile
+                    // focuses it, and the sidebar highlights its row.
+                    onPointerDown={(event) => {
+                      setActive(p.id);
+                      if (!touch) dragProps(p).onPointerDown(event);
+                    }}
+                    onFocus={() => setActive(p.id)}
                     onContextMenu={(event) => {
                       event.preventDefault();
+                      setActive(p.id);
                       setMenu({ pane: p, x: event.clientX, y: event.clientY });
                     }}
                     onClick={() => {
@@ -2046,18 +2113,6 @@ function App() {
             input={inputMode === "input"}
             onKey={barKey}
             onToggleKeyboard={toggleKeyboard}
-          />
-        )}
-        {!bare && !phone && (
-          <StatusBar
-            username={connection?.username || ""}
-            workspace={workspace}
-            count={live.length}
-            parked={parkedPanes.length}
-            vitals={vitals}
-            hint={hint}
-            showVitals={!showRail || folded}
-            onStats={() => setDialog("stats")}
           />
         )}
         {keyManagement}

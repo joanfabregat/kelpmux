@@ -208,9 +208,7 @@ export function ConfigPanel({
           Confirm before closing or reloading this browser tab
         </label>
         <h3>Connection</h3>
-        <p className="connection-line mono">
-          {connection?.username} · {connection?.workspace} · SSH
-        </p>
+        <p className="connection-line mono">{connection?.username} · SSH</p>
         <button className="subtle" onClick={() => store.session?.close()}>
           <Icon name="log-out" size="sm" />
           Log out all browser windows
