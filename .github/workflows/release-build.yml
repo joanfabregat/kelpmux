@@ -55,6 +55,8 @@ jobs:
             test "$TAG" = "v$version"
           fi
       - run: cargo +1.99.0 build --workspace --release --locked --offline
+      # KelpServer at the revision pinned in Cargo.toml, built from Cargo.lock.
+      - run: cargo +1.99.0 build --release --locked --offline -p kelpserver --bin kelpserver
       - name: Collect locked dependency license texts
         run: bash scripts/package-licenses.sh target/dependency-licenses
       - name: Package binary, license, and checksum

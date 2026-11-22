@@ -1694,7 +1694,13 @@ fn automatic_grid_parking_controls_alert_colors_and_three_row_tabs() {
             vec![Action::RestoreRequest(1)]
         );
         ws.apply(&Action::Restore(1)).unwrap();
-        assert_eq!(ws.panes.iter().map(|p| p.id).collect::<Vec<_>>(), ids);
+        // The unparked tab rejoins the tab order last.
+        let mut restored_order = ids[1..].to_vec();
+        restored_order.push(ids[0]);
+        assert_eq!(
+            ws.panes.iter().map(|p| p.id).collect::<Vec<_>>(),
+            restored_order
+        );
         assert_eq!(ws.reading, ReadingMode::Grid);
         ws.apply(&Action::Read(1)).unwrap();
         let f = frame(&ws);

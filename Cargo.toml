@@ -7,7 +7,7 @@ license = "Apache-2.0"
 description = "Kelp terminal interface"
 
 [dependencies]
-kelpserver = { path = "crates/server", version = "0.2.0-beta.7" }
+kelpserver = { workspace = true }
 kelpclient = { path = "crates/client", version = "0.1.0" }
 base64 = "0.22"
 unicode-width = "=0.2.2"
@@ -19,5 +19,12 @@ serde_json = "1"
 tungstenite = { version = "=0.30.0", default-features = false, features = ["handshake"] }
 
 [workspace]
-members = ["crates/server", "crates/client", "crates/protocol"]
+members = ["crates/client"]
 resolver = "2"
+
+# KelpServer and the protocol types come from one kelpserver revision. Both
+# entries must keep the identical URL and rev, or Cargo builds two protocol
+# crates (and client-core.wasm would disagree with the server).
+[workspace.dependencies]
+kelpserver = { git = "https://github.com/joanfabregat/kelpserver", rev = "ad961f010b88f0f9362f51baf733008a666d326d" }
+kelpclient-protocol = { git = "https://github.com/joanfabregat/kelpserver", rev = "ad961f010b88f0f9362f51baf733008a666d326d" }
