@@ -6,7 +6,9 @@ test("prefix keys follow the TUI's default bindings", () => {
   const key = (key, extra = {}) => prefixAction({ key, ...extra });
   assert.equal(key("Enter"), "new");
   assert.equal(key("z"), "reopen-last");
-  assert.equal(key("f"), "full-width");
+  // Full width was removed from the browser; f is free.
+  assert.equal(key("f"), null);
+  assert.equal(key("b"), "notifications");
   assert.equal(key("e"), "grid");
   assert.equal(key("Tab"), "next");
   assert.equal(key("Tab", { shiftKey: true }), "previous");

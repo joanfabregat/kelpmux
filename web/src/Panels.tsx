@@ -1,7 +1,8 @@
-// Workspace dialogs, the web equivalents of the TUI's: notifications,
-// recently closed (recovery), search, parked terminals, move and help. The
-// Terminals table (agents and overview) lives in Terminals.tsx. Each is a
-// list of rows with mouse actions; nothing here changes the TUI's layout.
+// Workspace dialogs, the web equivalents of the TUI's: a terminal's
+// notifications, recently closed (recovery), search, parked terminals, move
+// and help. The Terminals table (agents and overview) lives in Terminals.tsx.
+// Each is a list of rows with mouse actions; nothing here changes the TUI's
+// layout.
 import { useEffect, useRef, useState } from "react";
 import type { Pane, SearchMatch } from "./terminal/types";
 import { Icon } from "./status";
@@ -9,66 +10,35 @@ import { age } from "./format";
 import { StateMark } from "./state/StateMark";
 import { ProviderLogo } from "./state/ProviderLogo";
 import {
-  notificationMatches,
   notificationStatus,
+  paneNotifications,
   paneState,
   stateLabel,
   statusState,
-  visibleNotifications,
   type Notification,
 } from "./state/model";
 import { shortcuts } from "./shortcuts";
 import { paletteColor, paletteNames } from "./palette";
 
 const name = (p: Pane) => p.title || "shell";
-const where = (p: Pane, parked: Set<number>) =>
-  parked.has(p.id)
-    ? "Parked"
-    : p.number
-      ? `Terminal ${p.number}`
-      : p.parked
-        ? "Parked in the TUI"
-        : "Terminal";
 
-/** A row's "Open" action. */
-function OpenButton({
-  label,
-  onClick,
-}: {
-  label: string;
-  onClick: () => void;
-}) {
-  return (
-    <button
-      type="button"
-      className="small"
-      aria-label={label}
-      onClick={onClick}
-    >
-      <Icon name="arrow-right" size="sm" />
-      Open
-    </button>
-  );
-}
-
-export function NotificationsPanel({
-  panes,
-  parked,
+/** One terminal's notifications, opened from the bell in its header (or
+ * Ctrl-B b): its unread ones, or its whole retained history; mark one or
+ * all of them read. Read marks are the workspace's, shared with the TUI. */
+export function TerminalNotificationsPanel({
+  pane,
   notifications,
-  onOpen,
   onAcknowledge,
 }: {
-  panes: Pane[];
-  parked: Set<number>;
+  pane: Pane;
   notifications: Notification[];
-  onOpen: (pane: Pane) => void;
   onAcknowledge: (ids: number[]) => void;
 }) {
   const [history, setHistory] = useState(false);
-  const list = visibleNotifications(notifications, panes, history);
-  const unread = visibleNotifications(notifications, panes, false);
+  const list = paneNotifications(notifications, pane, history);
+  const unread = paneNotifications(notifications, pane, false);
   return (
-    <div className="panel-body">
+    <div className="panel-body" data-pane={pane.id}>
       <div className="panel-toolbar">
         <div className="seg panel-seg" role="group" aria-label="Notifications">
           <button aria-pressed={!history} onClick={() => setHistory(false)}>
@@ -91,13 +61,13 @@ export function NotificationsPanel({
       </div>
       <div className="panel-list" role="list">
         {list.map((n) => {
-          const pane = panes.find((p) => notificationMatches(n, p));
           const state = statusState(notificationStatus(notifications, n));
           return (
             <div
               className={`list-row ${n.read ? "read" : "unread"}`}
               role="listitem"
               key={n.id}
+              data-notification={n.id}
             >
               <span
                 className={`unread-dot ${n.read ? "" : "on"}`}
@@ -107,10 +77,7 @@ export function NotificationsPanel({
               <StateMark state={state} size="md" />
               <div className="grow">
                 <span className="t">{n.title}</span>
-                <span className="s">
-                  {pane ? where(pane, parked) : `Former pane ${n.pane}`} ·{" "}
-                  {age(n.at)}
-                </span>
+                <span className="s">{age(n.at)}</span>
               </div>
               {!n.read && (
                 <button
@@ -123,21 +90,14 @@ export function NotificationsPanel({
                   <Icon name="check" size="sm" />
                 </button>
               )}
-              {pane && (
-                <OpenButton
-                  label={`Open ${name(pane)}`}
-                  onClick={() => {
-                    if (!n.read) onAcknowledge([n.id]);
-                    onOpen(pane);
-                  }}
-                />
-              )}
             </div>
           );
         })}
         {!list.length && (
           <p className="panel-empty">
-            {history ? "No notifications yet." : "No unread alerts."}
+            {history
+              ? "No notifications from this terminal yet."
+              : "No unread notifications in this terminal."}
           </p>
         )}
       </div>

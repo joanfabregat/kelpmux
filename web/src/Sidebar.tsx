@@ -11,12 +11,13 @@ import {
   rollup,
   rollupEntries,
   stateLabel,
+  unreadFor,
   type DisplayState,
   type Notification,
 } from "./state/model";
 import { paletteColor } from "./palette";
 import { Vitals } from "./Vitals";
-import type { SessionMode } from "./Shell";
+import { UnreadMark, type SessionMode } from "./Shell";
 
 /** What a state shortcut in the sidebar summary opens. */
 const openStateLabel: Partial<Record<DisplayState, string>> = {
@@ -32,7 +33,7 @@ export type SidebarProps = {
   folded: boolean;
   /** Touch device: rows show a menu button instead of hover actions. */
   touch?: boolean;
-  /** Phone home screen: no grid and no full width. */
+  /** Phone home screen: no grid. */
   phone?: boolean;
   /** The terminal view, its grid page and page count. */
   mode: SessionMode;
@@ -44,14 +45,12 @@ export type SidebarProps = {
   parked: Pane[];
   notifications: Notification[];
   current?: number;
-  unread: number;
   vitals: { cpu?: number; memory?: number; disks?: number[] };
   /** Mount points of the vitals' disks, in order, once known. */
   diskMounts: string[];
   onDisksHover: () => void;
   onMode: (mode: SessionMode) => void;
   onPage: (page: number) => void;
-  onFullWidth: () => void;
   rowProps: (pane: Pane) => React.HTMLAttributes<HTMLDivElement>;
   rowClass: (pane: Pane) => string;
   /** The pane's tab colour in this browser (a TUI palette index). */
@@ -70,10 +69,12 @@ export type SidebarProps = {
 
 /** The left sidebar, like the TUI's, and the only navigation: the state
  * counts, every terminal in this browser's order with its live state, the
- * new-terminal row right under them and the parked terminals; at the bottom
- * the view and tools (live grid, full width, the Terminals table,
- * notifications, recently closed, search, help, settings), then the system
- * vitals. Order, parking and folding belong to this browser; they never
+ * new-terminal row right under them and the parked terminals. A tab with
+ * unread notifications shows a bell; the notifications themselves open
+ * from the terminal's header. At the bottom the view and tools in two
+ * columns like the TUI's buttons (live grid, the Terminals table, recently
+ * closed, search, help), the system vitals, then the account and its
+ * settings. Order, parking and folding belong to this browser; they never
  * change the TUI's layout. */
 export function Sidebar(props: SidebarProps) {
   const {
@@ -88,7 +89,6 @@ export function Sidebar(props: SidebarProps) {
     parked,
     notifications,
     current,
-    unread,
     vitals,
   } = props;
   const [parkedOpen, setParkedOpen] = useState(true);
@@ -96,6 +96,7 @@ export function Sidebar(props: SidebarProps) {
   const grid = mode === "grid";
   const row = (p: Pane, isParked: boolean) => {
     const state = paneState(p, notifications);
+    const unread = unreadFor(notifications, p).length;
     const title = p.title || "shell";
     const on = current === p.id && !isParked;
     return (
@@ -128,7 +129,7 @@ export function Sidebar(props: SidebarProps) {
           type="button"
           className={`nav-item term-item ${on ? "current" : ""}`}
           aria-current={on ? "page" : undefined}
-          aria-label={`${isParked ? "Unpark and open" : "Open"} terminal ${p.number || ""} ${title} (${stateLabel[state]})`}
+          aria-label={`${isParked ? "Unpark and open" : "Open"} terminal ${p.number || ""} ${title} (${stateLabel[state]}${unread ? `, ${unread} unread` : ""})`}
           title={`${title}\n${p.cwd}`}
           onClick={() => (isParked ? props.onUnpark(p) : props.onOpen(p))}
         >
@@ -141,6 +142,7 @@ export function Sidebar(props: SidebarProps) {
             <span className="term-title">{title}</span>
             <small className="term-folder">{basename(p.cwd)}</small>
           </span>
+          <UnreadMark count={unread} />
         </button>
         <span className="term-row-actions">
           {props.touch ? (
@@ -194,40 +196,39 @@ export function Sidebar(props: SidebarProps) {
       </div>
     );
   };
-  /** A bottom entry: an action with its icon, label and shortcut. */
+  /** A tool button: its icon and short label, the full name and shortcut
+   * in its tooltip and accessible name. */
   const entry = (
     key: string,
     label: string,
+    short: string,
     icon: IconName,
     keys: string,
     onClick: () => void,
-    extra: { count?: number; pressed?: boolean } = {},
+    pressed?: boolean,
   ) => (
     <Tooltip key={key} content={`${label} (${keys})`}>
       <button
         type="button"
         className="nav-item tool-item"
         aria-label={label}
-        aria-pressed={extra.pressed}
+        aria-pressed={pressed}
         data-tool={key}
         onClick={onClick}
       >
         <Icon name={icon} size="sm" />
-        <span className="grow">{label}</span>
-        {!!extra.count && (
-          <span className="badge accent count">{extra.count}</span>
-        )}
+        <span className="grow">{short}</span>
       </button>
     </Tooltip>
   );
   const tool = (
     dialog: string,
     label: string,
+    short: string,
     icon: IconName,
     keys: string,
-    count?: number,
-  ) =>
-    entry(dialog, label, icon, keys, () => props.onDialog(dialog), { count });
+  ) => entry(dialog, label, short, icon, keys, () => props.onDialog(dialog));
+  const paging = grid && pages > 1;
   return (
     <aside className={`rail ${folded ? "folded" : ""}`} aria-label="Terminals">
       <div className="rail-head">
@@ -302,19 +303,22 @@ export function Sidebar(props: SidebarProps) {
           </div>
         )}
       </nav>
+      {/* The tools in two columns, like the TUI's sidebar buttons, above
+          the vitals. */}
       <div className="rail-bottom">
-        <div className="tool-list">
+        <div className="tool-grid">
           {!phone && (
-            <div className="nav-cell view-cell">
+            <div className={`nav-cell view-cell ${paging ? "wide" : ""}`}>
               {entry(
                 "grid",
                 "Live grid",
+                "Grid",
                 "layout-grid",
                 "Ctrl-B g; Alt+Tab toggles",
                 () => props.onMode(grid ? "single" : "grid"),
-                { pressed: grid },
+                grid,
               )}
-              {grid && pages > 1 && (
+              {paging && (
                 <span className="grid-pages">
                   <Tooltip content="Previous page (Ctrl-B PgUp)">
                     <button
@@ -345,36 +349,16 @@ export function Sidebar(props: SidebarProps) {
               )}
             </div>
           )}
-          {!phone &&
-            entry(
-              "full-width",
-              "Full width",
-              "panel-left-close",
-              "Ctrl-B f",
-              props.onFullWidth,
-            )}
-          {tool("terminals", "Terminals", "layout-dashboard", "Ctrl-B o")}
-          {tool("notifications", "Notifications", "bell", "Ctrl-B b", unread)}
-          {tool("recovery", "Recently closed", "history", "Ctrl-B r")}
-          {tool("search", "Search", "search", "Ctrl-B /")}
-          {tool("help", "Help", "book-open", "Ctrl-B ?")}
-          <Tooltip content="Settings (Ctrl-B ,)">
-            <button
-              type="button"
-              className="nav-item tool-item account"
-              onClick={() => props.onDialog("config")}
-              aria-label="Settings"
-              data-tool="config"
-            >
-              <span className="avatar" aria-hidden="true">
-                {(username || "?").slice(0, 1).toUpperCase()}
-              </span>
-              <span className="grow account-name">
-                <b>{username || "…"}</b>
-              </span>
-              <Icon name="settings" size="sm" className="faint" />
-            </button>
-          </Tooltip>
+          {tool(
+            "terminals",
+            "Terminals",
+            "Terminals",
+            "layout-dashboard",
+            "Ctrl-B o",
+          )}
+          {tool("recovery", "Recently closed", "Closed", "history", "Ctrl-B r")}
+          {tool("search", "Search", "Search", "search", "Ctrl-B /")}
+          {tool("help", "Help", "Help", "book-open", "Ctrl-B ?")}
         </div>
       </div>
       <div className="rail-foot">
@@ -385,6 +369,24 @@ export function Sidebar(props: SidebarProps) {
           onOpen={() => props.onDialog("stats")}
           onDisksHover={props.onDisksHover}
         />
+        {/* The account and its settings, at the very bottom. */}
+        <Tooltip content="Settings (Ctrl-B ,)">
+          <button
+            type="button"
+            className="nav-item tool-item account"
+            onClick={() => props.onDialog("config")}
+            aria-label="Settings"
+            data-tool="config"
+          >
+            <span className="avatar" aria-hidden="true">
+              {(username || "?").slice(0, 1).toUpperCase()}
+            </span>
+            <span className="grow account-name">
+              <b>{username || "…"}</b>
+            </span>
+            <Icon name="settings" size="sm" className="faint" />
+          </button>
+        </Tooltip>
       </div>
       <div
         className="sidebar-divider"

@@ -64,13 +64,10 @@
   overscroll-behavior: contain;
 }
 /* The fold handle stays narrow; a taller tab is easier to hit. */
-.touch .sidebar-fold,
-.touch .sidebar-restore {
-  width: 16px;
-  height: 56px;
-}
 .touch .sidebar-fold {
   right: -8px;
+  width: 16px;
+  height: 56px;
 }
 .touch .view-cell .grid-pages .icon-btn {
   width: 36px;

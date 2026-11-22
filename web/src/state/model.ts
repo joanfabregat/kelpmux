@@ -231,27 +231,18 @@ export function nextPane<T extends StatePane>(
   return null;
 }
 
-/** Notifications the Notifications dialog lists, newest first: unread ones
- * of live panes, or every retained one with `history`. */
-export function visibleNotifications(
+/** A terminal's notifications, newest first: its unread ones, or with
+ * `history` every retained one of its current process (the panel its
+ * header's bell opens). */
+export function paneNotifications(
   notifications: Notification[],
-  panes: StatePane[],
+  pane: StatePane,
   history: boolean,
 ) {
   return [...notifications]
     .sort((a, b) => b.id - a.id)
-    .filter(
-      (n) =>
-        history ||
-        (!n.read && panes.some((pane) => notificationMatches(n, pane))),
-    );
+    .filter((n) => (history || !n.read) && notificationMatches(n, pane));
 }
-
-/** Unread notifications of live panes (the sidebar badge). */
-export const unreadCount = (
-  notifications: Notification[],
-  panes: StatePane[],
-) => visibleNotifications(notifications, panes, false).length;
 
 /** Agent provider of a pane kind, or null for a plain terminal. */
 export type Provider = "claude" | "codex";

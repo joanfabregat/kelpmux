@@ -40,12 +40,17 @@ import { KeySettings } from "./KeySettings";
 import { LoginScreen, PopupConnecting, StoppedWorkspace } from "./Login";
 import { ConfigPanel } from "./ConfigPanel";
 import { OPEN_SETTINGS } from "./Settings";
-import { PaneLabel, type SessionMode } from "./Shell";
+import {
+  NotificationsButton,
+  PaneLabel,
+  UnreadMark,
+  type SessionMode,
+} from "./Shell";
 import { Sidebar } from "./Sidebar";
 import {
   HelpPanel,
   MovePanel,
-  NotificationsPanel,
+  TerminalNotificationsPanel,
   PaneMenu,
   ParkedPanel,
   ColorPanel,
@@ -84,7 +89,6 @@ import {
   rollup,
   stateLabel,
   tabTitle,
-  unreadCount,
   unreadFor,
   type DisplayState,
   type Notification,
@@ -338,7 +342,8 @@ function App() {
     [preferences, setPreferences] = useState(loadPreferences),
     [terminalFilter, setTerminalFilter] = useState<TerminalFilter>("all"),
     [operations, setOperations] = useState(() => new Set<string>()),
-    [fullWidth, setFullWidth] = useState(false),
+    // The terminal whose notifications the Notifications panel shows.
+    [notifyPane, setNotifyPane] = useState(0),
     [findQuery, setFindQuery] = useState(""),
     [colorPane, setColorPane] = useState<Pane | null>(null),
     [gridWeights, setGridWeights] = useState<GridWeights>({
@@ -731,7 +736,7 @@ function App() {
   }, [sign, confirmAction, findPane, dialog, keyModal]);
   const focused = popupPane
     ? all.find((p) => p.id === popupPane)
-    : view === "single" || fullWidth
+    : view === "single"
       ? live.find((p) => p.id === active)
       : undefined;
   function openFind(pane: number, text = "") {
@@ -833,7 +838,6 @@ function App() {
     notifications,
     gridWidth,
     gridWeights,
-    fullWidth,
   ]);
   /** Runs a Ctrl-B prefix action (see shortcuts.ts). */
   function runPrefix(action: NonNullable<ReturnType<typeof prefixAction>>) {
@@ -857,12 +861,7 @@ function App() {
       case "reopen-last":
         return void reopenLast();
       case "grid":
-        setFullWidth(false);
         return chooseMode("grid");
-      case "full-width":
-        setFullWidth(!fullWidth);
-        if (!fullWidth && view === "grid" && active) chooseMode("single");
-        return;
       case "next":
         return cycle(1);
       case "previous":
@@ -894,7 +893,7 @@ function App() {
         const pane = focusedPane();
         if (!pane) return;
         // Keyboard modes act on a terminal shown on its own.
-        const grid = view === "grid" && !fullWidth && !popupPane;
+        const grid = view === "grid" && !popupPane;
         if (grid) activate(pane.id);
         setTimeout(
           () =>
@@ -927,6 +926,9 @@ function App() {
       case "agents-finished":
         return openTerminals("finished");
       case "notifications":
+        // The focused terminal's notifications (its header's bell).
+        if (targetPane) openNotifications(targetPane);
+        return;
       case "recovery":
       case "search":
       case "parked":
@@ -955,7 +957,7 @@ function App() {
    * browser's grid (Ctrl-B H/J/K/L; Ctrl-B = equalizes), like the TUI's
    * grid resizing. */
   function resizeGrid(dx: number, dy: number) {
-    if (view !== "grid" || fullWidth) return;
+    if (view !== "grid") return;
     const tiles = live.slice(page * PAGE, page * PAGE + PAGE);
     const index = tiles.findIndex((p) => p.id === active);
     if (index < 0) return;
@@ -1072,21 +1074,18 @@ function App() {
       store.session?.request("acknowledge", { notification: id });
     }
   }
-  // Showing a terminal marks its notifications read, as focusing one does
-  // in the TUI; a terminal that was already shown stays as it is until it is
-  // shown again.
+  /** Opens a terminal's notifications (its header's bell, Ctrl-B b or its
+   * menu). Showing a terminal no longer marks them read: its tab keeps the
+   * bell until they are marked read there (or by the TUI). */
+  function openNotifications(pane: Pane) {
+    setMenu(null);
+    setNotifyPane(pane.id);
+    setDialog("notifications");
+  }
+  /** The terminal shown on its own, if any. */
   const shownPane =
     popupPane ||
-    (active && !(phone && phoneList) && (view === "single" || fullWidth)
-      ? active
-      : 0);
-  useEffect(() => {
-    if (!online || !shownPane || document.hidden) return;
-    const pane = panes.find((p) => p.id === shownPane);
-    if (!pane) return;
-    const unread = unreadFor(notificationsRef.current, pane);
-    if (unread.length) acknowledge(unread.map((n) => n.id));
-  }, [online, shownPane, panesLoaded]);
+    (active && !(phone && phoneList) && view === "single" ? active : 0);
   // Opening or switching terminals returns to reading: the on-screen
   // keyboard never appears on its own.
   useEffect(() => {
@@ -1703,7 +1702,7 @@ function App() {
         store.events.dispatchEvent(new Event("terminal-focus")),
       );
   }
-  const showRail = !bare && !fullWidth && !phone;
+  const showRail = !bare && !phone;
   const railWidth = folded ? 56 : preferences.sidebarWidth;
   /** The phone shows its terminal list instead of a terminal. */
   const listShown = phone && (phoneList || !focused);
@@ -1749,6 +1748,7 @@ function App() {
   /** A terminal's context menu (right-click on its row or tile). */
   function menuItems(p: Pane): [string, () => void, boolean?][] {
     const isParked = parkedSet.has(p.id);
+    const unread = unreadFor(notifications, p).length;
     // Reorders among the tabs; parked terminals keep their places after.
     const liveIds = live.map((pane) => pane.id);
     const rest = all
@@ -1780,6 +1780,10 @@ function App() {
           setColorPane(p);
           setDialog("color");
         },
+      ],
+      [
+        unread ? `Notifications (${unread} unread)…` : "Notifications…",
+        () => openNotifications(p),
       ],
       ["Close…", () => close(p)],
     ];
@@ -1839,6 +1843,11 @@ function App() {
   const paneActions = (p: Pane, extra?: React.ReactNode) => (
     <div className="pane-actions">
       {extra}
+      <NotificationsButton
+        label={paneLabel(p)}
+        count={unreadFor(notifications, p).length}
+        onOpen={() => openNotifications(p)}
+      />
       <button
         type="button"
         className="icon-btn"
@@ -1893,10 +1902,16 @@ function App() {
       </button>
     </div>
   );
+  /** The terminal whose notifications the panel shows, while it lives. */
+  const notified = notifyPane
+    ? all.find((p) => p.id === notifyPane)
+    : undefined;
   const dialogTitles: Record<string, string> = {
     config: "Settings",
     stats: "System status",
-    notifications: "Notifications",
+    notifications: notified
+      ? `Notifications · ${paneLabel(notified)}`
+      : "Notifications",
     terminals: "Terminals",
     recovery: "Recently closed",
     search: "Search terminal history",
@@ -1924,17 +1939,12 @@ function App() {
       pages={pages}
       diskMounts={knownMounts}
       onDisksHover={() => void loadDiskMounts()}
-      onMode={(mode) => {
-        setFullWidth(false);
-        chooseMode(mode);
-      }}
+      onMode={chooseMode}
       onPage={setPage}
-      onFullWidth={() => runPrefix("full-width")}
       terminals={ordered}
       parked={parkedPanes}
       notifications={notifications}
       current={view === "single" || view === "grid" ? active : undefined}
-      unread={unreadCount(notifications, panes)}
       vitals={vitals}
       rowProps={touch ? () => ({}) : dragProps}
       rowClass={(p) => (drag === p.id && drag !== drop ? "landing" : "")}
@@ -1979,23 +1989,10 @@ function App() {
               setPhoneList(true);
               setFindPane(0);
             }}
+            unread={unreadFor(notifications, focused).length}
+            onNotifications={() => openNotifications(focused)}
             onMenu={(x, y) => setMenu({ pane: focused, x: Math.max(8, x), y })}
           />
-        )}
-        {!bare && !phone && fullWidth && (
-          <Tooltip content="Show the sidebar (Ctrl-B f)">
-            <button
-              type="button"
-              className="sidebar-restore"
-              aria-label="Show the sidebar"
-              onClick={(event) => {
-                event.stopPropagation();
-                runPrefix("full-width");
-              }}
-            >
-              <Icon name="chevron-right" size="sm" />
-            </button>
-          </Tooltip>
         )}
         {error && (
           <div className="notice error compact" role="alert">
@@ -2094,6 +2091,7 @@ function App() {
                     <header>
                       <PaneLabel pane={p} state={state} />
                       <span className="grid-folder">{basename(p.cwd)}</span>
+                      <UnreadMark count={unreadFor(notifications, p).length} />
                     </header>
                     <TerminalTile pane={p} store={store} />
                   </button>
@@ -2201,17 +2199,15 @@ function App() {
                   }}
                 />
               )}
-              {dialog === "notifications" && (
-                <NotificationsPanel
-                  panes={all}
-                  parked={parkedSet}
+              {dialog === "notifications" && notified && (
+                <TerminalNotificationsPanel
+                  pane={notified}
                   notifications={notifications}
                   onAcknowledge={acknowledge}
-                  onOpen={(p) => {
-                    closeDialog();
-                    openPane(p);
-                  }}
                 />
+              )}
+              {dialog === "notifications" && !notified && (
+                <p className="panel-empty">This terminal is closed.</p>
               )}
               {dialog === "recovery" && (
                 <RecoveryPanel

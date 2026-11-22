@@ -79,8 +79,13 @@ impl Cache {
                 break;
             }
             walked.push(directory.to_path_buf());
-            if let Some(git) = git_dir(directory, uid) {
-                found = read_repo(directory, &git, uid);
+            // Like Git's discovery, a `.git` that is not a repository (no
+            // readable HEAD, such as an empty or leftover directory) does
+            // not end the search: an enclosing repository still counts.
+            if let Some(repo) =
+                git_dir(directory, uid).and_then(|git| read_repo(directory, &git, uid))
+            {
+                found = Some(repo);
                 break;
             }
             current = directory.parent();
@@ -440,6 +445,25 @@ mod tests {
         // Anything else in HEAD is not a repository this reads.
         temp.write("d/.git/HEAD", "garbage\n");
         assert_eq!(one(&root), None);
+    }
+
+    #[test]
+    fn a_stub_git_directory_does_not_hide_the_enclosing_repository() {
+        // A folder inside a checkout with a leftover `.git` directory that
+        // is no repository (only `info/exclude` and an empty
+        // `config.worktree`, as some tools leave behind): Git still finds
+        // the enclosing checkout, and so must the Terminals table.
+        let temp = Temp::new();
+        let root = temp.repo("outer", "ref: refs/heads/main\n", ORIGIN_HTTPS);
+        temp.write("outer/stub/.git/info/exclude", "# nothing\n");
+        temp.write("outer/stub/.git/config.worktree", "");
+        let stub = temp.dir("outer/stub/src");
+        let repo = one(&stub).unwrap();
+        assert_eq!(repo.root, root);
+        assert_eq!(repo.github.as_deref(), Some("joanfabregat/kelpmux"));
+        // The same stub with no repository around it is in none.
+        temp.write("alone/.git/info/exclude", "# nothing\n");
+        assert_eq!(one(&temp.dir("alone")), None);
     }
 
     #[test]

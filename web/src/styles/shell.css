@@ -28,7 +28,6 @@
   height: var(--topbar);
   flex: none;
   padding: 0 var(--s3) 0 var(--s4);
-  border-bottom: 1px solid var(--line);
 }
 .logo {
   display: flex;
@@ -217,15 +216,26 @@ button.rail-mark:hover:not(:disabled) {
   outline-offset: -2px;
   opacity: 0.7;
 }
-/* The bottom of the sidebar: view, tools and settings, then the vitals.
- * The terminal list above takes the remaining height and scrolls; on a
- * short screen the bottom entries scroll too instead of crowding it out. */
+/* The bottom of the sidebar: the view and tools in two columns, like the
+ * TUI's sidebar buttons, then the vitals and, at the very bottom, the
+ * account and its settings. The terminal list above takes the remaining
+ * height and scrolls; on a short screen the tools scroll too instead of
+ * crowding it out. */
 .rail-bottom {
   flex: none;
   max-height: 45%;
   overflow-y: auto;
   padding: var(--s1) var(--s2);
   border-top: 1px solid var(--line);
+}
+.tool-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 1px var(--s1);
+}
+/* With several grid pages, the grid entry and its page buttons take a row. */
+.view-cell.wide {
+  grid-column: 1 / -1;
 }
 .view-cell .grid-pages {
   display: inline-flex;
@@ -250,8 +260,11 @@ button.rail-mark:hover:not(:disabled) {
   color: var(--accent);
 }
 .rail-foot {
+  display: flex;
   flex: none;
-  padding: var(--s2);
+  flex-direction: column;
+  gap: 1px;
+  padding: var(--s1) var(--s2) var(--s2);
   border-top: 1px solid var(--line);
 }
 
@@ -423,6 +436,10 @@ button.rail-mark:hover:not(:disabled) {
 }
 .rail.folded .account {
   justify-content: center;
+}
+/* Folded tools: one column of icons. */
+.rail.folded .tool-grid {
+  grid-template-columns: minmax(0, 1fr);
 }
 /* Folded vitals: short labels and values, and the two disk pies. */
 .rail.folded .rail-foot {
@@ -839,12 +856,11 @@ button.new-pane:hover:not(:disabled) {
 }
 
 /* Fold handle: a narrow tab vertically centred on the sidebar's edge, like
- * the TUI's; it stays on the folded rail so it can unfold it. The same tab
- * on the window's left edge brings the sidebar back from full width. */
-.sidebar-fold,
-.sidebar-restore {
+ * the TUI's; it stays on the folded rail so it can unfold it. */
+.sidebar-fold {
   position: absolute;
   top: 50%;
+  right: -6px;
   z-index: 4;
   display: grid;
   place-items: center;
@@ -859,18 +875,12 @@ button.new-pane:hover:not(:disabled) {
   cursor: pointer;
   transform: translateY(-50%);
 }
-.sidebar-fold {
-  right: -6px;
-}
-.sidebar-fold .svg-icon,
-.sidebar-restore .svg-icon {
+.sidebar-fold .svg-icon {
   width: 10px;
   height: 10px;
 }
 .sidebar-fold:hover:not(:disabled),
-.sidebar-fold:focus-visible,
-.sidebar-restore:hover:not(:disabled),
-.sidebar-restore:focus-visible {
+.sidebar-fold:focus-visible {
   filter: none;
   color: var(--text);
   border-color: var(--accent);
@@ -878,9 +888,47 @@ button.new-pane:hover:not(:disabled) {
 .rail:not(.folded) .sidebar-fold svg {
   transform: rotate(180deg);
 }
-.sidebar-restore {
-  position: fixed;
-  left: 0;
-  border-left: 0;
-  border-radius: 0 6px 6px 0;
+
+/* Unread notifications: a ringing bell on a terminal's sidebar tab and grid
+ * tile, and on the bell in its header that opens them. */
+.unread-mark {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  gap: 2px;
+  color: var(--st-input);
+  font-size: var(--fs-xs);
+  font-variant-numeric: tabular-nums;
+}
+.unread-mark .svg-icon {
+  width: 13px;
+  height: 13px;
+}
+.unread-mark b {
+  font-weight: 600;
+}
+.pane-notifications.unread {
+  width: auto;
+  gap: 2px;
+  padding: 0 var(--s1);
+  color: var(--st-input);
+}
+.pane-notifications-count {
+  font-size: var(--fs-xs);
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+/* The folded rail keeps the bell small in the row's corner, without the
+ * count, so the number and state mark keep their places. */
+.rail.folded .term-item .unread-mark {
+  position: absolute;
+  top: 2px;
+  right: 3px;
+}
+.rail.folded .unread-mark b {
+  display: none;
+}
+.rail.folded .unread-mark .svg-icon {
+  width: 11px;
+  height: 11px;
 }

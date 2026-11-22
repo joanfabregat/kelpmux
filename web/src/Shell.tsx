@@ -2,6 +2,7 @@ import type { Pane } from "./terminal/types";
 import { StateMark } from "./state/StateMark";
 import { ProviderLogo } from "./state/ProviderLogo";
 import { stateLabel, type DisplayState } from "./state/model";
+import { Icon } from "./status";
 
 /** One terminal at a time, or all of them live in a grid. */
 export type SessionMode = "single" | "grid";
@@ -35,5 +36,60 @@ export function PaneLabel({
         </span>
       )}
     </>
+  );
+}
+
+const unreadText = (count: number) =>
+  `${count} unread notification${count === 1 ? "" : "s"}`;
+
+/** A terminal's unread notifications, on its sidebar tab and grid tile: a
+ * ringing bell, with the count when there are several. Nothing when none. */
+export function UnreadMark({ count }: { count: number }) {
+  if (count <= 0) return null;
+  return (
+    <span
+      className="unread-mark"
+      role="img"
+      aria-label={unreadText(count)}
+      title={unreadText(count)}
+    >
+      <Icon name="bell-ring" size="sm" />
+      {count > 1 && <b aria-hidden="true">{count > 99 ? "99+" : count}</b>}
+    </span>
+  );
+}
+
+/** The bell in a terminal's header: opens that terminal's notifications
+ * (Ctrl-B b), marked while it has unread ones. */
+export function NotificationsButton({
+  label,
+  count,
+  onOpen,
+}: {
+  /** The terminal's name. */
+  label: string;
+  count: number;
+  onOpen: () => void;
+}) {
+  const text = `Notifications of ${label}${count ? `: ${unreadText(count)}` : ""}`;
+  return (
+    <button
+      type="button"
+      className={`icon-btn pane-notifications ${count ? "unread" : ""}`}
+      title={`${count ? unreadText(count) : "Notifications"} (Ctrl-B b)`}
+      aria-label={text}
+      data-unread={count || undefined}
+      onClick={(event) => {
+        event.stopPropagation();
+        onOpen();
+      }}
+    >
+      <Icon name={count ? "bell-ring" : "bell"} size="sm" />
+      {count > 0 && (
+        <b className="pane-notifications-count" aria-hidden="true">
+          {count > 99 ? "99+" : count}
+        </b>
+      )}
+    </button>
   );
 }
