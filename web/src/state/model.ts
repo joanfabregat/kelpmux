@@ -231,9 +231,23 @@ export function nextPane<T extends StatePane>(
   return null;
 }
 
+/** The terminal whose notifications showing it marks read, as focusing a
+ * pane does in the TUI: a popup's terminal, or the focused terminal when it
+ * is on screen (shown on its own, or the focused tile of the grid page;
+ * the other tiles keep their bells). 0 when none is, such as on the
+ * phone's terminal list. `onScreen` lists the terminals on screen. */
+export function readingPane(
+  popup: number,
+  focused: number,
+  onScreen: readonly number[],
+) {
+  if (popup) return popup;
+  return focused && onScreen.includes(focused) ? focused : 0;
+}
+
 /** A terminal's notifications, newest first: its unread ones, or with
  * `history` every retained one of its current process (the panel its
- * header's bell opens). */
+ * header's bell opens). The panel opens on its history. */
 export function paneNotifications(
   notifications: Notification[],
   pane: StatePane,

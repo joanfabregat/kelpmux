@@ -54,8 +54,8 @@ export function UnreadMark({ count }: { count: number }) {
   );
 }
 
-/** The bell in a terminal's header: opens that terminal's notifications
- * (Ctrl-B b), marked while it has unread ones. */
+/** The bell in a terminal's header: opens that terminal's notifications,
+ * mainly their history (Ctrl-B b), marked while it has unread ones. */
 export function NotificationsButton({
   label,
   count,

@@ -165,9 +165,9 @@ export function ConfigPanel({
         <p className="setting-hint">
           These preferences, parked terminals, tab colours and the terminal
           order are saved in this browser. Notification read marks are shared
-          with the TUI: marking a terminal's notifications read here (its bell)
-          marks them read in both, and the TUI marks them read when it shows the
-          terminal.
+          with the TUI: showing a terminal here (or focusing its grid tile)
+          marks its notifications read in both, as the TUI does when it shows
+          the terminal.
         </p>
       </section>
       <section hidden={settingsSection !== "shortcuts"}>

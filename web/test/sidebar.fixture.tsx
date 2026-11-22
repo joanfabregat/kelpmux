@@ -1,8 +1,12 @@
 // The sidebar, a terminal's header and its notifications panel as main.tsx
 // wires them, with fixed terminals and notifications instead of SSH
-// (test/sidebar.mjs). The query string picks the case: `mode=light`,
-// `tabs=N`, `view=grid`, `folded=1`.
-import React, { useState } from "react";
+// (test/sidebar.mjs). Showing a terminal (or focusing its grid tile) marks
+// its notifications read through the same hook as main.tsx; terminal 1,
+// which has none, is focused first. Right-clicking a row opens that
+// terminal's notifications, as its menu's Notifications… item does, and
+// `window.notify(pane)` adds an unread notification. The query string picks
+// the case: `mode=light`, `tabs=N`, `view=grid`, `folded=1`.
+import React, { useEffect, useState } from "react";
 import { createRoot } from "react-dom/client";
 import type { Pane } from "../src/terminal/types";
 import { Sidebar } from "../src/Sidebar";
@@ -13,7 +17,13 @@ import { Icon } from "../src/status";
 import { basename } from "../src/format";
 import { sidebarFolded } from "../src/device";
 import { interfaceVariables, themeVariables } from "../src/appearance";
-import { paneState, unreadFor, type Notification } from "../src/state/model";
+import {
+  paneState,
+  readingPane,
+  unreadFor,
+  type Notification,
+} from "../src/state/model";
+import { useReadShown } from "../src/state/read";
 import "../src/styles/base.css";
 import "../src/styles/shell.css";
 import "../src/terminal/terminal.css";
@@ -79,7 +89,7 @@ function Fixture() {
   const device = useDevice();
   const phone = device.mode === "phone";
   const [notifications, setNotifications] = useState(initial);
-  const [current, setCurrent] = useState(2);
+  const [current, setCurrent] = useState(1);
   const [dialog, setDialog] = useState(0);
   const [saved, setSaved] = useState(query.get("folded") === "1");
   const [portraitFolded, setPortraitFolded] = useState(true);
@@ -100,6 +110,26 @@ function Fixture() {
     );
   };
   const notified = panes.find((p) => p.id === dialog);
+  const listShown = phone && phoneList;
+  const onScreen = listShown
+    ? []
+    : grid
+      ? panes.slice(0, 6).map((p) => p.id)
+      : [current];
+  useReadShown(
+    panes.find((p) => p.id === readingPane(0, current, onScreen)),
+    notifications,
+    acknowledge,
+  );
+  useEffect(() => {
+    let id = 100;
+    Object.assign(window, {
+      notify: (pane: number) => {
+        const added = note(id++, pane, "input_needed");
+        setNotifications((list) => [...list, added]);
+      },
+    });
+  }, []);
   const sidebar = (
     <Sidebar
       username="alice"
@@ -129,7 +159,7 @@ function Fixture() {
       onClose={() => {}}
       onPark={() => {}}
       onUnpark={() => {}}
-      onMenu={() => {}}
+      onMenu={(p) => setDialog(p.id)}
       onNew={() => {}}
       onState={() => {}}
       onDialog={() => {}}
@@ -141,7 +171,6 @@ function Fixture() {
       }
     />
   );
-  const listShown = phone && phoneList;
   return (
     <div
       className={`kelpmux-shell ${device.touch ? "touch" : ""} ${phone ? "phone" : ""} ${listShown ? "phone-home" : ""}`}
@@ -175,8 +204,10 @@ function Fixture() {
                 <button
                   type="button"
                   key={p.id}
-                  className="grid-pane live-tile"
+                  className={`grid-pane live-tile ${p.id === current ? "focused" : ""}`}
+                  aria-current={p.id === current ? "true" : undefined}
                   data-tile-pane={p.id}
+                  onClick={() => setCurrent(p.id)}
                 >
                   <header>
                     <PaneLabel pane={p} state={paneState(p, notifications)} />
