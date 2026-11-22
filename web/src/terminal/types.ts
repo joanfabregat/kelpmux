@@ -45,8 +45,6 @@ export type Pane = {
   status_since?: number;
   /** A plain shell's latest foreground command (KelpServer facts). */
   command?: ShellCommand | null;
-  /** The pane's colour index in the TUI's tab palette. */
-  palette?: number;
   /** Last terminal output (seconds; 0 when unknown). */
   last_activity?: number;
 };

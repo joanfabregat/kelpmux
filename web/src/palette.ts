@@ -1,6 +1,7 @@
-// The TUI's tab colours (crates/server/src/native/ui.rs PALETTE): each
-// KelpServer pane has a palette index, chosen in the TUI or by default from
-// its ID. The browser shows the same colour beside the terminal's name.
+// The TUI's tab colours (KelpMux src/native/ui.rs PALETTE). Each client
+// keeps its own colour per pane (ADR 0002): this browser stores the ones
+// picked here in its layout (`layout-store.ts`), and a pane without one
+// takes the TUI's default for its ID.
 
 /** Foreground xterm-256 colour of each TUI tab colour. */
 const PALETTE = [39, 42, 141, 214, 80, 205, 185, 209, 111];

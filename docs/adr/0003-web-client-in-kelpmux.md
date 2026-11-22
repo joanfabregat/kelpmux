@@ -25,7 +25,7 @@ ADR 0002 established the browser architecture this decision keeps: browser-termi
 - The public repository now carries a JavaScript dependency graph (React, Vite, TypeScript, Playwright for tests) and pinned third-party WASSH/OpenSSH WASM assets. CI builds the WASM core, fetches and verifies the SSH assets, installs locked npm dependencies without scripts, audits them, runs unit and WASM tests, type-checks, builds and embeds the result. The OpenSSL copy inside the upstream OpenSSH WASM archive still needs its own review before exposure beyond private networks.
 - Creating and closing terminals from the browser affects every client; this is shared state by nature. The browser's close goes through the server's existing confirmation step and returns the pane's lease first.
 - Renaming and splitting panes are not offered: the server has no rename operation and its layout is automatic. Adding them would be a protocol change for a later decision.
-- The bridge's `Web` request API is versioned (`api_version` 1, then 2 after the addendum below) and deliberately small. KelpHub's management bridge remains separate; the two share only the stream protocol and the terminal component.
+- The bridge's `Web` request API is versioned (`api_version` 1, then 2 after the addendum below, then 3 after the 2026-11-21 addendum) and deliberately small. KelpHub's management bridge remains separate; the two share only the stream protocol and the terminal component.
 
 ## Addendum: TUI feature parity in the browser
 
@@ -58,3 +58,7 @@ The owner asked for the web client to work on iPhone and iPad, Safari first. Thi
 ## Addendum 2026-11-20: terminals table with repository facts
 
 Joan approved (decision 132) one Terminals table replacing the Overview and Agents dialogs, showing for each terminal its agent and state, folder, running program and last activity. When a terminal's folder is a Git repository, the table shows the branch and, for a GitHub remote, `owner/repo` linking to GitHub. This narrows point 1: the web client shows read-only repository and branch facts read from `.git` by the bridge; it still has no GitHub API integration, Git operations, file browser or Git views.
+
+## Addendum 2026-11-21: bridge API version 3, per-browser tab colours
+
+KelpServer [ADR 0002](https://github.com/joanfabregat/kelpserver/blob/main/crates/server/docs/adr/0002-generic-session-server.md) makes client UI state per client, keyed by pane identity (server epoch plus pane ID; decision 144b), and step 3 removes the composed administration the bridge used. The bridge therefore drops `color` and moves to `api_version` 3: the browser keeps tab colours in its own layout, like order and parking, and a terminal without one takes the TUI's default for its pane ID. A colour picked in the browser no longer appears in the TUI, and the reverse. The remaining operations keep their names and replies but reach the server through the stream session API on a short-lived connection each: `new` is `spawn`, `close` takes the lease and sends `close`, `closed` and `restore` use the server's closed-session records (`closed_sessions`, `restore`), and `search`, `history` and `commands` use the stream's requests and pane list. This supersedes the `TabColorSet` sentence of the parity addendum.

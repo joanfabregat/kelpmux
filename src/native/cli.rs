@@ -22,7 +22,7 @@ pub const HELP: &str = "Owned native terminal workspaces (Linux):
   kelpmux stream-inspect [--workspace NAME] [PANE_ID ...]
   kelpmux server [--socket PATH] [--state-dir PATH] [--shell PATH] [--cwd PATH] [--size CxR] [--config PATH] [--startup-panes layout|none]
   kelpmux attach [--workspace NAME] [--socket PATH] [--takeover] [--current-client]
-  kelpmux ctl [--socket PATH] list|new|park ID|restore ID|focus ID|read ID|fullscreen ID|reclaim ID|close|shutdown
+  kelpmux ctl [--socket PATH] list|new|reclaim ID|shutdown
 
 start owns a detached server; ssh-entry starts or attaches. stop ends its processes.
 start and ssh-entry start the server without panes (--startup-panes none); the TUI
@@ -359,7 +359,7 @@ pub fn run(args: &[String]) -> Result<()> {
             );
             control(&options.socket, &["list".into()])
         }
-        "diagnostics" => control(&options.socket, &["diagnostics".into()]),
+        "diagnostics" => diagnostics(&options.socket),
         "templates" => {
             println!(
                 "{}",
@@ -399,7 +399,14 @@ pub fn run(args: &[String]) -> Result<()> {
     }
 }
 pub use kelpserver::native::connection::{connect, response};
+/// `kelpmux ctl`: same-user administration through the stream session API.
+/// Tab focus, parking and reading modes are each client's own UI state
+/// (ADR 0002), so `ctl` only lists, creates, reclaims and stops.
 fn control(path: &Path, args: &[String]) -> Result<()> {
+    use super::{
+        session::{Session, request_id},
+        stream::{Event, Request},
+    };
     let [command, rest @ ..] = args else {
         return Err("ctl requires a command".into());
     };
@@ -409,32 +416,72 @@ fn control(path: &Path, args: &[String]) -> Result<()> {
         }
         Ok(rest[0].parse()?)
     };
-    // Same-user administration of the server (protocol 58 `Command`). The
-    // composed actions it names are KelpServer's, not the TUI's.
-    use kelpserver::native::protocol::Action;
-    let message = match command.as_str() {
-        "list" if rest.is_empty() => ClientMessage::Inspect,
-        "diagnostics" if rest.is_empty() => ClientMessage::Diagnostics,
-        "new" if rest.is_empty() => ClientMessage::Command(Action::NewTab),
-        "park" => ClientMessage::Command(Action::Park(id()?)),
-        "restore" => ClientMessage::Command(Action::Restore(id()?)),
-        "focus" => ClientMessage::Command(Action::Focus(id()?)),
-        "reclaim" => ClientMessage::Command(Action::ClaimPane(id()?)),
-        "read" => ClientMessage::Command(Action::Read(id()?)),
-        "fullscreen" => ClientMessage::Command(Action::Fullscreen(id()?)),
-        "close" if rest.is_empty() => ClientMessage::Command(Action::CloseReading),
-        "shutdown" if rest.is_empty() => ClientMessage::Command(Action::Shutdown),
-        _ => return Err("invalid ctl command; see kelpmux --help".into()),
+    if command == "diagnostics" && rest.is_empty() {
+        return diagnostics(path);
+    }
+    if !matches!(
+        (command.as_str(), rest.is_empty()),
+        ("list" | "new" | "shutdown", true) | ("reclaim", false)
+    ) {
+        return Err("invalid ctl command; see kelpmux --help".into());
+    }
+    let mut session = Session::open(connect(path)?)?;
+    let value = match command.as_str() {
+        "list" => {
+            let update = session.sessions()?;
+            serde_json::json!({
+                "epoch": session.epoch,
+                "server_version": session.server_version,
+                "panes": update.panes,
+                "sessions": update.sessions,
+                "leases": update.leases,
+            })
+        }
+        "new" => {
+            session.require("pane-lifecycle")?;
+            let Event::Spawned { pane, .. } = session.call(Request::Spawn {
+                request: request_id("ctl-new"),
+                cwd: None,
+                argv: Vec::new(),
+                shell: None,
+            })?
+            else {
+                return Err("terminal server did not identify the created pane".into());
+            };
+            serde_json::json!({ "pane": pane })
+        }
+        "reclaim" => {
+            // Returns a pane another client sized to the base geometry.
+            let pane = id()?;
+            session.claim(pane)?;
+            session.release(pane)?;
+            serde_json::json!({ "pane": pane })
+        }
+        _ => {
+            session.require("server-lifecycle")?;
+            session.call(Request::Shutdown {
+                request: request_id("ctl-shutdown"),
+            })?;
+            // Return once the server has closed its sockets.
+            session.wait_closed(std::time::Duration::from_secs(5));
+            serde_json::json!({ "stopped": true })
+        }
     };
+    println!("{}", serde_json::to_string_pretty(&value)?);
+    Ok(())
+}
+/// `kelpmux diagnostics`: the server's same-user diagnostics report, a
+/// management request outside the stream.
+fn diagnostics(path: &Path) -> Result<()> {
     let mut socket = connect(path)?;
-    write_message(&mut socket, &message)?;
+    write_message(&mut socket, &ClientMessage::Diagnostics)?;
     match response(&mut socket)? {
-        state @ (ServerMessage::State { .. } | ServerMessage::Diagnostics(_)) => {
-            println!("{}", serde_json::to_string_pretty(&state)?);
+        report @ ServerMessage::Diagnostics(_) => {
+            println!("{}", serde_json::to_string_pretty(&report)?);
             Ok(())
         }
         ServerMessage::Error(error) => Err(error.into()),
-        _ => Err("native server did not acknowledge the management command".into()),
+        _ => Err("native server did not return diagnostics".into()),
     }
 }
 pub(crate) fn tty_size() -> Result<(u16, u16)> {

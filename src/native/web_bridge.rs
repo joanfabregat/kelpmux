@@ -9,11 +9,19 @@
 //! it only reads, for display, which repository and branch a pane's folder
 //! is in and which program a pane runs (`web_repos`), without running `git`
 //! or any other process.
-use super::{connection, history, protocol::*, status, stream, web_repos};
-// Management operations still use KelpServer's composed administration
-// (`Command` actions on the server's own UI state); see `close` and `color`.
-use crate::{Result, model::Kind};
-use kelpserver::native::protocol::Action;
+//!
+//! Its operations use KelpServer's stream session API on a separate,
+//! short-lived stream connection each (`session`), never the composed UI's
+//! administration.
+use super::{
+    connection,
+    protocol::*,
+    session::{Session, request_id},
+    status,
+    stream::{self, ClosedSession, Event, Request},
+    web_repos,
+};
+use crate::Result;
 use serde_json::{Value, json};
 use std::{
     io,
@@ -30,12 +38,12 @@ use std::{
 /// Version of the `Web` request API spoken by this bridge.
 /// Version 2 added `color`, `closed`, `restore`, `start` (with the
 /// `Workspace` notice while the server is stopped) and notification
-/// acknowledgements.
-pub const API_VERSION: u64 = 2;
+/// acknowledgements. Version 3 removed `color`: tab colours are each
+/// client's own state (ADR 0002), kept per browser.
+pub const API_VERSION: u64 = 3;
 /// Additive revision within [`API_VERSION`]: clients of the same version
 /// keep working and detect newer operations from `state`'s `operations`.
-/// Minor 1 added `repos` and `commands`.
-pub const API_MINOR: u64 = 1;
+pub const API_MINOR: u64 = 0;
 /// Largest accepted `Web` request, in bytes of JSON.
 const REQUEST_LIMIT: usize = 65536;
 /// Largest request identifier a browser can represent exactly.
@@ -97,28 +105,29 @@ fn pane(value: &Value) -> Result<u64> {
 }
 
 impl Api {
-    fn exchange(&self, message: ClientMessage) -> Result<ServerMessage> {
-        let mut socket = connection::connect(&self.socket)?;
+    /// A fresh stream connection to the same server process and epoch as
+    /// the relayed stream, offering `capability`.
+    fn session(&self, capability: &str) -> Result<Session> {
+        let socket = connection::connect(&self.socket)?;
         if Peer::read(&socket)? != self.peer {
             return Err("terminal server changed; reconnect before continuing".into());
         }
-        socket.set_read_timeout(Some(Duration::from_secs(5)))?;
-        socket.set_write_timeout(Some(Duration::from_secs(5)))?;
-        write_message(&mut socket, &message)?;
-        match read_message(&mut socket)?.ok_or("workspace disconnected")? {
-            ServerMessage::Error(error) => Err(error.into()),
-            result => Ok(result),
+        let session = Session::open(socket)?;
+        if session.epoch != self.runtime()?.0 {
+            return Err("terminal server changed; reconnect before continuing".into());
         }
+        session
+            .require(capability)
+            .map_err(|_| "this terminal server cannot do this for web clients")?;
+        Ok(session)
     }
-    fn command(&self, action: Action) -> Result<ServerMessage> {
-        self.exchange(ClientMessage::Command(action))
-    }
-    fn capabilities(&self) -> Result<Vec<String>> {
+    /// The relayed stream's epoch and capabilities.
+    fn runtime(&self) -> Result<(String, Vec<String>)> {
         let runtime = self.runtime.lock().map_err(|_| "runtime unavailable")?;
         if runtime.epoch.is_empty() {
             return Err("terminal handshake is incomplete".into());
         }
-        Ok(runtime.capabilities.clone())
+        Ok((runtime.epoch.clone(), runtime.capabilities.clone()))
     }
     fn request(&mut self, method: &str, p: &Value) -> Result<Value> {
         match method {
@@ -127,7 +136,7 @@ impl Api {
                 "api_minor": API_MINOR,
                 "workspace": self.state.file_name().unwrap_or_default().to_string_lossy(),
                 "version": env!("CARGO_PKG_VERSION"),
-                "server_capabilities": self.capabilities()?,
+                "server_capabilities": self.runtime()?.1,
                 "operations": OPERATIONS,
             })),
             "new" => self.spawn(p),
@@ -137,56 +146,59 @@ impl Api {
                     return Err("closing a pane requires explicit confirmation".into());
                 }
                 // This explicitly confirmed same-user action may close a pane
-                // another client is using: return its lease to the base
-                // geometry first, then close it through the server's own
-                // confirmation step.
-                self.command(Action::ClaimPane(id))?;
-                self.command(Action::ClosePaneRequest(id))?;
-                Ok(serde_json::to_value(
-                    self.command(Action::ClosePaneConfirm(id))?,
-                )?)
+                // another client is using: take its lease first (the server
+                // refuses to close a pane another connection leases).
+                let mut session = self.session("pane-lifecycle")?;
+                session.claim(id)?;
+                session.call(Request::Close {
+                    request: request_id("web-close"),
+                    pane: id,
+                })?;
+                Ok(json!({ "pane": id }))
             }
             "search" => {
                 let query = p["query"].as_str().ok_or("search query required")?;
                 if query.is_empty() || query.len() > 256 || query.chars().any(char::is_control) {
                     return Err("search must be 1–256 bytes without control characters".into());
                 }
-                Ok(serde_json::to_value(self.exchange(
-                    ClientMessage::SearchPane {
-                        pane: pane(p)?,
+                let id = pane(p)?;
+                let Event::Search { results, .. } =
+                    self.session("pane-history")?.call(Request::Search {
+                        request: request_id("web-search"),
+                        panes: vec![id],
                         query: query.to_owned(),
                         limit: 64,
-                    },
-                )?)?)
+                    })?
+                else {
+                    return Err("terminal server did not answer the search".into());
+                };
+                let (hits, truncated) = results
+                    .into_iter()
+                    .find(|result| result.pane == id)
+                    .map_or((Vec::new(), false), |result| {
+                        (result.hits, result.truncated)
+                    });
+                Ok(json!({ "PaneSearch": { "pane": id, "hits": hits, "truncated": truncated } }))
             }
             "history" => {
                 let start = p["start"].as_i64().unwrap_or(-200).clamp(-100_000, 0) as i32;
                 let limit = p["limit"].as_u64().unwrap_or(200).min(200) as usize;
-                Ok(serde_json::to_value(self.exchange(
-                    ClientMessage::History {
+                let Event::History { pane, lines, .. } =
+                    self.session("pane-history")?.call(Request::History {
+                        request: request_id("web-history"),
                         pane: pane(p)?,
                         start,
                         limit,
-                    },
-                )?)?)
+                    })?
+                else {
+                    return Err("terminal server did not return history".into());
+                };
+                Ok(json!({ "History": { "pane": pane, "lines": lines } }))
             }
             "status" => {
                 let mut value = serde_json::to_value(self.monitor.poll(true))?;
                 value["refreshing"] = json!(self.monitor.refreshing());
                 Ok(value)
-            }
-            "color" => {
-                // The TUI's tab colour: an index into its palette. Shared
-                // workspace state, like the TUI's own picker.
-                let color = p["color"]
-                    .as_u64()
-                    .filter(|&c| c < 9)
-                    .ok_or("tab color must be a palette index from 0 to 8")?;
-                self.command(Action::TabColorSet {
-                    pane: pane(p)?,
-                    color: color as u8,
-                })?;
-                Ok(json!({}))
             }
             "start" => Err("the workspace server is already running".into()),
             "repos" => {
@@ -211,9 +223,8 @@ impl Api {
     /// table. Process identities come from the server, never the browser;
     /// only program names are returned, never arguments.
     fn commands(&self) -> Result<Value> {
-        let ServerMessage::State { panes, .. } = self.exchange(ClientMessage::Inspect)? else {
-            return Err("terminal server did not describe its panes".into());
-        };
+        let mut session = self.session("pane-lifecycle")?;
+        let panes = session.update()?.panes;
         let proc_root = Path::new("/proc");
         let commands: serde_json::Map<String, Value> = panes
             .iter()
@@ -228,99 +239,76 @@ impl Api {
             .collect();
         Ok(json!({ "commands": commands }))
     }
+    /// The server's closed-session records, newest first (at most 256).
+    fn records(session: &mut Session) -> Result<Vec<ClosedSession>> {
+        match session.call(Request::ClosedSessions {
+            request: request_id("web-closed"),
+        })? {
+            Event::ClosedSessions { records, .. } => Ok(records),
+            _ => Err("terminal server did not list closed terminals".into()),
+        }
+    }
     /// Recently closed terminals and previous runs, the TUI's Recovery list:
     /// this workspace's first, newest first within each group, with the
     /// restore actions each entry offers.
     fn closed(&self) -> Result<Value> {
         let current = self.workspace_name();
-        let mut entries = history::collect(&self.state);
-        entries.sort_by_key(|e| {
+        let mut records = Self::records(&mut self.session("closed-sessions")?)?;
+        records.sort_by_key(|r| {
             (
-                e.workspace != current,
-                e.reason != "Closed",
-                std::cmp::Reverse(e.closed_at),
+                r.record.workspace != current,
+                r.record.reason != "Closed",
+                std::cmp::Reverse(r.record.closed_at),
             )
         });
-        let entries = entries
+        let entries = records
             .iter()
-            .map(|entry| {
-                let mut value = serde_json::to_value(entry)?;
-                value["choices"] = json!(choices(entry));
+            .map(|record| {
+                let mut value = serde_json::to_value(&record.record)?;
+                value["choices"] = json!(choices(record));
                 Ok(value)
             })
             .collect::<Result<Vec<_>>>()?;
         Ok(json!({ "workspace": current, "entries": entries }))
     }
-    /// Reopens a closed terminal in a new pane: `resume` reopens an agent
-    /// conversation, `restart` reruns a shell's last program and `folder`
-    /// opens a shell in its folder. The command line comes from the server's
-    /// own history entry, never from the browser. An agent conversation that
-    /// is already open is returned instead of started twice.
+    /// Reopens a closed terminal through the server's `restore`: `resume`
+    /// reopens an agent conversation, `restart` reruns a shell's last
+    /// program and `folder` opens a shell in its folder. The command line
+    /// comes from the server's own record, never from the browser. An agent
+    /// conversation that is already open is returned instead of started
+    /// twice.
     fn restore(&self, p: &Value) -> Result<Value> {
         if p["confirmed"] != true {
             return Err("restoring a closed terminal requires explicit confirmation".into());
-        }
-        if !self.capabilities()?.iter().any(|c| c == "pane-spawn") {
-            return Err("this terminal server cannot create panes for web clients".into());
         }
         let key = p["key"].as_str().ok_or("closed entry required")?;
         let choice = p["choice"].as_str().ok_or("restore choice required")?;
         let request = p["request"]
             .as_str()
             .ok_or("restore request identity required")?;
-        let entry = history::collect(&self.state)
+        let mut session = self.session("closed-sessions")?;
+        // `restore` addresses a record of the server's latest list.
+        let record = Self::records(&mut session)?
             .into_iter()
-            .find(|entry| entry.key == key)
+            .find(|record| record.record.key == key)
             .ok_or("this closed terminal is no longer listed")?;
-        if !choices(&entry).contains(&choice) {
+        if !choices(&record).contains(&choice) {
             return Err("choose a restore action this entry offers".into());
         }
-        if entry.session_id.is_some() {
-            if let ServerMessage::State { panes, .. } = self.exchange(ClientMessage::Inspect)? {
-                if let Some(open) = panes.iter().find(|pane| {
-                    !pane.dead && pane.kind == entry.kind && pane.session_id == entry.session_id
-                }) {
-                    return Ok(json!({ "pane": open.id, "existing": true }));
-                }
-            }
-        }
-        let argv = match choice {
-            "resume" => resume_argv(&entry),
-            "restart" => entry.argv.clone(),
-            _ => vec![],
-        };
-        let original = PathBuf::from(&entry.cwd);
-        let cwd = if original.is_absolute() && original.is_dir() {
-            original
-        } else if argv.is_empty() {
-            home()?
-        } else {
-            // Never resume or rerun a program somewhere it did not run.
-            return Err("the original folder no longer exists".into());
-        };
-        let ServerMessage::SpawnedPane {
-            request: echoed,
-            pane,
-        } = self.exchange(ClientMessage::SpawnPane {
+        let Event::Restored { pane, existing, .. } = session.call(Request::Restore {
             request: request.to_owned(),
-            cwd,
-            argv,
+            record: key.to_owned(),
+            rerun: choice == "restart",
         })?
         else {
             return Err("terminal server did not identify the restored pane".into());
         };
-        if echoed != request {
-            return Err("pane creation identity mismatch".into());
-        }
-        Ok(json!({ "pane": pane, "existing": false }))
+        Ok(json!({ "pane": pane, "existing": existing }))
     }
-    /// Starts a shell in a new pane through the server's structured
-    /// `SpawnPane` request. The browser supplies no command line; only an
-    /// optional absolute working directory.
+    /// Starts a shell in a new pane through the stream's `spawn` request.
+    /// The browser supplies no command line; only an optional absolute
+    /// working directory. A retry with the same request returns the same pane.
     fn spawn(&self, p: &Value) -> Result<Value> {
-        if !self.capabilities()?.iter().any(|c| c == "pane-spawn") {
-            return Err("this terminal server cannot create panes for web clients".into());
-        }
         let request = p["request"]
             .as_str()
             .ok_or("new pane request identity required")?;
@@ -332,20 +320,15 @@ impl Api {
         if !cwd.is_absolute() || !cwd.is_dir() {
             return Err("cwd must be an existing absolute directory".into());
         }
-        let ServerMessage::SpawnedPane {
-            request: echoed,
-            pane,
-        } = self.exchange(ClientMessage::SpawnPane {
+        let Event::Spawned { pane, .. } = self.session("pane-lifecycle")?.call(Request::Spawn {
             request: request.to_owned(),
-            cwd,
+            cwd: Some(cwd),
             argv: vec![],
+            shell: None,
         })?
         else {
             return Err("terminal server did not identify the created pane".into());
         };
-        if echoed != request {
-            return Err("pane creation identity mismatch".into());
-        }
         Ok(json!({ "pane": pane }))
     }
     fn workspace_name(&self) -> String {
@@ -359,8 +342,8 @@ impl Api {
 
 /// Bridge operations, reported by `state`.
 const OPERATIONS: &[&str] = &[
-    "state", "new", "close", "search", "history", "status", "color", "closed", "restore", "start",
-    "repos", "commands",
+    "state", "new", "close", "search", "history", "status", "closed", "restore", "start", "repos",
+    "commands",
 ];
 /// Most panes whose foreground program one `commands` call reports.
 const MAX_COMMAND_PANES: usize = 128;
@@ -369,31 +352,14 @@ const MAX_COMMAND_PANES: usize = 128;
 /// names them: an agent resumes its conversation (or opens the agent's own
 /// picker when the conversation is unknown), a shell whose last program is
 /// known can rerun it, and every shell can reopen its folder.
-fn choices(entry: &history::Entry) -> Vec<&'static str> {
-    if entry.kind.is_some() {
+fn choices(record: &ClosedSession) -> Vec<&'static str> {
+    if record.record.kind.is_some() {
         vec!["resume"]
-    } else if entry.previous_command().is_some() {
+    } else if record.rerun.is_some() {
         vec!["restart", "folder"]
     } else {
         vec!["folder"]
     }
-}
-
-/// The trusted command that resumes an agent conversation, as argv.
-fn resume_argv(entry: &history::Entry) -> Vec<String> {
-    let mut argv: Vec<String> = match entry.kind {
-        Some(Kind::Codex) => vec!["codex".into(), "resume".into()],
-        Some(Kind::Claude) => vec!["claude".into(), "--resume".into()],
-        None => return vec![],
-    };
-    if let Some(id) = entry
-        .session_id
-        .as_deref()
-        .filter(|id| crate::session_id(id))
-    {
-        argv.push(id.into());
-    }
-    argv
 }
 
 fn home() -> Result<PathBuf> {
@@ -476,64 +442,21 @@ fn start(socket: &Path, state: &Path, params: &Value) -> Result<Value> {
 /// Creates one shell in a server that started without panes and still has
 /// none. A server that created its own startup tabs is left alone.
 fn first_shell(socket: &Path) -> Result<()> {
-    let mut connection = connection::connect(socket)?;
-    connection.set_read_timeout(Some(Duration::from_secs(5)))?;
-    connection.set_write_timeout(Some(Duration::from_secs(5)))?;
-    write_message(
-        &mut connection,
-        &ClientMessage::Stream(stream::Request::Hello {
-            version: stream::VERSION,
-        }),
-    )?;
-    let mut next = || -> Result<stream::Event> {
-        match read_message::<ServerMessage>(&mut connection)? {
-            Some(ServerMessage::Stream(stream::Event::Error { message, .. }))
-            | Some(ServerMessage::Error(message)) => Err(message.into()),
-            Some(ServerMessage::Stream(event)) => Ok(event),
-            Some(_) => Err("unexpected reply from the terminal server".into()),
-            None => Err("the terminal server disconnected".into()),
-        }
-    };
-    let stream::Event::Welcome {
-        startup_panes,
-        capabilities,
-        ..
-    } = next()?
-    else {
-        return Err("the terminal server did not welcome the stream".into());
-    };
-    if startup_panes != Some(stream::StartupPanes::None)
-        || !capabilities.iter().any(|c| c == "pane-lifecycle")
-    {
+    let mut session = Session::open(connection::connect(socket)?)?;
+    if session.startup_panes != Some(stream::StartupPanes::None) || !session.has("pane-lifecycle") {
         return Ok(());
     }
     // The first update lists the panes that exist.
-    loop {
-        if let stream::Event::Update(update) = next()? {
-            if !update.panes.is_empty() {
-                return Ok(());
-            }
-            break;
-        }
+    if !session.update()?.panes.is_empty() {
+        return Ok(());
     }
-    write_message(
-        &mut connection,
-        &ClientMessage::Stream(stream::Request::Spawn {
-            request: "web-start".into(),
-            cwd: None,
-            argv: Vec::new(),
-            shell: None,
-        }),
-    )?;
-    loop {
-        match read_message::<ServerMessage>(&mut connection)? {
-            Some(ServerMessage::Stream(stream::Event::Spawned { .. })) => return Ok(()),
-            Some(ServerMessage::Stream(stream::Event::Error { message, .. }))
-            | Some(ServerMessage::Error(message)) => return Err(message.into()),
-            Some(_) => {}
-            None => return Err("the terminal server disconnected".into()),
-        }
-    }
+    session.call(Request::Spawn {
+        request: "web-start".into(),
+        cwd: None,
+        argv: Vec::new(),
+        shell: None,
+    })?;
+    Ok(())
 }
 
 /// Serves the browser while the workspace is not running: answers its hello
@@ -748,6 +671,7 @@ pub fn run(socket: &Path, state: &Path) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::model::Kind;
     fn args(values: &[&str]) -> Vec<String> {
         values.iter().map(|value| (*value).into()).collect()
     }
@@ -797,8 +721,8 @@ mod tests {
             assert!(paths(&args(values)).is_err());
         }
     }
-    fn entry(kind: Option<Kind>, session: Option<&str>, argv: &[&str]) -> history::Entry {
-        history::Entry {
+    fn record(kind: Option<Kind>, session: Option<&str>, argv: &[&str]) -> ClosedSession {
+        super::super::history::Entry {
             key: "k".into(),
             workspace: "main".into(),
             pane: 1,
@@ -810,18 +734,19 @@ mod tests {
             closed_at: Some(1),
             reason: "Closed".into(),
         }
+        .into()
     }
     #[test]
-    fn restore_choices_and_commands_follow_the_tui() {
-        let codex = entry(Some(Kind::Codex), Some("abc-123"), &[]);
-        assert_eq!(choices(&codex), ["resume"]);
-        assert_eq!(resume_argv(&codex), ["codex", "resume", "abc-123"]);
-        let claude = entry(Some(Kind::Claude), Some("x y; rm"), &[]);
-        // An invalid conversation identity opens the agent's own picker.
-        assert_eq!(resume_argv(&claude), ["claude", "--resume"]);
-        let shell = entry(None, None, &["htop", "-d", "5"]);
+    fn restore_choices_follow_the_tui() {
+        // An agent resumes, even with an unknown conversation (the agent's
+        // own picker); a shell reruns its last program or opens its folder.
+        assert_eq!(
+            choices(&record(Some(Kind::Codex), Some("abc-123"), &[])),
+            ["resume"]
+        );
+        assert_eq!(choices(&record(Some(Kind::Claude), None, &[])), ["resume"]);
+        let shell = record(None, None, &["htop", "-d", "5"]);
         assert_eq!(choices(&shell), ["restart", "folder"]);
-        assert!(resume_argv(&shell).is_empty());
-        assert_eq!(choices(&entry(None, None, &[])), ["folder"]);
+        assert_eq!(choices(&record(None, None, &[])), ["folder"]);
     }
 }
