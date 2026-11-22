@@ -193,6 +193,7 @@ fn management_uses_the_stream_session_api_and_validates_arguments() {
                 recovery_pending: false,
                 limits: None,
                 notification_run: None,
+                upload_limits: None,
             }),
         )
         .unwrap();
@@ -299,6 +300,7 @@ fn a_server_without_the_session_api_is_refused_before_raw_mode() {
             recovery_pending: false,
             limits: None,
             notification_run: None,
+            upload_limits: None,
         },
     );
     let mut tty = Pty::spawn(&path, 80, 24);

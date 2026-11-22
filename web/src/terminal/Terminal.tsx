@@ -139,6 +139,7 @@ export function Terminal({
   stickyCtrl = false,
   onCtrlUsed,
   interceptText,
+  onFiles,
 }: {
   pane: Pane;
   store: Store;
@@ -162,6 +163,9 @@ export function Terminal({
   onCtrlUsed?: () => void;
   /** Sees text typed without a key event first; true consumes it. */
   interceptText?: (text: string) => boolean;
+  /** Files pasted from the clipboard (an image, a screenshot) without
+   * text: the application may upload them instead of pasting text. */
+  onFiles?: (files: File[]) => void;
 }) {
   const touchKeyboardRef = useRef(touchKeyboard);
   touchKeyboardRef.current = touchKeyboard;
@@ -230,8 +234,11 @@ export function Terminal({
       } else input.current?.blur();
     };
     const typed = (event: Event) => {
-      const { pane: id, bytes, paste } = (event as CustomEvent).detail || {};
+      const detail = (event as CustomEvent).detail || {};
+      const { pane: id, bytes, paste } = detail;
       if (id !== pane.id || typeof bytes !== "string" || !bytes) return;
+      // Tells the sender that a mounted terminal took the input.
+      detail.handled = true;
       send(bytes, !!paste);
     };
     store.events.addEventListener("terminal-keyboard", keyboard);
@@ -1110,7 +1117,10 @@ export function Terminal({
         }}
         onPaste={(e) => {
           e.preventDefault();
-          send(e.clipboardData.getData("text/plain"), true);
+          const text = e.clipboardData.getData("text/plain");
+          const files = Array.from(e.clipboardData.files || []);
+          if (!text && files.length && onFiles) onFiles(files);
+          else send(text, true);
         }}
         onCopy={(e) => {
           try {

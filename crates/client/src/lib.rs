@@ -96,6 +96,23 @@ pub struct PanePatch {
     pub changes: Vec<(usize, Cell)>,
 }
 pub use kelpclient_protocol::cell_valid;
+/// A client-chosen correlation identifier, as the server accepts them:
+/// 1–128 ASCII letters, digits, `-` or `_`.
+fn valid_request(value: &Value) -> bool {
+    value.as_str().is_some_and(|request| {
+        !request.is_empty()
+            && request.len() <= 128
+            && request
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
+    })
+}
+/// An upload directory or file path the client may paste into a shell: an
+/// absolute path of at most 4 KiB without control characters (a newline
+/// would run a command once pasted).
+pub fn valid_upload_path(path: &str) -> bool {
+    path.starts_with('/') && path.len() <= 4096 && !path.chars().any(char::is_control)
+}
 pub fn validate(snapshot: &PaneSnapshot) -> Result<()> {
     let screen = &snapshot.screen;
     if snapshot.pane == 0
@@ -273,6 +290,50 @@ impl Client {
                     || event["text"].as_str().is_none_or(|text| text.len() > 65536)
                 {
                     return Err("invalid clipboard event".into());
+                }
+            }
+            Some("upload_started") => {
+                if !valid_request(&event["request"])
+                    || event["batch"].as_u64().is_none()
+                    || event["dir"]
+                        .as_str()
+                        .is_none_or(|dir| !valid_upload_path(dir))
+                {
+                    return Err("invalid upload start".into());
+                }
+            }
+            Some("upload_progress") => {
+                if event["batch"].as_u64().is_none()
+                    || event["file_index"].as_u64().is_none_or(|i| i >= 4096)
+                    || event["received"].as_u64().is_none()
+                {
+                    return Err("invalid upload progress".into());
+                }
+            }
+            Some("upload_done") => {
+                let paths = event["paths"].as_array();
+                if !valid_request(&event["request"])
+                    || event["batch"].as_u64().is_none()
+                    || paths.is_none_or(|paths| {
+                        paths.len() > 4096
+                            || paths
+                                .iter()
+                                .any(|path| path.as_str().is_none_or(|p| !valid_upload_path(p)))
+                    })
+                {
+                    return Err("invalid upload result".into());
+                }
+            }
+            Some("upload_failed") => {
+                if event["batch"].as_u64().is_none()
+                    || event["message"].as_str().is_none_or(|m| m.len() > 4096)
+                {
+                    return Err("invalid upload failure".into());
+                }
+            }
+            Some("done") => {
+                if !valid_request(&event["request"]) {
+                    return Err("invalid request acknowledgement".into());
                 }
             }
             Some("lease") | Some("error") => {}

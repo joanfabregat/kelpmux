@@ -108,3 +108,30 @@ fn clipboard_events_are_bounded_ephemeral_messages() {
         assert!(client.accept(&event).is_err());
     }
 }
+
+#[test]
+fn upload_events_are_checked_before_their_paths_can_be_pasted() {
+    let mut client = Client::default();
+    for event in [
+        json!({"Stream":{"type":"upload_started","request":"u-1","batch":1,"dir":"/home/me/.cache/kelpserver/uploads/1-ab"}}),
+        json!({"Stream":{"type":"upload_progress","batch":1,"file_index":0,"received":262144}}),
+        json!({"Stream":{"type":"upload_done","request":"u-2","batch":1,"paths":["/up/1-ab/a b.png","/up/1-ab/it's.txt"]}}),
+        json!({"Stream":{"type":"upload_failed","batch":1,"message":"upload exceeds the declared size of file 0"}}),
+        json!({"Stream":{"type":"done","request":"u-3"}}),
+    ] {
+        assert!(client.accept(&event).is_ok(), "{event}");
+    }
+    for event in [
+        // A path with a newline would run a command once pasted.
+        json!({"Stream":{"type":"upload_done","request":"u-2","batch":1,"paths":["/up/a\nrm -rf ~"]}}),
+        json!({"Stream":{"type":"upload_done","request":"u-2","batch":1,"paths":["relative.txt"]}}),
+        json!({"Stream":{"type":"upload_done","request":"u 2","batch":1,"paths":[]}}),
+        json!({"Stream":{"type":"upload_started","request":"u-1","batch":-1,"dir":"/up"}}),
+        json!({"Stream":{"type":"upload_started","request":"u-1","batch":1,"dir":"/up/\u{1b}[2J"}}),
+        json!({"Stream":{"type":"upload_progress","batch":1,"file_index":0}}),
+        json!({"Stream":{"type":"upload_failed","batch":1}}),
+        json!({"Stream":{"type":"done","request":""}}),
+    ] {
+        assert!(client.accept(&event).is_err(), "{event}");
+    }
+}
