@@ -210,6 +210,29 @@
 .upload-dialog .confirm-buttons {
   margin-top: var(--s2);
 }
+.upload-files li {
+  flex-wrap: wrap;
+  align-items: center;
+}
+.upload-files li progress {
+  flex-basis: 100%;
+  width: 100%;
+  height: 4px;
+  accent-color: var(--accent);
+}
+.upload-paths li .mono {
+  flex: 1;
+  min-width: 0;
+  font-family: var(--font-mono);
+}
+.upload-dialog .notice {
+  margin: 0;
+}
+/* A terminal (or grid tile) under files being dragged. */
+.grid-pane.drop-target {
+  outline: 2px dashed var(--accent);
+  outline-offset: -3px;
+}
 
 /* ───── Toasts ───── */
 .toast-region {

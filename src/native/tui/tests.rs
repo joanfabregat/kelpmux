@@ -57,6 +57,7 @@ fn welcome(client: u64, epoch: &str, capabilities: Vec<String>) -> Event {
         recovery_pending: false,
         limits: None,
         notification_run: None,
+        upload_limits: None,
     }
 }
 fn update(panes: Vec<PaneInfo>) -> Update {
@@ -134,6 +135,7 @@ fn welcomed(document: Document, options: Options, extras: Extras) -> Controller 
             recovery_pending: extras.recovery_pending,
             limits: extras.limits,
             notification_run: extras.notification_run,
+            upload_limits: None,
         })
         .unwrap();
     controller

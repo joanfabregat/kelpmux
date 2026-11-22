@@ -106,6 +106,20 @@ import {
   type InputMode,
 } from "./terminal/touch-keys";
 import { chime, desktopAlert, freshNotifications, newestId } from "./alerts";
+import {
+  UploadDialog,
+  dragHasFiles,
+  droppedFiles,
+  loadUploadDestination,
+  saveUploadDestination,
+  type UploadDrop,
+} from "./Upload";
+import {
+  pastedPaths,
+  readUploadLimits,
+  type UploadLimits,
+  type UploadTransport,
+} from "./terminal/uploads";
 
 /** Grid tiles per page. The stream allows ten subscriptions per connection;
  * eight leaves room for popup windows sharing the connection. */
@@ -120,6 +134,29 @@ const store: Store = {
   closing: new Set(),
   session: null,
 };
+/** Upload requests go out on the shared stream; their events arrive as
+ * `upload-event`s on the store (see `event` in App). */
+const uploadTransport: UploadTransport = {
+  send(type, params) {
+    if (!store.session) throw Error("The SSH connection is closed");
+    store.session.request(type, params);
+  },
+  listen(handler) {
+    const listener = (event: Event) => handler((event as CustomEvent).detail);
+    store.events.addEventListener("upload-event", listener);
+    return () => store.events.removeEventListener("upload-event", listener);
+  },
+};
+/** Stream events that belong to an upload (and its correlated replies). */
+function isUploadEvent(e: any) {
+  return (
+    typeof e.type === "string" &&
+    (e.type.startsWith("upload_") ||
+      (["done", "error"].includes(e.type) &&
+        typeof e.request === "string" &&
+        e.request.startsWith("upload-")))
+  );
+}
 const storage = {
   get(key: string) {
     try {
@@ -364,6 +401,16 @@ function App() {
     touch = device.touch;
   const view: SessionMode = phone ? "single" : savedView;
   /** The phone shows its terminal list (its home screen). */
+  /** Uploads: the server's capability and limits (from its Welcome), the
+   * drop being reviewed or uploaded, the terminal under dragged files and
+   * this browser's default destination folder. */
+  const [serverUploads, setServerUploads] = useState(false),
+    [uploadLimits, setUploadLimits] = useState<UploadLimits | null>(null),
+    [uploadDrop, setUploadDrop] = useState<UploadDrop | null>(null),
+    [dropPane, setDropPane] = useState(0),
+    [uploadDestination, setUploadDestination] = useState(loadUploadDestination);
+  const filePicker = useRef<HTMLInputElement>(null),
+    pickerPane = useRef<Pane | null>(null);
   const [phoneList, setPhoneList] = useState(true);
   const [inputMode, setInputMode] = useState<InputMode>("reading"),
     [ctrlArmed, setCtrlArmed] = useState(false),
@@ -443,7 +490,12 @@ function App() {
     }
   }
   const overlayOpen =
-    !!dialog || !!confirmAction || keyModal || !!findPane || !!menu;
+    !!dialog ||
+    !!confirmAction ||
+    keyModal ||
+    !!findPane ||
+    !!menu ||
+    !!uploadDrop;
   useEffect(() => {
     if (overlayWasOpen.current && !overlayOpen)
       requestAnimationFrame(() =>
@@ -452,6 +504,27 @@ function App() {
     overlayWasOpen.current = overlayOpen;
   }, [overlayOpen]);
   useEffect(() => () => dragCleanup.current?.(), []);
+  useEffect(() => {
+    // Files dropped outside a terminal must not make the browser open them
+    // in place of the client; only terminals accept them.
+    const outside = (event: DragEvent) => {
+      if (!dragHasFiles(event)) return;
+      event.preventDefault();
+      const target = event.target as Element | null;
+      if (event.dataTransfer && !target?.closest?.("[data-upload-pane]"))
+        event.dataTransfer.dropEffect = "none";
+      if (event.type === "drop") setDropPane(0);
+    };
+    const ended = () => setDropPane(0);
+    window.addEventListener("dragover", outside);
+    window.addEventListener("drop", outside);
+    window.addEventListener("dragend", ended);
+    return () => {
+      window.removeEventListener("dragover", outside);
+      window.removeEventListener("drop", outside);
+      window.removeEventListener("dragend", ended);
+    };
+  }, []);
   const fail = (e: any) => setError(e?.message || String(e));
   async function rpc(method: string, params: any = {}) {
     try {
@@ -1186,12 +1259,23 @@ function App() {
     }
     const e = event.Stream;
     if (!e) return;
+    if (isUploadEvent(e)) {
+      // The upload dialog shows its own errors.
+      store.events.dispatchEvent(
+        new CustomEvent("upload-event", { detail: e }),
+      );
+      return;
+    }
     if (e.type === "clipboard") {
       store.events.dispatchEvent(new CustomEvent("clipboard", { detail: e }));
       return;
     }
     if (e.type === "welcome") {
       setStopped("");
+      setServerUploads(
+        Array.isArray(e.capabilities) && e.capabilities.includes("uploads"),
+      );
+      setUploadLimits(readUploadLimits(e.upload_limits));
       authProgress.current.welcomed = true;
       setSignedInKey(store.session?.signedInKey || null);
       if (store.session) void afterSignIn(store.session);
@@ -1759,6 +1843,84 @@ function App() {
     window.addEventListener("pointerup", up);
   }
   const paneLabel = (p: Pane) => p.title || "shell";
+  /** Why files cannot be uploaded on this connection, if they cannot. */
+  const uploadUnavailable = !serverUploads
+    ? "This workspace's terminal server cannot receive files (it lacks the uploads capability). Restart the workspace with a current KelpServer to upload files to terminals."
+    : !operations.has("uploads")
+      ? "The server's kelpmux web-bridge is older than this web client and cannot relay uploads. Install matching versions."
+      : !uploadLimits
+        ? "The terminal server did not announce its upload limits."
+        : null;
+  /** Opens the upload dialog for files dropped, pasted or picked onto a
+   * terminal. */
+  function openUpload(pane: Pane, files: File[], folders: string[] = []) {
+    if ((!files.length && !folders.length && !uploadUnavailable) || uploadDrop)
+      return;
+    setMenu(null);
+    setUploadDrop({ pane, files, folders });
+  }
+  /** The terminal menu's Upload files…: a file picker (phones and tablets
+   * have no drag and drop). It opens inside the menu click's gesture. */
+  function pickFiles(pane: Pane) {
+    pickerPane.current = pane;
+    const picker = filePicker.current;
+    if (!picker) return;
+    picker.value = "";
+    picker.click();
+  }
+  /** Drop target props for a terminal (its view or grid tile). */
+  function dropProps(p: Pane) {
+    return {
+      "data-upload-pane": p.id,
+      onDragOver: (event: React.DragEvent) => {
+        if (!dragHasFiles(event) || uploadDrop) return;
+        event.preventDefault();
+        event.dataTransfer.dropEffect = "copy";
+        if (dropPane !== p.id) setDropPane(p.id);
+      },
+      onDragLeave: (event: React.DragEvent) => {
+        if (!event.currentTarget.contains(event.relatedTarget as Node))
+          setDropPane((pane) => (pane === p.id ? 0 : pane));
+      },
+      onDrop: (event: React.DragEvent) => {
+        if (!dragHasFiles(event)) return;
+        event.preventDefault();
+        event.stopPropagation();
+        setDropPane(0);
+        const { files, folders } = droppedFiles(event.dataTransfer);
+        openUpload(p, files, folders);
+      },
+    };
+  }
+  const panesNow = useRef(panes);
+  panesNow.current = panes;
+  /** Pastes uploaded paths into their terminal as a paste (bracketed when
+   * the pane has it on), without Enter. Null once pasted, else why not. */
+  function pasteUploaded(target: Pane, paths: string[]): string | null {
+    const paneId = target.id;
+    const pane = panesNow.current.find((p) => p.id === paneId);
+    if (!pane || pane.dead || store.closing?.has(paneId) || !store.session)
+      return `Terminal ${target.number} closed while the files were uploading.`;
+    const text = pastedPaths(paths);
+    if (new TextEncoder().encode(text).length > 65536)
+      return "The paths are longer than one 64 KiB paste.";
+    // A mounted terminal pastes through its own input (taking the pane at
+    // its size); otherwise take the pane and paste directly.
+    const detail: any = { pane: paneId, bytes: text, paste: true };
+    store.events.dispatchEvent(new CustomEvent("terminal-input", { detail }));
+    if (!detail.handled) {
+      store.session.control(paneId);
+      store.session.request("paste", {
+        pane: paneId,
+        bytes: Array.from(new TextEncoder().encode(text)),
+      });
+    }
+    toast(
+      `Pasted ${paths.length === 1 ? "the path" : `${paths.length} paths`} into terminal ${pane.number}`,
+      { key: "upload" },
+    );
+    return null;
+  }
   /** A terminal's context menu (right-click on its row or tile). */
   function menuItems(p: Pane): [string, () => void, boolean?][] {
     const isParked = parkedSet.has(p.id);
@@ -1798,6 +1960,10 @@ function App() {
       [
         unread ? `Notifications (${unread} unread)…` : "Notifications…",
         () => openNotifications(p),
+      ],
+      [
+        "Upload files…",
+        () => (uploadUnavailable ? openUpload(p, []) : pickFiles(p)),
       ],
       ["Close…", () => close(p)],
     ];
@@ -2023,7 +2189,8 @@ function App() {
             <div className="pane-grid tab-pane-layout">
               <section
                 key={focused.id}
-                className={`grid-pane first-row selected ${focused.status === "input_needed" ? "needs-input" : ""}`}
+                className={`grid-pane first-row selected ${focused.status === "input_needed" ? "needs-input" : ""} ${dropPane === focused.id ? "drop-target" : ""}`}
+                {...dropProps(focused)}
               >
                 {!phone && paneHeader(focused)}
                 <Terminal
@@ -2045,6 +2212,7 @@ function App() {
                   stickyCtrl={ctrlArmed}
                   onCtrlUsed={() => setCtrlArmed(false)}
                   interceptText={interceptText}
+                  onFiles={(files) => openUpload(focused, files)}
                 />
               </section>
             </div>
@@ -2078,7 +2246,8 @@ function App() {
                   <button
                     type="button"
                     key={p.id}
-                    className={`grid-pane live-tile ${state === "input_needed" ? "needs-input" : ""} ${p.id === active ? "focused" : ""} ${drag === p.id && drag !== drop ? "landing" : ""}`}
+                    className={`grid-pane live-tile ${state === "input_needed" ? "needs-input" : ""} ${p.id === active ? "focused" : ""} ${drag === p.id && drag !== drop ? "landing" : ""} ${dropPane === p.id ? "drop-target" : ""}`}
+                    {...dropProps(p)}
                     aria-current={p.id === active ? "true" : undefined}
                     aria-label={`Open terminal ${paneLabel(p)} (${stateLabel[state]})`}
                     data-tile-pane={p.id}
@@ -2140,6 +2309,42 @@ function App() {
           />
         )}
         {keyManagement}
+        <input
+          ref={filePicker}
+          type="file"
+          multiple
+          hidden
+          aria-hidden="true"
+          tabIndex={-1}
+          data-upload-picker
+          onChange={(event) => {
+            const files = Array.from(event.currentTarget.files || []);
+            const pane = pickerPane.current;
+            pickerPane.current = null;
+            if (pane && files.length) openUpload(pane, files);
+          }}
+        />
+        {uploadDrop && (
+          <UploadDialog
+            drop={uploadDrop}
+            unavailable={uploadUnavailable}
+            limits={uploadLimits}
+            transport={uploadTransport}
+            defaultDestination={uploadDestination}
+            onRememberDestination={(path) => {
+              saveUploadDestination(path);
+              setUploadDestination(path);
+            }}
+            onUploaded={(paths) => pasteUploaded(uploadDrop.pane, paths)}
+            onCopy={(text) =>
+              navigator.clipboard
+                ?.writeText(text)
+                .then(() => toast("Copied", { key: "copy" }))
+                .catch(fail)
+            }
+            onClose={() => setUploadDrop(null)}
+          />
+        )}
         {menu && (
           <PaneMenu
             pane={menu.pane}
@@ -2187,6 +2392,12 @@ function App() {
                   keyContent={keySettings("settings")}
                   preferences={preferences}
                   setPreferences={setPreferences}
+                  uploadDestination={uploadDestination}
+                  setUploadDestination={(path) => {
+                    saveUploadDestination(path);
+                    setUploadDestination(path);
+                  }}
+                  uploadUnavailable={uploadUnavailable}
                 />
               )}
               {dialog === "stats" && (

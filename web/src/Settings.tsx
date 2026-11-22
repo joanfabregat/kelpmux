@@ -6,6 +6,7 @@ const sections: readonly (readonly [string, string, IconName])[] = [
   ["theme", "Theme", "palette"],
   ["alerts", "Notifications", "bell"],
   ["shortcuts", "Keyboard", "book-open"],
+  ["uploads", "Uploads", "upload"],
   ["keys", "Security keys", "key-round"],
   ["connection", "Connection", "plug"],
 ];

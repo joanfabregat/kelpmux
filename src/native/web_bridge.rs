@@ -43,7 +43,10 @@ use std::{
 pub const API_VERSION: u64 = 3;
 /// Additive revision within [`API_VERSION`]: clients of the same version
 /// keep working and detect newer operations from `state`'s `operations`.
-pub const API_MINOR: u64 = 0;
+/// Minor 1 added `uploads`: the bridge relays the stream's upload requests
+/// (`upload_begin`, `upload_chunk`, `upload_finish`, `upload_cancel`) and
+/// their events, which a bridge of minor 0 cannot parse.
+pub const API_MINOR: u64 = 1;
 /// Largest accepted `Web` request, in bytes of JSON.
 const REQUEST_LIMIT: usize = 65536;
 /// Largest request identifier a browser can represent exactly.
@@ -340,10 +343,11 @@ impl Api {
     }
 }
 
-/// Bridge operations, reported by `state`.
+/// Bridge operations, reported by `state`. `uploads` is not a `Web` method:
+/// it tells the browser that this bridge relays the stream's upload requests.
 const OPERATIONS: &[&str] = &[
     "state", "new", "close", "search", "history", "status", "closed", "restore", "start", "repos",
-    "commands",
+    "commands", "uploads",
 ];
 /// Most panes whose foreground program one `commands` call reports.
 const MAX_COMMAND_PANES: usize = 128;
@@ -643,7 +647,10 @@ pub fn run(socket: &Path, state: &Path) -> Result<()> {
             // Every stream request is forwarded unchanged, notification
             // acknowledgements included: read flags belong to the workspace,
             // and the TUI marks a terminal's notifications read when it is
-            // shown, as the browser does.
+            // shown, as the browser does. Upload requests too: like typing
+            // into a pane, they write only what the bridge's own user can,
+            // and the server enforces their limits, destination rules and
+            // flow-control window on this one relayed connection.
             let sent = writer
                 .lock()
                 .map_err(|_| "bridge writer unavailable".into())

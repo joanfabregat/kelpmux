@@ -37,6 +37,9 @@ impl Server {
             .arg(root.join("state/control.sock"))
             .args(["--shell", "/bin/sh", "--cwd"])
             .arg(&root)
+            // Uploads without a destination land in the server's cache
+            // directory: keep them inside this disposable root.
+            .env("XDG_CACHE_HOME", root.join("cache"))
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::null())
@@ -735,10 +738,11 @@ fn repos_and_commands_report_read_only_facts_for_the_terminals_table() {
     welcome(&mut bridge);
     let state = bridge.web(1, "state", json!({}));
     assert_eq!(state["result"]["api_version"], 3);
-    assert_eq!(state["result"]["api_minor"], 0);
+    assert_eq!(state["result"]["api_minor"], 1);
     let operations = state["result"]["operations"].as_array().unwrap();
     assert!(operations.iter().any(|op| op == "repos"));
     assert!(operations.iter().any(|op| op == "commands"));
+    assert!(operations.iter().any(|op| op == "uploads"));
 
     let checkout = server.root.join("checkout/src");
     let repos = bridge.web(
@@ -808,5 +812,166 @@ fn step_two_session_requests_pass_through_the_bridge() {
     }}));
     bridge.expect("refused shell", |v| {
         v["Stream"]["type"] == "error" && v["Stream"]["request"] == "r3"
+    });
+}
+
+/// Files dropped onto a terminal in the browser reach the server through
+/// the relayed stream: the bridge forwards the upload requests and every
+/// event of the batch unchanged, keeping the server's flow-control window,
+/// and the files land where the shells run.
+#[test]
+fn uploads_are_relayed_end_to_end_with_flow_control() {
+    use base64::Engine as _;
+    let server = Server::start();
+    let mut bridge = Bridge::start(&server);
+    let welcome = welcome(&mut bridge);
+    assert!(
+        welcome["capabilities"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|c| c == "uploads"),
+        "{welcome}"
+    );
+    let limits = &welcome["upload_limits"];
+    let chunk = limits["max_chunk_bytes"].as_u64().unwrap() as usize;
+    let window = limits["max_chunks_in_flight"].as_u64().unwrap() as usize;
+    assert!(chunk > 0 && window > 0, "{welcome}");
+
+    // Into a destination folder: a file of several chunks, one with a name
+    // that needs shell quoting and an empty file (which needs no chunk).
+    let dest = server.root.join("dropped");
+    fs::create_dir(&dest).unwrap();
+    let big: Vec<u8> = (0..chunk * 3 + 17).map(|i| (i % 251) as u8).collect();
+    let files = [
+        ("photo.png", big.clone()),
+        ("it's here.txt", b"hello\n".to_vec()),
+        ("empty", Vec::new()),
+    ];
+    bridge.send(json!({"Stream": {
+        "type": "upload_begin",
+        "request": "upload-1-begin",
+        "files": files.iter().map(|(name, data)| json!({"name": name, "size": data.len()})).collect::<Vec<_>>(),
+        "dest": dest.to_str().unwrap(),
+    }}));
+    let started = bridge.expect("upload started", |v| {
+        v["Stream"]["type"] == "upload_started" && v["Stream"]["request"] == "upload-1-begin"
+    });
+    let batch = started["Stream"]["batch"].as_u64().unwrap();
+    let dir = PathBuf::from(started["Stream"]["dir"].as_str().unwrap());
+    assert_eq!(dir.parent(), Some(dest.as_path()), "{started}");
+
+    let chunks: Vec<(usize, u64, &[u8])> = files
+        .iter()
+        .enumerate()
+        .flat_map(|(index, (_, data))| {
+            data.chunks(chunk)
+                .enumerate()
+                .map(move |(n, part)| (index, (n * chunk) as u64, part))
+        })
+        .collect();
+    // Never more than the window unacknowledged; each progress allows one
+    // more chunk.
+    let mut sent = 0;
+    let mut acknowledged = 0;
+    let mut received = vec![0u64; files.len()];
+    while acknowledged < chunks.len() {
+        while sent < chunks.len() && sent - acknowledged < window {
+            let (index, offset, part) = chunks[sent];
+            bridge.send(json!({"Stream": {
+                "type": "upload_chunk",
+                "batch": batch,
+                "file_index": index,
+                "offset": offset,
+                "data": base64::engine::general_purpose::STANDARD.encode(part),
+            }}));
+            sent += 1;
+        }
+        let progress = bridge.expect("upload progress", |v| {
+            matches!(
+                v["Stream"]["type"].as_str(),
+                Some("upload_progress" | "upload_failed")
+            )
+        });
+        assert_eq!(progress["Stream"]["type"], "upload_progress", "{progress}");
+        assert_eq!(progress["Stream"]["batch"], batch);
+        let index = progress["Stream"]["file_index"].as_u64().unwrap() as usize;
+        assert_eq!(index, chunks[acknowledged].0);
+        received[index] = progress["Stream"]["received"].as_u64().unwrap();
+        acknowledged += 1;
+    }
+    assert_eq!(received[0], big.len() as u64);
+    assert_eq!(received[1], 6);
+
+    bridge.send(
+        json!({"Stream": {"type": "upload_finish", "request": "upload-1-finish", "batch": batch}}),
+    );
+    let done = bridge.expect("upload done", |v| {
+        v["Stream"]["type"] == "upload_done" && v["Stream"]["request"] == "upload-1-finish"
+    });
+    let paths: Vec<PathBuf> = done["Stream"]["paths"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|p| PathBuf::from(p.as_str().unwrap()))
+        .collect();
+    assert_eq!(
+        paths,
+        vec![
+            dir.join("photo.png"),
+            dir.join("it's here.txt"),
+            dir.join("empty")
+        ]
+    );
+    for (path, (_, data)) in paths.iter().zip(&files) {
+        assert_eq!(&fs::read(path).unwrap(), data, "{}", path.display());
+    }
+
+    // Without a destination the batch lands in the server's upload root;
+    // a cancel removes it and is acknowledged with `done`.
+    bridge.send(json!({"Stream": {
+        "type": "upload_begin",
+        "request": "upload-2-begin",
+        "files": [{"name": "later.bin", "size": 10}],
+    }}));
+    let started = bridge.expect("second upload started", |v| {
+        v["Stream"]["type"] == "upload_started" && v["Stream"]["request"] == "upload-2-begin"
+    });
+    let second = started["Stream"]["batch"].as_u64().unwrap();
+    let root_dir = PathBuf::from(started["Stream"]["dir"].as_str().unwrap());
+    assert!(root_dir.starts_with(server.root.join("cache")), "{started}");
+    assert!(root_dir.is_dir());
+    bridge.send(
+        json!({"Stream": {"type": "upload_cancel", "request": "upload-2-cancel", "batch": second}}),
+    );
+    bridge.expect("cancelled", |v| {
+        v["Stream"]["type"] == "done" && v["Stream"]["request"] == "upload-2-cancel"
+    });
+    assert!(!root_dir.exists());
+
+    // A chunk at the wrong offset fails the batch; refusals of a begin are
+    // errors correlated with its request.
+    bridge.send(json!({"Stream": {
+        "type": "upload_begin",
+        "request": "upload-3-begin",
+        "files": [{"name": "a", "size": 4}],
+    }}));
+    let started = bridge.expect("third upload started", |v| {
+        v["Stream"]["type"] == "upload_started" && v["Stream"]["request"] == "upload-3-begin"
+    });
+    let third = started["Stream"]["batch"].as_u64().unwrap();
+    bridge.send(json!({"Stream": {
+        "type": "upload_chunk", "batch": third, "file_index": 0, "offset": 2, "data": "YWI="
+    }}));
+    let failed = bridge.expect("upload failed", |v| v["Stream"]["type"] == "upload_failed");
+    assert_eq!(failed["Stream"]["batch"], third);
+    bridge.send(json!({"Stream": {
+        "type": "upload_begin",
+        "request": "upload-4-begin",
+        "files": [{"name": "a", "size": 1}],
+        "dest": "relative/dir",
+    }}));
+    bridge.expect("refused destination", |v| {
+        v["Stream"]["type"] == "error" && v["Stream"]["request"] == "upload-4-begin"
     });
 }

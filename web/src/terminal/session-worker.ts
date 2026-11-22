@@ -23,6 +23,127 @@ let host: View | undefined;
 let signingKey: { credentialId: string; label?: string } | undefined;
 let lastActivity = Date.now();
 const idleMs = 15 * 60 * 1000;
+/** Uploads (KelpServer `uploads`) belong to the one SSH connection all
+ * windows share: correlated upload requests by identifier (with the batch a
+ * finish or cancel names), and batches with the window that began them and
+ * their unacknowledged chunks. A view of `undefined` is a batch whose window
+ * left and is being cancelled. */
+const uploadRequests = new Map<string, { view?: View; batch?: number }>();
+const batches = new Map<number, { view?: View; inFlight: number }>();
+/** Chunks waiting for the connection's flow-control window: the server
+ * counts unacknowledged chunks per connection, whichever window sent them. */
+const queuedChunks: { batch: number; params: any }[] = [];
+let chunksInFlight = 0;
+let uploadSerial = 0;
+const uploadRequest = /^[A-Za-z0-9_-]{1,128}$/;
+function uploadWindow() {
+  const n = welcome?.upload_limits?.max_chunks_in_flight;
+  return Number.isSafeInteger(n) && n > 0 ? n : 1;
+}
+function flushChunks() {
+  while (ssh && queuedChunks.length && chunksInFlight < uploadWindow()) {
+    const { batch, params } = queuedChunks.shift()!;
+    const entry = batches.get(batch);
+    if (!entry?.view) continue;
+    entry.inFlight += 1;
+    chunksInFlight += 1;
+    ssh.request("upload_chunk", params);
+  }
+}
+/** The batch ended (done, failed or cancelled): the server drops its
+ * chunks still in flight without acknowledging them. */
+function settleBatch(batch: unknown) {
+  const entry = batches.get(batch as number);
+  if (!entry) return;
+  batches.delete(batch as number);
+  chunksInFlight = Math.max(0, chunksInFlight - entry.inFlight);
+  for (let i = queuedChunks.length - 1; i >= 0; i--)
+    if (queuedChunks[i].batch === batch) queuedChunks.splice(i, 1);
+  flushChunks();
+}
+function cancelBatch(batch: number) {
+  const entry = batches.get(batch);
+  if (!entry || !ssh) return;
+  entry.view = undefined;
+  const request = `upload-left-${++uploadSerial}`;
+  uploadRequests.set(request, { batch });
+  ssh.request("upload_cancel", { request, batch });
+}
+/** Routes an upload event to the window it belongs to. */
+function uploadEvent(value: any) {
+  const e = value.Stream;
+  let view: View | undefined;
+  if (e.type === "upload_started") {
+    view = uploadRequests.get(e.request)?.view;
+    uploadRequests.delete(e.request);
+    batches.set(e.batch, { view, inFlight: 0 });
+    // The window that began it left before it started.
+    if (!view || !views.has(view)) cancelBatch(e.batch);
+  } else if (e.type === "upload_progress") {
+    const entry = batches.get(e.batch);
+    if (entry) {
+      entry.inFlight = Math.max(0, entry.inFlight - 1);
+      chunksInFlight = Math.max(0, chunksInFlight - 1);
+      view = entry.view;
+      flushChunks();
+    }
+  } else if (e.type === "upload_failed") {
+    view = batches.get(e.batch)?.view;
+    settleBatch(e.batch);
+  } else {
+    // upload_done, done or error of a correlated upload request.
+    const entry = uploadRequests.get(e.request);
+    uploadRequests.delete(e.request);
+    view = entry?.view;
+    if (e.type === "upload_done") settleBatch(e.batch);
+    else if (entry?.batch !== undefined) settleBatch(entry.batch);
+  }
+  if (view) send(view, { type: "event", event: value });
+}
+function isUploadEvent(e: any) {
+  return (
+    [
+      "upload_started",
+      "upload_progress",
+      "upload_failed",
+      "upload_done",
+    ].includes(e.type) ||
+    (["done", "error"].includes(e.type) &&
+      typeof e.request === "string" &&
+      uploadRequests.has(e.request))
+  );
+}
+/** An upload request from a window; chunks wait for the window's turn. */
+function uploadFrom(view: View, type: string, params: any) {
+  if (!ssh) return;
+  if (type === "upload_chunk") {
+    const entry = batches.get(params.batch);
+    // A chunk of a batch that ended (or another window's) is dropped.
+    if (!entry || entry.view !== view) return;
+    if (queuedChunks.length >= 256)
+      throw Error("Too many upload chunks queued");
+    queuedChunks.push({ batch: params.batch, params });
+    flushChunks();
+    return;
+  }
+  if (typeof params.request !== "string" || !uploadRequest.test(params.request))
+    throw Error("Invalid upload request");
+  if (uploadRequests.has(params.request))
+    throw Error("Duplicate upload request");
+  if (type === "upload_begin") {
+    if (!Array.isArray(params.files) || params.files.length > 4096)
+      throw Error("Invalid upload files");
+    uploadRequests.set(params.request, { view });
+  } else {
+    if (batches.get(params.batch)?.view !== view)
+      throw Error("Unknown upload batch");
+    uploadRequests.set(params.request, { view, batch: params.batch });
+    if (type === "upload_cancel")
+      for (let i = queuedChunks.length - 1; i >= 0; i--)
+        if (queuedChunks[i].batch === params.batch) queuedChunks.splice(i, 1);
+  }
+  ssh.request(type, params);
+}
 function send(view: View, value: any) {
   if (views.has(view) && (view.ready || value.type === "closed"))
     view.port.postMessage(value);
@@ -47,6 +168,10 @@ function stop(message = "Signed out of all KelpMux windows.") {
   owners.clear();
   claiming.clear();
   screens.clear();
+  uploadRequests.clear();
+  batches.clear();
+  queuedChunks.length = 0;
+  chunksInFlight = 0;
   for (const view of views) {
     view.ready = false;
     send(view, { type: "closed", message });
@@ -68,6 +193,11 @@ function leave(view: View) {
     return;
   }
   views.delete(view);
+  // Its unfinished uploads would otherwise hold the connection's batches.
+  for (const [batch, entry] of batches)
+    if (entry.view === view) cancelBatch(batch);
+  for (const entry of uploadRequests.values())
+    if (entry.view === view) entry.view = undefined;
   for (const [pane, owner] of owners)
     if (owner === view) {
       owners.delete(pane);
@@ -102,6 +232,10 @@ function event(value: any) {
   }
   const e = value.Stream;
   if (!e) return;
+  if (isUploadEvent(e)) {
+    uploadEvent(value);
+    return;
+  }
   if (e.type === "welcome") {
     welcome = e;
     stopped = undefined;
@@ -346,6 +480,21 @@ async function message(view: View, data: any) {
         );
       view.subscribed = [...new Set<number>(panes)];
       subscribe();
+      return;
+    }
+    if (type.startsWith("upload_")) {
+      if (
+        ![
+          "upload_begin",
+          "upload_chunk",
+          "upload_finish",
+          "upload_cancel",
+        ].includes(type)
+      )
+        throw Error("Unsupported upload operation");
+      // An upload is deliberate, like typing: it keeps the session open.
+      lastActivity = Date.now();
+      uploadFrom(view, type, params);
       return;
     }
     if (type === "acknowledge") {

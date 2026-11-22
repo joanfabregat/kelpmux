@@ -9,6 +9,7 @@ import { FontPicker } from "./FontPicker";
 import { Icon } from "./status";
 import { shortcuts } from "./shortcuts";
 import type { Preferences } from "./layout-store";
+import { UploadSettings } from "./Upload";
 
 export type ConfigPanelProps = {
   store: Store;
@@ -22,6 +23,9 @@ export type ConfigPanelProps = {
   keyContent: React.ReactNode;
   preferences: Preferences;
   setPreferences: (preferences: Preferences) => void;
+  uploadDestination: string;
+  setUploadDestination: (path: string) => void;
+  uploadUnavailable: string | null;
 };
 
 /** Settings dialog body. Everything here is saved in this browser only;
@@ -38,6 +42,9 @@ export function ConfigPanel({
   keyContent,
   preferences,
   setPreferences,
+  uploadDestination,
+  setUploadDestination,
+  uploadUnavailable,
 }: ConfigPanelProps) {
   return (
     <Settings active={settingsSection} onChange={setSettingsSection}>
@@ -189,6 +196,13 @@ export function ConfigPanel({
           (its prefix and configuration file) are unchanged; this browser's
           tabs, grid and focus are separate from the TUI's.
         </p>
+      </section>
+      <section hidden={settingsSection !== "uploads"}>
+        <UploadSettings
+          destination={uploadDestination}
+          onChange={setUploadDestination}
+          unavailable={uploadUnavailable}
+        />
       </section>
       <section hidden={settingsSection !== "keys"}>{keyContent}</section>
       <section hidden={settingsSection !== "connection"}>

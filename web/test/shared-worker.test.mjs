@@ -4,7 +4,7 @@ import { readFileSync } from "node:fs";
 import { stripTypeScriptTypes } from "node:module";
 import vm from "node:vm";
 
-function harness({ welcome = true } = {}) {
+function harness({ welcome = true, extra = {} } = {}) {
   let now = 1000,
     tick;
   const calls = [],
@@ -47,7 +47,12 @@ function harness({ welcome = true } = {}) {
                 data: {
                   type: "host_event",
                   event: {
-                    Stream: { type: "welcome", client: 7, capabilities: [] },
+                    Stream: {
+                      type: "welcome",
+                      client: 7,
+                      capabilities: [],
+                      ...extra,
+                    },
                   },
                 },
               }),
@@ -415,4 +420,116 @@ test("a stopped workspace reaches every view and allows only state and start", a
   );
   await h.send(b, { type: "request", request: "input", params: { pane: 1 } });
   assert.notEqual(h.calls.at(-1).type, "input");
+});
+
+test("uploads go to the window that began them, within one connection-wide window", async () => {
+  const h = harness({
+    extra: {
+      capabilities: ["uploads"],
+      upload_limits: { max_chunks_in_flight: 2 },
+    },
+  });
+  const a = h.attach(),
+    b = h.attach();
+  await h.join(a);
+  await h.join(b);
+  const events = (view, type) =>
+    view.messages.filter((m) => m.event?.Stream?.type === type);
+  const host = (event) =>
+    h.send(a, { type: "host_event", event: { Stream: event } });
+  const sent = (type) => h.calls.filter((call) => call.type === type);
+  const request = (view, type, params) =>
+    h.send(view, { type: "request", request: type, params });
+
+  await request(a, "upload_begin", {
+    request: "upload-a-begin",
+    files: [{ name: "a", size: 9 }],
+  });
+  assert.equal(sent("upload_begin").length, 1);
+  await host({
+    type: "upload_started",
+    request: "upload-a-begin",
+    batch: 1,
+    dir: "/d",
+  });
+  assert.equal(events(a, "upload_started").length, 1);
+  assert.equal(events(b, "upload_started").length, 0, "another window's batch");
+
+  // Another window cannot send chunks for this batch.
+  await request(b, "upload_chunk", {
+    batch: 1,
+    file_index: 0,
+    offset: 0,
+    data: "YQ==",
+  });
+  assert.equal(sent("upload_chunk").length, 0);
+  for (const offset of [0, 1, 2])
+    await request(a, "upload_chunk", {
+      batch: 1,
+      file_index: 0,
+      offset,
+      data: "YQ==",
+    });
+  assert.equal(sent("upload_chunk").length, 2, "the connection's window");
+  await host({ type: "upload_progress", batch: 1, file_index: 0, received: 1 });
+  assert.equal(events(a, "upload_progress").length, 1);
+  assert.equal(events(b, "upload_progress").length, 0);
+  assert.equal(sent("upload_chunk").length, 3, "one more after each progress");
+
+  // A failure ends the batch: its unacknowledged chunks no longer count.
+  await host({ type: "upload_failed", batch: 1, message: "disk full" });
+  assert.equal(events(a, "upload_failed").length, 1);
+  await request(a, "upload_begin", {
+    request: "upload-a-second",
+    files: [{ name: "a", size: 9 }],
+  });
+  await host({
+    type: "upload_started",
+    request: "upload-a-second",
+    batch: 2,
+    dir: "/d",
+  });
+  for (const offset of [0, 1])
+    await request(a, "upload_chunk", {
+      batch: 2,
+      file_index: 0,
+      offset,
+      data: "YQ==",
+    });
+  assert.equal(sent("upload_chunk").length, 5);
+
+  // An upload refusal reaches only its window and keeps pane leases.
+  await request(a, "claim", { pane: 3 });
+  await request(b, "upload_begin", {
+    request: "upload-b-begin",
+    files: [{ name: "b", size: 1 }],
+  });
+  await host({
+    type: "error",
+    request: "upload-b-begin",
+    message: "too many batches",
+  });
+  assert.equal(events(b, "error").length, 1);
+  assert.equal(events(a, "error").length, 0);
+  assert.deepEqual(
+    a.messages.filter((m) => m.type === "owned").at(-1).panes,
+    [3],
+  );
+
+  // A window that leaves cancels its unfinished batches.
+  await request(b, "upload_begin", {
+    request: "upload-b-again",
+    files: [{ name: "b", size: 1 }],
+  });
+  await host({
+    type: "upload_started",
+    request: "upload-b-again",
+    batch: 7,
+    dir: "/d",
+  });
+  await h.send(b, { type: "leave" });
+  const cancel = sent("upload_cancel").at(-1);
+  assert.equal(cancel.params.batch, 7);
+  await host({ type: "done", request: cancel.params.request });
+  assert.equal(events(a, "done").length, 0);
 });
