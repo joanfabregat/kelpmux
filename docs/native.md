@@ -318,6 +318,12 @@ UI state lives in one private file per workspace, `tui-state.json`, in the works
 - `layout`: an epoch-independent template of the tabs (launch folder, shell, arguments, name, colour, parked). After a server restart, the TUI maps the template onto the new panes: by launch folder and arguments first, then plain shells in order. When every live pane is one of the server's untouched startup shells, missing template tabs are respawned in their folders.
 - `migrated`: whether the one-time migration ran.
 
+### Live sync between stream TUIs
+
+Stream TUIs attached to the same workspace follow each other's arrangement through this file; the server is not involved. Every 500 ms each TUI writes its pending changes and checks the file's identity (inode, size, modification and change times, one `lstat`). When another TUI replaced the file, it reloads it, merges its own unwritten changes on top (its changes win for the panes, order, settings or template it changed) and repaints. A change therefore shows in the other TUIs within about a second. A TUI recognizes its own writes and does not reload them.
+
+What syncs: the tab order, names, colours, parking and scratch marker of the current server run, the layout template and the settings. What stays per TUI: focus and focus history, open dialogs and help, reading mode and grid view, and the text selection. When another TUI parks the tab focused here (or turns it into the scratch terminal), focus moves as if it had been parked here: to the previously selected open tab, else the first. A tab restored elsewhere reappears where that TUI put it, without taking focus here. Settings changed elsewhere wait while a dialog or help is open here, because they can change the key bindings or the dialog being edited; they apply once it closes, unless a setting was changed here meanwhile, in which case the local settings win and are written.
+
 ### Migration from the composed TUI
 
 The first stream attach to a workspace migrates once. Settings come from the composed server's `workspace.json` UI section and its sidebar preference files; the template comes from its `tab-layout.json`. The tab order, parking and colours of the running server's panes are taken from the composed workspace. The migration only reads those files; the composed TUI keeps using them, so switching back with `--legacy` shows the composed server's own arrangement, which the stream TUI does not update.
@@ -352,4 +358,4 @@ The first stream attach to a workspace migrates once. Settings come from the com
 | Codex conversation picker | Dropped |
 | Grid shape picker | Not applicable: grid layout is automatic in both |
 
-Known differences that keep the stream TUI opt-in: two stream TUIs on one workspace share arrangement changes through the file only when they attach, not live; changes made in the stream TUI are not visible to composed TUIs and the reverse; a server started without a stream TUI still recreates its own startup tabs from `tab-layout.json`; and very large grids are limited by the stream's 10-pane, 100,000-cell subscription bound, so further panes show their header without content.
+Known differences that keep the stream TUI opt-in: changes made in the stream TUI are not visible to composed TUIs and the reverse; a server started without a stream TUI still recreates its own startup tabs from `tab-layout.json`; and very large grids are limited by the stream's 10-pane, 100,000-cell subscription bound, so further panes show their header without content.

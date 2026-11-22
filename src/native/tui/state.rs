@@ -13,6 +13,11 @@
 //! changed since their last write, prune panes that no longer exist and
 //! replace the file by an atomic rename, so concurrent TUIs do not discard
 //! each other's changes.
+//!
+//! Each TUI also follows the others live: it remembers the identity of the
+//! file version it last read or wrote (`Stamp`) and, when `poll` or `flush`
+//! finds another version, adopts it with its own pending changes merged on
+//! top, so local changes win for the fields they touched.
 use super::super::{lifecycle, protocol::PaneId, ui::UiConfig};
 use crate::Result;
 use serde::{Deserialize, Serialize};
@@ -232,15 +237,52 @@ fn check_private(path: &Path) -> Result<bool> {
     Ok(true)
 }
 
+/// The identity of one version of the state file. Every write creates a new
+/// file and renames it over the old one, so a new version has a new inode
+/// and change time; size and modification time guard against inode reuse.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct Stamp {
+    dev: u64,
+    ino: u64,
+    size: u64,
+    mtime: (i64, i64),
+    ctime: (i64, i64),
+}
+impl Stamp {
+    fn of(meta: &fs::Metadata) -> Self {
+        Self {
+            dev: meta.dev(),
+            ino: meta.ino(),
+            size: meta.size(),
+            mtime: (meta.mtime(), meta.mtime_nsec()),
+            ctime: (meta.ctime(), meta.ctime_nsec()),
+        }
+    }
+    /// The stamp of the file at `path`, `None` when there is none.
+    fn at(path: &Path) -> Result<Option<Self>> {
+        match fs::symlink_metadata(path) {
+            Ok(meta) => Ok(Some(Self::of(&meta))),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+            Err(error) => Err(error.into()),
+        }
+    }
+}
+
 /// Reads the document, or the default when there is none yet.
 pub fn load(path: &Path) -> Result<Document> {
+    read(path).map(|(document, _)| document)
+}
+
+/// Reads the document and the stamp of the version read.
+fn read(path: &Path) -> Result<(Document, Option<Stamp>)> {
     if !check_private(path)? {
-        return Ok(Document::default());
+        return Ok((Document::default(), None));
     }
     let mut file = OpenOptions::new()
         .read(true)
         .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
         .open(path)?;
+    let stamp = Stamp::of(&file.metadata()?);
     let mut bytes = Vec::new();
     (&mut file).take(MAX_BYTES + 1).read_to_end(&mut bytes)?;
     if bytes.len() as u64 > MAX_BYTES {
@@ -248,7 +290,7 @@ pub fn load(path: &Path) -> Result<Document> {
     }
     let document: Document = serde_json::from_slice(&bytes)?;
     document.validate()?;
-    Ok(document)
+    Ok((document, Some(stamp)))
 }
 
 struct Lock(fs::File);
@@ -321,17 +363,23 @@ pub struct Store {
     pub changes: Changes,
     /// Pane IDs the server currently has; prunes state of closed panes.
     pub live: Option<BTreeSet<PaneId>>,
+    /// The file version this client last read or wrote.
+    seen: Option<Stamp>,
+    /// `document` adopted another client's write; see `take_reloaded`.
+    reloaded: bool,
 }
 impl Store {
     /// Opens the store of the workspace whose state directory is `directory`.
     pub fn open(directory: &Path) -> Result<Self> {
-        let document = load(&directory.join(FILE))?;
+        let (document, seen) = read(&directory.join(FILE))?;
         Ok(Self {
             directory: directory.to_path_buf(),
             document,
             epoch: String::new(),
             changes: Changes::default(),
             live: None,
+            seen,
+            reloaded: false,
         })
     }
     /// A store that is never written, for tests and read-only sessions.
@@ -342,6 +390,60 @@ impl Store {
             epoch: String::new(),
             changes: Changes::default(),
             live: None,
+            seen: None,
+            reloaded: false,
+        }
+    }
+    /// Whether `document` adopted another client's write since the last
+    /// call. The caller then applies it to the live UI.
+    pub fn take_reloaded(&mut self) -> bool {
+        std::mem::take(&mut self.reloaded)
+    }
+    /// Adopts `disk` with this client's pending changes merged on top: local
+    /// changes win for the fields they touched. The changes stay pending.
+    fn adopt(&mut self, disk: Document) {
+        let mut view = merge(
+            disk,
+            &self.document,
+            &self.epoch,
+            &self.changes,
+            self.live.as_ref(),
+            crate::now(),
+        );
+        if !self.epoch.is_empty() {
+            view.epochs.retain(|name, _| *name == self.epoch);
+        }
+        self.document = view;
+        self.reloaded = true;
+    }
+    /// Adopts the file when another client replaced it since this client
+    /// last read or wrote it. One `lstat` when nothing changed. Returns
+    /// whether it adopted a new version.
+    pub fn poll(&mut self) -> Result<bool> {
+        if self.directory.as_os_str().is_empty() {
+            return Ok(false);
+        }
+        let path = self.path();
+        let current = Stamp::at(&path)?;
+        if current == self.seen {
+            return Ok(false);
+        }
+        match read(&path) {
+            Ok((disk, Some(stamp))) => {
+                self.seen = Some(stamp);
+                self.adopt(disk);
+                Ok(true)
+            }
+            // Removed: keep the current view; the next flush recreates it.
+            Ok((_, None)) => {
+                self.seen = None;
+                Ok(false)
+            }
+            Err(error) => {
+                // Report an unreadable version once, not on every poll.
+                self.seen = current;
+                Err(error)
+            }
         }
     }
     pub fn path(&self) -> PathBuf {
@@ -412,7 +514,10 @@ impl Store {
         let path = self.path();
         let _lock = Lock::acquire(&self.directory.join(LOCK))?;
         // An unreadable file is replaced rather than blocking the TUI.
-        let disk = load(&path).unwrap_or_default();
+        let (disk, external) = match read(&path) {
+            Ok((disk, stamp)) => (disk, stamp != self.seen),
+            Err(_) => (Document::default(), false),
+        };
         let merged = merge(
             disk,
             &self.document,
@@ -422,6 +527,16 @@ impl Store {
             crate::now(),
         );
         write_atomic(&path, &merged)?;
+        // Still under the lock: this is the version just written, which a
+        // later poll must not mistake for another client's.
+        self.seen = Stamp::at(&path).ok().flatten();
+        if external {
+            // Another client wrote since this one last looked: adopt the
+            // merged document, which already carries this client's changes.
+            self.changes = Changes::default();
+            self.adopt(merged);
+            return Ok(());
+        }
         // Adopt state other clients wrote for panes this client did not touch.
         if let (Some(theirs), false) = (merged.epochs.get(&self.epoch), self.epoch.is_empty()) {
             let own = self.current_mut();
@@ -634,6 +749,85 @@ mod tests {
         let merged = merge(disk, &mine, "e", &changes, None, 10);
         assert_eq!(merged.epochs["e"].panes[&1].name.as_deref(), Some("mine"));
         assert_eq!(merged.settings.unwrap().prefix, 3);
+    }
+
+    #[test]
+    fn poll_adopts_other_writes_and_ignores_its_own() {
+        let fixture = Fixture::new();
+        let mut a = Store::open(&fixture.0).unwrap();
+        let mut b = Store::open(&fixture.0).unwrap();
+        for store in [&mut a, &mut b] {
+            store.epoch = "e1".into();
+        }
+        a.set_pane(1, named("alpha"));
+        a.set_order(vec![2, 1]);
+        a.flush().unwrap();
+        // A's own write is not a change for A.
+        assert!(!a.poll().unwrap());
+        assert!(!a.take_reloaded());
+        // B sees it once.
+        assert!(b.poll().unwrap());
+        assert!(b.take_reloaded());
+        assert_eq!(b.pane(1).unwrap().name.as_deref(), Some("alpha"));
+        assert_eq!(b.current().unwrap().order, vec![2, 1]);
+        assert!(!b.poll().unwrap());
+        // B's write is new for A, and not for B.
+        b.set_pane(2, named("beta"));
+        b.flush().unwrap();
+        assert!(!b.take_reloaded());
+        assert!(!b.poll().unwrap());
+        assert!(a.poll().unwrap());
+        assert_eq!(a.pane(2).unwrap().name.as_deref(), Some("beta"));
+    }
+
+    #[test]
+    fn a_reload_keeps_pending_local_changes() {
+        let fixture = Fixture::new();
+        let mut a = Store::open(&fixture.0).unwrap();
+        let mut b = Store::open(&fixture.0).unwrap();
+        for store in [&mut a, &mut b] {
+            store.epoch = "e1".into();
+        }
+        a.set_order(vec![1, 2, 3]);
+        a.flush().unwrap();
+        b.poll().unwrap();
+        // B parks 3 and changes the order; not flushed yet.
+        b.set_pane(
+            3,
+            PaneState {
+                parked: true,
+                ..Default::default()
+            },
+        );
+        b.set_order(vec![3, 1, 2]);
+        // Meanwhile A names 1 and 3 and reorders.
+        a.set_pane(1, named("alpha"));
+        a.set_pane(3, named("gamma"));
+        a.set_order(vec![2, 1, 3]);
+        a.flush().unwrap();
+        assert!(b.poll().unwrap());
+        // B adopted A's pane 1 and kept its own pending pane 3 and order.
+        assert_eq!(b.pane(1).unwrap().name.as_deref(), Some("alpha"));
+        assert!(b.pane(3).unwrap().parked);
+        assert_eq!(b.pane(3).unwrap().name, None);
+        assert_eq!(b.current().unwrap().order, vec![3, 1, 2]);
+        assert!(b.changes.order && b.changes.panes.contains(&3));
+        // Its flush writes them over A's version of the same fields only.
+        b.flush().unwrap();
+        let disk = load(&fixture.0.join(FILE)).unwrap();
+        let epoch = &disk.epochs["e1"];
+        assert_eq!(epoch.panes[&1].name.as_deref(), Some("alpha"));
+        assert!(epoch.panes[&3].parked);
+        assert_eq!(epoch.order, vec![3, 1, 2]);
+        // A flush that finds another client's write adopts it as well.
+        a.set_pane(2, named("beta"));
+        b.set_pane(1, named("one"));
+        b.flush().unwrap();
+        a.flush().unwrap();
+        assert!(a.take_reloaded());
+        assert_eq!(a.pane(1).unwrap().name.as_deref(), Some("one"));
+        assert_eq!(a.pane(2).unwrap().name.as_deref(), Some("beta"));
+        assert!(!a.poll().unwrap());
     }
 
     #[test]

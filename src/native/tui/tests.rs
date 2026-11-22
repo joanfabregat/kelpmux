@@ -72,10 +72,13 @@ fn screen(cols: u16, rows: u16, text: &str) -> Screen {
     }
 }
 fn controller_with(document: Document) -> Controller {
+    controller_from(Store::memory(document))
+}
+fn controller_from(store: Store) -> Controller {
     let mut controller = Controller::new(
         120,
         40,
-        Store::memory(document),
+        store,
         Options {
             workspace: "main".into(),
             ..Options::default()
@@ -689,6 +692,204 @@ fn renders_dialogs_from_local_state() {
     act(&mut c, Action::DialogClose);
     act(&mut c, Action::Config);
     assert!(text(&c.frame()).iter().any(|l| l.contains("Notifications")));
+}
+
+/// A private state directory shared by the TUIs of one test.
+struct StateDir(std::path::PathBuf);
+impl StateDir {
+    fn new() -> Self {
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static NEXT: AtomicU64 = AtomicU64::new(0);
+        let path = std::env::temp_dir().join(format!(
+            "kelpmux-tui-sync-{}-{}",
+            std::process::id(),
+            NEXT.fetch_add(1, Ordering::Relaxed)
+        ));
+        let _ = std::fs::remove_dir_all(&path);
+        crate::journal::private_dir(&path).unwrap();
+        Self(path)
+    }
+    /// A synced TUI on this directory's state with panes `ids`, its own
+    /// changes written.
+    fn attach(&self, ids: &[PaneId]) -> Controller {
+        let mut store = Store::open(&self.0).unwrap();
+        store.mark_migrated();
+        let mut c = controller_from(store);
+        c.event(Event::Update(update(
+            ids.iter().map(|id| info(*id)).collect(),
+        )))
+        .unwrap();
+        c.take_requests();
+        c.exchange_state().unwrap();
+        c
+    }
+}
+impl Drop for StateDir {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+/// Applies pending actions and lets `c` exchange state.
+fn exchange(c: &mut Controller) {
+    c.take_requests();
+    c.exchange_state().unwrap();
+}
+fn pane(c: &Controller, id: PaneId) -> &PaneInfo {
+    c.workspace.panes.iter().find(|p| p.id == id).unwrap()
+}
+
+#[test]
+fn another_tuis_order_names_colours_and_parking_apply_live() {
+    let dir = StateDir::new();
+    let mut a = dir.attach(&[1, 2, 3, 4]);
+    let mut b = dir.attach(&[1, 2, 3, 4]);
+    exchange(&mut a);
+    // B's transient state: focus history 1, 3, 2 and an open dialog.
+    act(&mut b, Action::Select(1));
+    act(&mut b, Action::Focus(3));
+    act(&mut b, Action::Focus(2));
+    act(&mut b, Action::Config);
+    exchange(&mut b);
+    b.dirty = false;
+
+    act(
+        &mut a,
+        Action::Reorder {
+            source: 4,
+            before: Some(1),
+        },
+    );
+    act(&mut a, Action::TabColorSet { pane: 1, color: 5 });
+    let mut one = a.store.pane(1).cloned().unwrap_or_default();
+    one.name = Some("Build".into());
+    a.store.set_pane(1, one);
+    act(&mut a, Action::Park(2));
+    exchange(&mut a);
+
+    exchange(&mut b);
+    assert!(b.dirty, "a reload repaints");
+    assert_eq!(order(&b), vec![4, 1, 2, 3]);
+    assert_eq!(pane(&b, 1).title, "Build");
+    assert_eq!(pane(&b, 1).palette, 5);
+    assert!(pane(&b, 2).parked);
+    // The parked tab was focused here: focus returns to the previous one.
+    assert_eq!(b.workspace.active, 3);
+    assert_eq!(b.workspace.reading, ReadingMode::Tabs(3));
+    assert_eq!(
+        b.workspace.ui.dialog.map(|d| d.kind),
+        Some(DialogKind::Config)
+    );
+    // Applying it leaves nothing to write back.
+    b.take_requests();
+    assert!(b.store.changes.is_empty(), "{:?}", b.store.changes);
+    // Restoring elsewhere puts the tab back where that TUI put it, without
+    // moving focus here.
+    act(&mut a, Action::Restore(2));
+    exchange(&mut a);
+    exchange(&mut b);
+    assert_eq!(order(&b), vec![4, 1, 3, 2]);
+    assert!(!pane(&b, 2).parked);
+    assert_eq!(b.workspace.active, 3);
+}
+
+#[test]
+fn a_tuis_own_writes_are_not_reapplied() {
+    let dir = StateDir::new();
+    let mut a = dir.attach(&[1, 2]);
+    act(&mut a, Action::Park(2));
+    exchange(&mut a);
+    a.dirty = false;
+    // Its own write: no reload, no repaint, nothing to write.
+    exchange(&mut a);
+    assert!(!a.dirty);
+    assert!(!a.store.poll().unwrap());
+    assert!(!a.store.take_reloaded());
+    // Local transient state set after the write survives the exchange.
+    act(&mut a, Action::Help);
+    a.dirty = false;
+    exchange(&mut a);
+    assert!(a.workspace.help);
+    assert!(!a.dirty);
+}
+
+#[test]
+fn pending_local_changes_survive_another_tuis_write() {
+    let dir = StateDir::new();
+    let mut a = dir.attach(&[1, 2, 3]);
+    let mut b = dir.attach(&[1, 2, 3]);
+    exchange(&mut a);
+    // B parks 3 and recolours 1; not written yet.
+    act(&mut b, Action::Park(3));
+    act(&mut b, Action::TabColorSet { pane: 1, color: 6 });
+    b.take_requests();
+    assert!(!b.store.changes.is_empty());
+    // A reorders and recolours 1 and 2 meanwhile.
+    act(
+        &mut a,
+        Action::Reorder {
+            source: 2,
+            before: Some(1),
+        },
+    );
+    act(&mut a, Action::TabColorSet { pane: 1, color: 2 });
+    act(&mut a, Action::TabColorSet { pane: 2, color: 4 });
+    exchange(&mut a);
+    // B's exchange writes its changes over A's for the same fields and
+    // adopts the rest.
+    exchange(&mut b);
+    assert!(pane(&b, 3).parked);
+    assert_eq!(pane(&b, 1).palette, 6);
+    assert_eq!(pane(&b, 2).palette, 4);
+    // Parking moves nothing, so B left the order alone: it is A's.
+    assert_eq!(order(&b), vec![2, 1, 3]);
+    let disk = super::state::load(&dir.0.join(super::state::FILE)).unwrap();
+    let epoch = &disk.epochs["e1"];
+    assert!(epoch.panes[&3].parked);
+    assert_eq!(epoch.panes[&1].color, Some(6));
+    assert_eq!(epoch.panes[&2].color, Some(4));
+    assert_eq!(epoch.order, order(&b));
+    // A converges on the merged state.
+    exchange(&mut a);
+    assert!(pane(&a, 3).parked);
+    assert_eq!(pane(&a, 1).palette, 6);
+    assert_eq!(order(&a), order(&b));
+}
+
+#[test]
+fn settings_from_another_tui_wait_for_open_dialogs() {
+    let dir = StateDir::new();
+    let mut a = dir.attach(&[1]);
+    let mut b = dir.attach(&[1]);
+    exchange(&mut a);
+    act(&mut b, Action::Config);
+    exchange(&mut b);
+    act(&mut a, Action::NotificationSoundToggle);
+    exchange(&mut a);
+    exchange(&mut b);
+    // Not applied under the open dialog, and not written back either.
+    assert!(!b.workspace.ui.config.notification_sound);
+    exchange(&mut b);
+    let path = dir.0.join(super::state::FILE);
+    assert!(
+        super::state::load(&path)
+            .unwrap()
+            .settings
+            .unwrap()
+            .notification_sound
+    );
+    act(&mut b, Action::DialogClose);
+    exchange(&mut b);
+    assert!(b.workspace.ui.config.notification_sound);
+    // A local change made under the dialog wins over a deferred one.
+    act(&mut b, Action::Config);
+    act(&mut a, Action::NotificationSoundToggle);
+    exchange(&mut a);
+    exchange(&mut b);
+    act(&mut b, Action::ToggleSidebarFold);
+    act(&mut b, Action::DialogClose);
+    exchange(&mut b);
+    assert!(b.workspace.ui.config.notification_sound);
+    assert!(b.workspace.ui.config.sidebar_folded);
 }
 
 #[test]
