@@ -4,20 +4,22 @@ pub mod model {
     pub use kelpclient::model::*;
 }
 pub mod native {
-    // KelpServer modules KelpMux uses, all part of the generic session
+    // KelpServer 0.3 modules KelpMux uses, all part of the generic session
     // server (ADR 0002): the stream and its session API, the same-user
     // connection, server lifecycle and upgrade checks, closed-session
-    // history, recovery records, hooks, templates, vitals, diagnostics, the
-    // terminal emulator, the stream reference client and the SSH bridge.
-    // Nothing from KelpServer's composed UI (protocol 58 frames, `Action`,
-    // `ui`, `render`, `workspace`, its controller) is used: the TUI renders
-    // locally with the modules below, and administration (`ctl`, `stop`,
-    // the web bridge) speaks the stream session API (`session`).
+    // history, recovery records, hooks, the startup template format, vitals,
+    // the diagnostics report, the terminal emulator, the stream reference
+    // client and the SSH bridge. KelpServer 0.3 has no composed UI any
+    // more; the TUI renders locally with the modules below, administration
+    // (`ctl`, `stop`, the web bridge) speaks the stream session API
+    // (`session`), `config` holds KelpMux's part of `workspace.json`, and
+    // the web relay is KelpMux's own (`web_relay`).
     pub use kelpserver::native::{
         bridge, connection, diagnostics, engine, history, hooks, lifecycle, recovery, reference,
         stream, templates, upgrade, vitals,
     };
     pub mod cli;
+    pub mod config;
     pub mod hover;
     pub mod input;
     pub mod protocol;

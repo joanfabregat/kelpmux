@@ -10,10 +10,10 @@ TUI feature development is frozen while the separately maintained KelpHub web ap
 | --- | --- | --- |
 | `kelpmux` | `src/`, `web/` | Terminal interface, web client (bridge, relay assets and browser UI) and optional legacy tmux adapter |
 | `kelpclient` | [crates/client](crates/client) | Shared terminal state, selection/history utilities and WASM bindings |
-| `kelpserver` | [joanfabregat/kelpserver](https://github.com/joanfabregat/kelpserver) (Git dependency) | PTYs, authoritative terminal state, persistent sessions and generic SSH byte relay |
+| `kelpserver` | [joanfabregat/kelpserver](https://github.com/joanfabregat/kelpserver) (Git dependency, 0.3) | PTYs, authoritative terminal state, persistent sessions and the pane stream session API |
 | `kelpclient-protocol` | [joanfabregat/kelpserver](https://github.com/joanfabregat/kelpserver) (Git dependency) | Portable wire types and validation |
 
-The `web/` directory holds the terminals-only browser client (see [docs/web.md](docs/web.md)). KelpHub owns the full web application with project management, authenticated management backend, uploads and its hosting. See [MIGRATION.md](MIGRATION.md) for history provenance and the intentionally retained composed-screen TUI compatibility boundary.
+The `web/` directory holds the terminals-only browser client (see [docs/web.md](docs/web.md)). KelpHub owns the full web application with project management, authenticated management backend, uploads and its hosting. See [MIGRATION.md](MIGRATION.md) for history provenance and the removal of the composed-screen protocol.
 
 ### KelpServer pin
 
@@ -34,7 +34,7 @@ kelpmux start --workspace trial
 kelpmux attach --workspace trial
 ```
 
-`kelpmux attach` runs the TUI, a client of KelpServer's pane stream that renders locally and keeps its own UI state in `tui-state.json`. `kelpmux start` starts the server without panes (`--startup-panes none`) and the first TUI or web client creates the tabs from its saved layout or template. The former composed TUI was removed: `--legacy` is refused, `--stream` is accepted without effect. `kelpmux ctl`, `stop` and the web bridge use the same stream session API. See [the native guide](docs/native.md#the-tui-a-pane-stream-client) for the parity table and the one-time migration.
+`kelpmux attach` runs the TUI, a client of KelpServer's pane stream that renders locally and keeps its own UI state in `tui-state.json`. KelpMux requires KelpServer 0.3 or later, which speaks only the pane stream (the composed-screen protocol 58 is gone) and starts every workspace without panes: the first TUI or web client creates the tabs from its saved layout or the workspace's template. The former composed TUI was removed: `--legacy` is refused, `--stream` is accepted without effect, and `--startup-panes` accepts only `none`. `kelpmux ctl`, `stop` and the web bridge use the same stream session API. See [the native guide](docs/native.md#the-tui-a-pane-stream-client) for the parity table and the one-time migration.
 
 `Ctrl-B`, then `d` detaches. `g` selects grid, `z` reopens the latest useful closed tab, `p` parks a tab and `u` shows parked tabs. Stop a disposable workspace with `kelpmux stop --workspace trial`; stopping ends its processes. Existing settings and XDG state paths are preserved. A server crash or reboot requires recovery/resume; metadata does not preserve live processes.
 

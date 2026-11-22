@@ -18,7 +18,7 @@
 //! file version it last read or wrote (`Stamp`) and, when `poll` or `flush`
 //! finds another version, adopts it with its own pending changes merged on
 //! top, so local changes win for the fields they touched.
-use super::super::{lifecycle, protocol::PaneId, ui::UiConfig};
+use super::super::{config, protocol::PaneId, ui::UiConfig};
 use crate::Result;
 use serde::{Deserialize, Serialize};
 use std::{
@@ -563,28 +563,19 @@ impl Store {
     }
 }
 
-/// One-time migration input from the composed server's files in the
-/// workspace state directory: UI settings from `workspace.json` and the
-/// separate accent/fold preferences, and the tab layout from
-/// `tab-layout.json`. The files are read, never modified. KelpServer's
-/// composed settings types are converted through their JSON form, which the
-/// TUI's copies share.
+/// One-time migration input from the files the composed UI (KelpServer 0.2)
+/// left in the workspace state directory: UI settings from `workspace.json`
+/// and the separate accent/fold preferences, and the tab layout from
+/// `tab-layout.json`. The files are read, never modified (`config`).
 pub fn legacy_settings(directory: &Path) -> Option<UiConfig> {
-    let path = directory.join("workspace.json");
-    let saved = path
-        .is_file()
-        .then(|| lifecycle::Settings::load(&path).ok())
-        .flatten()?;
-    let mut settings: UiConfig =
-        serde_json::from_value(serde_json::to_value(saved.ui).ok()?).ok()?;
-    if let Ok(folded) = lifecycle::sidebar_folded(&directory.join("sidebar-folded.json")) {
+    let mut settings = config::workspace(directory)?
+        .ui_config()
+        .ok()?
+        .unwrap_or_default();
+    if let Some(folded) = config::legacy_sidebar_folded(directory) {
         settings.sidebar_folded = folded;
     }
-    if let Some(accent) = lifecycle::sidebar_accent(&directory.join("sidebar-accent.json"))
-        .ok()
-        .and_then(|accent| serde_json::to_value(accent).ok())
-        .and_then(|accent| serde_json::from_value(accent).ok())
-    {
+    if let Some(accent) = config::legacy_sidebar_accent(directory) {
         settings.accent = accent;
     }
     settings.pane_colors.clear();
@@ -592,7 +583,7 @@ pub fn legacy_settings(directory: &Path) -> Option<UiConfig> {
     Some(settings)
 }
 pub fn legacy_layout(directory: &Path) -> Vec<LayoutTab> {
-    lifecycle::TabLayout::load(&directory.join("tab-layout.json"))
+    config::legacy_tab_layout(directory)
         .map(|layout| {
             layout
                 .panes
@@ -616,12 +607,7 @@ pub fn legacy_layout(directory: &Path) -> Vec<LayoutTab> {
 /// saved in `workspace.json`) as layout tabs, and the workspace shell, which
 /// `spawn` uses when a tab names none.
 pub fn workspace_template(directory: &Path) -> (Vec<LayoutTab>, Option<String>) {
-    let path = directory.join("workspace.json");
-    let Some(settings) = path
-        .is_file()
-        .then(|| lifecycle::Settings::load(&path).ok())
-        .flatten()
-    else {
+    let Some(settings) = config::workspace(directory) else {
         return (Vec::new(), None);
     };
     let shell = settings
@@ -894,21 +880,55 @@ mod tests {
     #[test]
     fn legacy_tab_layout_migrates_names_and_folders() {
         let fixture = Fixture::new();
-        let layout = lifecycle::TabLayout {
-            template: None,
-            cwd: "/tmp".into(),
-            shell: "/bin/sh".into(),
-            panes: vec![lifecycle::StartupPane {
-                name: Some("Build".into()),
-                cwd: "/var".into(),
-                shell: "/bin/sh".into(),
-            }],
-        };
+        // As KelpServer 0.2 wrote it.
+        let layout = serde_json::json!({
+            "template": null,
+            "cwd": "/tmp",
+            "shell": "/bin/sh",
+            "panes": [
+                {"name": "Build", "cwd": "/var", "shell": "/bin/sh"},
+                {"name": null, "cwd": "/srv", "shell": "/bin/zsh"},
+            ],
+        });
         crate::journal::atomic(&fixture.0.join("tab-layout.json"), &layout).unwrap();
         let tabs = legacy_layout(&fixture.0);
-        assert_eq!(tabs.len(), 1);
+        assert_eq!(tabs.len(), 2);
         assert_eq!(tabs[0].cwd, "/var");
         assert_eq!(tabs[0].name.as_deref(), Some("Build"));
+        assert_eq!(tabs[0].shell, None);
+        assert_eq!(tabs[1].name, None);
+        assert_eq!(tabs[1].shell.as_deref(), Some("/bin/zsh"));
         assert!(legacy_layout(&fixture.0.join("missing")).is_empty());
+        // A relative folder makes the whole layout invalid, as before.
+        let invalid = serde_json::json!({
+            "shell": "/bin/sh",
+            "panes": [{"name": null, "cwd": "var", "shell": "/bin/sh"}],
+        });
+        crate::journal::atomic(&fixture.0.join("tab-layout.json"), &invalid).unwrap();
+        assert!(legacy_layout(&fixture.0).is_empty());
+    }
+
+    #[test]
+    fn legacy_settings_merge_the_sidebar_preferences() {
+        let fixture = Fixture::new();
+        assert_eq!(legacy_settings(&fixture.0), None);
+        let saved = serde_json::json!({
+            "tab_count": 2,
+            "template": null,
+            "ui": {"notification_sound": true, "pane_colors": {"3": 2}},
+            "shell": "/bin/sh",
+            "cwd": "/tmp",
+        });
+        crate::journal::atomic(&fixture.0.join("workspace.json"), &saved).unwrap();
+        crate::journal::atomic(&fixture.0.join("sidebar-folded.json"), &true).unwrap();
+        crate::journal::atomic(&fixture.0.join("sidebar-accent.json"), &"sage").unwrap();
+        let settings = legacy_settings(&fixture.0).unwrap();
+        assert!(settings.notification_sound);
+        assert!(settings.sidebar_folded);
+        assert_eq!(
+            serde_json::to_value(settings.accent).unwrap(),
+            serde_json::json!("sage")
+        );
+        assert!(settings.pane_colors.is_empty());
     }
 }

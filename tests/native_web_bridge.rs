@@ -357,9 +357,9 @@ fn tui_controller_and_web_client_alternate_pane_input_and_size() {
 
     let mut bridge = Bridge::start(&server);
     let client = welcome(&mut bridge)["client"].as_u64().unwrap();
-    bridge.send(json!({"Stream": {"type": "subscribe", "panes": []}}));
-    let update = bridge.expect("metadata", |v| v["Stream"]["type"] == "update");
-    let pane = update["Stream"]["panes"][0]["id"].as_u64().unwrap();
+    // The server starts without panes; the browser creates the shell.
+    let created = bridge.web(1, "new", json!({"request": "web-first"}));
+    let pane = created["result"]["pane"].as_u64().unwrap();
     bridge.send(json!({"Stream": {"type": "subscribe", "panes": [pane]}}));
     let size = |bridge: &mut Bridge| {
         bridge.send(json!({"Stream": {"type": "resync", "pane": pane}}));
@@ -379,6 +379,15 @@ fn tui_controller_and_web_client_alternate_pane_input_and_size() {
             screen["rows"].as_u64().unwrap(),
         )
     };
+    // Snapshots of an earlier size may still be queued (the subscription's
+    // and each resync's): wait for the latest to show the expected size.
+    let until_size = |bridge: &mut Bridge, expected: (u64, u64), what: &str| {
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while size(bridge) != expected {
+            assert!(Instant::now() < deadline, "{what}");
+            thread::sleep(Duration::from_millis(50));
+        }
+    };
     let base = size(&mut bridge);
     assert_ne!(base, (50, 10));
 
@@ -391,7 +400,7 @@ fn tui_controller_and_web_client_alternate_pane_input_and_size() {
     bridge.send(
         json!({"Stream": {"type": "input", "pane": pane, "bytes": b"echo from-web\n".to_vec()}}),
     );
-    assert_eq!(size(&mut bridge), (50, 10));
+    until_size(&mut bridge, (50, 10), "the browser did not take the pane");
 
     // Typing in the TUI takes the pane back at the TUI's own size.
     for request in [
@@ -413,11 +422,7 @@ fn tui_controller_and_web_client_alternate_pane_input_and_size() {
     }
     // KelpServer tells only the claiming client about a lease, so the
     // browser sees the takeover in the pane's size.
-    let deadline = Instant::now() + Duration::from_secs(10);
-    while size(&mut bridge) != (100, 30) {
-        assert!(Instant::now() < deadline, "the TUI did not take the pane");
-        thread::sleep(Duration::from_millis(50));
-    }
+    until_size(&mut bridge, (100, 30), "the TUI did not take the pane");
     // Focusing it again in the browser hands it back, without any explicit
     // takeover command in the TUI.
     bridge.send(json!({"Stream": {"type": "claim", "pane": pane, "takeover": true}}));
@@ -428,7 +433,7 @@ fn tui_controller_and_web_client_alternate_pane_input_and_size() {
     // Every client's input reached the same shell: the server's search sees
     // each command's output.
     let deadline = Instant::now() + Duration::from_secs(10);
-    let mut id = 0;
+    let mut id = 1;
     for word in ["from-web", "from-tui", "web-again"] {
         loop {
             id += 1;
@@ -443,7 +448,11 @@ fn tui_controller_and_web_client_alternate_pane_input_and_size() {
             thread::sleep(Duration::from_millis(50));
         }
     }
-    assert_eq!(size(&mut bridge), (50, 10));
+    until_size(
+        &mut bridge,
+        (50, 10),
+        "the browser did not take the pane back",
+    );
 }
 
 /// Closed terminals are listed with the TUI's restore actions and reopen in
@@ -652,7 +661,7 @@ fn a_stopped_workspace_starts_on_an_explicit_request_then_connects() {
     // The bridge then connects as usual: the stream welcome follows.
     let welcome = bridge.expect("welcome", |v| v["Stream"]["type"] == "welcome");
     assert_eq!(welcome["Stream"]["version"], 1);
-    // The server started without panes (`--startup-panes none`); the
+    // The server started without panes (KelpServer 0.3); the
     // bridge created the one shell the browser opens on.
     assert_eq!(welcome["Stream"]["startup_panes"], "none", "{welcome}");
     bridge.send(json!({"Stream": {"type": "subscribe", "panes": []}}));
@@ -771,7 +780,7 @@ fn step_two_session_requests_pass_through_the_bridge() {
     let server = Server::start();
     let mut bridge = Bridge::start(&server);
     let welcome = welcome(&mut bridge);
-    assert_eq!(welcome["startup_panes"], "layout", "{welcome}");
+    assert_eq!(welcome["startup_panes"], "none", "{welcome}");
     assert_eq!(welcome["limits"]["subscriptions"], 64);
     assert!(welcome["notification_run"].is_string());
     bridge.send(json!({"Stream": {"type": "dismiss_recovery", "request": "r1"}}));

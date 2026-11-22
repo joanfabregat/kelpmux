@@ -123,7 +123,6 @@ fn run() -> Result<()> {
                 | "recover"
                 | "diagnostics"
                 | "templates"
-                | "benchmark"
                 | "bridge"
                 | "web-bridge"
                 | "web-relay"

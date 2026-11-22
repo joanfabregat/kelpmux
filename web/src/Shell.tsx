@@ -25,11 +25,6 @@ export function PaneLabel({
       <ProviderLogo kind={pane.kind} />
       <span className="grid-title">{pane.title || "shell"}</span>
       {parked && <span className="badge parked-badge">parked</span>}
-      {pane.parked && (
-        <span className="badge parked-badge" title="Parked in the TUI">
-          parked in TUI
-        </span>
-      )}
       {state !== "idle" && state !== "running" && (
         <span className={`badge state-badge state-${state}`}>
           {stateLabel[state]}

@@ -32,6 +32,8 @@ export type Pane = {
   cwd: string;
   title: string;
   status: string;
+  /** Always false since KelpServer 0.3: parking is each client's own state
+   * (this browser keeps it in its layout store). */
   parked: boolean;
   dead: boolean;
   kind?: string;

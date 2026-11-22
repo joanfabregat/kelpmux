@@ -433,17 +433,17 @@ fn start(socket: &Path, state: &Path, params: &Value) -> Result<Value> {
         return Err("the workspace server is already running".into());
     }
     super::cli::start_workspace(state, socket)?;
-    // The server starts without panes (`--startup-panes none`); like the
-    // TUI, the browser that started it gets one shell to work in.
+    // The server starts without panes; like the TUI, the browser that
+    // started it gets one shell to work in.
     first_shell(socket)?;
     Ok(json!({ "started": true }))
 }
 
-/// Creates one shell in a server that started without panes and still has
-/// none. A server that created its own startup tabs is left alone.
+/// Creates one shell in a server that still has none (another client may
+/// have created panes since it started).
 fn first_shell(socket: &Path) -> Result<()> {
     let mut session = Session::open(connection::connect(socket)?)?;
-    if session.startup_panes != Some(stream::StartupPanes::None) || !session.has("pane-lifecycle") {
+    if !session.has("pane-lifecycle") {
         return Ok(());
     }
     // The first update lists the panes that exist.

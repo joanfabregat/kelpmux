@@ -160,14 +160,23 @@ fn retained_client_survives_selection_change(installation: &str) {
             .unwrap(),
     );
     let deadline = Instant::now() + Duration::from_secs(5);
-    let before = loop {
-        if let Ok(panes) = stream_panes(&socket) {
-            break panes;
-        }
+    while stream_panes(&socket).is_err() {
         assert!(Instant::now() < deadline, "server did not start");
         assert!(server.0.try_wait().unwrap().is_none(), "server exited");
         thread::sleep(Duration::from_millis(10));
-    };
+    }
+    // The server starts without panes; one shell shows it keeps running.
+    Session::open(connection::connect(&socket).unwrap())
+        .unwrap()
+        .call(stream::Request::Spawn {
+            request: "upgrade-test".into(),
+            cwd: None,
+            argv: Vec::new(),
+            shell: None,
+        })
+        .unwrap();
+    let before = stream_panes(&socket).unwrap();
+    assert_eq!(before.len(), 1);
     for verb in ["attach", "ssh-entry"] {
         let output = Command::new(env!("CARGO_BIN_EXE_kelpmux"))
             .args([verb, "--socket"])
@@ -223,7 +232,8 @@ fn retained_client_survives_selection_change(installation: &str) {
         .unwrap();
     assert!(status.status.success());
     assert!(
-        String::from_utf8_lossy(&status.stderr).contains(&format!("(stream {})", stream::VERSION))
+        String::from_utf8_lossy(&status.stderr)
+            .contains(&format!("(stream protocol {})", stream::VERSION))
     );
     let list: serde_json::Value = serde_json::from_slice(&status.stdout).unwrap();
     assert!(list["panes"].is_array(), "{list}");

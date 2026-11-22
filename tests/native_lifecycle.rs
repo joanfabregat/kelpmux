@@ -115,10 +115,7 @@ impl Fixture {
             socket,
         }
     }
-    /// `verb` for this fixture's workspace. `start` and `ssh-entry` keep
-    /// KelpServer's startup tabs (`--startup-panes layout`): these tests
-    /// cover the server's startup transactions, templates and saved layout.
-    /// KelpMux's own default, `none`, is tested separately.
+    /// `verb` for this fixture's workspace.
     fn command(&self, verb: &str) -> Command {
         let mut cmd = Command::new(env!("CARGO_BIN_EXE_kelpmux"));
         cmd.arg(verb)
@@ -127,19 +124,50 @@ impl Fixture {
             .arg("--socket")
             .arg(&self.socket)
             .current_dir(&self.root);
-        if matches!(verb, "start" | "ssh-entry") {
-            cmd.args(["--startup-panes", "layout"]);
-        }
         cmd
     }
     fn cmd(&self, verb: &str, extra: &[&str]) -> Output {
         bounded_output(self.command(verb).args(extra))
     }
+    /// `start`, then the workspace's panes. The server starts without panes
+    /// (KelpServer 0.3); like a connecting client, this creates one shell
+    /// when there is none, so the tests can observe the server's processes.
     fn start(&self, extra: &[&str]) -> Vec<PaneInfo> {
         let mut args = vec!["--shell", "/bin/sh", "--cwd"];
         args.push(self.root.to_str().unwrap());
         args.extend(extra);
-        panes(&self.cmd("start", &args))
+        let started = panes(&self.cmd("start", &args));
+        if started.is_empty() {
+            self.shell()
+        } else {
+            started
+        }
+    }
+    /// Creates one shell (`ctl new`) and returns the pane list.
+    fn shell(&self) -> Vec<PaneInfo> {
+        let out = self.cmd("ctl", &["new"]);
+        assert!(
+            out.status.success(),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        self.status()
+    }
+    /// Waits until the workspace has `count` panes, as a client creates them.
+    fn wait_panes(&self, count: usize) -> Vec<PaneInfo> {
+        let deadline = Instant::now() + Duration::from_secs(10);
+        loop {
+            let panes = self.status();
+            if panes.len() == count {
+                return panes;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "expected {count} panes, found {}",
+                panes.len()
+            );
+            thread::sleep(Duration::from_millis(20));
+        }
     }
     fn status(&self) -> Vec<PaneInfo> {
         panes(&self.cmd("status", &[]))
@@ -236,19 +264,19 @@ fn named_workspaces_reject_path_traversal_and_preserve_effective_restart_setting
         "{}",
         String::from_utf8_lossy(&out.stderr)
     );
-    assert_eq!(fixture.status()[0].cwd, fixture.root.to_string_lossy());
+    // A shell created without a folder starts in the saved one.
+    assert_eq!(fixture.shell()[0].cwd, fixture.root.to_string_lossy());
     fixture.stop();
 }
 #[test]
-fn dev_example_starts_exactly_one_shell() {
+fn dev_example_starts_an_empty_server() {
     let config = Path::new(env!("CARGO_MANIFEST_DIR")).join("examples/native-tabs.json");
-    let settings = Settings::load(&config).unwrap();
-    assert_eq!(settings.tab_count, Some(1));
+    let settings = kelpmux::native::config::Settings::load(&config).unwrap();
+    assert!(settings.ui_config().unwrap().is_some());
     let fixture = Fixture::new();
-    assert_eq!(
-        fixture.start(&["--config", config.to_str().unwrap()]).len(),
-        1
-    );
+    let mut args = vec!["--shell", "/bin/sh", "--config", config.to_str().unwrap()];
+    args.extend(["--cwd", fixture.root.to_str().unwrap()]);
+    assert!(panes(&fixture.cmd("start", &args)).is_empty());
     fixture.stop();
 }
 
@@ -284,37 +312,25 @@ fn legacy_tab_placements_start_and_save_as_left_tabs() {
 }
 
 #[test]
-fn configured_large_startup_and_invalid_config_are_checked() {
+fn startup_tab_counts_are_ignored_and_invalid_config_is_checked() {
     let fixture = Fixture::new();
     let config = fixture.root.join("config.json");
-    fs::write(&config,r#"{"grid":[3,3],"ui":{"prefix":1,"read_width":100,"read_height_percent":80,"bindings":{"r":"read"}}}"#).unwrap();
-    let panes = fixture.start(&["--config", config.to_str().unwrap()]);
-    assert_eq!(panes.len(), 9);
-    assert_eq!(
-        panes
-            .iter()
-            .map(|p| p.id)
-            .collect::<std::collections::BTreeSet<_>>()
-            .len(),
-        9
-    );
+    // The composed UI's startup grid and tab count no longer create panes:
+    // the server starts empty and the connecting client creates the tabs.
+    fs::write(&config,r#"{"grid":[3,3],"tab_count":12,"ui":{"prefix":1,"read_width":100,"read_height_percent":80,"bindings":{"r":"read"}}}"#).unwrap();
+    let args = ["--shell", "/bin/sh", "--config", config.to_str().unwrap()];
+    assert!(panes(&fixture.cmd("start", &args)).is_empty());
     fixture.stop();
-    fs::write(&config, r#"{"tab_count":12}"#).unwrap();
-    assert_eq!(
-        fixture.start(&["--config", config.to_str().unwrap()]).len(),
-        12
-    );
-    fixture.stop();
-    fs::write(&config, r#"{"tab_count":1000}"#).unwrap();
-    assert_eq!(Settings::load(&config).unwrap().tab_count, Some(1000));
-    fs::write(&config, r#"{"grid":[0,4]}"#).unwrap();
-    assert!(
-        !fixture
-            .cmd("start", &["--config", config.to_str().unwrap()])
-            .status
-            .success()
-    );
-    assert!(!fixture.socket.exists());
+    for invalid in [
+        r#"{"ui":{"prefix":0}}"#,
+        r#"{"ui":{"unknown_setting":true}}"#,
+        r#"{"template":{"grid":[0,4],"panes":[]}}"#,
+    ] {
+        fs::write(&config, invalid).unwrap();
+        let out = fixture.cmd("start", &["--config", config.to_str().unwrap()]);
+        assert!(!out.status.success(), "{invalid} accepted");
+        assert!(!fixture.socket.exists());
+    }
 }
 #[test]
 fn pid_fifo_cannot_block_background_start_and_symlink_state_is_rejected() {
@@ -396,15 +412,13 @@ fn concurrent_starters_keep_winning_configuration_consistent_with_live_shells() 
     let fixture = Fixture::new();
     let barrier = Arc::new(Barrier::new(2));
     let mut workers = Vec::new();
-    for (index, grid, shell) in [(0, (2, 1), "/bin/sh"), (1, (2, 2), "/bin/bash")] {
+    for (index, shell) in [(0, "/bin/sh"), (1, "/bin/bash")] {
         let cwd = fixture.root.join(format!("candidate-{index}"));
         fs::create_dir(&cwd).unwrap();
         let config = fixture.root.join(format!("config-{index}.json"));
         let settings = Settings {
-            grid,
             shell: Some(PathBuf::from(shell)),
             cwd: Some(cwd),
-            ..Settings::default()
         };
         fs::write(&config, serde_json::to_vec(&settings).unwrap()).unwrap();
         let mut command = fixture.command("start");
@@ -430,11 +444,10 @@ fn concurrent_starters_keep_winning_configuration_consistent_with_live_shells() 
         }
     }
     let settings = Settings::load(&fixture.state.join("workspace.json")).unwrap();
-    let actual = fixture.status();
-    assert_eq!(
-        actual.len(),
-        usize::from(settings.grid.0) * usize::from(settings.grid.1)
-    );
+    // Shells the server creates use the winner's saved configuration.
+    fixture.shell();
+    let actual = fixture.shell();
+    assert_eq!(actual.len(), 2);
     for pane in actual {
         assert_eq!(pane.cwd, settings.cwd.as_ref().unwrap().to_string_lossy());
         let argv = fs::read(format!("/proc/{}/cmdline", pane.pid)).unwrap();
@@ -502,13 +515,26 @@ fn stopping_one_named_workspace_preserves_the_other_process() {
             .args(["--workspace", name])
             .env("XDG_STATE_HOME", &fixture.root)
             .current_dir(&fixture.root);
-        if verb == "start" {
-            command.args(["--shell", "/bin/sh", "--startup-panes", "layout"]);
+        match verb {
+            // Still accepted for existing scripts.
+            "start" => {
+                command.args(["--shell", "/bin/sh", "--startup-panes", "none"]);
+            }
+            "ctl" => {
+                command.arg("new");
+            }
+            _ => {}
         }
         bounded_output(&mut command)
     };
-    let first = panes(&named("start", "first"));
-    let second = panes(&named("start", "second"));
+    let started = |name: &str| {
+        assert!(panes(&named("start", name)).is_empty());
+        let out = named("ctl", name);
+        assert!(out.status.success());
+        panes(&named("status", name))
+    };
+    let first = started("first");
+    let second = started("second");
     assert_ne!(first[0].pid, second[0].pid);
     assert!(named("stop", "first").status.success());
     wait_absent(&fixture.root.join("kelpmux/workspaces/first/control.sock"));
@@ -650,8 +676,8 @@ fn ssh_entry_starts_attaches_and_reconnects_with_nonrecursive_shell_environment(
     let fixture = Fixture::new();
     let mut first = SshPty::spawn(&fixture);
     first.ready();
-    let before = fixture.status();
-    assert_eq!(before.len(), 1);
+    // The server started empty; the TUI created the workspace's one shell.
+    let before = fixture.wait_panes(1);
     let result = fixture.root.join("shell-environment");
     let command = format!(
         "printf '%s|%s|%s' \"$TERM\" \"$KELPMUX\" \"$KELPMUX_PANE\" > '{}'\r",
@@ -697,46 +723,63 @@ fn template_start_preserves_names_directories_restart_and_control_after_director
         .unwrap(),
     )
     .unwrap();
+    // The server starts empty; the template is KelpMux's, saved beside the
+    // server's settings for the TUI, which creates its tabs.
+    let template_tabs = || {
+        let (tabs, shell) = kelpmux::native::tui::state::workspace_template(&fixture.state);
+        assert_eq!(shell.as_deref(), Some("/bin/sh"));
+        tabs.into_iter()
+            .map(|tab| (tab.name.unwrap(), PathBuf::from(tab.cwd), tab.shell))
+            .collect::<Vec<_>>()
+    };
+    let expected = vec![
+        ("Backend".to_owned(), first.clone(), None),
+        ("Review".to_owned(), second.clone(), None),
+    ];
     let initial = fixture.start(&["--template", template.to_str().unwrap()]);
-    assert_eq!(initial.len(), 2);
-    assert_eq!(initial[0].title, "Backend");
-    assert_eq!(initial[1].title, "Review");
-    assert_eq!(Path::new(&initial[0].cwd), first);
-    assert_eq!(Path::new(&initial[1].cwd), second);
-    assert_eq!(fixture.start(&[])[0].pid, initial[0].pid);
+    assert_eq!(template_tabs(), expected);
+    // A running workspace is not reconfigured by another start.
+    let other = fixture.root.join("other.json");
+    fs::write(&other, br#"{"grid":[1,1],"panes":[]}"#).unwrap();
+    assert_eq!(
+        fixture.start(&["--template", other.to_str().unwrap()])[0].pid,
+        initial[0].pid
+    );
+    assert_eq!(template_tabs(), expected);
     fixture.stop();
-    let restarted = fixture.start(&[]);
-    assert_eq!(restarted.len(), 2);
-    assert_eq!(restarted[1].title, "Review");
-    assert_eq!(Path::new(&restarted[1].cwd), second);
+    // A restart keeps the saved template.
+    fixture.start(&[]);
+    assert_eq!(template_tabs(), expected);
     fs::remove_dir(&second).unwrap();
-    assert_eq!(fixture.status().len(), 2);
+    assert_eq!(fixture.status().len(), 1);
     assert!(fixture.cmd("diagnostics", &[]).status.success());
     fixture.stop();
+    // A saved template whose folder is gone stops the next start.
     assert!(!fixture.cmd("start", &[]).status.success());
 }
 
 #[test]
-fn explicit_template_override_rebalances_saved_grid_weights() {
+fn start_keeps_other_keys_of_workspace_json() {
     let fixture = Fixture::new();
     fixture.start(&[]);
     fixture.stop();
     let path = fixture.state.join("workspace.json");
-    let mut settings = Settings::load(&path).unwrap();
-    settings.grid = (2, 1);
-    settings.grid_weights = [vec![600, 400], vec![1000]];
-    fs::write(&path, serde_json::to_vec(&settings).unwrap()).unwrap();
+    let mut saved: serde_json::Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+    saved["grid_weights"] = serde_json::json!([[600, 400], [1000]]);
+    saved["tab_count"] = serde_json::json!(2);
+    fs::write(&path, serde_json::to_vec(&saved).unwrap()).unwrap();
     let template = fixture.root.join("template.json");
     fs::write(&template, b"{\"grid\":[3,2],\"panes\":[]}").unwrap();
+    fixture.start(&["--template", template.to_str().unwrap()]);
+    let saved: serde_json::Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+    assert_eq!(saved["template"]["grid"], serde_json::json!([3, 2]));
     assert_eq!(
-        fixture
-            .start(&["--template", template.to_str().unwrap()])
-            .len(),
-        6
+        saved["grid_weights"],
+        serde_json::json!([[600, 400], [1000]])
     );
-    let saved = Settings::load(&path).unwrap();
-    assert_eq!(saved.tab_count, Some(6));
-    assert!(saved.grid_weights.iter().all(Vec::is_empty));
+    assert_eq!(saved["tab_count"], 2);
+    assert_eq!(saved["shell"], "/bin/sh");
+    assert_eq!(saved["cwd"], fixture.root.to_str().unwrap());
     fixture.stop();
 }
 
@@ -775,15 +818,12 @@ fn recovery_is_signalled_after_real_server_crash_once_but_not_after_clean_stop()
         .spawn()
         .unwrap();
     let deadline = Instant::now() + Duration::from_secs(5);
-    let original = loop {
-        let out = fixture.cmd("status", &[]);
-        if out.status.success() {
-            break panes(&out);
-        }
+    while !fixture.cmd("status", &[]).status.success() {
         assert!(Instant::now() < deadline);
         assert!(crashed.try_wait().unwrap().is_none());
         thread::sleep(Duration::from_millis(10));
-    };
+    }
+    let original = fixture.shell();
     let marker = fixture.state.join("server.running.json");
     assert!(marker.is_file());
     assert!(!hello(&fixture).1);
@@ -829,7 +869,8 @@ fn dev_feature_flag_stays_out_of_saved_settings_and_child_environment() {
                 .args(["--shell", "/bin/sh", "--cwd"])
                 .arg(&fixture.root),
         );
-        let pane = panes(&out)[0].clone();
+        assert!(panes(&out).is_empty());
+        let pane = fixture.shell()[0].clone();
         let config: serde_json::Value =
             serde_json::from_slice(&fs::read(fixture.state.join("workspace.json")).unwrap())
                 .unwrap();
@@ -952,7 +993,8 @@ fn permissive_caller_umask_reaches_shell_but_state_stays_private() {
             Ok(())
         });
     }
-    let started = panes(&bounded_output(&mut command));
+    assert!(panes(&bounded_output(&mut command)).is_empty());
+    let started = fixture.shell();
     let shell = fs::read_to_string(format!("/proc/{}/status", started[0].pid)).unwrap();
     assert!(shell.lines().any(|line| line == "Umask:\t0002"));
     for (path, mode) in [
@@ -970,13 +1012,24 @@ fn permissive_caller_umask_reaches_shell_but_state_stays_private() {
     }
     fixture.stop();
 }
-/// KelpMux starts its servers without panes (`--startup-panes none`): the
-/// TUI or web client that connects creates the tabs, and the server keeps
-/// running with none until then.
+/// The server starts without panes (KelpServer 0.3): the TUI or web client
+/// that connects creates the tabs, and the server keeps running with none
+/// until then. `--startup-panes layout` was removed.
 #[test]
 fn default_start_leaves_the_tabs_to_the_connecting_client() {
     use kelpmux::native::stream::{Event, Request, StartupPanes};
     let fixture = Fixture::new();
+    let refused = fixture.cmd(
+        "start",
+        &["--shell", "/bin/sh", "--startup-panes", "layout"],
+    );
+    assert!(!refused.status.success());
+    assert!(
+        String::from_utf8_lossy(&refused.stderr).contains("removed"),
+        "{}",
+        String::from_utf8_lossy(&refused.stderr)
+    );
+    assert!(!fixture.socket.exists());
     let out = bounded_output(
         Command::new(env!("CARGO_BIN_EXE_kelpmux"))
             .args(["start", "--state-dir"])

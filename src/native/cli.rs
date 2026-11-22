@@ -12,22 +12,20 @@ use std::{
 };
 
 pub const HELP: &str = "Owned native terminal workspaces (Linux):
-  kelpmux start [--workspace NAME] [--config PATH] [--template PATH] [--shell PATH] [--cwd PATH] [--replace-running] [--server-binary PATH] [--startup-panes none|layout]
+  kelpmux start [--workspace NAME] [--config PATH] [--template PATH] [--shell PATH] [--cwd PATH] [--replace-running] [--server-binary PATH]
   kelpmux ssh-entry [--workspace NAME] [--takeover]
   kelpmux status|stop|recover|diagnostics|templates [--workspace NAME]
-  kelpmux benchmark
   kelpmux bridge [--workspace NAME] [--socket PATH]
   kelpmux web-bridge [--workspace NAME] [--socket PATH] [--state-dir PATH]
   kelpmux web-relay --config PATH   (browser client; see docs/web.md)
   kelpmux stream-inspect [--workspace NAME] [PANE_ID ...]
-  kelpmux server [--socket PATH] [--state-dir PATH] [--shell PATH] [--cwd PATH] [--size CxR] [--config PATH] [--startup-panes layout|none]
+  kelpmux server [--socket PATH] [--state-dir PATH] [--shell PATH] [--cwd PATH] [--size CxR] [--config PATH]
   kelpmux attach [--workspace NAME] [--socket PATH] [--takeover] [--current-client]
   kelpmux ctl [--socket PATH] list|new|reclaim ID|shutdown
 
 start owns a detached server; ssh-entry starts or attaches. stop ends its processes.
-start and ssh-entry start the server without panes (--startup-panes none); the TUI
-  or web client creates the tabs from its saved layout or template. --startup-panes
-  layout keeps the server's own startup tabs.
+The server (KelpServer 0.3 or later) starts without panes; the TUI or web client
+  creates the tabs from its saved layout or the workspace's template.
 --replace-running ends an outdated server's shells/jobs before starting the selected binary.
 attach runs the TUI: a client of the server's pane stream that renders
   locally and keeps its UI state in the workspace's tui-state.json.
@@ -69,9 +67,8 @@ struct Options {
     server_binary: Option<PathBuf>,
     command: Vec<String>,
     background: bool,
-    settings: super::lifecycle::Settings,
-    /// `none` (the default here): the TUI or web client creates the tabs.
-    startup_panes: super::stream::StartupPanes,
+    /// `workspace.json` or `--config`, with `--template` applied.
+    settings: super::config::Settings,
 }
 fn options(args: &[String]) -> Result<Options> {
     let state = super::lifecycle::workspace_path("main")?;
@@ -89,8 +86,7 @@ fn options(args: &[String]) -> Result<Options> {
         server_binary: None,
         command: vec![],
         background: false,
-        settings: super::lifecycle::Settings::default(),
-        startup_panes: super::stream::StartupPanes::None,
+        settings: super::config::Settings::default(),
     };
     let verb = args.first().ok_or("missing native command")?;
     let mut position = 1;
@@ -154,8 +150,10 @@ fn options(args: &[String]) -> Result<Options> {
                     result.cwd = PathBuf::from(value);
                     cwd_explicit = true;
                 }
+                // Accepted for existing scripts: every server starts without
+                // panes. `layout` fails with KelpServer's explanation.
                 "--startup-panes" if matches!(verb.as_str(), "server" | "start" | "ssh-entry") => {
-                    result.startup_panes = value.parse()?;
+                    value.parse::<super::stream::StartupPanes>()?;
                 }
                 "--size" if matches!(verb.as_str(), "server" | "start" | "ssh-entry") => {
                     result.size = parse_size(value)?;
@@ -203,11 +201,12 @@ fn options(args: &[String]) -> Result<Options> {
         result.socket = result.state.join("control.sock");
     }
     if let Some(path) = config_path {
-        result.settings = super::lifecycle::Settings::load(&path)?;
+        result.settings = super::config::Settings::load(&path)?;
+        result.settings.ui_config()?;
     } else if matches!(verb.as_str(), "start" | "ssh-entry")
-        && result.state.join("workspace.json").is_file()
+        && result.state.join(super::config::FILE).is_file()
     {
-        result.settings = super::lifecycle::Settings::load(&result.state.join("workspace.json"))?;
+        result.settings = super::config::Settings::load(&result.state.join(super::config::FILE))?;
     }
     if let Some(shell) = &result.settings.shell {
         if !shell_explicit {
@@ -228,12 +227,7 @@ fn options(args: &[String]) -> Result<Options> {
         }
     };
     if let Some(path) = template_path {
-        let template = super::templates::Template::load(&absolute(&path)?)?;
-        result.settings.grid = template.grid;
-        result.settings.tab_count =
-            Some(usize::from(template.grid.0) * usize::from(template.grid.1));
-        result.settings.grid_weights = [Vec::new(), Vec::new()];
-        result.settings.template = Some(template);
+        result.settings.template = Some(super::templates::Template::load(&absolute(&path)?)?);
     }
     result.socket = absolute(&result.socket)?;
     result.state = absolute(&result.state)?;
@@ -257,6 +251,18 @@ fn start_server(options: &Options) -> Result<()> {
         .clone()
         .or_else(|| std::env::var_os("KELPSERVER_BINARY").map(PathBuf::from))
         .unwrap_or(std::env::current_exe()?.with_file_name("kelpserver"));
+    // KelpServer records only `shell` and `cwd` in `workspace.json`. The
+    // template and UI settings are KelpMux's keys of the same file, saved
+    // like before only when this start launches (or replaces) the server; a
+    // running workspace keeps its configuration.
+    let launching = options.replace_running || connect(&options.socket).is_err();
+    if launching {
+        if let Some(template) = &options.settings.template {
+            template.validate()?;
+        }
+    }
+    // The server starts without panes: the TUI or web client that connects
+    // creates the workspace's tabs.
     super::lifecycle::start(super::lifecycle::StartRequest {
         socket: &options.socket,
         state: &options.state,
@@ -264,13 +270,13 @@ fn start_server(options: &Options) -> Result<()> {
         cwd: &options.cwd,
         cols: options.size.0,
         rows: options.size.1,
-        settings: &options.settings,
         replace_running: options.replace_running,
         executable: Some(&selected_server),
-        // By default (`none`) the TUI or web client that connects creates the
-        // workspace's tabs (ADR 0002 step 2), not KelpServer's startup tabs.
-        startup_panes: options.startup_panes,
-    })
+    })?;
+    if launching {
+        options.settings.persist(&options.state)?;
+    }
+    Ok(())
 }
 /// Runs the TUI until it detaches, the server stops or a signal ends it.
 fn attach(options: &Options) -> Result<()> {
@@ -345,7 +351,7 @@ pub fn run(args: &[String]) -> Result<()> {
             let stream = connect(&options.socket)?;
             let identity = super::upgrade::identify(&stream, &options.state)?;
             eprintln!(
-                "Kelpmux workspace {}: server {} (protocol {}), client {} (stream {}), PID {}",
+                "Kelpmux workspace {}: server {} ({}), client {} (stream protocol {}), PID {}",
                 options
                     .state
                     .file_name()
@@ -364,13 +370,6 @@ pub fn run(args: &[String]) -> Result<()> {
             println!(
                 "{}",
                 serde_json::to_string_pretty(&super::templates::list(&options.state)?)?
-            );
-            Ok(())
-        }
-        "benchmark" => {
-            println!(
-                "{}",
-                serde_json::to_string_pretty(&super::diagnostics::benchmark()?)?
             );
             Ok(())
         }

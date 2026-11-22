@@ -363,8 +363,11 @@ fn reattaching_in_the_same_epoch_restores_order_parking_and_colours() {
     assert!(c.workspace.panes.iter().any(|p| p.id == 2 && p.parked));
 }
 
+/// The composed-UI fields of `PaneInfo` (`parked`, `number`, `palette`)
+/// are neutral since KelpServer 0.3; the TUI never takes its arrangement
+/// from them.
 #[test]
-fn the_first_stream_attach_adopts_the_composed_arrangement() {
+fn the_first_attach_ignores_the_servers_composed_fields() {
     let mut c = controller_with(Document::default());
     let mut panes = vec![info(1), info(2), info(3)];
     panes[0].number = 2;
@@ -372,10 +375,49 @@ fn the_first_stream_attach_adopts_the_composed_arrangement() {
     panes[2].number = 1;
     panes[2].palette = 7;
     c.event(Event::Update(update(panes))).unwrap();
-    assert_eq!(order(&c), vec![3, 1, 2]);
-    assert!(c.workspace.panes.iter().any(|p| p.id == 2 && p.parked));
-    assert_eq!(c.store.pane(3).unwrap().color, Some(7));
+    assert_eq!(order(&c), vec![1, 2, 3]);
+    assert!(c.workspace.panes.iter().all(|p| !p.parked));
+    assert_eq!(c.store.pane(3).and_then(|p| p.color), None);
     assert!(c.store.document.migrated);
+}
+
+/// The server sends an update right after Welcome, before it processed the
+/// `session_events` opt-in: it lists the panes without their folders. The
+/// first arrangement waits for the update that has them, or the layout
+/// would be matched to the wrong panes (the cause of the flaky
+/// `layout_template_survives_a_server_restart`).
+#[test]
+fn the_first_arrangement_waits_for_session_data() {
+    let tab = |cwd: &str, name: &str| LayoutTab {
+        cwd: cwd.into(),
+        name: Some(name.into()),
+        ..LayoutTab::default()
+    };
+    let mut c = welcomed(
+        Document {
+            layout: vec![tab("/srv/a", "A"), tab("/srv/b", "B")],
+            ..migrated()
+        },
+        Options::default(),
+        Extras {
+            capabilities: vec!["startup-policy"],
+            startup_panes: Some(StartupPanes::None),
+            ..Extras::default()
+        },
+    );
+    c.take_requests();
+    let mut b = info(1);
+    b.cwd = "/srv/b".into();
+    let mut early = update(vec![b.clone()]);
+    early.sessions.clear();
+    c.event(Event::Update(early)).unwrap();
+    assert!(!c.synced());
+    assert!(spawns(&c.take_requests()).is_empty());
+    c.event(Event::Update(update(vec![b]))).unwrap();
+    assert!(c.synced());
+    // Pane 1 is tab B by its folder; only tab A is created.
+    assert_eq!(spawns(&c.take_requests()), [(Some("/srv/a".into()), None)]);
+    assert_eq!(c.workspace.panes[0].title, "B");
 }
 
 #[test]
@@ -410,12 +452,21 @@ fn a_restarted_server_gets_the_layout_template() {
     assert_eq!((a.title.as_str(), a.palette), ("A", 4));
     assert!(c.workspace.panes.iter().any(|p| p.id == 5 && p.parked));
 
-    // A fresh server with fewer startup shells gets the missing tabs.
-    let mut c = controller_with(Document {
-        migrated: true,
-        layout,
-        ..Document::default()
-    });
+    // A new server run with fewer panes than tabs (another client created
+    // one before this TUI attached) gets the missing tabs.
+    let mut c = welcomed(
+        Document {
+            migrated: true,
+            layout,
+            ..Document::default()
+        },
+        Options::default(),
+        Extras {
+            capabilities: vec!["startup-policy"],
+            startup_panes: Some(StartupPanes::None),
+            ..Extras::default()
+        },
+    );
     let mut a = info(1);
     a.cwd = "/srv/a".into();
     c.event(Event::Update(update(vec![a]))).unwrap();
@@ -1073,8 +1124,11 @@ fn an_empty_server_without_a_layout_gets_one_shell() {
     }
 }
 
+/// A server older than `startup-policy` (KelpServer 0.2 before step 2)
+/// created its own startup tabs: the TUI adopts them and only fills a
+/// server that has no pane at all.
 #[test]
-fn layout_servers_only_respawn_over_untouched_startup_shells() {
+fn servers_with_startup_tabs_are_only_filled_when_empty() {
     let document = || Document {
         layout: vec![
             LayoutTab {
@@ -1089,16 +1143,18 @@ fn layout_servers_only_respawn_over_untouched_startup_shells() {
         ],
         ..migrated()
     };
-    // A startup shell is adopted and the missing program tab respawned.
+    // A startup shell is adopted; nothing is created beside it.
     let mut c = welcomed(document(), Options::default(), Extras::default());
     c.event(Event::Update(update(vec![info(1)]))).unwrap();
-    assert_eq!(spawns(&c.take_requests()), [(Some("/srv/y".into()), None)]);
-    // A pane another client created is not a startup pane: nothing respawns.
-    let mut c = welcomed(document(), Options::default(), Extras::default());
-    let mut spawned = update(vec![info(1)]);
-    spawned.sessions[0].spawned_by = Some(OTHER);
-    c.event(Event::Update(spawned)).unwrap();
     assert!(spawns(&c.take_requests()).is_empty());
+    assert_eq!(order(&c), [1]);
+    // An empty server gets the layout.
+    let mut c = welcomed(document(), Options::default(), Extras::default());
+    c.event(Event::Update(empty_update())).unwrap();
+    assert_eq!(
+        spawns(&c.take_requests()),
+        [(Some("/srv/x".into()), None), (Some("/srv/y".into()), None)]
+    );
 }
 
 #[test]
