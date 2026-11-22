@@ -364,6 +364,36 @@ fn legacy_tab_layout_is_migrated_once() {
     assert!(!path_exists(&directory.join(state::FILE)) || store.document.migrated);
 }
 
+#[test]
+fn two_tuis_share_arrangement_changes_live() {
+    let server = Server::new();
+    let mut a = Tui::attach(&server);
+    a.act(Action::NewTab);
+    a.until("second tab", |c| c.workspace.panes.len() == 2);
+    a.c.exchange_state().unwrap();
+    let mut b = Tui::attach(&server);
+    let tabs = a.tabs();
+    assert_eq!(b.tabs(), tabs);
+    b.c.exchange_state().unwrap();
+    // A reorders and parks; B picks it up on its next exchange, attached.
+    a.act(Action::Reorder {
+        source: tabs[1],
+        before: Some(tabs[0]),
+    });
+    a.act(Action::Park(tabs[0]));
+    a.until("requests sent", |_| true);
+    a.c.exchange_state().unwrap();
+    b.until("requests sent", |_| true);
+    b.c.exchange_state().unwrap();
+    assert_eq!(b.tabs(), vec![tabs[1], tabs[0]]);
+    assert!(
+        b.c.workspace
+            .panes
+            .iter()
+            .any(|p| p.id == tabs[0] && p.parked)
+    );
+}
+
 fn path_exists(path: &Path) -> bool {
     fs::symlink_metadata(path).is_ok()
 }

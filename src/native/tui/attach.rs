@@ -25,6 +25,7 @@ use std::{
     time::{Duration, Instant},
 };
 
+/// How often UI state is written and checked for other TUIs' writes.
 const FLUSH_INTERVAL: Duration = Duration::from_millis(500);
 const PAINT_INTERVAL: Duration = Duration::from_millis(16);
 
@@ -246,9 +247,10 @@ fn run_loop(
             painted_at = Instant::now();
         }
         if flushed_at.elapsed() >= FLUSH_INTERVAL {
-            if let Err(error) = controller.store.flush() {
+            // Save this TUI's changes and pick up other TUIs'; a reload
+            // marks the controller dirty, so the next pass repaints.
+            if let Err(error) = controller.exchange_state() {
                 controller.notice = Some(format!("TUI state: {error}"));
-                controller.store.changes = Default::default();
             }
             flushed_at = Instant::now();
         }

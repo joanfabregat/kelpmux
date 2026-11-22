@@ -14,7 +14,7 @@ use super::super::{
     stream::{
         CloseReason, Event, PanePatch, PaneSession, PaneSnapshot, Request, StopReason, Update,
     },
-    ui::{self, DialogKind},
+    ui::{self, DialogKind, UiConfig},
     vitals,
     workspace::Workspace,
 };
@@ -131,6 +131,9 @@ pub struct Controller {
     animation_at: Instant,
     title_at: Instant,
     pub store: Store,
+    /// Settings another TUI wrote while a dialog was open here, with the
+    /// local settings they replace; applied once no dialog is open.
+    deferred_settings: Option<(UiConfig, UiConfig)>,
     pub selection: Option<Selection>,
     pub spinner: usize,
     pub notice: Option<String>,
@@ -188,6 +191,7 @@ impl Controller {
             animation_at: now,
             title_at: now,
             store,
+            deferred_settings: None,
             selection: None,
             spinner: 0,
             notice: None,
@@ -887,21 +891,12 @@ impl Controller {
         if self.workspace.active == id {
             self.workspace.active = fallback;
         }
-        fn replace(reading: ReadingMode, id: PaneId, fallback: PaneId) -> ReadingMode {
-            match reading {
-                ReadingMode::Tabs(pane) | ReadingMode::Capped(pane) if pane == id => {
-                    ReadingMode::Tabs(fallback)
-                }
-                ReadingMode::Fullscreen(pane) if pane == id => ReadingMode::Fullscreen(fallback),
-                other => other,
-            }
-        }
-        self.workspace.reading = replace(self.workspace.reading, id, fallback);
+        self.workspace.reading = replace_reading(self.workspace.reading, id, fallback);
         self.workspace.ui.scratch_reading = self
             .workspace
             .ui
             .scratch_reading
-            .map(|reading| replace(reading, id, fallback));
+            .map(|reading| replace_reading(reading, id, fallback));
         if self
             .workspace
             .ui
@@ -1309,6 +1304,183 @@ impl Controller {
             if !layout.is_empty() {
                 self.store.set_layout(layout);
             }
+        }
+    }
+
+    /// Writes this TUI's pending UI state and applies what other TUIs on the
+    /// workspace wrote since the last exchange. The attach loop calls it
+    /// every 500 ms.
+    pub fn exchange_state(&mut self) -> Result<()> {
+        let mut result = self.store.flush();
+        if result.is_err() {
+            // Report a failed write once instead of retrying it every time.
+            self.store.changes = Default::default();
+        }
+        if !self.synced {
+            return result;
+        }
+        let polled = self.store.poll().map(drop);
+        result = result.and(polled);
+        if self.store.take_reloaded() {
+            self.adopt_state();
+        }
+        self.apply_deferred_settings();
+        result
+    }
+
+    /// Settings changes from another TUI wait while a dialog or help is
+    /// open: they may change the key bindings or the dialog being edited.
+    fn settings_busy(&self) -> bool {
+        self.workspace.ui.dialog.is_some() || self.workspace.help
+    }
+
+    fn apply_settings(&mut self, settings: UiConfig) {
+        let colors = std::mem::take(&mut self.workspace.ui.config.pane_colors);
+        self.workspace.ui.config = settings;
+        self.workspace.ui.config.pane_colors = colors;
+        self.workspace.reflow();
+        self.dirty = true;
+    }
+
+    fn apply_deferred_settings(&mut self) {
+        if self.settings_busy() {
+            return;
+        }
+        if let Some((base, settings)) = self.deferred_settings.take() {
+            // A local change made meanwhile wins, as in `state::merge`.
+            if stored_settings(&self.workspace.ui.config) == base {
+                self.store.document.settings = Some(settings.clone());
+                self.apply_settings(settings);
+            }
+        }
+    }
+
+    /// Applies the store's document, just reloaded with another TUI's write
+    /// and this TUI's pending changes merged on top, to the live UI. Focus,
+    /// dialogs, reading mode, selection and scroll stay local, except that a
+    /// tab parked elsewhere is left as if it had been parked here.
+    fn adopt_state(&mut self) {
+        self.dirty = true;
+        let local = stored_settings(&self.workspace.ui.config);
+        match self.store.document.settings.clone() {
+            Some(settings) if settings != local => {
+                if self.settings_busy() {
+                    // Keep the stored view equal to the displayed settings,
+                    // so `persist` does not write them back meanwhile.
+                    self.store.document.settings = Some(local.clone());
+                    let base = self
+                        .deferred_settings
+                        .take()
+                        .map_or(local, |(base, _)| base);
+                    self.deferred_settings = Some((base, settings));
+                } else {
+                    self.deferred_settings = None;
+                    self.apply_settings(settings);
+                }
+            }
+            Some(_) => self.deferred_settings = None,
+            None => {}
+        }
+        let Some(state) = self.store.current().cloned() else {
+            return;
+        };
+        self.workspace.track_focus();
+        let ids: Vec<PaneId> = self.workspace.panes.iter().map(|p| p.id).collect();
+        // One scratch marker: keep this TUI's if the file still marks it,
+        // else adopt the marked one.
+        let local_scratch = self.workspace.ui.scratch;
+        let marked: Vec<PaneId> = ids
+            .iter()
+            .copied()
+            .filter(|id| state.panes.get(id).is_some_and(|pane| pane.scratch))
+            .collect();
+        let scratch = if marked.is_empty() || local_scratch.is_some_and(|id| marked.contains(&id)) {
+            local_scratch
+        } else {
+            marked.first().copied()
+        };
+        if scratch != local_scratch && self.workspace.ui.scratch_visible {
+            let _ = self.workspace.apply(&Action::ScratchClose);
+        }
+        // The file's order, then live tabs it does not know yet.
+        let mut order: Vec<PaneId> = Vec::new();
+        for id in state.order.iter().chain(ids.iter()) {
+            if ids.contains(id) && Some(*id) != scratch && !order.contains(id) {
+                order.push(*id);
+            }
+        }
+        let previous = std::mem::take(&mut self.workspace.panes);
+        let mut leaving = Vec::new();
+        let mut panes = Vec::with_capacity(previous.len());
+        for id in order.iter().chain(scratch.iter()) {
+            let old = previous.iter().find(|pane| pane.id == *id);
+            let mut info = self.info_for(*id, self.infos.get(id).or(old));
+            if let Some(old) = old {
+                info.number = old.number;
+                info.dead |= old.dead;
+            }
+            if Some(*id) == scratch {
+                info.parked = false;
+                if self.store.pane(*id).is_none_or(|pane| pane.name.is_none()) {
+                    info.title = SCRATCH_TITLE.into();
+                }
+                if local_scratch != scratch {
+                    leaving.push(*id);
+                }
+            } else if info.parked && old.is_some_and(|old| !old.parked) {
+                leaving.push(*id);
+            }
+            panes.push(info);
+        }
+        self.workspace.panes = panes;
+        self.workspace.ui.scratch = scratch;
+        for id in leaving {
+            self.leave(id);
+        }
+        if self.workspace.active == 0 && !self.workspace.ui.scratch_visible {
+            let first = self.main_panes().find(|pane| !pane.parked).map(|p| p.id);
+            if let Some(first) = first {
+                self.workspace.active = first;
+            }
+        }
+        self.workspace.reflow();
+    }
+
+    /// Moves focus off a tab that another TUI parked (or made the scratch
+    /// terminal), as parking it here would: to the previously focused tab,
+    /// else the first.
+    fn leave(&mut self, id: PaneId) {
+        let fallback = self
+            .workspace
+            .previous_focus(id)
+            .or_else(|| {
+                self.main_panes()
+                    .find(|pane| !pane.parked && pane.id != id)
+                    .map(|pane| pane.id)
+            })
+            .unwrap_or(0);
+        if self.workspace.ui.scratch_return == Some(id) {
+            self.workspace.ui.scratch_return = Some(fallback);
+            self.workspace.ui.scratch_reading = self
+                .workspace
+                .ui
+                .scratch_reading
+                .map(|reading| replace_reading(reading, id, fallback));
+        }
+        if self.workspace.active == id {
+            self.workspace.active = fallback;
+            if self.workspace.reading != ReadingMode::Grid {
+                self.workspace.reading = if fallback == 0 {
+                    ReadingMode::Grid
+                } else {
+                    ReadingMode::Tabs(fallback)
+                };
+            }
+        } else {
+            self.workspace.reading = replace_reading(self.workspace.reading, id, fallback);
+        }
+        if self.selection.is_some_and(|selection| selection.pane == id) {
+            self.selection = None;
         }
     }
 
@@ -1783,6 +1955,30 @@ impl Controller {
         }
         frame
     }
+}
+
+/// `reading` with pane `id` replaced by `fallback`; no fallback (0) reads
+/// the grid.
+fn replace_reading(reading: ReadingMode, id: PaneId, fallback: PaneId) -> ReadingMode {
+    match reading {
+        ReadingMode::Tabs(pane) | ReadingMode::Capped(pane) | ReadingMode::Fullscreen(pane)
+            if pane == id && fallback == 0 =>
+        {
+            ReadingMode::Grid
+        }
+        ReadingMode::Tabs(pane) | ReadingMode::Capped(pane) if pane == id => {
+            ReadingMode::Tabs(fallback)
+        }
+        ReadingMode::Fullscreen(pane) if pane == id => ReadingMode::Fullscreen(fallback),
+        other => other,
+    }
+}
+
+/// Settings as stored: colours are pane state, never saved by pane ID.
+fn stored_settings(config: &UiConfig) -> UiConfig {
+    let mut settings = config.clone();
+    settings.pane_colors.clear();
+    settings
 }
 
 fn ordered(start: Point, end: Point) -> (Point, Point) {
