@@ -50,10 +50,6 @@ const FALLBACK_LIMITS: Limits = Limits {
     subscribed_cells: 100_000,
 };
 const MAX_COPY: usize = 64 * 1024;
-/// With a server's `layout` startup policy, panes created within this many
-/// seconds of the oldest pane, and by no stream client, are the server's
-/// startup panes.
-const STARTUP_WINDOW: u64 = 10;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum Pending {
@@ -123,8 +119,9 @@ pub struct Controller {
     pub client: u64,
     pub capabilities: BTreeSet<String>,
     pub server_version: Option<String>,
-    /// The server's startup policy (Welcome `startup_panes`); `None` for a
-    /// server without `startup-policy`, which always creates startup tabs.
+    /// The server's startup policy (Welcome `startup_panes`): always `none`
+    /// since KelpServer 0.3; `None` for an older server without
+    /// `startup-policy`, which created startup tabs.
     pub startup_panes: Option<StartupPanes>,
     /// The previous server run ended uncleanly (Welcome `recovery_pending`):
     /// the first sync opens the Closed dialog and dismisses the signal.
@@ -436,7 +433,7 @@ impl Controller {
                     self.restored(pane, existing, &key, rerun, kind, &name);
                 }
             }
-            Event::History { request, .. } => {
+            Event::History { request, .. } | Event::Diagnostics { request, .. } => {
                 self.pending.remove(&request);
             }
             Event::Search {
@@ -487,9 +484,12 @@ impl Controller {
             }
             return;
         }
-        // Lease races are routine: another client claimed first, or a claim
-        // for a pane that just exited. Their effect shows in the next update.
-        if message.contains("leased") || message.contains("has exited") {
+        // Lease races are routine: another client claimed first, or a claim,
+        // resize or input for a pane that just exited or was just closed
+        // (sent before this client saw `pane_closed`). Their effect shows in
+        // the next update.
+        if message.contains("leased") || message.contains("has exited") || message == "unknown pane"
+        {
             self.claims.retain(|_, takeover| *takeover);
             return;
         }
@@ -532,7 +532,12 @@ impl Controller {
             .into_iter()
             .map(|pane| (pane.id, pane))
             .collect();
-        if !update.sessions.is_empty() || self.infos.is_empty() {
+        // Whether this update carries every pane's session facts. The server
+        // sends an update right after Welcome, before it has processed this
+        // client's `session_events` opt-in; that one lists the panes
+        // without their folders and arguments.
+        let described = !update.sessions.is_empty() || self.infos.is_empty();
+        if described {
             self.sessions = update
                 .sessions
                 .into_iter()
@@ -592,6 +597,12 @@ impl Controller {
             }
         }
         if !self.synced {
+            // The first arrangement matches the layout to the panes by their
+            // session facts: wait for the update built after the opt-in, or
+            // a pane would be mistaken for an unmatched shell.
+            if !described {
+                return Ok(());
+            }
             self.reconcile();
             self.synced = true;
             let active = self.workspace.active;
@@ -718,35 +729,12 @@ impl Controller {
                     order.push(*id);
                 }
             }
-        } else if !self.store.document.migrated && !ids.is_empty() {
-            // First stream attach to this workspace: keep the arrangement the
-            // composed TUI left in the server (order, parking, colours).
-            let mut panes: Vec<&PaneInfo> = self.infos.values().collect();
-            panes.sort_by_key(|pane| (pane.parked, pane.number, pane.id));
-            order = panes.iter().map(|pane| pane.id).collect();
-            let seeds: Vec<_> = panes
-                .iter()
-                .map(|pane| {
-                    (
-                        pane.id,
-                        PaneState {
-                            parked: pane.parked,
-                            color: (pane.palette != default_palette(pane.id)
-                                && usize::from(pane.palette) < ui::PALETTE.len())
-                            .then_some(pane.palette),
-                            ..PaneState::default()
-                        },
-                    )
-                })
-                .collect();
-            for (id, state) in seeds {
-                self.store.set_pane(id, state);
-            }
-            self.store.mark_migrated();
         } else {
-            // A new server run: map the layout template onto its panes. A
-            // first attach to an empty server keeps nothing from the
-            // composed TUI but its migrated layout.
+            // A new server run, or the first attach to this workspace: map
+            // the layout template onto its panes. Nothing is taken from the
+            // server's composed-UI fields (`parked`, `number`, `palette`):
+            // KelpServer 0.3 fills them with neutral values, and the
+            // composed TUI's layout was migrated from its files on open.
             self.store.mark_migrated();
             order = self.apply_template(&ids);
         }
@@ -769,9 +757,10 @@ impl Controller {
 
     /// Matches template tabs to live panes by folder and arguments, then
     /// adopts remaining shells in order, and spawns the tabs still missing
-    /// when this run's layout is the TUI's to create: always on a server
-    /// started without panes (`--startup-panes none`), else only while every
-    /// live pane is one of the server's untouched startup panes. Without a
+    /// when this run's layout is the TUI's to create. A server started
+    /// without panes (every KelpServer 0.3, and 0.2 with `--startup-panes
+    /// none`) leaves it to the client; an older server that created its own
+    /// startup tabs only gets spawns while it has no pane at all. Without a
     /// saved layout the workspace's configured template is used, and an
     /// empty server without either gets one shell.
     fn apply_template(&mut self, ids: &[PaneId]) -> Vec<PaneId> {
@@ -795,19 +784,7 @@ impl Controller {
                 unmatched.push(slot);
             }
         }
-        let fresh = if self.startup_panes == Some(StartupPanes::None) {
-            true
-        } else {
-            let earliest = self.sessions.values().map(|s| s.created_at).min();
-            self.infos.values().all(|pane| {
-                pane.kind.is_none()
-                    && pane.command.is_none()
-                    && self.sessions.get(&pane.id).is_some_and(|s| {
-                        s.spawned_by.is_none()
-                            && earliest.is_some_and(|t| s.created_at <= t + STARTUP_WINDOW)
-                    })
-            })
-        };
+        let fresh = self.startup_panes == Some(StartupPanes::None) || ids.is_empty();
         let spawn = fresh && self.supports("pane-lifecycle");
         for slot in unmatched {
             let tab = &template[slot];

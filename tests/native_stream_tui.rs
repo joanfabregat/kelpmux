@@ -10,7 +10,7 @@ use kelpmux::native::{
     stream::{self, Event, Request},
     tui::{
         controller::{Controller, Options},
-        state::{self, LayoutTab, Store},
+        state::{self, LayoutTab},
     },
 };
 use std::{
@@ -33,17 +33,13 @@ fn server_binary() -> PathBuf {
     }
 }
 
+/// A KelpServer 0.3, which starts without panes: the TUI creates them.
 struct Server {
     root: PathBuf,
     child: Option<Child>,
-    /// `--startup-panes`: `layout` (KelpServer's default) or `none`.
-    startup: &'static str,
 }
 impl Server {
     fn new() -> Self {
-        Self::with_startup("layout")
-    }
-    fn with_startup(startup: &'static str) -> Self {
         static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
         let root = std::env::temp_dir().join(format!(
             "kelpmux-stream-tui-{}-{}",
@@ -52,11 +48,7 @@ impl Server {
         ));
         fs::create_dir(&root).unwrap();
         fs::set_permissions(&root, fs::Permissions::from_mode(0o700)).unwrap();
-        let mut server = Self {
-            root,
-            child: None,
-            startup,
-        };
+        let mut server = Self { root, child: None };
         server.start();
         server
     }
@@ -72,7 +64,6 @@ impl Server {
             .arg(self.state())
             .arg("--socket")
             .arg(self.socket())
-            .args(["--startup-panes", self.startup])
             .args(["--shell", "/bin/sh", "--cwd"])
             .arg(&self.root)
             .env("SHELL", "/bin/sh")
@@ -164,7 +155,8 @@ impl Tui {
         socket
             .set_read_timeout(Some(Duration::from_millis(20)))
             .unwrap();
-        let store = Store::open(&server.state()).unwrap();
+        // As `kelpmux attach` does: migrates the composed UI's files once.
+        let store = kelpmux::native::tui::attach::open_store(&server.state()).unwrap();
         let mut c = Controller::new(160, 48, store, options).unwrap();
         let mut tui = Self {
             socket,
@@ -229,6 +221,14 @@ impl Tui {
             }
         }
     }
+    /// The one shell the TUI creates in a server without panes.
+    fn first_shell(&mut self) -> PaneId {
+        self.until("the first shell", |c| c.workspace.panes.len() == 1);
+        let first = self.tabs()[0];
+        self.until("focus", |c| c.workspace.active == first);
+        first
+    }
+    #[track_caller]
     fn act(&mut self, action: Action) {
         self.c.message(UiMessage::Action(action));
         assert_eq!(self.c.notice, None);
@@ -256,9 +256,8 @@ impl Tui {
 fn tabs_scratch_and_input_over_a_real_server() {
     let server = Server::new();
     let mut tui = Tui::attach(&server);
+    let one = tui.first_shell();
     let first = tui.tabs();
-    assert!(!first.is_empty(), "the server starts with a shell");
-    let one = first[0];
     // Typing claims and sizes the pane; its screen arrives over the stream.
     tui.c
         .message(UiMessage::Input(b"echo stream-$((40+2))\r".to_vec()));
@@ -347,6 +346,7 @@ fn tabs_scratch_and_input_over_a_real_server() {
 fn layout_template_survives_a_server_restart() {
     let mut server = Server::new();
     let mut tui = Tui::attach(&server);
+    tui.first_shell();
     tui.act(Action::NewTab);
     tui.until("second tab", |c| c.workspace.panes.len() == 2);
     let tabs = tui.tabs();
@@ -358,8 +358,8 @@ fn layout_template_survives_a_server_restart() {
     server.start();
     let mut tui = Tui::attach(&server);
     assert_ne!(tui.c.epoch, old_epoch);
-    // Respawned (or adopted) tabs follow the template: two tabs, the first
-    // parked.
+    // The new run starts empty; the TUI recreates the template's tabs, the
+    // first parked.
     tui.until("template tabs", |c| c.workspace.panes.len() == 2);
     let tabs = tui.tabs();
     assert!(
@@ -376,21 +376,48 @@ fn layout_template_survives_a_server_restart() {
     assert!(document.layout[0].parked);
 }
 
+/// The tab layout a KelpServer 0.2 composed UI saved (`tab-layout.json`)
+/// becomes the TUI's layout once: the first attach creates its tabs.
 #[test]
 fn legacy_tab_layout_is_migrated_once() {
     let server = Server::new();
     let directory = server.state();
-    // The composed server persisted its layout on start.
-    let layout = state::legacy_layout(&directory);
+    let cwd = server.root.to_string_lossy().into_owned();
+    let legacy = serde_json::json!({
+        "template": null,
+        "cwd": cwd,
+        "shell": "/bin/sh",
+        "panes": [
+            {"name": "Build", "cwd": cwd, "shell": "/bin/sh"},
+            {"name": "Logs", "cwd": cwd, "shell": "/bin/sh"},
+        ],
+    });
+    kelpmux::journal::atomic(&directory.join("tab-layout.json"), &legacy).unwrap();
+    assert_eq!(state::legacy_layout(&directory).len(), 2);
+    let mut tui = Tui::attach(&server);
+    tui.until("migrated tabs", |c| {
+        c.workspace
+            .panes
+            .iter()
+            .map(|p| p.title.as_str())
+            .eq(["Build", "Logs"])
+    });
+    assert!(tui.c.store.document.migrated);
+    tui.c.store.flush().unwrap();
+    drop(tui);
+    // Migrated once: the legacy file is no longer needed.
+    fs::remove_file(directory.join("tab-layout.json")).unwrap();
     let store = kelpmux::native::tui::attach::open_store(&directory).unwrap();
-    assert_eq!(store.document.layout.len(), layout.len());
-    assert!(!path_exists(&directory.join(state::FILE)) || store.document.migrated);
+    assert!(store.document.migrated);
+    assert_eq!(store.document.layout.len(), 2);
+    assert!(path_exists(&directory.join(state::FILE)));
 }
 
 #[test]
 fn two_tuis_share_arrangement_changes_live() {
     let server = Server::new();
     let mut a = Tui::attach(&server);
+    a.first_shell();
     a.act(Action::NewTab);
     a.until("second tab", |c| c.workspace.panes.len() == 2);
     a.c.exchange_state().unwrap();
@@ -421,17 +448,15 @@ fn path_exists(path: &Path) -> bool {
     fs::symlink_metadata(path).is_ok()
 }
 
-/// A server started without panes (`--startup-panes none`, as `kelpmux
-/// start` does) gets its tabs from the TUI: one shell without a layout,
-/// then the saved layout after a restart.
+/// A server starts without panes (KelpServer 0.3) and gets its tabs from
+/// the TUI: one shell without a layout, then the saved layout after a
+/// restart.
 #[test]
-fn startup_none_tui_creates_one_shell_then_its_saved_layout() {
-    let mut server = Server::with_startup("none");
+fn the_tui_creates_one_shell_then_its_saved_layout() {
+    let mut server = Server::new();
     let mut tui = Tui::attach(&server);
     assert_eq!(tui.c.startup_panes, Some(stream::StartupPanes::None));
-    tui.until("the first shell", |c| c.workspace.panes.len() == 1);
-    let first = tui.tabs()[0];
-    tui.until("focus", |c| c.workspace.active == first);
+    tui.first_shell();
     tui.act(Action::NewTab);
     tui.until("second tab", |c| c.workspace.panes.len() == 2);
     tui.act(Action::Park(tui.tabs()[0]));
@@ -458,7 +483,7 @@ fn startup_none_tui_creates_one_shell_then_its_saved_layout() {
 #[test]
 fn template_tabs_spawn_their_shell_and_fall_back_without_it() {
     use std::os::unix::fs::PermissionsExt;
-    let server = Server::with_startup("none");
+    let server = Server::new();
     let custom = server.root.join("custom-shell");
     fs::write(&custom, "#!/bin/sh\nexec /bin/sh \"$@\"\n").unwrap();
     fs::set_permissions(&custom, fs::Permissions::from_mode(0o700)).unwrap();
@@ -531,7 +556,7 @@ fn limits_notification_run_and_unused_shells_come_from_the_server() {
     assert_eq!(tui.c.limits.subscriptions, 64);
     assert_eq!(tui.c.limits.subscribed_cells, 100_000);
     assert!(!tui.c.workspace.ui.notification_run.is_empty());
-    let first = tui.tabs()[0];
+    let first = tui.first_shell();
     tui.until("unused shell", |c| c.workspace.ui.unused.contains(&first));
     tui.c.message(UiMessage::Input(b"sleep 30\r".to_vec()));
     tui.until("shell in use", |c| !c.workspace.ui.unused.contains(&first));

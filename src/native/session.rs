@@ -4,6 +4,15 @@
 //! sends `hello`, sends one or a few requests and waits for their correlated
 //! replies; it never subscribes to screens and never keeps a lease after it
 //! disconnects.
+//!
+//! KelpServer 0.3 has a similar `connection::Session` for its own `start`,
+//! `stop` and `status`. KelpMux keeps this one because it needs more than
+//! that type offers: opening on an already connected socket (the web bridge
+//! checks the peer process on it before greeting), the 10 s bound that
+//! `closed_sessions` needs (KelpServer's waits 6 s), `require` with a
+//! user-facing message, the session-data opt-in (`sessions`), `claim` and
+//! `release` for `ctl reclaim`, `wait_closed` after `shutdown`, request
+//! identities unique per process, and an epoch check on updates.
 use super::{
     protocol::*,
     stream::{self, Event, Request, Update},
@@ -26,7 +35,6 @@ pub struct Session {
     pub epoch: String,
     pub capabilities: Vec<String>,
     pub server_version: Option<String>,
-    pub startup_panes: Option<stream::StartupPanes>,
 }
 
 impl Session {
@@ -46,7 +54,6 @@ impl Session {
             epoch: String::new(),
             capabilities: Vec::new(),
             server_version: None,
-            startup_panes: None,
         };
         match session.event()? {
             Event::Welcome {
@@ -55,14 +62,12 @@ impl Session {
                 epoch,
                 capabilities,
                 server_version,
-                startup_panes,
                 ..
             } if version == stream::VERSION && client != 0 && !epoch.is_empty() => {
                 session.client = client;
                 session.epoch = epoch;
                 session.capabilities = capabilities;
                 session.server_version = server_version;
-                session.startup_panes = startup_panes;
                 Ok(session)
             }
             _ => Err("the terminal server did not welcome the stream".into()),
