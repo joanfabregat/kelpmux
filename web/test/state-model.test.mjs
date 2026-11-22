@@ -4,13 +4,12 @@ import {
   nextPane,
   notificationMatches,
   notificationStatus,
+  paneNotifications,
   paneState,
   rollup,
   rollupSummary,
   tabTitle,
-  unreadCount,
   unreadFor,
-  visibleNotifications,
 } from "../src/state/model.ts";
 
 const pane = (id, status = "idle", extra = {}) => ({
@@ -133,20 +132,31 @@ test("next question / completion cycles from the active pane", () => {
   assert.equal(nextPane([], 1, attention), null);
 });
 
-test("the notification list shows unread ones of live panes, or history", () => {
-  const panes = [pane(1)];
+test("a terminal's panel lists its own notifications, unread or history", () => {
   const list = [
     note(1, 1, "turn_finished"),
     note(2, 1, "failed", { read: true }),
     note(3, 7, "input_needed"),
+    note(4, 1, "input_needed"),
+    // An earlier process in the same pane is not this terminal's.
+    note(5, 1, "failed", { origin: { run: "r", pid: 999 } }),
   ];
   assert.deepEqual(
-    visibleNotifications(list, panes, false).map((n) => n.id),
-    [1],
+    paneNotifications(list, pane(1), false).map((n) => n.id),
+    [4, 1],
   );
   assert.deepEqual(
-    visibleNotifications(list, panes, true).map((n) => n.id),
-    [3, 2, 1],
+    paneNotifications(list, pane(1), true).map((n) => n.id),
+    [4, 2, 1],
   );
-  assert.equal(unreadCount(list, panes), 1);
+  assert.deepEqual(
+    paneNotifications(list, pane(7), false).map((n) => n.id),
+    [3],
+  );
+  assert.deepEqual(paneNotifications(list, pane(2), true), []);
+  // A closed terminal has none.
+  assert.deepEqual(
+    paneNotifications(list, pane(1, "exited", { dead: true }), true),
+    [],
+  );
 });

@@ -15,6 +15,7 @@ import {
 import { Icon } from "./status";
 import { StateMark } from "./state/StateMark";
 import type { DisplayState } from "./state/model";
+import { NotificationsButton } from "./Shell";
 
 export type Device = {
   mode: LayoutMode;
@@ -185,13 +186,16 @@ export function KeyBar({
 }
 
 /** The phone's bar above a terminal: back to the terminal list, the
- * terminal's state and title, and the terminal's menu. The Input control is
- * on the key bar below the terminal. */
+ * terminal's state and title, its notifications (the bell, as in a
+ * desktop terminal's header) and its menu. The Input control is on the key
+ * bar below the terminal. */
 export function PhoneBar({
   pane,
   state,
   attention,
   onList,
+  unread,
+  onNotifications,
   onMenu,
 }: {
   pane: Pane;
@@ -199,6 +203,9 @@ export function PhoneBar({
   /** Terminals needing attention, shown on the back button. */
   attention: number;
   onList: () => void;
+  /** The terminal's unread notifications. */
+  unread: number;
+  onNotifications: () => void;
   onMenu: (x: number, y: number) => void;
 }) {
   return (
@@ -223,6 +230,11 @@ export function PhoneBar({
         {pane.number > 0 && <span className="tab-number">{pane.number}</span>}
         <span className="phone-title-text">{pane.title || "shell"}</span>
       </span>
+      <NotificationsButton
+        label={pane.title || "shell"}
+        count={unread}
+        onOpen={onNotifications}
+      />
       <button
         type="button"
         className="icon-btn phone-menu"

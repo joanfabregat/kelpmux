@@ -13,7 +13,6 @@ export type PrefixAction =
   | "grid-resize-down"
   | "grid-equalize"
   | "grid"
-  | "full-width"
   | "next"
   | "previous"
   | "page-previous"
@@ -64,7 +63,6 @@ export function prefixAction(event: {
     "=": "grid-equalize",
     g: "grid",
     e: "grid",
-    f: "full-width",
     PageUp: "page-previous",
     PageDown: "page-next",
     h: "focus-left",

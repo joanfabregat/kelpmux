@@ -185,14 +185,6 @@
 .rail-fold .count {
   color: var(--text-3);
 }
-.tool-list {
-  display: flex;
-  flex-direction: column;
-  gap: 1px;
-}
-.tool-item .badge {
-  margin-left: auto;
-}
 .rail.folded .term-names,
 .rail.folded .term-row-actions,
 .rail.folded .rail-marks,
