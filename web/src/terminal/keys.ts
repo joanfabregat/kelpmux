@@ -161,7 +161,7 @@ export async function discoverKey(
     candidates,
   };
 }
-export async function useExistingKey(
+export async function selectExistingKey(
   config: Connection,
   saved: Identity[],
   options: { signal?: AbortSignal; knownOnly?: boolean } = {},

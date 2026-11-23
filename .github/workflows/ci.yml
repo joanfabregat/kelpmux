@@ -142,7 +142,7 @@ jobs:
           docker run --rm -v "$GITHUB_WORKSPACE:/w" -w /w/web docker.io/library/node:24-bookworm sh -euc "npm ci --ignore-scripts; npm audit --audit-level=high"
       - name: Validate and build web assets
         run: |
-          docker run --rm --network=none -v "$GITHUB_WORKSPACE:/w" -w /w/web docker.io/library/node:24-bookworm sh -euc "npm test; npm run check; npm run build"
+          docker run --rm --network=none -v "$GITHUB_WORKSPACE:/w" -w /w/web docker.io/library/node:24-bookworm sh -euc "npm test; npm run check; npm run lint; npm run build"
       - name: Build kelpmux with the embedded web client
         run: |
           cargo +1.99.0 build --locked --offline --release --bin kelpmux

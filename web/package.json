@@ -7,7 +7,8 @@
   "scripts": {
     "build": "vite build",
     "check": "tsc --noEmit",
-    "test": "node --test test/*.test.mjs && node test/wasm.mjs"
+    "test": "node --test test/*.test.mjs && node test/wasm.mjs",
+    "lint": "oxlint src test/*.fixture.tsx"
   },
   "dependencies": {
     "react": "19.3.1",
@@ -16,6 +17,7 @@
   "devDependencies": {
     "@types/react": "19.3.0",
     "@types/react-dom": "19.3.0",
+    "oxlint": "1.94.0",
     "playwright": "1.64.0",
     "prettier": "3.9.10",
     "typescript": "7.0.2",
