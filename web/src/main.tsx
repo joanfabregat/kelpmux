@@ -46,6 +46,11 @@ import { Stats } from "./Stats";
 import { KeySettings } from "./KeySettings";
 import { LoginScreen, PopupConnecting, StoppedWorkspace } from "./Login";
 import { ConfigPanel } from "./ConfigPanel";
+import {
+  IdleWarning,
+  useActivityReports,
+  type IdleNotice,
+} from "./IdleWarning";
 import { OPEN_SETTINGS } from "./Settings";
 import {
   NotificationsButton,
@@ -247,6 +252,12 @@ function App() {
   /** The bridge reported this workspace's server stopped (its name). */
   const [stopped, setStopped] = useState(""),
     [starting, setStarting] = useState(false);
+  /** The shared connection's idle warning (IdleWarning.tsx). */
+  const [idle, setIdle] = useState<IdleNotice | null>(null);
+  const reportActivity = () => {
+    if (store.session instanceof Session) store.session.activity();
+  };
+  useActivityReports(online ? reportActivity : null, !!idle);
   const [keyBusy, setKeyBusy] = useState(false);
   const [keyToDelete, setKeyToDelete] = useState("");
   const [settingsSection, setSettingsSection] = useState("appearance");
@@ -1487,6 +1498,7 @@ function App() {
         else progress.signed = true;
       },
     );
+    session.onIdle = setIdle;
     connectionAttempt.current = session;
     store.session = session;
     try {
@@ -2553,6 +2565,7 @@ function App() {
             </section>
           </div>
         )}
+        {idle && <IdleWarning notice={idle} onStay={reportActivity} />}
       </div>
     </div>
   );

@@ -162,6 +162,15 @@ pub struct Config {
     /// Optional environment name for reported errors (e.g. `preprod`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub error_environment: Option<String>,
+    /// Optional minutes without activity before every browser window warns
+    /// that the shared connection will lock (1–1440; the browser defaults
+    /// to 60).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub idle_warning_minutes: Option<u32>,
+    /// Optional minutes after that warning before the connection locks
+    /// (1–240; the browser defaults to 15).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub idle_lock_minutes: Option<u32>,
 }
 impl Config {
     /// Validated error-reporting settings; `None` when no DSN is configured.
@@ -206,10 +215,23 @@ impl Config {
         }
         super::lifecycle::workspace_path(&self.workspace)?;
         self.error_reporting()?;
+        if self
+            .idle_warning_minutes
+            .is_some_and(|m| !(1..=1440).contains(&m))
+        {
+            return Err("idle_warning_minutes must be an integer from 1 to 1440".into());
+        }
+        if self
+            .idle_lock_minutes
+            .is_some_and(|m| !(1..=240).contains(&m))
+        {
+            return Err("idle_lock_minutes must be an integer from 1 to 240".into());
+        }
         Ok(())
     }
     /// The bootstrap document the browser reads from `/connection.json`.
-    /// `errors` is present only when a DSN is configured.
+    /// `errors` is present only when a DSN is configured, and each idle
+    /// duration only when it is configured (the browser has defaults).
     fn connection(&self) -> Result<serde_json::Value> {
         let mut value = json!({"origin":self.origin,"rpId":self.origin.trim_start_matches("https://").split(':').next().unwrap_or(""),"hostPublic":self.ssh_host_key,"username":self.username,"command":self.bridge_command,"workspace":self.workspace,"dev":self.dev});
         if let Some(settings) = self.error_reporting()? {
@@ -218,6 +240,12 @@ impl Config {
                 errors["environment"] = environment.into();
             }
             value["errors"] = errors;
+        }
+        if let Some(minutes) = self.idle_warning_minutes {
+            value["idle_warning_minutes"] = minutes.into();
+        }
+        if let Some(minutes) = self.idle_lock_minutes {
+            value["idle_lock_minutes"] = minutes.into();
         }
         Ok(value)
     }
@@ -712,6 +740,8 @@ mod tests {
             dev: true,
             glitchtip_dsn: None,
             error_environment: None,
+            idle_warning_minutes: None,
+            idle_lock_minutes: None,
         }
     }
     fn reporting_config() -> Config {
@@ -973,5 +1003,71 @@ mod tests {
             json["errors"],
             json!({"dsn": "https://abc123@errors.example.com/7"})
         );
+    }
+    #[test]
+    fn idle_durations_parse_validate_and_reach_the_browser_only_when_set() {
+        let request = b"GET /connection.json HTTP/1.1\r\nHost: terminal.example.com\r\n\r\n";
+        let base = serde_json::to_value(config()).unwrap();
+        // Absent: the existing format; the browser uses its defaults.
+        assert!(base.get("idle_warning_minutes").is_none());
+        let parsed: Config = serde_json::from_value(base.clone()).unwrap();
+        assert!(parsed.validate().is_ok());
+        let (_, json) = split(&http_with(parsed, request));
+        assert!(json.get("idle_warning_minutes").is_none(), "{json}");
+        assert!(json.get("idle_lock_minutes").is_none(), "{json}");
+        // Null, as in the shipped example, is absent too.
+        let example: Config =
+            serde_json::from_str(include_str!("../../examples/web-relay.json")).unwrap();
+        assert_eq!(example.idle_warning_minutes, None);
+        assert_eq!(example.idle_lock_minutes, None);
+        // Present: passed through exactly as given, each on its own.
+        for (warning, lock) in [(Some(1), Some(240)), (Some(1440), None), (None, Some(1))] {
+            let mut value = base.clone();
+            if let Some(m) = warning {
+                value["idle_warning_minutes"] = m.into();
+            }
+            if let Some(m) = lock {
+                value["idle_lock_minutes"] = m.into();
+            }
+            let parsed: Config = serde_json::from_value(value).unwrap();
+            assert!(parsed.validate().is_ok(), "{warning:?} {lock:?}");
+            let (_, json) = split(&http_with(parsed, request));
+            assert_eq!(
+                json.get("idle_warning_minutes"),
+                warning.map(|m: u32| json!(m)).as_ref()
+            );
+            assert_eq!(
+                json.get("idle_lock_minutes"),
+                lock.map(|m: u32| json!(m)).as_ref()
+            );
+            assert_eq!(json["workspace"], "dev");
+        }
+        // Out of range stops the relay at startup.
+        for (warning, lock) in [
+            (Some(0), None),
+            (Some(1441), None),
+            (None, Some(0)),
+            (None, Some(241)),
+        ] {
+            let mut c = config();
+            c.idle_warning_minutes = warning;
+            c.idle_lock_minutes = lock;
+            assert!(c.validate().is_err(), "{warning:?} {lock:?}");
+        }
+        // Not integers: configuration errors at parse time.
+        for (field, bad) in [
+            ("idle_warning_minutes", json!(1.5)),
+            ("idle_warning_minutes", json!(-5)),
+            ("idle_warning_minutes", json!("60")),
+            ("idle_lock_minutes", json!(true)),
+            ("idle_lock_minutes", json!(4294967296u64)),
+        ] {
+            let mut value = base.clone();
+            value[field] = bad.clone();
+            assert!(
+                serde_json::from_value::<Config>(value).is_err(),
+                "{field} {bad}"
+            );
+        }
     }
 }

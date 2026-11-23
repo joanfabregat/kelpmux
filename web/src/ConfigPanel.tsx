@@ -10,6 +10,7 @@ import { Icon } from "./status";
 import { shortcuts } from "./shortcuts";
 import type { Preferences } from "./layout-store";
 import { UploadSettings } from "./Upload";
+import { idleMinutes, minutesText } from "./idle";
 
 export type ConfigPanelProps = {
   store: Store;
@@ -46,6 +47,7 @@ export function ConfigPanel({
   setUploadDestination,
   uploadUnavailable,
 }: ConfigPanelProps) {
+  const idle = idleMinutes(connection);
   return (
     <Settings active={settingsSection} onChange={setSettingsSection}>
       <section hidden={settingsSection !== "appearance"}>
@@ -211,8 +213,9 @@ export function ConfigPanel({
           {store.session instanceof Session && store.session.host
             ? "Connection tab — keep this tab open while using other KelpMux windows."
             : "Using the SSH connection held by another KelpMux tab."}{" "}
-          Shared sessions lock after 15 minutes without interaction. Logging out
-          disconnects every shared window; terminals keep running.
+          After {minutesText(idle.warning)} without interaction every window
+          warns, and the shared session locks {minutesText(idle.lock)} later.
+          Logging out disconnects every shared window; terminals keep running.
         </p>
         <label className="close-setting">
           <input

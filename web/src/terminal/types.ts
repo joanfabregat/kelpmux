@@ -69,6 +69,9 @@ export type Connection = {
   dev: boolean;
   /** Present only when the relay configured error reporting (errors.ts). */
   errors?: { dsn: string; environment?: string };
+  /** Present only when the relay sets them; see web/src/idle.ts. */
+  idle_warning_minutes?: number;
+  idle_lock_minutes?: number;
 };
 export type Identity = {
   version: number;

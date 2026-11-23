@@ -21,8 +21,77 @@ let ssh: HostSession | undefined,
   latest: any;
 let host: View | undefined;
 let signingKey: { credentialId: string; label?: string } | undefined;
+/** Idle lock (decision 163): after `idleWarningMs` without user activity in
+ * any window, every window shows a warning; `idleLockMs` later the
+ * connection locks. Activity is terminal input and the windows' own
+ * `activity` reports (keys, clicks, taps, scrolling), never terminal output,
+ * polls or heartbeats. Deadlines are wall-clock: a worker that wakes past
+ * both (a sleeping laptop, a suspended tab) locks at once, unwarned. The
+ * relay may set both durations in /connection.json (`idle_warning_minutes`,
+ * `idle_lock_minutes`); the defaults match web/src/idle.ts. */
+const minute = 60 * 1000;
 let lastActivity = Date.now();
-const idleMs = 15 * 60 * 1000;
+let idleWarningMs = 60 * minute,
+  idleLockMs = 15 * minute,
+  idleWarned = false,
+  idleTimer: ReturnType<typeof setTimeout> | undefined;
+/** Minutes from the relay as milliseconds; the relay validated the ranges. */
+function minutes(value: unknown, fallback: number) {
+  return typeof value === "number" && Number.isFinite(value) && value > 0
+    ? value * minute
+    : fallback * minute;
+}
+function duration(ms: number) {
+  const m = ms / minute;
+  if (Number.isInteger(m)) return `${m} minute${m === 1 ? "" : "s"}`;
+  const s = Math.round(ms / 1000);
+  return `${s} second${s === 1 ? "" : "s"}`;
+}
+function idleNotice() {
+  return idleWarned
+    ? {
+        type: "idle",
+        warning: true,
+        idleFor: duration(idleWarningMs),
+        lockAt: lastActivity + idleWarningMs + idleLockMs,
+      }
+    : { type: "idle", warning: false };
+}
+/** Locks a connection idle past both durations; true when it did. */
+function lockIfExpired() {
+  if (!ssh || Date.now() - lastActivity < idleWarningMs + idleLockMs)
+    return false;
+  stop(
+    `Session locked after ${duration(idleWarningMs + idleLockMs)} without activity. Authenticate again to reconnect.`,
+  );
+  return true;
+}
+/** Locks or warns by wall-clock time, then waits for the next deadline. */
+function checkIdle() {
+  if (lockIfExpired() || !ssh) return;
+  if (!idleWarned && Date.now() - lastActivity >= idleWarningMs) {
+    idleWarned = true;
+    for (const view of views) send(view, idleNotice());
+  }
+  scheduleIdle();
+}
+function scheduleIdle() {
+  clearTimeout(idleTimer);
+  idleTimer = undefined;
+  if (!ssh) return;
+  const due =
+    lastActivity + idleWarningMs + (idleWarned ? idleLockMs : 0) - Date.now();
+  idleTimer = setTimeout(checkIdle, Math.max(0, due));
+}
+/** The user did something: restart the idle clock and lift any warning. */
+function active() {
+  lastActivity = Date.now();
+  if (idleWarned) {
+    idleWarned = false;
+    for (const view of views) send(view, idleNotice());
+  }
+  scheduleIdle();
+}
 /** Uploads (KelpServer `uploads`) belong to the one SSH connection all
  * windows share: correlated upload requests by identifier (with the batch a
  * finish or cancel names), and batches with the window that began them and
@@ -179,6 +248,9 @@ function stop(message = "Signed out of all KelpMux windows.") {
   views.clear();
   host = undefined;
   signingKey = undefined;
+  idleWarned = false;
+  clearTimeout(idleTimer);
+  idleTimer = undefined;
 }
 function subscribe() {
   if (!welcome || !ssh) return;
@@ -368,14 +440,13 @@ class HostSession {
 }
 async function message(view: View, data: any) {
   // Mobile browsers may suspend interval callbacks; check before any action.
-  if (ssh && Date.now() - lastActivity >= idleMs) {
-    stop(
-      "Session locked after 15 minutes without input. Authenticate again to reconnect.",
-    );
-    return;
-  }
+  if (lockIfExpired()) return;
   view.pulse = Date.now();
   if (data.type === "pulse") return;
+  if (data.type === "activity") {
+    if (view.ready && ssh) active();
+    return;
+  }
   if (data.type === "leave") {
     leave(view);
     return;
@@ -401,6 +472,7 @@ async function message(view: View, data: any) {
     view.ready = true;
     if (ssh) {
       replay(view);
+      if (idleWarned) send(view, idleNotice());
       return;
     }
     if (data.resumeOnly) {
@@ -414,8 +486,10 @@ async function message(view: View, data: any) {
     host = view;
     signingKey = { credentialId: identity.credentialId, label: identity.label };
     configKey = key;
-    lastActivity = Date.now();
+    idleWarningMs = minutes(expected.idle_warning_minutes, 60);
+    idleLockMs = minutes(expected.idle_lock_minutes, 15);
     ssh = new HostSession(view);
+    active();
     send(view, { type: "host_start" });
     return;
   }
@@ -493,7 +567,7 @@ async function message(view: View, data: any) {
       )
         throw Error("Unsupported upload operation");
       // An upload is deliberate, like typing: it keeps the session open.
-      lastActivity = Date.now();
+      active();
       uploadFrom(view, type, params);
       return;
     }
@@ -501,29 +575,28 @@ async function message(view: View, data: any) {
       // Notification read marks are workspace state, not a pane lease.
       if (!Number.isSafeInteger(params.notification) || params.notification < 1)
         throw Error("Invalid notification");
-      lastActivity = Date.now();
+      active();
       ssh.request(type, { notification: params.notification });
       return;
     }
     if (type === "claim") {
       owners.set(params.pane, view);
       claiming.set(params.pane, (claiming.get(params.pane) || 0) + 1);
-      lastActivity = Date.now();
+      active();
       ownership();
     } else if (
       ["resize", "input", "paste", "mouse", "theme", "release"].includes(type)
     ) {
       if (owners.get(params.pane) !== view) return;
       if (type === "release") owners.delete(params.pane);
-      if (["input", "paste", "mouse"].includes(type)) lastActivity = Date.now();
+      if (["input", "paste", "mouse"].includes(type)) active();
     } else if (type !== "resync") throw Error("Unsupported pane operation");
     ssh.request(type, params);
     return;
   }
   if (data.type === "rpc") {
     // Polls and passive rendering must not keep a forgotten session unlocked.
-    if (!["state", "status", "history"].includes(data.method))
-      lastActivity = Date.now();
+    if (!["state", "status", "history"].includes(data.method)) active();
     const result = await ssh.rpc(data.method, data.params);
     send(view, { type: "result", id: data.id, result });
     return;
@@ -531,12 +604,8 @@ async function message(view: View, data: any) {
   throw Error("Unsupported worker message");
 }
 setInterval(() => {
-  if (ssh && Date.now() - lastActivity >= idleMs) {
-    stop(
-      "Session locked after 15 minutes without input. Authenticate again to reconnect.",
-    );
-    return;
-  }
+  // Timers may be throttled or suspended; this also catches a late wake-up.
+  checkIdle();
   for (const view of views) if (Date.now() - view.pulse > 120000) leave(view);
 }, 10000);
 (globalThis as any).onconnect = (event: MessageEvent) => {
