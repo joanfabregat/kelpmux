@@ -670,6 +670,7 @@ fn focusing_a_pane_acknowledges_its_notifications() {
     c.take_requests();
     let mut next = update(vec![info(1), info(2)]);
     next.notifications = vec![Notification {
+        bell: false,
         origin: Some(NotificationOrigin {
             run: "run".into(),
             pid: 1002,
@@ -720,6 +721,7 @@ fn new_notifications_raise_one_desktop_notification_each() {
     c.take_requests();
     assert_eq!(c.workspace.active, 1);
     let event = |id: u64, pane: PaneId, status: Status| Notification {
+        bell: false,
         origin: Some(NotificationOrigin {
             run: "run".into(),
             pid: 1000 + pane as u32,
@@ -829,6 +831,7 @@ fn observers_raise_no_desktop_notifications() {
         owner: OTHER,
     }];
     next.notifications = vec![Notification {
+        bell: false,
         origin: None,
         id: 1,
         pane: 1,

@@ -121,6 +121,7 @@ fn focusing_reused_panes_acknowledges_only_their_history() {
         ws.panes[1].title = "htop".into();
         ws.ui.notifications = (1..=2)
             .map(|pane| Notification {
+                bell: false,
                 id: pane,
                 pane,
                 title: "Previous agent".into(),

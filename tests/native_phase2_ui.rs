@@ -168,6 +168,7 @@ fn notification_history_acknowledges_and_jumps_and_next_agent_navigation_wraps()
     ws.apply(&Action::NextFinished).unwrap();
     assert_eq!(ws.active, 4);
     ws.ui.notifications.push(Notification {
+        bell: false,
         id: 7,
         pane: 2,
         title: "question".into(),
