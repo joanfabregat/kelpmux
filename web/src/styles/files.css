@@ -335,3 +335,66 @@ button.files-open:hover .files-name {
 .phone .files-head {
   height: 48px;
 }
+
+/* The side panel: the editor docked right of the terminal shown alone,
+ * resized by dragging its left edge (src/files/SidePanel.tsx). */
+.side-panel {
+  position: relative;
+  display: flex;
+  flex: none;
+  width: var(--side-width);
+  max-width: calc(100% - 240px);
+  min-width: 0;
+  min-height: 0;
+  border-left: 1px solid var(--line);
+}
+.side-panel[hidden] {
+  display: none;
+}
+.side-divider {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: -4px;
+  z-index: 3;
+  width: 8px;
+  cursor: col-resize;
+  touch-action: none;
+}
+.side-divider span {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 3px;
+  width: 2px;
+  background: transparent;
+  transition: background 0.12s;
+}
+.side-divider:hover span,
+.side-divider:active span {
+  background: var(--accent);
+}
+/* While dragging, the pointer may cross the terminal and the editor. */
+body.side-resizing {
+  cursor: col-resize;
+  user-select: none;
+}
+body.side-resizing .workspace {
+  pointer-events: none;
+}
+
+/* A file path under the pointer with Cmd/Ctrl held (src/files/PathLinks.tsx). */
+.path-link-hover .terminal canvas {
+  cursor: pointer !important;
+}
+.path-link-underline {
+  position: absolute;
+  z-index: 2;
+  height: 1px;
+  background: var(--accent);
+  pointer-events: none;
+}
+/* Open files keep their editors mounted while another view shows. */
+.files-view[hidden] {
+  display: none;
+}

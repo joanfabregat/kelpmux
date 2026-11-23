@@ -95,6 +95,9 @@ export type FilesBrowserProps = {
   dir: string;
   onDir: (dir: string) => void;
   onOpenFile: (path: string) => void;
+  /** Opens a file in the side panel beside the terminal last shown alone
+   * (no item without it: no terminal, or a popup window). */
+  onOpenBeside?: (path: string) => void;
   /** The terminal "Insert path" types into, if any. */
   insertTarget?: { number: number; title: string };
   onInsertPath: (path: string) => void;
@@ -394,6 +397,14 @@ export function FilesBrowser(props: FilesBrowserProps) {
   const crumbs = breadcrumbs(dir, home);
   const menuItems = (m: Menu): [string, () => void, boolean?][] => [
     ["Open", () => void open(m.entry, m.path)],
+    ...(props.onOpenBeside && m.entry.kind !== "dir" && m.entry.kind !== "other"
+      ? [
+          ["Open beside terminal", () => props.onOpenBeside!(m.path)] as [
+            string,
+            () => void,
+          ],
+        ]
+      : []),
     [
       props.insertTarget
         ? `Insert path into terminal ${props.insertTarget.number}`

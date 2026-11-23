@@ -140,6 +140,8 @@ export type Preferences = {
   /** Sidebar width in CSS pixels. */
   sidebarWidth: number;
   sidebarFolded: boolean;
+  /** Width of the editor beside a terminal, in CSS pixels. */
+  sidePanelWidth: number;
   /** Play a sound when an enabled event arrives. */
   sound: boolean;
   /** Which events alert: toast, sound and, for bells, the favicon. The
@@ -151,9 +153,12 @@ export type Preferences = {
 const preferencesKey = "kelpmux-web-preferences";
 export const SIDEBAR_MIN = 200;
 export const SIDEBAR_MAX = 480;
+export const SIDE_PANEL_MIN = 280;
+export const SIDE_PANEL_MAX = 1600;
 export const defaultPreferences: Preferences = {
   sidebarWidth: 248,
   sidebarFolded: false,
+  sidePanelWidth: 560,
   sound: false,
   notificationEvents: defaultNotificationEvents,
   hardwareKeyboard: "auto",
@@ -168,6 +173,14 @@ export function loadPreferences(): Preferences {
         ? Math.round(Math.min(SIDEBAR_MAX, Math.max(SIDEBAR_MIN, width)))
         : defaultPreferences.sidebarWidth,
       sidebarFolded: value.sidebarFolded === true,
+      sidePanelWidth: Number.isFinite(Number(value.sidePanelWidth))
+        ? Math.round(
+            Math.min(
+              SIDE_PANEL_MAX,
+              Math.max(SIDE_PANEL_MIN, Number(value.sidePanelWidth)),
+            ),
+          )
+        : defaultPreferences.sidePanelWidth,
       sound: value.sound === true,
       notificationEvents: notificationEvents(value.notificationEvents),
       hardwareKeyboard: hardwareKeyboard(value.hardwareKeyboard),

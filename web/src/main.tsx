@@ -151,10 +151,15 @@ import {
 } from "@kelpcore/web/files/paths.ts";
 import { FilesBrowser } from "./files/FilesBrowser";
 import { FileEditor } from "./files/FileEditor";
+import { SidePanel } from "./files/SidePanel";
+import { usePathLinks, type PathTarget } from "./files/PathLinks";
 import { useDocuments } from "./files/documents";
 import { dragHasPaths, droppedPaths, typeIntoPane } from "./files/insert";
 import { ConfirmDialog, type ConfirmAction } from "./Confirm";
 import "./styles/files.css";
+
+/** A position in a file an editor jumps to. */
+type FileJump = { line: number; col?: number; seq: number } | undefined;
 
 /** Subscriptions per connection when the server's Welcome does not
  * advertise `limits` (servers before `stream-limits`). */
@@ -456,7 +461,13 @@ function App() {
     [home, setHome] = useState<string | undefined>(undefined),
     [filesDir, setFilesDir] = useState("~"),
     [shownDoc, setShownDoc] = useState(""),
-    [pathDropPane, setPathDropPane] = useState(0);
+    [pathDropPane, setPathDropPane] = useState(0),
+    /** A position the main area's editor jumps to (a path link). */
+    [mainJump, setMainJump] = useState<FileJump>(),
+    /** The file in the side panel beside the terminal shown alone (by
+     * document identity, so it follows renames), and where it jumps. */
+    [side, setSide] = useState<{ id: number; jump?: FileJump } | null>(null);
+  const jumps = useRef(0);
   const filesOffered = online && serverFiles && operations.has("files");
   useEffect(() => {
     if (!filesOffered || !fileLimits) {
@@ -887,6 +898,15 @@ function App() {
     : view === "single"
       ? live.find((p) => p.id === active)
       : undefined;
+  /** Cmd/Ctrl-click on file paths in the terminal shown alone (not in
+   * popup windows, and only on a connection that offers files). */
+  const pathLinks = usePathLinks({
+    pane: popupPane ? undefined : focused,
+    store,
+    client: popupPane ? null : filesClient,
+    home,
+    onOpen: (target) => openPathTarget(target),
+  });
   function openFind(pane: number, text = "") {
     if (!pane) return;
     setFindQuery(text);
@@ -908,6 +928,7 @@ function App() {
         !dialog &&
         // The file editor has its own search (CodeMirror's).
         view !== "files" &&
+        !(e.target as Element | null)?.closest?.(".files-editor") &&
         !confirmAction &&
         !keyModal
       ) {
@@ -2011,13 +2032,77 @@ function App() {
     setPhoneList(false);
     chooseMode("files");
   }
-  /** Opens a file in the editor (or shows it again). */
-  function openDoc(path: string) {
+  /** The file in the side panel, while it is open. */
+  const sideDocument = side
+    ? documents.docs.find((doc) => doc.id === side.id)
+    : undefined;
+  /** The side panel shows beside the terminal shown alone (never on a
+   * phone); otherwise it stays mounted but hidden. */
+  const sideShown =
+    !!sideDocument && !phone && !popupPane && view === "single" && !!focused;
+  const jumpTo = (at?: { line?: number; col?: number }): FileJump =>
+    at?.line ? { line: at.line, col: at.col, seq: ++jumps.current } : undefined;
+  /** Opens a file in the editor (or shows it again), at `jump` when given.
+   * The file in the side panel shows there, beside its terminal. */
+  function openDoc(path: string, jump?: FileJump) {
     if (!filesClient) return;
+    if (sideDocument?.path === path) {
+      if (!phone && insertPane) {
+        setSide({ id: sideDocument.id, jump });
+        activate(insertPane.id);
+        return;
+      }
+      // A phone has no side panel: the file moves to the main area.
+      setSide(null);
+    }
     documents.open(path);
     setShownDoc(path);
+    setMainJump(jump);
     setPhoneList(false);
     chooseMode("files");
+  }
+  /** Opens a file in the side panel beside the terminal last shown alone,
+   * showing that terminal; a phone (or no terminal) opens the editor in
+   * the main area instead. A file with unsaved changes in the panel is
+   * closed first, after asking. */
+  function openBeside(path: string, jump?: FileJump) {
+    if (!filesClient || popupPane) return;
+    const pane = insertPane;
+    if (phone || !pane) return openDoc(path, jump);
+    const place = () => {
+      const id = documents.open(path);
+      if (shownDoc === path) setShownDoc("");
+      setSide({ id, jump });
+      activate(pane.id);
+    };
+    const current = sideDocument;
+    if (!current?.dirty || current.path === path) return place();
+    setConfirmAction({
+      title: "Discard changes",
+      text: `“${baseName(current.path)}” in the side panel has unsaved changes. Close it and discard them?`,
+      buttons: [
+        {
+          label: "Discard changes",
+          color: "danger",
+          action: () => {
+            documents.close(current.path);
+            place();
+          },
+        },
+      ],
+    });
+  }
+  /** A path link: a folder opens in the browser, a file beside the
+   * terminal at its position; a symbolic link opens as what it names. */
+  function openPathTarget(target: PathTarget) {
+    if (!filesClient) return;
+    const jump = jumpTo(target);
+    if (target.kind === "dir") return openFiles(target.path);
+    if (target.kind !== "symlink") return openBeside(target.path, jump);
+    filesClient.list(target.path).then(
+      (listing) => openFiles(listing.path),
+      () => openBeside(target.path, jump),
+    );
   }
   /** Closes an open file, asking first when it has unsaved changes. */
   function closeDoc(path: string) {
@@ -2025,6 +2110,7 @@ function App() {
     const close = () => {
       documents.close(path);
       if (shownDoc === path) setShownDoc("");
+      if (sideDocument?.path === path) setSide(null);
     };
     if (!doc?.dirty) return close();
     setConfirmAction({
@@ -2341,133 +2427,187 @@ function App() {
           </div>
         )}
         <div className="workspace">
-          {listShown ? (
-            <div className="phone-list">{sidebar}</div>
-          ) : view === "files" && filesClient ? (
-            shownDocument ? (
-              <FileEditor
-                key={shownDocument.id}
-                doc={shownDocument}
-                documents={documents}
-                home={home}
-                maxRead={filesClient.limits.max_read_bytes}
-                onClose={() => closeDoc(shownDocument.path)}
-                onReveal={() => openFiles(parentPath(shownDocument.path))}
-                onBack={phone ? () => setPhoneList(true) : undefined}
-              />
-            ) : (
-              <FilesBrowser
-                client={filesClient}
-                home={home}
-                dir={filesDir}
-                onDir={setFilesDir}
-                onOpenFile={openDoc}
-                insertTarget={
-                  insertPane
-                    ? { number: insertPane.number, title: paneLabel(insertPane) }
-                    : undefined
-                }
-                onInsertPath={(path) => insertPaths([path], insertPane)}
-                onCopyPath={(path) =>
-                  navigator.clipboard
-                    ?.writeText(path)
-                    .then(() => toast("Path copied", { key: "copy" }))
-                    .catch(fail)
-                }
-                confirm={setConfirmAction}
-                toast={(message, options) =>
-                  toast(message, { key: "files", ...options })
-                }
-                onRenamed={(from, to) => {
-                  documents.renamed(from, to);
-                  // The file shown follows its rename or move.
-                  setShownDoc((shown) =>
-                    isInside(shown, from) ? to + shown.slice(from.length) : shown,
-                  );
-                }}
-                onRemoved={documents.removed}
-                upload={{
-                  unavailable: uploadUnavailable,
-                  limits: uploadLimits,
-                  transport: uploadTransport,
-                }}
-                onBack={phone ? () => setPhoneList(true) : undefined}
-              />
-            )
-          ) : focused ? (
-            <div className="pane-grid tab-pane-layout">
-              <section
-                key={focused.id}
-                className={`grid-pane first-row selected ${focused.status === "input_needed" ? "needs-input" : ""} ${dropPane === focused.id ? "drop-target" : ""}`}
-                {...dropProps(focused)}
-              >
-                {!phone && paneHeader(focused)}
-                <Terminal
-                  pane={focused}
-                  store={store}
-                  active
-                  layout="tabs"
-                  onActivate={() => setActive(focused.id)}
-                  onError={fail}
-                  find={findPane === focused.id}
-                  findQuery={findQuery}
-                  onCloseFind={() => setFindPane(0)}
-                  touchKeyboard={touch}
-                  onInputFocus={(focus) =>
-                    setInputMode((mode) =>
-                      nextInputMode(mode, focus ? "focus" : "blur"),
-                    )
+          <div className="workspace-main">
+            {listShown ? (
+              <div className="phone-list">{sidebar}</div>
+            ) : view === "files" && filesClient ? (
+              // An open file shows in its editor, mounted below.
+              shownDocument ? null : (
+                <FilesBrowser
+                  client={filesClient}
+                  home={home}
+                  dir={filesDir}
+                  onDir={setFilesDir}
+                  onOpenFile={(path) => openDoc(path)}
+                  onOpenBeside={
+                    insertPane ? (path) => openBeside(path) : undefined
                   }
-                  stickyCtrl={ctrlArmed}
-                  onCtrlUsed={() => setCtrlArmed(false)}
-                  interceptText={interceptText}
-                  onFiles={(files) => openUpload(focused, files)}
+                  insertTarget={
+                    insertPane
+                      ? { number: insertPane.number, title: paneLabel(insertPane) }
+                      : undefined
+                  }
+                  onInsertPath={(path) => insertPaths([path], insertPane)}
+                  onCopyPath={(path) =>
+                    navigator.clipboard
+                      ?.writeText(path)
+                      .then(() => toast("Path copied", { key: "copy" }))
+                      .catch(fail)
+                  }
+                  confirm={setConfirmAction}
+                  toast={(message, options) =>
+                    toast(message, { key: "files", ...options })
+                  }
+                  onRenamed={(from, to) => {
+                    documents.renamed(from, to);
+                    // The file shown follows its rename or move.
+                    setShownDoc((shown) =>
+                      isInside(shown, from) ? to + shown.slice(from.length) : shown,
+                    );
+                  }}
+                  onRemoved={documents.removed}
+                  upload={{
+                    unavailable: uploadUnavailable,
+                    limits: uploadLimits,
+                    transport: uploadTransport,
+                  }}
+                  onBack={phone ? () => setPhoneList(true) : undefined}
                 />
-              </section>
-            </div>
-          ) : view === "grid" && live.length ? (
-            // Read-only: no focus and no input (keys, mouse, paste or
-            // dropped files) reach a tile's terminal.
-            <LiveGrid
-              panes={ordered}
-              notifications={notifications}
-              body={(p) =>
-                streamedIds.has(p.id) ? (
-                  <TerminalTile pane={p} store={store} />
-                ) : (
-                  <div className="tile-unstreamed" aria-hidden="true" />
+              )
+            ) : focused ? (
+              <div className="pane-grid tab-pane-layout">
+                <section
+                  key={focused.id}
+                  className={`grid-pane first-row selected ${focused.status === "input_needed" ? "needs-input" : ""} ${dropPane === focused.id ? "drop-target" : ""} ${pathLinks.className}`}
+                  {...dropProps(focused)}
+                  {...pathLinks.props}
+                >
+                  {pathLinks.overlay}
+                  {!phone && paneHeader(focused)}
+                  <Terminal
+                    pane={focused}
+                    store={store}
+                    active
+                    layout="tabs"
+                    onActivate={() => setActive(focused.id)}
+                    onError={fail}
+                    find={findPane === focused.id}
+                    findQuery={findQuery}
+                    onCloseFind={() => setFindPane(0)}
+                    touchKeyboard={touch}
+                    onInputFocus={(focus) =>
+                      setInputMode((mode) =>
+                        nextInputMode(mode, focus ? "focus" : "blur"),
+                      )
+                    }
+                    stickyCtrl={ctrlArmed}
+                    onCtrlUsed={() => setCtrlArmed(false)}
+                    interceptText={interceptText}
+                    onFiles={(files) => openUpload(focused, files)}
+                  />
+                </section>
+              </div>
+            ) : view === "grid" && live.length ? (
+              // Read-only: no focus and no input (keys, mouse, paste or
+              // dropped files) reach a tile's terminal.
+              <LiveGrid
+                panes={ordered}
+                notifications={notifications}
+                body={(p) =>
+                  streamedIds.has(p.id) ? (
+                    <TerminalTile pane={p} store={store} />
+                  ) : (
+                    <div className="tile-unstreamed" aria-hidden="true" />
+                  )
+                }
+                onOpen={(p) => {
+                  if (performance.now() < suppressClick.current) return;
+                  openPane(p);
+                }}
+                onMenu={(pane, x, y) => setMenu({ pane, x, y })}
+                onNew={newTab}
+                onDragStart={(p, event) => {
+                  if (!touch) dragProps(p).onPointerDown(event);
+                }}
+                tileClass={(p) =>
+                  drag === p.id && drag !== drop ? "landing" : ""
+                }
+              />
+            ) : panesLoaded ? (
+              <div className="empty-state">
+                <Icon name="terminal" size="lg" />
+                <h3>{live.length ? "Choose a terminal" : "No open terminals"}</h3>
+                {parkedPanes.length > 0 && (
+                  <p>
+                    {parkedPanes.length} parked{" "}
+                    {parkedPanes.length === 1 ? "terminal" : "terminals"} in the
+                    sidebar.
+                  </p>
+                )}
+                <button onClick={newTab}>
+                  <Icon name="plus" size="sm" />
+                  New terminal
+                </button>
+              </div>
+            ) : null}
+            {/* Every open file's editor stays mounted (hidden unless shown)
+                so its unsaved buffer survives switching to a terminal, the
+                grid or another file; the side panel's file is the panel's. */}
+            {filesClient &&
+              documents.docs
+                .filter((doc) => doc.id !== side?.id)
+                .map((doc) => (
+                  <FileEditor
+                    key={doc.id}
+                    doc={doc}
+                    documents={documents}
+                    home={home}
+                    maxRead={filesClient.limits.max_read_bytes}
+                    hidden={
+                      listShown ||
+                      view !== "files" ||
+                      doc.id !== shownDocument?.id
+                    }
+                    onClose={() => closeDoc(doc.path)}
+                    onReveal={() => openFiles(parentPath(doc.path))}
+                    onBack={phone ? () => setPhoneList(true) : undefined}
+                    onMove={
+                      !phone && insertPane
+                        ? () => openBeside(doc.path)
+                        : undefined
+                    }
+                    jump={doc.id === shownDocument?.id ? mainJump : undefined}
+                  />
+                ))}
+          </div>
+          {sideDocument && filesClient && !popupPane && (
+            <SidePanel
+              doc={sideDocument}
+              documents={documents}
+              home={home}
+              maxRead={filesClient.limits.max_read_bytes}
+              hidden={!sideShown}
+              width={preferences.sidePanelWidth}
+              onWidth={(width) =>
+                setPreferences((current) =>
+                  current.sidePanelWidth === width
+                    ? current
+                    : { ...current, sidePanelWidth: width },
                 )
               }
-              onOpen={(p) => {
-                if (performance.now() < suppressClick.current) return;
-                openPane(p);
+              onClose={() => closeDoc(sideDocument.path)}
+              onReveal={() => openFiles(parentPath(sideDocument.path))}
+              onMove={() => {
+                const path = sideDocument.path;
+                setSide(null);
+                documents.open(path);
+                setShownDoc(path);
+                setMainJump(undefined);
+                chooseMode("files");
               }}
-              onMenu={(pane, x, y) => setMenu({ pane, x, y })}
-              onNew={newTab}
-              onDragStart={(p, event) => {
-                if (!touch) dragProps(p).onPointerDown(event);
-              }}
-              tileClass={(p) =>
-                drag === p.id && drag !== drop ? "landing" : ""
-              }
+              jump={side?.jump}
             />
-          ) : panesLoaded ? (
-            <div className="empty-state">
-              <Icon name="terminal" size="lg" />
-              <h3>{live.length ? "Choose a terminal" : "No open terminals"}</h3>
-              {parkedPanes.length > 0 && (
-                <p>
-                  {parkedPanes.length} parked{" "}
-                  {parkedPanes.length === 1 ? "terminal" : "terminals"} in the
-                  sidebar.
-                </p>
-              )}
-              <button onClick={newTab}>
-                <Icon name="plus" size="sm" />
-                New terminal
-              </button>
-            </div>
-          ) : null}
+          )}
         </div>
         {touch && focused && !listShown && (
           <KeyBar
