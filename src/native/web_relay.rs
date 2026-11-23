@@ -155,8 +155,22 @@ pub struct Config {
     pub workspace: String,
     #[serde(default)]
     pub dev: bool,
+    /// Optional public GlitchTip DSN. Unset means no error reporting: the
+    /// browser is not told about one and loads no reporting code.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub glitchtip_dsn: Option<String>,
+    /// Optional environment name for reported errors (e.g. `preprod`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error_environment: Option<String>,
 }
 impl Config {
+    /// Validated error-reporting settings; `None` when no DSN is configured.
+    pub fn error_reporting(&self) -> Result<Option<super::error_reporting::Settings>> {
+        super::error_reporting::Settings::new(
+            self.glitchtip_dsn.as_deref(),
+            self.error_environment.as_deref(),
+        )
+    }
     pub fn validate(&self) -> Result<()> {
         if !self.enabled {
             return Err("web relay is disabled in configuration".into());
@@ -191,7 +205,32 @@ impl Config {
             return Err("invalid bridge command".into());
         }
         super::lifecycle::workspace_path(&self.workspace)?;
+        self.error_reporting()?;
         Ok(())
+    }
+    /// The bootstrap document the browser reads from `/connection.json`.
+    /// `errors` is present only when a DSN is configured.
+    fn connection(&self) -> Result<serde_json::Value> {
+        let mut value = json!({"origin":self.origin,"rpId":self.origin.trim_start_matches("https://").split(':').next().unwrap_or(""),"hostPublic":self.ssh_host_key,"username":self.username,"command":self.bridge_command,"workspace":self.workspace,"dev":self.dev});
+        if let Some(settings) = self.error_reporting()? {
+            let mut errors = json!({"dsn": settings.dsn.as_str()});
+            if let Some(environment) = settings.environment {
+                errors["environment"] = environment.into();
+            }
+            value["errors"] = errors;
+        }
+        Ok(value)
+    }
+    /// The Content-Security-Policy of every static response. `connect-src`
+    /// adds the GlitchTip origin only when a DSN is configured.
+    fn content_security_policy(&self) -> String {
+        let reporting = match self.error_reporting() {
+            Ok(Some(settings)) => format!(" {}", settings.dsn.origin()),
+            _ => String::new(),
+        };
+        format!(
+            "default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; connect-src 'self'{reporting}; worker-src 'self'; img-src 'self' blob: data:; object-src 'none'; base-uri 'none'; frame-ancestors 'none'"
+        )
     }
 }
 #[derive(Default)]
@@ -255,6 +294,7 @@ impl Drop for SshPermit<'_> {
 }
 fn response(
     stream: &mut TcpStream,
+    csp: &str,
     status: &str,
     content_type: &str,
     body: &[u8],
@@ -262,7 +302,7 @@ fn response(
 ) -> Result<()> {
     write!(
         stream,
-        "HTTP/1.1 {status}\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\nCache-Control: no-cache\r\nCross-Origin-Opener-Policy: same-origin\r\nCross-Origin-Embedder-Policy: require-corp\r\nCross-Origin-Resource-Policy: same-origin\r\nX-Content-Type-Options: nosniff\r\nReferrer-Policy: no-referrer\r\nContent-Security-Policy: default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; connect-src 'self'; worker-src 'self'; img-src 'self' blob: data:; object-src 'none'; base-uri 'none'; frame-ancestors 'none'\r\n\r\n",
+        "HTTP/1.1 {status}\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\nCache-Control: no-cache\r\nCross-Origin-Opener-Policy: same-origin\r\nCross-Origin-Embedder-Policy: require-corp\r\nCross-Origin-Resource-Policy: same-origin\r\nX-Content-Type-Options: nosniff\r\nReferrer-Policy: no-referrer\r\nContent-Security-Policy: {csp}\r\n\r\n",
         body.len()
     )?;
     if !head {
@@ -445,9 +485,11 @@ fn serve(
         .ok_or("missing HTTP header terminator")?
         + 4;
     socket.read_exact(&mut vec![0u8; header_length])?;
+    let csp = config.content_security_policy();
     if method != "GET" && method != "HEAD" {
         return response(
             &mut socket,
+            &csp,
             "405 Method Not Allowed",
             "text/plain",
             b"Read-only static service",
@@ -455,12 +497,12 @@ fn serve(
         );
     }
     if path == "/connection.json" {
-        let value = json!({"origin":config.origin,"rpId":config.origin.trim_start_matches("https://").split(':').next().unwrap_or(""),"hostPublic":config.ssh_host_key,"username":config.username,"command":config.bridge_command,"workspace":config.workspace,"dev":config.dev});
         return response(
             &mut socket,
+            &csp,
             "200 OK",
             "application/json",
-            &serde_json::to_vec(&value)?,
+            &serde_json::to_vec(&config.connection()?)?,
             method == "HEAD",
         );
     }
@@ -469,6 +511,7 @@ fn serve(
     if let Some((_, body)) = assets.iter().find(|(name, _)| *name == path) {
         response(
             &mut socket,
+            &csp,
             "200 OK",
             content_type(path),
             body,
@@ -477,6 +520,7 @@ fn serve(
     } else {
         response(
             &mut socket,
+            &csp,
             "404 Not Found",
             "text/plain",
             b"Not found",
@@ -527,6 +571,16 @@ pub fn run_with_assets(path: &Path, assets: Assets) -> Result<()> {
         "Kelpmux static web + SSH byte relay: {} (workspace {})",
         config.origin, config.workspace
     );
+    // The relay's own errors and panics will be reported from here with
+    // these settings (component `relay`) once the Rust reporter lands; today
+    // only the browser reports (see super::error_reporting).
+    if let Some(settings) = config.error_reporting()? {
+        eprintln!(
+            "Browser error reporting to {} (release {})",
+            settings.dsn.origin(),
+            super::error_reporting::RELEASE
+        );
+    }
     for socket in listener.incoming() {
         let Ok(socket) = socket else {
             continue;
@@ -656,6 +710,15 @@ mod tests {
             bridge_command: "/usr/bin/kelpmux web-bridge --workspace dev".into(),
             workspace: "dev".into(),
             dev: true,
+            glitchtip_dsn: None,
+            error_environment: None,
+        }
+    }
+    fn reporting_config() -> Config {
+        Config {
+            glitchtip_dsn: Some("https://abc123@errors.example.com/7".into()),
+            error_environment: Some("preprod".into()),
+            ..config()
         }
     }
     #[test]
@@ -745,13 +808,16 @@ mod tests {
         );
     }
     fn http(request: &[u8]) -> Vec<u8> {
+        http_with(config(), request)
+    }
+    fn http_with(config: Config, request: &[u8]) -> Vec<u8> {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let address = listener.local_addr().unwrap();
         let worker = std::thread::spawn(move || {
             let (socket, _) = listener.accept().unwrap();
             serve(
                 socket,
-                &config(),
+                &config,
                 "127.0.0.1:22".parse().unwrap(),
                 &Mutex::new(Budget::default()),
                 ASSETS,
@@ -833,5 +899,79 @@ mod tests {
         c = config();
         c.ssh_host_key = "".into();
         assert!(c.validate().is_err());
+    }
+    fn split(response: &[u8]) -> (String, serde_json::Value) {
+        let at = response.windows(4).position(|p| p == b"\r\n\r\n").unwrap() + 4;
+        (
+            String::from_utf8_lossy(&response[..at]).into_owned(),
+            serde_json::from_slice(&response[at..]).unwrap_or_default(),
+        )
+    }
+    #[test]
+    fn error_reporting_settings_parse_from_configuration() {
+        let base = serde_json::to_value(config()).unwrap();
+        // Absent: the existing configuration format, reporting off.
+        assert!(base.get("glitchtip_dsn").is_none());
+        let parsed: Config = serde_json::from_value(base.clone()).unwrap();
+        assert!(parsed.validate().is_ok());
+        assert_eq!(parsed.error_reporting().unwrap(), None);
+        // Present.
+        let mut value = base.clone();
+        value["glitchtip_dsn"] = "https://abc123@errors.example.com/7".into();
+        value["error_environment"] = "preprod".into();
+        let parsed: Config = serde_json::from_value(value).unwrap();
+        assert!(parsed.validate().is_ok());
+        let settings = parsed.error_reporting().unwrap().unwrap();
+        assert_eq!(settings.dsn.origin(), "https://errors.example.com");
+        assert_eq!(settings.environment.as_deref(), Some("preprod"));
+        // Invalid DSNs and environments stop the relay at startup.
+        for (dsn, environment) in [
+            (Some("http://abc@errors.example.com/7"), None),
+            (Some("https://abc:secret@errors.example.com/7"), None),
+            (Some("not a dsn"), None),
+            (Some("https://abc@errors.example.com/7"), Some("pre prod")),
+            (None, Some("")),
+        ] {
+            let mut c = config();
+            c.glitchtip_dsn = dsn.map(Into::into);
+            c.error_environment = environment.map(Into::into);
+            assert!(c.validate().is_err(), "{dsn:?} {environment:?}");
+        }
+        // The shipped example lists both fields, unset.
+        let example: Config =
+            serde_json::from_str(include_str!("../../examples/web-relay.json")).unwrap();
+        assert_eq!(example.error_reporting().unwrap(), None);
+        // Wrong types are configuration errors too.
+        let mut value = base;
+        value["glitchtip_dsn"] = 7.into();
+        assert!(serde_json::from_value::<Config>(value).is_err());
+    }
+    #[test]
+    fn browser_gets_the_dsn_and_csp_origin_only_when_configured() {
+        let request = b"GET /connection.json HTTP/1.1\r\nHost: terminal.example.com\r\n\r\n";
+        let (headers, json) = split(&http(request));
+        assert!(json.get("errors").is_none(), "{json}");
+        assert!(!headers.contains("errors.example.com"));
+        assert!(headers.contains("; connect-src 'self'; worker-src"));
+        let (headers, json) = split(&http_with(reporting_config(), request));
+        assert_eq!(
+            json["errors"],
+            json!({"dsn": "https://abc123@errors.example.com/7", "environment": "preprod"})
+        );
+        assert_eq!(json["workspace"], "dev");
+        assert!(headers.contains("; connect-src 'self' https://errors.example.com; worker-src"));
+        // Every static response carries the same policy.
+        let (headers, _) = split(&http_with(
+            reporting_config(),
+            b"GET /missing HTTP/1.1\r\nHost: terminal.example.com\r\n\r\n",
+        ));
+        assert!(headers.contains("connect-src 'self' https://errors.example.com;"));
+        let mut no_environment = reporting_config();
+        no_environment.error_environment = None;
+        let (_, json) = split(&http_with(no_environment, request));
+        assert_eq!(
+            json["errors"],
+            json!({"dsn": "https://abc123@errors.example.com/7"})
+        );
     }
 }

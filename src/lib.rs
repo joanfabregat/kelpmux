@@ -91,6 +91,7 @@ pub mod native {
     };
     pub mod cli;
     pub mod config;
+    pub mod error_reporting;
     pub mod history;
     pub mod hover;
     pub mod input;

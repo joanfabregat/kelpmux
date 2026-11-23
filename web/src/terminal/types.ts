@@ -67,6 +67,8 @@ export type Connection = {
   command: string;
   workspace: string;
   dev: boolean;
+  /** Present only when the relay configured error reporting (errors.ts). */
+  errors?: { dsn: string; environment?: string };
 };
 export type Identity = {
   version: number;
