@@ -1,8 +1,9 @@
 // KelpMux web client: terminals only. It signs in with a security key
 // through browser-terminated OpenSSH, attaches to one KelpServer workspace
 // through `kelpmux web-bridge`, and shows the workspace's panes as tabs or a
-// live grid. Tabs, grid and focus are this browser's own layout; the TUI and
-// other browsers see the same panes and processes with their own layouts.
+// read-only live grid. Tabs, grid and focus are this browser's own layout;
+// the TUI and other browsers see the same panes and processes with their
+// own layouts.
 import React, { useEffect, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import {
@@ -19,7 +20,7 @@ import type {
   Pane,
   SignInKey,
 } from "./terminal/types";
-import { gridColumns } from "./terminal/layout";
+import { LiveGrid } from "./LiveGrid";
 import { trimScreens } from "./terminal/screen-cache";
 import "./styles/base.css";
 import "./styles/shell.css";
@@ -86,11 +87,8 @@ import {
   saveLayout,
   savePreferences,
   saveView,
-  gridTemplate,
   liveColors,
-  resizeTrack,
   tabColor,
-  type GridWeights,
   type TabColors,
 } from "./layout-store";
 import {
@@ -108,7 +106,7 @@ import {
   type Notification,
 } from "./state/model";
 import { useReadShown } from "./state/read";
-import { gridNeighbour, prefixAction } from "./prefix";
+import { prefixAction } from "./prefix";
 import { KeyBar, PhoneBar, useDevice, useVisualViewport } from "./Mobile";
 import { sidebarFolded } from "./device";
 import {
@@ -134,9 +132,12 @@ import {
   type UploadTransport,
 } from "./terminal/uploads";
 
-/** Grid tiles per page. The stream allows ten subscriptions per connection;
- * eight leaves room for popup windows sharing the connection. */
-const PAGE = 8;
+/** Subscriptions per connection when the server's Welcome does not
+ * advertise `limits` (servers before `stream-limits`). */
+const DEFAULT_SUBSCRIPTIONS = 10;
+/** Subscriptions left for popup windows sharing the connection: the grid
+ * streams at most the server's limit less these. */
+const POPUP_SUBSCRIPTIONS = 2;
 /** The `Web` request API this client speaks (see `kelpmux web-bridge`). */
 const API_VERSION = 3;
 
@@ -393,7 +394,8 @@ function App() {
     /** Mount points of the vitals' disks, from the status request. */
     [diskMounts, setDiskMounts] = useState<string[]>([]),
     [query, setQuery] = useState(""),
-    [page, setPage] = useState(0),
+    /** Panes one connection may subscribe to (Welcome `limits`). */
+    [subscriptionLimit, setSubscriptionLimit] = useState(DEFAULT_SUBSCRIPTIONS),
     [notifications, setNotifications] = useState<Notification[]>([]),
     [parked, setParked] = useState<number[]>([]),
     [colors, setColors] = useState<TabColors>({}),
@@ -404,11 +406,6 @@ function App() {
     [notifyPane, setNotifyPane] = useState(0),
     [findQuery, setFindQuery] = useState(""),
     [colorPane, setColorPane] = useState<NumberedPane | null>(null),
-    [gridWeights, setGridWeights] = useState<GridWeights>({
-      shape: "",
-      cols: [],
-      rows: [],
-    }),
     [menu, setMenu] = useState<{
       pane: NumberedPane;
       x: number;
@@ -487,9 +484,7 @@ function App() {
     [drag, setDrag] = useState<number | null>(null),
     [drop, setDrop] = useState<number | null>(null);
   const metadata = useRef(""),
-    connectionAttempt = useRef<Session | null>(null),
-    gridRef = useRef<HTMLDivElement>(null),
-    [gridWidth, setGridWidth] = useState(() => innerWidth);
+    connectionAttempt = useRef<Session | null>(null);
   const prefix = useRef(false);
   const dragCleanup = useRef<(() => void) | null>(null);
   const suppressClick = useRef(0);
@@ -647,13 +642,17 @@ function App() {
       setActive(live[0]?.id || 0);
   }, [panes, order, panesLoaded, parked.join(",")]);
 
+  // The grid shows every live terminal; it streams as many as the server
+  // allows one connection, less room for popups. Tiles beyond that (only
+  // with a server that allows few) show their header without content.
+  const streamed = Math.max(1, subscriptionLimit - POPUP_SUBSCRIPTIONS);
   const visible = popupPane
       ? all.filter((p) => p.id === popupPane)
       : phone && phoneList
         ? []
         : view === "single"
           ? live.filter((p) => p.id === active)
-          : live.slice(page * PAGE, page * PAGE + PAGE),
+          : live.slice(0, streamed),
     visibleKey = visible.map((p) => p.id).join(",");
   const browserActivity = activityIcon(online ? panes : null);
   const attention = rollup(
@@ -685,11 +684,6 @@ function App() {
     window.addEventListener("beforeunload", warn);
     return () => window.removeEventListener("beforeunload", warn);
   }, [online, confirmClose, toast]);
-  useEffect(() => {
-    setPage((previous) =>
-      Math.min(previous, Math.max(0, Math.ceil(live.length / PAGE) - 1)),
-    );
-  }, [live.length]);
   useEffect(() => {
     if (online)
       store.session?.request("subscribe", {
@@ -747,14 +741,6 @@ function App() {
       clearTimeout(timer);
     };
   }, [dialog, online]);
-  useEffect(() => {
-    if (!gridRef.current) return;
-    const obs = new ResizeObserver((entries) => {
-      setGridWidth(entries[0].contentRect.width);
-    });
-    obs.observe(gridRef.current);
-    return () => obs.disconnect();
-  }, [online, view]);
 
   /** Shows one terminal on its own. */
   function activate(id: number) {
@@ -765,21 +751,10 @@ function App() {
     setActive(id);
     setPhoneList(false);
   }
-  /** Grid mode: focuses a terminal's tile on its page. */
-  function focusInGrid(pane: NumberedPane) {
-    const index = live.findIndex((p) => p.id === pane.id);
-    if (index < 0) return;
-    setActive(pane.id);
-    setPage(Math.floor(index / PAGE));
-  }
   function chooseMode(next: SessionMode) {
     if (popupPane) return;
     saveView(next);
     setView(next);
-    if (next === "grid") {
-      const index = live.findIndex((p) => p.id === active);
-      if (index >= 0) setPage(Math.floor(index / PAGE));
-    }
   }
   function switchView() {
     chooseMode(view === "grid" ? "single" : "grid");
@@ -789,12 +764,6 @@ function App() {
     const index = live.findIndex((p) => p.id === active);
     openPane(live[(index + step + live.length) % live.length]);
   }
-  useEffect(() => {
-    if (view !== "grid" || !active) return;
-    document
-      .querySelector<HTMLElement>(`.live-tile[data-tile-pane="${active}"]`)
-      ?.scrollIntoView?.({ block: "nearest", inline: "nearest" });
-  }, [active, view, page]);
 
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
@@ -934,13 +903,10 @@ function App() {
     parked,
     active,
     view,
-    page,
     overlayOpen,
     dialog,
     confirmAction,
     notifications,
-    gridWidth,
-    gridWeights,
   ]);
   /** Runs a Ctrl-B prefix action (see shortcuts.ts). */
   function runPrefix(action: NonNullable<ReturnType<typeof prefixAction>>) {
@@ -966,54 +932,33 @@ function App() {
       case "grid":
         return chooseMode("grid");
       case "next":
+      case "focus-right":
+      case "focus-down":
+        // Without grid focus, h j k l and the arrows step through the
+        // terminals like Tab, each opened alone.
         return cycle(1);
       case "previous":
-        return cycle(-1);
-      case "page-previous":
-        return setPage(Math.max(0, page - 1));
-      case "page-next":
-        return setPage(
-          Math.min(Math.max(0, Math.ceil(live.length / PAGE) - 1), page + 1),
-        );
       case "focus-left":
-        return moveFocus(-1, 0);
-      case "focus-right":
-        return moveFocus(1, 0);
       case "focus-up":
-        return moveFocus(0, -1);
-      case "grid-resize-left":
-        return resizeGrid(-1, 0);
-      case "grid-resize-right":
-        return resizeGrid(1, 0);
-      case "grid-resize-up":
-        return resizeGrid(0, -1);
-      case "grid-resize-down":
-        return resizeGrid(0, 1);
-      case "grid-equalize":
-        return setGridWeights({ shape: "", cols: [], rows: [] });
+        return cycle(-1);
       case "scroll-mode":
       case "select-mode": {
+        // Keyboard modes act on a terminal shown on its own; the grid has
+        // no focused terminal.
         const pane = focusedPane();
         if (!pane) return;
-        // Keyboard modes act on a terminal shown on its own.
-        const grid = view === "grid" && !popupPane;
-        if (grid) activate(pane.id);
-        setTimeout(
-          () =>
-            store.events.dispatchEvent(
-              new CustomEvent("terminal-key-mode", {
-                detail: {
-                  pane: pane.id,
-                  kind: action === "scroll-mode" ? "scroll" : "select",
-                },
-              }),
-            ),
-          grid ? 80 : 0,
+        setTimeout(() =>
+          store.events.dispatchEvent(
+            new CustomEvent("terminal-key-mode", {
+              detail: {
+                pane: pane.id,
+                kind: action === "scroll-mode" ? "scroll" : "select",
+              },
+            }),
+          ),
         );
         return;
       }
-      case "focus-down":
-        return moveFocus(0, 1);
       case "next-attention":
         return nextState(needsAttention, "No terminal needs attention");
       case "next-finished":
@@ -1035,9 +980,12 @@ function App() {
       case "recovery":
       case "search":
       case "parked":
-      case "move":
       case "help":
         return setDialog(action);
+      case "move":
+        // Moves the terminal shown alone; nothing in the read-only grid.
+        if (targetPane) setDialog(action);
+        return;
       case "settings":
         return setDialog("config");
       case "park":
@@ -1050,61 +998,20 @@ function App() {
         return store.session?.close();
     }
   }
-  /** The terminal keyboard actions address: the one shown alone, or the
-   * focused tile of the grid. */
+  /** The terminal keyboard actions address: the one shown alone. The grid
+   * is read-only and has no focused terminal, so they do nothing there. */
   function focusedPane() {
     if (popupPane) return all.find((p) => p.id === popupPane);
+    if (view === "grid") return undefined;
     return live.find((p) => p.id === active);
   }
-  /** Grows or shrinks the focused tile's column (dx) or row (dy) in this
-   * browser's grid (Ctrl-B H/J/K/L; Ctrl-B = equalizes), like the TUI's
-   * grid resizing. */
-  function resizeGrid(dx: number, dy: number) {
-    if (view !== "grid") return;
-    const tiles = live.slice(page * PAGE, page * PAGE + PAGE);
-    const index = tiles.findIndex((p) => p.id === active);
-    if (index < 0) return;
-    const columns = gridColumns(tiles.length, gridWidth);
-    const lines = Math.max(1, Math.ceil(tiles.length / columns));
-    const shape = `${columns}x${lines}`;
-    const current =
-      gridWeights.shape === shape ? gridWeights : { shape, cols: [], rows: [] };
-    setGridWeights({
-      shape,
-      cols: dx
-        ? resizeTrack(current.cols, columns, index % columns, dx)
-        : current.cols,
-      rows: dy
-        ? resizeTrack(current.rows, lines, Math.floor(index / columns), dy)
-        : current.rows,
-    });
-  }
-  /** Moves grid focus to a neighbouring tile (Ctrl-B h/j/k/l). */
-  function moveFocus(dx: number, dy: number) {
-    if (view !== "grid") return cycle(dx + dy > 0 ? 1 : -1);
-    const tiles = live.slice(page * PAGE, page * PAGE + PAGE);
-    const index = tiles.findIndex((p) => p.id === active);
-    const next =
-      tiles[
-        gridNeighbour(
-          index,
-          tiles.length,
-          gridColumns(tiles.length, gridWidth),
-          dx,
-          dy,
-        )
-      ];
-    if (next) setActive(next.id);
-  }
-  /** Opens a terminal wherever it is: unparks a parked one, and otherwise
-   * opens it alone or, in grid view, focuses it in the grid. `alone` (a
-   * sidebar tab's click) always opens it alone. */
-  function openPane(pane: NumberedPane, alone = false) {
+  /** Opens a terminal alone, leaving the grid, and unparks a parked one.
+   * Every way of opening a terminal comes here. */
+  function openPane(pane: NumberedPane) {
     setMenu(null);
     if (parkedSet.has(pane.id))
       setParked(parked.filter((id) => id !== pane.id));
-    if (!alone && view === "grid" && !parkedSet.has(pane.id)) focusInGrid(pane);
-    else activate(pane.id);
+    activate(pane.id);
     focusTerminal();
   }
   /** The TUI's next question / next completion: the next terminal after the
@@ -1190,11 +1097,11 @@ function App() {
     popupPane ||
     (active && !(phone && phoneList) && view === "single" ? active : 0);
   // Showing a terminal marks its notifications read, as focusing one does
-  // in the TUI: the terminal shown on its own or the focused grid tile
-  // (other tiles keep their bells), only while this browser is signed in.
+  // in the TUI: the terminal shown on its own (grid tiles are read-only and
+  // keep their bells), only while this browser is signed in.
   const readPane = readingPane(
     popupPane,
-    active,
+    shownPane,
     visible.map((p) => p.id),
   );
   useReadShown(
@@ -1305,6 +1212,12 @@ function App() {
         Array.isArray(e.capabilities) && e.capabilities.includes("uploads"),
       );
       setUploadLimits(readUploadLimits(e.upload_limits));
+      const subscriptions = Number(e.limits?.subscriptions);
+      setSubscriptionLimit(
+        Number.isSafeInteger(subscriptions) && subscriptions > 0
+          ? subscriptions
+          : DEFAULT_SUBSCRIPTIONS,
+      );
       authProgress.current.welcomed = true;
       setSignedInKey(store.session?.signedInKey || null);
       if (store.session) void afterSignIn(store.session);
@@ -1584,12 +1497,8 @@ function App() {
   }
   async function newTab() {
     const result = await rpc("new", { request: crypto.randomUUID() });
-    if (result?.pane) {
-      if (view === "grid" && !popupPane) {
-        setActive(result.pane);
-        setPage(Math.floor(live.length / PAGE));
-      } else activate(result.pane);
-    }
+    // In the grid the new terminal joins the tiles; otherwise it opens.
+    if (result?.pane && !(view === "grid" && !popupPane)) activate(result.pane);
   }
   function move(source: number, before: number | null) {
     setOrder(
@@ -1695,14 +1604,7 @@ function App() {
           ),
         )
       : live;
-  const gridPanes = ordered.slice(page * PAGE, page * PAGE + PAGE);
-  const cols = gridColumns(gridPanes.length, gridWidth);
-  const rows = Math.max(1, Math.ceil(gridPanes.length / cols));
-  // A weight set belongs to one grid shape; another shape starts equal.
-  const weights =
-    gridWeights.shape === `${cols}x${rows}`
-      ? gridWeights
-      : { shape: `${cols}x${rows}`, cols: [], rows: [] };
+  const streamedIds = new Set(visible.map((p) => p.id));
   const keySettings = (mode: "register" | "settings") => (
     <KeySettings
       mode={mode}
@@ -2136,7 +2038,6 @@ function App() {
     setDialog("");
     setQuery("");
   };
-  const pages = Math.max(1, Math.ceil(live.length / PAGE));
   // Rows reorder by dragging with a mouse; on touch a drag scrolls the list,
   // and the row menu offers Move up / Move down instead.
   const sidebar = (
@@ -2147,12 +2048,9 @@ function App() {
       touch={touch}
       phone={phone}
       mode={view}
-      page={page}
-      pages={pages}
       diskMounts={knownMounts}
       onDisksHover={() => void loadDiskMounts()}
       onMode={chooseMode}
-      onPage={setPage}
       terminals={ordered}
       parked={parkedPanes}
       notifications={notifications}
@@ -2163,7 +2061,7 @@ function App() {
       colorOf={(p) => tabColor(colors, p.id)}
       onOpen={(p) => {
         if (performance.now() < suppressClick.current) return;
-        openPane(p, true);
+        openPane(p);
       }}
       onClose={close}
       onPark={park}
@@ -2214,7 +2112,7 @@ function App() {
             </button>
           </div>
         )}
-        <div className="workspace" ref={gridRef}>
+        <div className="workspace">
           {listShown ? (
             <div className="phone-list">{sidebar}</div>
           ) : focused ? (
@@ -2249,70 +2147,31 @@ function App() {
               </section>
             </div>
           ) : view === "grid" && live.length ? (
-            <div
-              className="pane-grid live-grid"
-              aria-label="Terminal grid"
-              style={{
-                gridTemplateColumns: gridTemplate(weights.cols, cols),
-                gridTemplateRows: gridTemplate(weights.rows, rows),
+            // Read-only: no focus and no input (keys, mouse, paste or
+            // dropped files) reach a tile's terminal.
+            <LiveGrid
+              panes={ordered}
+              notifications={notifications}
+              body={(p) =>
+                streamedIds.has(p.id) ? (
+                  <TerminalTile pane={p} store={store} />
+                ) : (
+                  <div className="tile-unstreamed" aria-hidden="true" />
+                )
+              }
+              onOpen={(p) => {
+                if (performance.now() < suppressClick.current) return;
+                openPane(p);
               }}
-            >
-              {Array.from({ length: cols * rows }, (_, i) => {
-                const p = gridPanes[i];
-                if (!p)
-                  return i === gridPanes.length ? (
-                    <button
-                      type="button"
-                      className="inactive-pane new-pane"
-                      key={`new-${i}`}
-                      onClick={newTab}
-                    >
-                      <Icon name="plus" size="lg" />
-                      New terminal
-                    </button>
-                  ) : (
-                    <div className="inactive-pane" key={`empty-${i}`} />
-                  );
-                const state = paneState(p, notifications);
-                return (
-                  <button
-                    type="button"
-                    key={p.id}
-                    className={`grid-pane live-tile ${state === "input_needed" ? "needs-input" : ""} ${p.id === active ? "focused" : ""} ${drag === p.id && drag !== drop ? "landing" : ""} ${dropPane === p.id ? "drop-target" : ""}`}
-                    {...dropProps(p)}
-                    aria-current={p.id === active ? "true" : undefined}
-                    aria-label={`Open terminal ${paneLabel(p)} (${stateLabel[state]})`}
-                    data-tile-pane={p.id}
-                    data-drop-pane={p.id}
-                    data-drop-axis="x"
-                    data-state={state}
-                    // Pressing, focusing or opening the menu of a tile
-                    // focuses it (its header tinted, no border).
-                    onPointerDown={(event) => {
-                      setActive(p.id);
-                      if (!touch) dragProps(p).onPointerDown(event);
-                    }}
-                    onFocus={() => setActive(p.id)}
-                    onContextMenu={(event) => {
-                      event.preventDefault();
-                      setActive(p.id);
-                      setMenu({ pane: p, x: event.clientX, y: event.clientY });
-                    }}
-                    onClick={() => {
-                      if (performance.now() < suppressClick.current) return;
-                      activate(p.id);
-                    }}
-                  >
-                    <header>
-                      <PaneLabel pane={p} state={state} />
-                      <span className="grid-folder">{basename(p.cwd)}</span>
-                      <UnreadMark count={unreadFor(notifications, p).length} />
-                    </header>
-                    <TerminalTile pane={p} store={store} />
-                  </button>
-                );
-              })}
-            </div>
+              onMenu={(pane, x, y) => setMenu({ pane, x, y })}
+              onNew={newTab}
+              onDragStart={(p, event) => {
+                if (!touch) dragProps(p).onPointerDown(event);
+              }}
+              tileClass={(p) =>
+                drag === p.id && drag !== drop ? "landing" : ""
+              }
+            />
           ) : panesLoaded ? (
             <div className="empty-state">
               <Icon name="terminal" size="lg" />

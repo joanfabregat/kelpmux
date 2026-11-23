@@ -35,10 +35,8 @@ export type SidebarProps = {
   touch?: boolean;
   /** Phone home screen: no grid. */
   phone?: boolean;
-  /** The terminal view, its grid page and page count. */
+  /** The terminal view: one terminal or the read-only grid. */
   mode: SessionMode;
-  page: number;
-  pages: number;
   /** Terminals in this browser's order, parked ones excluded. */
   terminals: NumberedPane[];
   /** Terminals parked in this browser. */
@@ -50,7 +48,6 @@ export type SidebarProps = {
   diskMounts: string[];
   onDisksHover: () => void;
   onMode: (mode: SessionMode) => void;
-  onPage: (page: number) => void;
   rowProps: (pane: NumberedPane) => React.HTMLAttributes<HTMLDivElement>;
   rowClass: (pane: NumberedPane) => string;
   /** The pane's tab colour in this browser (a TUI palette index). */
@@ -73,11 +70,11 @@ export type SidebarProps = {
  * them and the parked terminals. The grid's entry opens the grid and a
  * terminal's opens that terminal alone; the one on screen is selected. A
  * tab with unread notifications shows a bell; the notifications themselves
- * open from the terminal's header. At the bottom the grid's pages (while
- * it has several), the tools in two columns like the TUI's buttons (the
- * Terminals table, recently closed, search, help), the system vitals,
- * then the account and its settings. Order, parking and folding belong to
- * this browser; they never change the TUI's layout. */
+ * open from the terminal's header. At the bottom the tools in two columns
+ * like the TUI's buttons (the Terminals table, recently closed, search,
+ * help), the system vitals, then the account and its settings. Order,
+ * parking and folding belong to this browser; they never change the TUI's
+ * layout. The grid is read-only: a tile's click opens its terminal alone. */
 export function Sidebar(props: SidebarProps) {
   const {
     username,
@@ -85,8 +82,6 @@ export function Sidebar(props: SidebarProps) {
     folded,
     phone,
     mode,
-    page,
-    pages,
     terminals,
     parked,
     notifications,
@@ -228,7 +223,6 @@ export function Sidebar(props: SidebarProps) {
     icon: IconName,
     keys: string,
   ) => entry(dialog, label, short, icon, keys, () => props.onDialog(dialog));
-  const paging = grid && pages > 1;
   return (
     <aside className={`rail ${folded ? "folded" : ""}`} aria-label="Terminals">
       <div className="rail-head">
@@ -328,45 +322,7 @@ export function Sidebar(props: SidebarProps) {
           the vitals. */}
       <div className="rail-bottom">
         <div className="tool-grid">
-          {/* The grid's pages, while it shows and has several. */}
-          {!phone && paging && (
-            <div className="nav-cell view-cell wide">
-              <span className="grid-pages">
-                <Tooltip content="Previous page (Ctrl-B PgUp)">
-                  <button
-                    type="button"
-                    className="icon-btn"
-                    aria-label="Previous grid page"
-                    disabled={!page}
-                    onClick={() => props.onPage(page - 1)}
-                  >
-                    <Icon name="chevron-left" size="sm" />
-                  </button>
-                </Tooltip>
-                <span className="grid-page" aria-live="polite">
-                  {page + 1}/{pages}
-                </span>
-                <Tooltip content="Next page (Ctrl-B PgDn)">
-                  <button
-                    type="button"
-                    className="icon-btn"
-                    aria-label="Next grid page"
-                    disabled={page + 1 >= pages}
-                    onClick={() => props.onPage(page + 1)}
-                  >
-                    <Icon name="chevron-right" size="sm" />
-                  </button>
-                </Tooltip>
-              </span>
-            </div>
-          )}
-          {tool(
-            "terminals",
-            "Terminals",
-            "Terminals",
-            "layout-dashboard",
-            "Ctrl-B o",
-          )}
+          {tool("terminals", "Terminals", "Terminals", "list", "Ctrl-B o")}
           {tool("recovery", "Recently closed", "Closed", "history", "Ctrl-B r")}
           {tool("search", "Search", "Search", "search", "Ctrl-B /")}
           {tool("help", "Help", "Help", "book-open", "Ctrl-B ?")}

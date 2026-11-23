@@ -230,9 +230,9 @@ export function nextPane<T extends StatePane>(
 }
 
 /** The terminal whose notifications showing it marks read, as focusing a
- * pane does in the TUI: a popup's terminal, or the focused terminal when it
- * is on screen (shown on its own, or the focused tile of the grid page;
- * the other tiles keep their bells). 0 when none is, such as on the
+ * pane does in the TUI: a popup's terminal, or the terminal shown on its
+ * own when it is on screen (the caller passes 0 in the read-only grid,
+ * whose tiles keep their bells). 0 when none is, such as on the
  * phone's terminal list. `onScreen` lists the terminals on screen. */
 export function readingPane(
   popup: number,

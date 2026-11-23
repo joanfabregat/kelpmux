@@ -1,29 +1,32 @@
 // The sidebar, a terminal's header and its notifications panel as main.tsx
 // wires them, with fixed terminals and notifications instead of SSH
-// (test/sidebar.mjs). Showing a terminal (or focusing its grid tile) marks
-// its notifications read through the same hook as main.tsx; terminal 1,
-// which has none, is focused first. Right-clicking a row opens that
-// terminal's notifications, as its menu's Notifications… item does, and
-// `window.notify(pane)` adds an unread notification. The query string picks
-// the case: `mode=light`, `tabs=N`, `view=grid`, `pages=N` (grid pages),
-// `folded=1`. The grid entry and the tabs switch the view as in main.tsx.
+// (test/sidebar.mjs). Showing a terminal marks its notifications read
+// through the same hook as main.tsx; terminal 1, which has none, is shown
+// first. The read-only grid (the real LiveGrid, with placeholders for the
+// screens) marks nothing read and has no focus. Right-clicking a row opens
+// that terminal's notifications, as its menu's Notifications… item does,
+// and `window.notify(pane)` adds an unread notification. The query string
+// picks the case: `mode=light`, `tabs=N`, `view=grid`, `folded=1`. The grid
+// entry, the tabs, the tiles and the opening shortcuts (Alt+digit, Alt+Tab,
+// Ctrl/Cmd+Shift+G and the Ctrl-B keys through the real prefix map) switch
+// the view as in main.tsx. The shown terminal's placeholder is a text area
+// recording the keys typed into it in `window.typed`.
 import React, { useEffect, useState } from "react";
 import { createRoot } from "react-dom/client";
 import type { NumberedPane } from "../src/terminal/types";
 import { Sidebar } from "../src/Sidebar";
-import {
-  NotificationsButton,
-  PaneLabel,
-  UnreadMark,
-  type SessionMode,
-} from "../src/Shell";
+import { NotificationsButton, PaneLabel, type SessionMode } from "../src/Shell";
 import { TerminalNotificationsPanel } from "../src/Panels";
+import { LiveGrid } from "../src/LiveGrid";
+import { prefixAction } from "../src/prefix";
 import { PhoneBar, useDevice } from "../src/Mobile";
 import { Icon } from "../src/status";
 import { basename } from "../src/format";
 import { sidebarFolded } from "../src/device";
 import { interfaceVariables, themeVariables } from "../src/appearance";
 import {
+  needsAttention,
+  nextPane,
   paneState,
   readingPane,
   unreadFor,
@@ -86,7 +89,7 @@ const initial: Notification[] = [
   note(3, 2, "input_needed"),
   note(4, 5, "turn_finished"),
 ];
-Object.assign(window, { acks: [] as number[] });
+Object.assign(window, { acks: [] as number[], typed: [] as string[] });
 /** Where a terminal would be. */
 const placeholder = { flex: 1, minHeight: 0, background: "var(--bg)" };
 
@@ -121,11 +124,8 @@ function Fixture() {
   };
   const notified = panes.find((p) => p.id === dialog);
   const listShown = phone && phoneList;
-  const onScreen = listShown
-    ? []
-    : grid
-      ? panes.slice(0, 6).map((p) => p.id)
-      : [current];
+  // Only a terminal shown alone is read; grid tiles keep their bells.
+  const onScreen = listShown || grid ? [] : [current];
   useReadShown(
     panes.find((p) => p.id === readingPane(0, current, onScreen)),
     notifications,
@@ -140,6 +140,62 @@ function Fixture() {
       },
     });
   }, []);
+  /** Opens a terminal alone, leaving the grid, as main.tsx's openPane. */
+  const openPane = (p: NumberedPane) => {
+    setCurrent(p.id);
+    setPhoneList(false);
+    setView("single");
+  };
+  const cycle = (step: number) => {
+    const index = panes.findIndex((p) => p.id === current);
+    openPane(panes[(index + step + panes.length) % panes.length]);
+  };
+  // The opening and grid shortcuts, as main.tsx's keyboard handler.
+  const [prefix, setPrefix] = useState(false);
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => {
+      const toggle = () => setView(view === "grid" ? "single" : "grid");
+      if ((e.ctrlKey || e.metaKey) && e.shiftKey && e.code === "KeyG") {
+        e.preventDefault();
+        return toggle();
+      }
+      if (e.altKey && !e.ctrlKey && !e.metaKey) {
+        if (e.code === "Tab") {
+          e.preventDefault();
+          return toggle();
+        }
+        if (/^Digit[0-9]$/.test(e.code)) {
+          const pane = panes[(Number(e.code.slice(5)) || 10) - 1];
+          if (pane) {
+            e.preventDefault();
+            openPane(pane);
+          }
+          return;
+        }
+      }
+      if (e.ctrlKey && !e.altKey && e.key.toLowerCase() === "b" && !prefix) {
+        e.preventDefault();
+        return setPrefix(true);
+      }
+      if (!prefix || ["Shift", "Control", "Alt", "Meta"].includes(e.key))
+        return;
+      setPrefix(false);
+      e.preventDefault();
+      const action = prefixAction(e);
+      if (typeof action === "object" && action) {
+        const pane = panes[action.select - 1];
+        if (pane) openPane(pane);
+      } else if (action === "grid") setView("grid");
+      else if (action === "next" || action === "focus-right") cycle(1);
+      else if (action === "previous" || action === "focus-left") cycle(-1);
+      else if (action === "next-attention") {
+        const pane = nextPane(panes, current, needsAttention);
+        if (pane) openPane(pane);
+      }
+    };
+    window.addEventListener("keydown", handler, true);
+    return () => window.removeEventListener("keydown", handler, true);
+  });
   const sidebar = (
     <Sidebar
       username="alice"
@@ -148,8 +204,6 @@ function Fixture() {
       touch={device.touch}
       phone={phone}
       mode={grid ? "grid" : "single"}
-      page={0}
-      pages={Number(query.get("pages")) || 1}
       terminals={panes}
       parked={[]}
       notifications={notifications}
@@ -158,15 +212,10 @@ function Fixture() {
       diskMounts={["/", "/data"]}
       onDisksHover={() => {}}
       onMode={(next) => setView(next)}
-      onPage={() => {}}
       rowProps={() => ({})}
       rowClass={() => ""}
       colorOf={(p) => (p.id - 1) % 9}
-      onOpen={(p) => {
-        setCurrent(p.id);
-        setPhoneList(false);
-        setView("single");
-      }}
+      onOpen={openPane}
       onClose={() => {}}
       onPark={() => {}}
       onUnpark={() => {}}
@@ -204,31 +253,16 @@ function Fixture() {
           {listShown ? (
             <div className="phone-list">{sidebar}</div>
           ) : grid ? (
-            <div
-              className="pane-grid live-grid"
-              style={{
-                gridTemplateColumns: "repeat(3, minmax(0, 1fr))",
-                gridTemplateRows: "repeat(2, minmax(0, 1fr))",
-              }}
-            >
-              {panes.slice(0, 6).map((p) => (
-                <button
-                  type="button"
-                  key={p.id}
-                  className={`grid-pane live-tile ${p.id === current ? "focused" : ""}`}
-                  aria-current={p.id === current ? "true" : undefined}
-                  data-tile-pane={p.id}
-                  onClick={() => setCurrent(p.id)}
-                >
-                  <header>
-                    <PaneLabel pane={p} state={paneState(p, notifications)} />
-                    <span className="grid-folder">{basename(p.cwd)}</span>
-                    <UnreadMark count={unread(p)} />
-                  </header>
-                  <div className="terminal-placeholder" style={placeholder} />
-                </button>
-              ))}
-            </div>
+            <LiveGrid
+              panes={panes}
+              notifications={notifications}
+              body={() => (
+                <div className="terminal-placeholder" style={placeholder} />
+              )}
+              onOpen={openPane}
+              onMenu={(p) => setDialog(p.id)}
+              onNew={() => {}}
+            />
           ) : (
             <div className="pane-grid tab-pane-layout">
               <section className="grid-pane first-row selected">
@@ -262,7 +296,14 @@ function Fixture() {
                     </div>
                   </header>
                 )}
-                <div className="terminal-placeholder" style={placeholder} />
+                <textarea
+                  className="terminal-placeholder"
+                  aria-label={`Input for terminal ${focused.number}`}
+                  style={{ ...placeholder, border: 0, resize: "none" }}
+                  value=""
+                  onChange={() => {}}
+                  onKeyDown={(e) => (window as any).typed.push(e.key)}
+                />
               </section>
             </div>
           )}

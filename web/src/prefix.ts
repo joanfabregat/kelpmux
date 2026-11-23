@@ -7,16 +7,9 @@ export type PrefixAction =
   | "reopen-last"
   | "scroll-mode"
   | "select-mode"
-  | "grid-resize-left"
-  | "grid-resize-right"
-  | "grid-resize-up"
-  | "grid-resize-down"
-  | "grid-equalize"
   | "grid"
   | "next"
   | "previous"
-  | "page-previous"
-  | "page-next"
   | "focus-left"
   | "focus-right"
   | "focus-up"
@@ -56,15 +49,8 @@ export function prefixAction(event: {
     z: "reopen-last",
     "[": "scroll-mode",
     " ": "select-mode",
-    H: "grid-resize-left",
-    L: "grid-resize-right",
-    K: "grid-resize-up",
-    J: "grid-resize-down",
-    "=": "grid-equalize",
     g: "grid",
     e: "grid",
-    PageUp: "page-previous",
-    PageDown: "page-next",
     h: "focus-left",
     ArrowLeft: "focus-left",
     l: "focus-right",
@@ -91,24 +77,4 @@ export function prefixAction(event: {
     d: "disconnect",
   };
   return Object.hasOwn(map, key) ? map[key] : null;
-}
-
-/** The grid neighbour of tile `index` in direction (dx, dy) for `count`
- * tiles in `cols` columns, or the same index at an edge. */
-export function gridNeighbour(
-  index: number,
-  count: number,
-  cols: number,
-  dx: number,
-  dy: number,
-) {
-  if (index < 0 || !count) return index;
-  const columns = Math.max(1, cols);
-  const row = Math.floor(index / columns),
-    col = index % columns;
-  const nextRow = row + dy,
-    nextCol = col + dx;
-  if (nextCol < 0 || nextCol >= columns || nextRow < 0) return index;
-  const next = nextRow * columns + nextCol;
-  return next < count ? next : index;
 }

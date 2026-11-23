@@ -5,12 +5,6 @@ import {
   modeSelection,
   selectMode,
 } from "../src/terminal/key-mode.ts";
-import {
-  GRID_WEIGHT_MAX,
-  GRID_WEIGHT_MIN,
-  gridTemplate,
-  resizeTrack,
-} from "../src/layout-store.ts";
 
 test("scroll mode scrolls history and leaves to the live screen", () => {
   const scroll = { kind: "scroll" };
@@ -64,18 +58,4 @@ test("select mode moves a cursor, marks, scrolls at edges and copies", () => {
   });
   assert.equal(modeSelection(null), null);
   assert.equal(modeSelection({ kind: "scroll" }), null);
-});
-
-test("grid tracks resize by quarters within bounds", () => {
-  assert.equal(gridTemplate([], 2), "minmax(0,1fr) minmax(0,1fr)");
-  assert.deepEqual(resizeTrack([], 3, 1, 1), [1, 1.25, 1]);
-  assert.deepEqual(resizeTrack([1, 1.25, 1], 3, 1, -1), [1, 1, 1]);
-  assert.deepEqual(resizeTrack([], 1, 0, 1), []);
-  assert.deepEqual(resizeTrack([], 2, 5, 1), []);
-  let grow = [];
-  for (let i = 0; i < 20; i++) grow = resizeTrack(grow, 2, 0, 1);
-  assert.equal(grow[0], GRID_WEIGHT_MAX);
-  let shrink = [];
-  for (let i = 0; i < 20; i++) shrink = resizeTrack(shrink, 2, 0, -1);
-  assert.equal(shrink[0], GRID_WEIGHT_MIN);
 });
