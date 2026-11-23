@@ -368,24 +368,6 @@ button.search-hit {
   color: var(--text-3);
   font-variant-numeric: tabular-nums;
 }
-.color-grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(120px, 1fr));
-  gap: var(--s2);
-}
-.color-swatch {
-  justify-content: flex-start;
-  gap: var(--s2);
-  font-weight: 400;
-}
-.color-swatch[aria-pressed="true"] {
-  outline: 2px solid var(--accent);
-}
-.color-swatch .swatch {
-  width: 14px;
-  height: 14px;
-  border-radius: 4px;
-}
 
 /* ───────── Terminals table ───────── */
 .terminals-wrap {

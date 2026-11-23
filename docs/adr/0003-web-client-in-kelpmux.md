@@ -66,3 +66,7 @@ KelpServer [ADR 0002](https://github.com/joanfabregat/kelpserver/blob/main/crate
 ## Addendum 2026-11-21: uploads
 
 Joan decided (151a) that file and image uploads belong to KelpServer as the generic `uploads` stream capability (kelpserver#6), because both KelpMux and KelpHub need them and the files must land where the shells run. The KelpMux web client uses it: files dropped onto a terminal, a pasted image, or the menu's Upload files… are sent through the bridge on the existing stream and the shell-quoted paths are pasted into the pane. This replaces "no uploads" in decision 1. The web bridge reports API 3.1 with an `uploads` operation; see [web.md](../web.md#uploads).
+
+## Addendum 2026-11-22: no tab colours in the web client
+
+Joan dropped tab colours from the web client (decision 177): sidebar tabs have no colour stripe and there is no tab colour picker. This supersedes the per-browser tab colours of the 2026-11-21 addendum; layouts stored by older builds still load and their `colors` key is ignored. The TUI keeps its own tab colours.

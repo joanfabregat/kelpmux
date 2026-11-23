@@ -1,7 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { freshNotifications, newestId } from "../src/alerts.ts";
-import { paletteColor, xterm256 } from "../src/palette.ts";
 import {
   SIDEBAR_MAX,
   SIDEBAR_MIN,
@@ -24,15 +23,6 @@ test("only unread notifications newer than the last seen one alert", () => {
   assert.deepEqual(freshNotifications(list, 7), []);
   assert.equal(newestId(list), 7);
   assert.equal(newestId([], 9), 9);
-});
-
-test("tab colours match the TUI palette", () => {
-  assert.equal(xterm256(39), "#00afff");
-  assert.equal(xterm256(214), "#ffaf00");
-  assert.equal(xterm256(232), "#080808");
-  assert.equal(paletteColor(0), "#00afff");
-  assert.equal(paletteColor(undefined), "var(--line-strong)");
-  assert.equal(paletteColor(42), "var(--line-strong)");
 });
 
 function memoryStorage() {
