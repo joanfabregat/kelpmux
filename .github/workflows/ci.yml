@@ -41,10 +41,10 @@ jobs:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
         with:
           persist-credentials: false
-      - run: rustup toolchain install 1.85.0 --profile minimal
-      - run: cargo +1.85.0 fetch --locked
-      - run: cargo +1.85.0 build --locked --offline -p kelpserver --bin kelpserver
-      - run: cargo +1.85.0 test --workspace --locked --offline -- --test-threads=2
+      - run: rustup toolchain install 1.89.0 --profile minimal
+      - run: cargo +1.89.0 fetch --locked
+      - run: cargo +1.89.0 build --locked --offline -p kelpserver --bin kelpserver
+      - run: cargo +1.89.0 test --workspace --locked --offline -- --test-threads=2
   integration:
     name: Legacy tmux compatibility (${{ matrix.os }})
     strategy:
@@ -182,10 +182,15 @@ jobs:
             all(.packages[];
               . as $package |
               (["MIT", "Apache-2.0", "MIT OR Apache-2.0", "Apache-2.0 OR MIT", "Unlicense OR MIT"] | index($package.license) != null)
+              # Permissive licenses of the error-reporting stack (sentry, ureq,
+              # rustls, ring, webpki-roots, backtrace, url/idna/ICU).
+              or (["MIT/Apache-2.0", "0BSD OR MIT OR Apache-2.0", "MIT OR Zlib OR Apache-2.0",
+                   "Apache-2.0 OR ISC OR MIT", "Apache-2.0 AND ISC", "ISC", "BSD-3-Clause",
+                   "Unicode-3.0", "CDLA-Permissive-2.0"] | index($package.license) != null)
               or ($package.name == "unicode-ident" and $package.license == "(MIT OR Apache-2.0) AND Unicode-3.0")
               or ($package.name == "cursor-icon" and $package.license == "MIT OR Apache-2.0 OR Zlib")
               or ($package.name == "r-efi" and $package.license == "MIT OR Apache-2.0 OR LGPL-2.1-or-later")
-              or ((["linux-raw-sys", "rustix", "rustix-openpty"] | index($package.name) != null)
+              or ((["linux-raw-sys", "rustix", "rustix-openpty", "wasi"] | index($package.name) != null)
                  and $package.license == "Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT")
             )
           ' metadata.json

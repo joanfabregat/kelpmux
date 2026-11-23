@@ -459,10 +459,10 @@ impl Controller {
                         }
                     }
                     self.workspace.ui.search_hits = hits;
-                    if let Some(dialog) = self.workspace.ui.dialog.as_mut() {
-                        if dialog.kind == DialogKind::Search {
-                            dialog.selection = 0;
-                        }
+                    if let Some(dialog) = self.workspace.ui.dialog.as_mut()
+                        && dialog.kind == DialogKind::Search
+                    {
+                        dialog.selection = 0;
                     }
                 }
             }
@@ -580,28 +580,26 @@ impl Controller {
         }
         self.acked.retain(|id| !self.server_read.contains(id));
         let ids: BTreeSet<_> = notifications.iter().map(|n| n.id).collect();
-        if let Some(previous) = &self.seen_notifications {
-            if self.controlling
-                && self.workspace.ui.config.notification_sound
-                && notifications
-                    .iter()
-                    .any(|n| !n.read && !previous.contains(&n.id))
-            {
-                self.bell = true;
-            }
+        if let Some(previous) = &self.seen_notifications
+            && self.controlling
+            && self.workspace.ui.config.notification_sound
+            && notifications
+                .iter()
+                .any(|n| !n.read && !previous.contains(&n.id))
+        {
+            self.bell = true;
         }
         self.seen_notifications = Some(ids);
         self.workspace.ui.notifications = notifications;
         self.vitals(&update.vitals);
-        if let Some(host) = update.host {
-            if self
+        if let Some(host) = update.host
+            && self
                 .workspace
                 .ui
                 .dialog
                 .is_some_and(|d| d.kind == DialogKind::Status)
-            {
-                self.workspace.ui.status = *host;
-            }
+        {
+            self.workspace.ui.status = *host;
         }
         if !self.synced {
             // The first arrangement matches the layout to the panes by their
@@ -1241,24 +1239,24 @@ impl Controller {
                 self.claim(*pane, false);
             }
         }
-        if self.supports("controller-theme") {
-            if let [Some(foreground), Some(background)] = self.workspace.ui.terminal_theme {
-                let theme = [foreground, background];
-                let owned: Vec<_> = self
-                    .leases
-                    .iter()
-                    .filter(|(_, owner)| **owner == self.client)
-                    .map(|(pane, _)| *pane)
-                    .collect();
-                for pane in owned {
-                    if self.themed.get(&pane) != Some(&theme) {
-                        self.out.push(Request::Theme {
-                            pane,
-                            foreground,
-                            background,
-                        });
-                        self.themed.insert(pane, theme);
-                    }
+        if self.supports("controller-theme")
+            && let [Some(foreground), Some(background)] = self.workspace.ui.terminal_theme
+        {
+            let theme = [foreground, background];
+            let owned: Vec<_> = self
+                .leases
+                .iter()
+                .filter(|(_, owner)| **owner == self.client)
+                .map(|(pane, _)| *pane)
+                .collect();
+            for pane in owned {
+                if self.themed.get(&pane) != Some(&theme) {
+                    self.out.push(Request::Theme {
+                        pane,
+                        foreground,
+                        background,
+                    });
+                    self.themed.insert(pane, theme);
                 }
             }
         }
@@ -2047,16 +2045,15 @@ impl Controller {
             self.notice.as_deref(),
             self.spinner,
         );
-        if let Some(selection) = self.selection {
-            if let Some(body) = frame
+        if let Some(selection) = self.selection
+            && let Some(body) = frame
                 .panes
                 .iter()
                 .rev()
                 .find(|v| v.pane.id == selection.pane && v.body.cols > 0)
                 .map(|v| v.body)
-            {
-                highlight(&mut frame, body, selection);
-            }
+        {
+            highlight(&mut frame, body, selection);
         }
         frame
     }

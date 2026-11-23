@@ -240,26 +240,26 @@ fn options(args: &[String]) -> Result<Options> {
     };
     // Like `kelpserver start`: command-line upload options override the
     // configuration file's (`upload_dir`, `upload_retention_days`).
-    if verb == "start" {
-        if let Some(path) = &settings_path {
-            let server = super::lifecycle::Settings::load(path)?;
-            if result.uploads.dir.is_none() {
-                result.uploads.dir = server.upload_dir;
-            }
-            if result.uploads.retention_days.is_none() {
-                result.uploads.retention_days = server.upload_retention_days;
-            }
+    if verb == "start"
+        && let Some(path) = &settings_path
+    {
+        let server = super::lifecycle::Settings::load(path)?;
+        if result.uploads.dir.is_none() {
+            result.uploads.dir = server.upload_dir;
+        }
+        if result.uploads.retention_days.is_none() {
+            result.uploads.retention_days = server.upload_retention_days;
         }
     }
-    if let Some(shell) = &result.settings.shell {
-        if !shell_explicit {
-            result.shell = shell.clone();
-        }
+    if let Some(shell) = &result.settings.shell
+        && !shell_explicit
+    {
+        result.shell = shell.clone();
     }
-    if let Some(cwd) = &result.settings.cwd {
-        if !cwd_explicit {
-            result.cwd = cwd.clone();
-        }
+    if let Some(cwd) = &result.settings.cwd
+        && !cwd_explicit
+    {
+        result.cwd = cwd.clone();
     }
     // Daemon children must not reinterpret relative paths after their caller exits.
     let absolute = |path: &Path| -> Result<PathBuf> {
@@ -302,10 +302,8 @@ fn start_server(options: &Options) -> Result<()> {
     // like before only when this start launches (or replaces) the server; a
     // running workspace keeps its configuration.
     let launching = options.replace_running || connect(&options.socket).is_err();
-    if launching {
-        if let Some(template) = &options.settings.template {
-            template.validate()?;
-        }
+    if launching && let Some(template) = &options.settings.template {
+        template.validate()?;
     }
     // Upload options are recorded like `kelpserver start` does, whether or
     // not a server is running: the server reads them from `workspace.json`
@@ -343,8 +341,15 @@ fn attach(options: &Options) -> Result<()> {
     } else {
         super::upgrade::attach_matching(&options.socket, &options.state, options.takeover)
     };
-    let result =
-        socket.and_then(|socket| super::tui::attach::run(socket, &options.state, options.takeover));
+    let result = socket.and_then(|socket| {
+        // Optional error reporting from KELPMUX_GLITCHTIP_DSN, set up before
+        // raw mode. A panic is captured by the hook, printed as before and
+        // the terminal restored while it unwinds; dropping the guard then
+        // flushes for at most two seconds, as on a normal exit.
+        let _reporting =
+            super::error_reporting::init_from_env(super::error_reporting::Component::Tui);
+        super::tui::attach::run(socket, &options.state, options.takeover)
+    });
     if INTERRUPTED.load(Ordering::Relaxed) {
         Ok(())
     } else {
@@ -390,6 +395,10 @@ pub fn run(args: &[String]) -> Result<()> {
     }
     if args.first().is_some_and(|arg| arg == "web-bridge") {
         let (socket, state) = super::web_bridge::paths(&args[1..])?;
+        // Optional error reporting from KELPMUX_GLITCHTIP_DSN; the guard
+        // flushes (at most two seconds) when the bridge returns.
+        let _reporting =
+            super::error_reporting::init_from_env(super::error_reporting::Component::Bridge);
         return super::web_bridge::run(&socket, &state);
     }
     let options = options(args)?;

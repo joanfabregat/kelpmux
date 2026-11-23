@@ -181,10 +181,10 @@ impl Session {
                 pane: leased,
                 owner,
             } = self.event()?
+                && leased == pane
+                && owner == Some(self.client)
             {
-                if leased == pane && owner == Some(self.client) {
-                    return Ok(());
-                }
+                return Ok(());
             }
         }
         Err("the terminal server did not grant the pane".into())
@@ -198,10 +198,9 @@ impl Session {
                 pane: released,
                 owner: None,
             } = self.event()?
+                && released == pane
             {
-                if released == pane {
-                    return Ok(());
-                }
+                return Ok(());
             }
         }
         Err("the terminal server did not release the pane".into())
