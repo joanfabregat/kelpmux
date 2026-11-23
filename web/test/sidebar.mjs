@@ -12,6 +12,10 @@
 //    above the vitals, the account and settings below the vitals at the very
 //    bottom, all fitting 800 px with ten tabs; one column when folded; the
 //    same on an iPad in portrait and a phone's terminal list.
+// 4. A Grid entry heads the tabs, selected while the grid shows (no tab is
+//    then); a tab opens its terminal alone and the entry the grid. The
+//    focused tile has no border. Folded, the entry is its icon; phones have
+//    none.
 // Set SIDEBAR_SCREENSHOTS to a directory to save screenshots of each case.
 import { build } from "vite";
 import { chromium, webkit, devices } from "playwright";
@@ -109,6 +113,59 @@ async function checkBottom(page, columns) {
   );
 }
 
+/** The Grid entry: the first row above the tabs, a terminal row's height,
+ * selected exactly while the grid shows, with no terminal tab selected
+ * then. */
+async function checkGridEntry(page, grid) {
+  const entry = page.locator('.grid-row [data-view="grid"]');
+  assert.equal(await entry.count(), 1, "one Grid entry");
+  assert.equal(await entry.getAttribute("aria-current"), grid ? "page" : null);
+  const own = await entry.boundingBox();
+  const first = await box(page, ".term-row .term-item");
+  assert.ok(own.y + own.height <= first.y + 1, "Grid above the tabs");
+  assert.ok(Math.abs(own.height - first.height) <= 1, "a tab's height");
+  assert.ok(Math.abs(own.x - first.x) <= 1, "aligned with the tabs");
+  assert.equal(
+    await page.locator('.term-row .term-item[aria-current="page"]').count(),
+    grid ? 0 : 1,
+    "selected tabs",
+  );
+  assert.equal(
+    await page.locator(".term-row:has(> .current)").count(),
+    grid ? 0 : 1,
+  );
+  // The selected entry's highlight is its cell's, as a tab's.
+  const background = await page
+    .locator(".grid-row")
+    .evaluate((el) => getComputedStyle(el).backgroundColor);
+  if (grid) assert.notEqual(background, "rgba(0, 0, 0, 0)", "Grid selected");
+  else assert.equal(background, "rgba(0, 0, 0, 0)");
+}
+/** The focused grid tile has no border of its own: the same border as the
+ * other tiles and no ring. */
+async function checkTileBorder(page, focused, other) {
+  await page.mouse.move(0, 0);
+  const style = (id) =>
+    page.locator(`[data-tile-pane="${id}"]`).evaluate((el) => {
+      const s = getComputedStyle(el);
+      return {
+        color: s.borderTopColor,
+        width: s.borderTopWidth,
+        shadow: s.boxShadow,
+        outline: s.outlineStyle,
+      };
+    });
+  const own = await style(focused);
+  assert.equal(
+    await page
+      .locator(`[data-tile-pane="${focused}"]`)
+      .getAttribute("aria-current"),
+    "true",
+  );
+  assert.deepEqual(own, await style(other), "focused tile like the others");
+  assert.equal(own.shadow, "none");
+}
+
 for (const engine of [chromium, webkit]) {
   const browser = await engine.launch({ headless: true });
   const name = engine.name();
@@ -141,7 +198,16 @@ for (const engine of [chromium, webkit]) {
       // Short, readable labels.
       assert.deepEqual(
         await page.locator(".tool-grid .tool-item .grow").allTextContents(),
-        ["Grid", "Terminals", "Closed", "Search", "Help"],
+        ["Terminals", "Closed", "Search", "Help"],
+      );
+      // 4. The Grid entry heads the tabs, not selected in single view; the
+      // shown terminal's tab is.
+      await checkGridEntry(page, false);
+      assert.equal(
+        await page
+          .locator('.term-row[data-pane="1"] .term-item')
+          .getAttribute("aria-current"),
+        "page",
       );
       // 2. Terminal 1 is shown. Unread bells on tabs 2 (two unread) and 5
       // (one), none elsewhere, and nothing marked read yet.
@@ -256,6 +322,42 @@ for (const engine of [chromium, webkit]) {
       assert.deepEqual(errors, []);
       await context.close();
     }
+    // 4. Grid view, three pages: the Grid entry is selected and no tab is;
+    // the focused tile has no border; the pages take a row of the tools.
+    // A tab opens its terminal alone, and the Grid entry the grid again.
+    {
+      const { context, page, errors } = await open(
+        browser,
+        { viewport: { width: 1440, height: 900 } },
+        "?view=grid&pages=3",
+      );
+      await shot(page, name, "desktop-grid");
+      await checkGridEntry(page, true);
+      await checkTileBorder(page, 1, 2);
+      await checkBottom(page, 2);
+      assert.equal(await page.locator(".view-cell .grid-pages").count(), 1);
+      await page.locator('.term-row[data-pane="3"] .term-item').click();
+      await page.locator(".tab-pane-layout").waitFor();
+      assert.equal(await page.locator(".live-grid").count(), 0);
+      await checkGridEntry(page, false);
+      assert.equal(
+        await page
+          .locator('.term-row[data-pane="3"] .term-item')
+          .getAttribute("aria-current"),
+        "page",
+      );
+      assert.equal(
+        await page.locator(".tab-pane-layout .grid-title").textContent(),
+        "codex 3",
+      );
+      assert.equal(await page.locator(".view-cell").count(), 0, "no pages");
+      await page.locator('[data-view="grid"]').click();
+      await page.locator(".live-grid").waitFor();
+      await checkGridEntry(page, true);
+      assert.equal(await page.locator(".view-cell .grid-pages").count(), 1);
+      assert.deepEqual(errors, []);
+      await context.close();
+    }
     {
       const { context, page, errors } = await open(
         browser,
@@ -264,6 +366,12 @@ for (const engine of [chromium, webkit]) {
       );
       await shot(page, name, "desktop-folded-grid");
       await checkBottom(page, 1);
+      // The Grid entry is its icon, in the same place, selected.
+      await checkGridEntry(page, true);
+      const entry = page.locator('[data-view="grid"]');
+      assert.ok(await entry.locator(".svg-icon").isVisible(), "Grid icon");
+      assert.equal(await entry.locator(".grow").isVisible(), false);
+      await checkTileBorder(page, 1, 3);
       // The grid tiles carry the bell too; focusing a tile marks its
       // notifications read, and the other tiles keep theirs.
       const tileBell = (id) =>
@@ -306,7 +414,8 @@ for (const engine of [chromium, webkit]) {
         emulate("iPhone 15"),
       );
       await shot(page, name, "phone-list");
-      assert.equal(await page.locator('[data-tool="grid"]').count(), 0);
+      assert.equal(await page.locator('[data-view="grid"]').count(), 0);
+      assert.equal(await page.locator(".grid-row").count(), 0);
       const lefts = await page
         .locator(".tool-grid .tool-item")
         .evaluateAll((els) => [
@@ -335,7 +444,7 @@ for (const engine of [chromium, webkit]) {
       await context.close();
     }
     console.log(
-      `PASS: ${name} sidebar: no full width, showing a terminal marks it read, per-terminal notifications, two-column tools above the vitals, account at the bottom`,
+      `PASS: ${name} sidebar: no full width, showing a terminal marks it read, per-terminal notifications, two-column tools above the vitals, account at the bottom, Grid entry and view switching, no focused-tile border`,
     );
   } finally {
     await browser.close();

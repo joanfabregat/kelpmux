@@ -233,9 +233,10 @@ button.rail-mark:hover:not(:disabled) {
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 1px var(--s1);
 }
-/* With several grid pages, the grid entry and its page buttons take a row. */
+/* With several grid pages, the page buttons take a row. */
 .view-cell.wide {
   grid-column: 1 / -1;
+  min-height: 30px;
 }
 .view-cell .grid-pages {
   display: inline-flex;
@@ -252,12 +253,6 @@ button.rail-mark:hover:not(:disabled) {
   height: 22px;
   min-height: 0;
   padding: 0;
-}
-.tool-item[aria-pressed="true"] {
-  color: var(--text);
-}
-.tool-item[aria-pressed="true"] > .svg-icon {
-  color: var(--accent);
 }
 .rail-foot {
   display: flex;
@@ -461,7 +456,7 @@ button.rail-mark:hover:not(:disabled) {
   justify-content: center;
   gap: var(--s1);
 }
-.rail.folded .grid-pages {
+.rail.folded .view-cell {
   display: none;
 }
 
@@ -719,11 +714,8 @@ button.live-tile:focus-visible {
 .live-tile.needs-input {
   border-color: color-mix(in srgb, var(--st-input) 70%, transparent);
 }
-/* The session whose tab is current: chosen from the tab bar in grid mode. */
-.live-tile.focused {
-  border-color: var(--accent);
-  box-shadow: 0 0 0 1px var(--accent);
-}
+/* The focused tile, which takes the grid's keys: no border, only its
+ * header's tint. */
 .live-tile.focused > header {
   background: var(--accent-soft);
   color: var(--text-2);
