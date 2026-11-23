@@ -1,0 +1,337 @@
+/* ───────── File browser and editor (src/files/) ───────── */
+.files-view {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  background: var(--bg);
+}
+.files-head {
+  display: flex;
+  align-items: center;
+  gap: var(--s2);
+  height: 40px;
+  flex: none;
+  padding: 0 var(--s2) 0 var(--s3);
+  border-bottom: 1px solid var(--line);
+  background: var(--surface-1);
+  color: var(--text-2);
+  font-size: var(--fs-sm);
+}
+.files-head .phone-back {
+  min-height: 30px;
+  padding: 0 var(--s1);
+}
+.files-crumbs {
+  display: flex;
+  flex: 1;
+  align-items: center;
+  gap: 1px;
+  min-width: 0;
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+button.files-crumb {
+  flex: none;
+  gap: 4px;
+  min-height: 26px;
+  padding: 0 6px;
+  font-size: var(--fs-sm);
+  font-weight: 400;
+}
+button.files-crumb[aria-current] {
+  color: var(--text);
+  font-weight: 600;
+}
+.files-crumb-sep {
+  color: var(--text-3);
+}
+.files-tools {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: 1px;
+  margin-left: auto;
+}
+.files-tools .icon-btn {
+  width: 28px;
+  height: 28px;
+}
+.files-tools button.small {
+  margin-right: var(--s1);
+}
+.files-tools .icon-btn[aria-pressed="true"] {
+  background: var(--accent-soft);
+  color: var(--accent-text);
+}
+.files-progress {
+  display: flex;
+  align-items: center;
+  gap: var(--s2);
+  flex: none;
+  padding: var(--s1) var(--s3);
+  border-bottom: 1px solid var(--line);
+  background: var(--surface-1);
+  color: var(--text-2);
+  font-size: var(--fs-sm);
+}
+.files-progress .grow {
+  flex: 1;
+  min-width: 0;
+}
+.files-list {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  padding-bottom: var(--s5);
+}
+.files-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 88px 168px 36px;
+  align-items: center;
+  gap: var(--s2);
+  min-height: 32px;
+  padding: 0 var(--s2) 0 var(--s3);
+  border-bottom: 1px solid color-mix(in srgb, var(--line) 60%, transparent);
+  font-size: 13px;
+}
+.files-row:not(.files-columns):hover,
+.files-row.selected {
+  background: var(--surface-1);
+}
+.files-row.files-columns {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  min-height: 28px;
+  background: var(--bg);
+  color: var(--text-3);
+  font-size: var(--fs-xs);
+  font-weight: 600;
+}
+.files-row.drop-target,
+.files-list.drop-target,
+button.files-crumb.drop-target,
+.term-row.drop-target {
+  outline: 2px dashed var(--accent);
+  outline-offset: -2px;
+  background: var(--accent-soft);
+}
+.files-name-col {
+  display: flex;
+  align-items: center;
+  gap: var(--s2);
+  min-width: 0;
+}
+.files-kind {
+  flex: none;
+  color: var(--text-3);
+}
+.files-kind.dir {
+  color: var(--accent);
+}
+button.files-open {
+  flex: 1;
+  justify-content: flex-start;
+  gap: var(--s2);
+  min-width: 0;
+  min-height: 28px;
+  padding: 0;
+  overflow: hidden;
+  border: 0;
+  background: transparent;
+  color: var(--text);
+  font-weight: 400;
+  text-align: left;
+}
+button.files-open:hover:not(:disabled) {
+  filter: none;
+}
+button.files-open:hover .files-name {
+  text-decoration: underline;
+}
+.files-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.files-target,
+.files-meta {
+  overflow: hidden;
+  color: var(--text-3);
+  font-size: var(--fs-xs);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.files-meta {
+  display: none;
+}
+.files-size,
+.files-modified {
+  overflow: hidden;
+  color: var(--text-3);
+  font-size: var(--fs-sm);
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+  white-space: nowrap;
+}
+.files-actions {
+  display: flex;
+  justify-content: flex-end;
+}
+.files-actions .icon-btn {
+  width: 26px;
+  height: 26px;
+}
+/* Hover devices show a row's actions on hover; touch devices always. */
+.kelpmux-shell:not(.touch)
+  .files-row:not(:hover):not(:focus-within):not(.selected)
+  .files-actions
+  .icon-btn {
+  opacity: 0;
+}
+.files-name-edit {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+  padding: 3px 0;
+}
+.files-name-edit input {
+  min-height: 26px;
+  padding: 2px 6px;
+}
+.files-name-error {
+  color: var(--st-failed);
+  font-size: var(--fs-xs);
+}
+.files-message {
+  margin: 0;
+  padding: var(--s4);
+  color: var(--text-2);
+}
+.files-message.error {
+  display: grid;
+  justify-items: start;
+  gap: var(--s2);
+  color: color-mix(in srgb, var(--st-failed) 70%, var(--text));
+}
+.files-message.error p {
+  margin: 0;
+}
+.files-menu {
+  position: fixed;
+  min-width: 240px;
+}
+
+/* An open file */
+.files-title {
+  display: flex;
+  flex: 1;
+  align-items: baseline;
+  gap: var(--s2);
+  min-width: 0;
+  overflow: hidden;
+}
+.files-title strong {
+  overflow: hidden;
+  color: var(--text);
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.files-folder {
+  overflow: hidden;
+  color: var(--text-3);
+  font-family: var(--font-mono);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.files-dirty {
+  flex: none;
+  align-self: center;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--st-input);
+}
+.files-editor .notice.compact {
+  margin: var(--s2) var(--s3);
+}
+.files-editor-body {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-height: 0;
+  overflow: hidden;
+}
+.files-editor-body > .code-editor {
+  flex: 1;
+  min-height: 0;
+}
+.code-editor .cm-editor {
+  height: 100%;
+}
+.files-info {
+  flex: 1;
+}
+
+/* Sidebar: the Files entry and the open files under it. */
+.doc-row {
+  position: relative;
+}
+.doc-row .term-item {
+  min-height: 30px;
+  padding-left: var(--s4);
+}
+.doc-row .term-title {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.doc-row:hover .term-row-actions,
+.doc-row:focus-within .term-row-actions {
+  display: inline-flex;
+}
+.rail.folded .doc-row .term-item {
+  padding-left: 0;
+}
+
+.spin {
+  animation: files-spin 1s linear infinite;
+}
+@keyframes files-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+/* Phones: one column, size and time under the name. */
+.phone .files-row {
+  grid-template-columns: minmax(0, 1fr) 40px;
+  min-height: 44px;
+}
+.phone .files-row .files-size,
+.phone .files-row .files-modified {
+  display: none;
+}
+.phone .files-columns {
+  display: none;
+}
+.phone button.files-open {
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 0;
+}
+.phone .files-meta {
+  display: block;
+}
+.phone .files-actions .icon-btn {
+  width: 36px;
+  height: 36px;
+}
+.phone .files-head {
+  height: 48px;
+}

@@ -4,8 +4,9 @@ import { ProviderLogo } from "./state/ProviderLogo";
 import { stateLabel, type DisplayState } from "./state/model";
 import { Icon } from "./status";
 
-/** One terminal at a time, or all of them live in a grid. */
-export type SessionMode = "single" | "grid";
+/** One terminal at a time, all of them live in a grid, or the file
+ * browser (and the files open from it). */
+export type SessionMode = "single" | "grid" | "files";
 
 /** Number, state, provider and title of a pane, shared by the grid tiles
  * and the focused terminal's header. */

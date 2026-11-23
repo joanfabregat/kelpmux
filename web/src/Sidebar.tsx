@@ -59,6 +59,19 @@ export type SidebarProps = {
   onDialog: (dialog: string) => void;
   onResizeStart: (event: React.PointerEvent) => void;
   onToggleFold: () => void;
+  /** The file browser's entry and the files open from it, when this
+   * connection offers files (KelpServer `files` through the bridge). */
+  files?: SidebarFiles;
+};
+
+/** The Files entry: the browser, and each open file under it like a tab. */
+export type SidebarFiles = {
+  /** The browser (not an open file) is shown. */
+  browsing: boolean;
+  docs: { path: string; name: string; dirty: boolean; current: boolean }[];
+  onBrowse: () => void;
+  onOpenDoc: (path: string) => void;
+  onCloseDoc: (path: string) => void;
 };
 
 /** The left sidebar, like the TUI's, and the only navigation: the state
@@ -86,6 +99,7 @@ export function Sidebar(props: SidebarProps) {
     notifications,
     current,
     vitals,
+    files,
   } = props;
   const [parkedOpen, setParkedOpen] = useState(true);
   const summary = rollup(terminals.concat(parked), notifications);
@@ -271,6 +285,72 @@ export function Sidebar(props: SidebarProps) {
               </button>
             </Tooltip>
           </div>
+        )}
+        {/* The file browser, then the files open from it, each like a
+            tab: shown in the main area, with a dot while it has unsaved
+            changes. */}
+        {files && (
+          <>
+            <div className="nav-cell grid-row files-row-entry">
+              <Tooltip content="Files on the server">
+                <button
+                  type="button"
+                  className={`nav-item term-item grid-item ${mode === "files" && files.browsing ? "current" : ""}`}
+                  aria-current={
+                    mode === "files" && files.browsing ? "page" : undefined
+                  }
+                  aria-label="Files"
+                  data-view="files"
+                  onClick={files.onBrowse}
+                >
+                  <span className="term-number" aria-hidden="true">
+                    <Icon name="folder" size="sm" />
+                  </span>
+                  <span className="grow">Files</span>
+                </button>
+              </Tooltip>
+            </div>
+            {files.docs.map((doc) => {
+              const on = mode === "files" && doc.current;
+              return (
+                <div
+                  key={doc.path}
+                  className="nav-cell doc-row"
+                  data-doc={doc.path}
+                >
+                  <button
+                    type="button"
+                    className={`nav-item term-item ${on ? "current" : ""}`}
+                    aria-current={on ? "page" : undefined}
+                    aria-label={`Open file ${doc.name}${doc.dirty ? " (unsaved changes)" : ""}`}
+                    title={doc.path}
+                    onClick={() => files.onOpenDoc(doc.path)}
+                  >
+                    <span className="term-number" aria-hidden="true">
+                      <Icon name="file" size="sm" />
+                    </span>
+                    <span className="grow term-names">
+                      <span className="term-title">{doc.name}</span>
+                    </span>
+                    {doc.dirty && (
+                      <span className="files-dirty" aria-hidden="true" />
+                    )}
+                  </button>
+                  <span className="term-row-actions">
+                    <button
+                      type="button"
+                      className="icon-btn"
+                      aria-label={`Close file ${doc.name}`}
+                      title="Close"
+                      onClick={() => files.onCloseDoc(doc.path)}
+                    >
+                      <Icon name="x" size="sm" />
+                    </button>
+                  </span>
+                </div>
+              );
+            })}
+          </>
         )}
         <div className="term-list" role="list" aria-label="Terminals">
           {terminals.map((p) => row(p, false))}
