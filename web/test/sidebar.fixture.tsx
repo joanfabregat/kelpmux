@@ -13,7 +13,7 @@
 // recording the keys typed into it in `window.typed`.
 import React, { useEffect, useState } from "react";
 import { createRoot } from "react-dom/client";
-import type { NumberedPane } from "../src/terminal/types";
+import type { NumberedPane } from "@kelpcore/web/types.ts";
 import { Sidebar } from "../src/Sidebar";
 import { NotificationsButton, PaneLabel, type SessionMode } from "../src/Shell";
 import { TerminalNotificationsPanel } from "../src/Panels";
@@ -35,7 +35,7 @@ import {
 import { useReadShown } from "../src/state/read";
 import "../src/styles/base.css";
 import "../src/styles/shell.css";
-import "../src/terminal/terminal.css";
+import "@kelpcore/web/terminal.css";
 import "../src/styles/dialogs.css";
 import "../src/styles/login.css";
 import "../src/styles/kelpmux.css";

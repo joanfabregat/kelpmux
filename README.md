@@ -1,6 +1,6 @@
 # KelpMux
 
-KelpMux is the open-source terminal interface for persistent workspaces. This repository contains the TUI, the shared Rust/WASM client library and the terminals-only web client. The terminal server, [KelpServer](https://github.com/joanfabregat/kelpserver), lives in its own repository and is a pinned dependency. The TUI provides grid and sidebar views, agent activity, parking, recently closed sessions, recovery and system metrics. Detaching leaves shells and agents running.
+KelpMux is the open-source terminal interface for persistent workspaces. This repository contains the TUI and the terminals-only web client. The terminal server ([KelpServer](https://github.com/joanfabregat/kelpcore)), the protocol crate, the shared Rust/WASM client library and the browser terminal layer live in the [KelpCore](https://github.com/joanfabregat/kelpcore) repository and are pinned dependencies. The TUI provides grid and sidebar views, agent activity, parking, recently closed sessions, recovery and system metrics. Detaching leaves shells and agents running.
 
 TUI feature development is frozen while the separately maintained KelpHub web application evolves. Compatibility, security and necessary fixes remain in scope; feature parity with the web application is not required.
 
@@ -9,15 +9,15 @@ TUI feature development is frozen while the separately maintained KelpHub web ap
 | Package | Location | Responsibility |
 | --- | --- | --- |
 | `kelpmux` | `src/`, `web/` | Terminal interface, web client (bridge, relay assets and browser UI) and optional legacy tmux adapter |
-| `kelpclient` | [crates/client](crates/client) | Shared terminal state, selection/history utilities and WASM bindings |
-| `kelpserver` | [joanfabregat/kelpserver](https://github.com/joanfabregat/kelpserver) (Git dependency, 0.3) | PTYs, authoritative terminal state, persistent sessions and the pane stream session API |
-| `kelpclient-protocol` | [joanfabregat/kelpserver](https://github.com/joanfabregat/kelpserver) (Git dependency) | Portable wire types and validation |
+| `kelpclient` | [joanfabregat/kelpcore](https://github.com/joanfabregat/kelpcore) (Git dependency) | Shared terminal state, selection/history utilities and WASM bindings |
+| `kelpserver` | [joanfabregat/kelpcore](https://github.com/joanfabregat/kelpcore) (Git dependency, 0.3) | PTYs, authoritative terminal state, persistent sessions and the pane stream session API |
+| `kelpclient-protocol` | [joanfabregat/kelpcore](https://github.com/joanfabregat/kelpcore) (Git dependency) | Portable wire types and validation |
 
-The `web/` directory holds the terminals-only browser client (see [docs/web.md](docs/web.md)). KelpHub owns the full web application with project management, authenticated management backend and its hosting. See [MIGRATION.md](MIGRATION.md) for history provenance and the removal of the composed-screen protocol.
+The `web/` directory holds the terminals-only browser client (see [docs/web.md](docs/web.md)); its terminal layer is the `@kelpcore/web` npm package from KelpCore, pinned in `web/package.json`. KelpHub owns the full web application with project management, authenticated management backend and its hosting. See [MIGRATION.md](MIGRATION.md) for history provenance and the removal of the composed-screen protocol.
 
-### KelpServer pin
+### KelpCore pin
 
-`kelpserver` and `kelpclient-protocol` are declared once, in `[workspace.dependencies]` of the root `Cargo.toml`, with the identical Git URL and `rev`; `crates/client` inherits `kelpclient-protocol` from there. Keep the URL string and revision identical for both, or Cargo builds two protocol crates. The browser's `client-core.wasm` must use protocol types from the same KelpServer revision as the server it talks to. To move to a newer KelpServer, change the `rev` of both entries, run `cargo update -p kelpserver -p kelpclient-protocol`, and review and audit the `Cargo.lock` change.
+`kelpserver`, `kelpclient-protocol` and `kelpclient` are declared once, in `[workspace.dependencies]` of the root `Cargo.toml`, with the identical KelpCore Git URL and `rev`. Keep the URL string and revision identical for all three, or Cargo builds two protocol crates. The browser's `client-core.wasm` (built from `kelpclient`) must use protocol types from the same KelpCore revision as the server it talks to. The web client's `@kelpcore/web` dependency in `web/package.json` pins the same KelpCore commit. To move to a newer KelpCore, change the `rev` of all three entries, run `cargo update -p kelpserver -p kelpclient-protocol -p kelpclient`, update the `@kelpcore/web` commit and `web/package-lock.json` (`npm install --ignore-scripts --package-lock-only`), and review and audit both lockfile changes.
 
 ## Build and run
 

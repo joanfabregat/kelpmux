@@ -27,7 +27,7 @@ while IFS=$'\t' read -r name version manifest source; do
     found=1
   fi
   # A crate inside a pinned Git repository (kelpclient-protocol from
-  # kelpserver) may rely on the repository's root license files: look up to
+  # KelpCore) may rely on the repository's root license files: look up to
   # Cargo's checkout root, which it marks with .cargo-ok.
   if [[ "$found" != 1 && $source == git+* ]]; then
     root=$dir

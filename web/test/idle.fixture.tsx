@@ -1,5 +1,5 @@
 // The idle warning as main.tsx wires it, against the real shared worker
-// (src/terminal/session-worker.ts, built to /worker.js) instead of SSH
+// (@kelpcore/web/session-worker.ts, built to /worker.js) instead of SSH
 // (test/idle.mjs). Each page joins the worker as SharedSession does; the
 // first page plays the connection tab and answers `host_start` with a
 // welcome. The page reports activity with the same hook as main.tsx and

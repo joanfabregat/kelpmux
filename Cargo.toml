@@ -8,7 +8,7 @@ description = "Kelp terminal interface"
 
 [dependencies]
 kelpserver = { workspace = true }
-kelpclient = { path = "crates/client", version = "0.1.0" }
+kelpclient = { workspace = true }
 base64 = "0.22"
 unicode-width = "=0.2.2"
 libc = "0.2"
@@ -25,12 +25,13 @@ sentry = { version = "0.49.6", default-features = false, features = ["backtrace"
 ureq = { version = "3.5.2", default-features = false, features = ["rustls"] }
 
 [workspace]
-members = ["crates/client"]
 resolver = "2"
 
-# KelpServer and the protocol types come from one kelpserver revision. Both
-# entries must keep the identical URL and rev, or Cargo builds two protocol
-# crates (and client-core.wasm would disagree with the server).
+# KelpServer, the protocol types and the client core (kelpclient, also built
+# as client-core.wasm) come from one KelpCore revision. All three entries
+# must keep the identical URL and rev, or Cargo builds two protocol crates
+# (and client-core.wasm would disagree with the server).
 [workspace.dependencies]
-kelpserver = { git = "https://github.com/joanfabregat/kelpserver", rev = "21b23391e7ab1170b9c8c5cd3d3606af13de5142" }
-kelpclient-protocol = { git = "https://github.com/joanfabregat/kelpserver", rev = "21b23391e7ab1170b9c8c5cd3d3606af13de5142" }
+kelpserver = { git = "https://github.com/joanfabregat/kelpcore", rev = "92fd8f998ae15d15b45ec5308ce702441f98410b" }
+kelpclient-protocol = { git = "https://github.com/joanfabregat/kelpcore", rev = "92fd8f998ae15d15b45ec5308ce702441f98410b" }
+kelpclient = { git = "https://github.com/joanfabregat/kelpcore", rev = "92fd8f998ae15d15b45ec5308ce702441f98410b" }

@@ -1,5 +1,5 @@
 import React, { useState } from "react";
-import type { NumberedPane } from "./terminal/types";
+import type { NumberedPane } from "@kelpcore/web/types.ts";
 import type { IconName } from "./icons";
 import { Icon } from "./status";
 import { Tooltip } from "./Tooltip";

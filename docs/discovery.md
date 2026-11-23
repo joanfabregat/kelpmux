@@ -1,6 +1,6 @@
 # Discovery and optional hooks
 
-Native KelpMux panes (served by [KelpServer](https://github.com/joanfabregat/kelpserver)) consume [OSC 7501 program status](https://github.com/joanfabregat/kelpserver/blob/main/docs/agent-polling.md#terminal-program-status) from Codex and Claude Code. The PTY identifies the pane directly, so activity no longer requires a Codex transport bridge or a thread-to-terminal guess. Process discovery and read-only daemon polling still supply supplementary metadata when a conversation ID is known. The passive identity limitations below still apply; activity and conversation identity are separate observations.
+Native KelpMux panes (served by [KelpServer](https://github.com/joanfabregat/kelpcore)) consume [OSC 7501 program status](https://github.com/joanfabregat/kelpcore/blob/main/docs/agent-polling.md#terminal-program-status) from Codex and Claude Code. The PTY identifies the pane directly, so activity no longer requires a Codex transport bridge or a thread-to-terminal guess. Process discovery and read-only daemon polling still supply supplementary metadata when a conversation ID is known. The passive identity limitations below still apply; activity and conversation identity are separate observations.
 
 ## Default: discover existing processes
 
@@ -52,4 +52,4 @@ Sources: [Claude Code hook reference](https://code.claude.com/docs/en/hooks), [C
 
 ## Owned native workspaces
 
-Native workspaces are served by [KelpServer](https://github.com/joanfabregat/kelpserver), which performs discovery itself; no separate tmux daemon or launch wrapper is needed. Its native hook receiver (`kelpmux native-event codex|claude`), pane identity rules, tab labels, recovery metadata and the shared polling adapters are documented in [KelpServer's discovery guide](https://github.com/joanfabregat/kelpserver/blob/main/docs/discovery.md) and [agent polling adapters](https://github.com/joanfabregat/kelpserver/blob/main/docs/agent-polling.md). The sections above cover the legacy tmux path, whose commands (`kelpmux daemon`, `scan`, `name` and `event`) remain part of KelpMux.
+Native workspaces are served by [KelpServer](https://github.com/joanfabregat/kelpcore), which performs discovery itself; no separate tmux daemon or launch wrapper is needed. Its native hook receiver (`kelpmux native-event codex|claude`), pane identity rules, tab labels, recovery metadata and the shared polling adapters are documented in [KelpServer's discovery guide](https://github.com/joanfabregat/kelpcore/blob/main/docs/discovery.md) and [agent polling adapters](https://github.com/joanfabregat/kelpcore/blob/main/docs/agent-polling.md). The sections above cover the legacy tmux path, whose commands (`kelpmux daemon`, `scan`, `name` and `event`) remain part of KelpMux.

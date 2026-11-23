@@ -1,7 +1,7 @@
 import type React from "react";
-import { SharedSession as Session } from "./terminal/shared-session";
-import type { Store } from "./terminal/Terminal";
-import type { Connection } from "./terminal/types";
+import { SharedSession as Session } from "@kelpcore/web/shared-session.ts";
+import type { Store } from "@kelpcore/web/Terminal.tsx";
+import type { Connection } from "@kelpcore/web/types.ts";
 import { modes, terminalColors, type Appearance } from "./appearance";
 import { ThemePicker } from "./ThemePicker";
 import { Settings } from "./Settings";
@@ -9,7 +9,7 @@ import { FontPicker } from "./FontPicker";
 import { Icon } from "./status";
 import { shortcuts } from "./shortcuts";
 import type { Preferences } from "./layout-store";
-import type { HardwareKeyboard } from "./terminal/touch-keys";
+import type { HardwareKeyboard } from "@kelpcore/web/touch-keys.ts";
 import { UploadSettings } from "./Upload";
 import { idleMinutes, minutesText } from "./idle";
 

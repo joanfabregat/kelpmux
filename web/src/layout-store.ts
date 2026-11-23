@@ -15,7 +15,7 @@
 import {
   hardwareKeyboard,
   type HardwareKeyboard,
-} from "./terminal/touch-keys.ts";
+} from "@kelpcore/web/touch-keys.ts";
 
 export type ViewMode = "single" | "grid";
 

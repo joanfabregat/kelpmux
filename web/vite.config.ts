@@ -1,5 +1,7 @@
-// Production build of the web client. Two additions to Vite's defaults, both
-// for optional error reporting (docs/web.md, "Error reporting"):
+// Production build of the web client. Besides keeping the @kelpcore/web
+// terminal layer out of dependency pre-bundling, two additions to Vite's
+// defaults, both for optional error reporting (docs/web.md, "Error
+// reporting"):
 // - `__KELPMUX_RELEASE__`, the release name events carry (scripts/release.mjs,
 //   identical to the kelpmux executable's).
 // - Hidden source maps: generated without a `sourceMappingURL` comment and
@@ -52,6 +54,10 @@ export default defineConfig(({ command }) => {
   const release = releaseName();
   return {
     define: { __KELPMUX_RELEASE__: JSON.stringify(release) },
+    // @kelpcore/web is TypeScript source that creates its SharedWorker with
+    // `new URL("./session-worker.ts", import.meta.url)`; pre-bundling would
+    // move the importing module away from the worker file.
+    optimizeDeps: { exclude: ["@kelpcore/web"] },
     build: { sourcemap: "hidden" },
     plugins: command === "build" ? [hiddenSourceMaps(release)] : [],
   };

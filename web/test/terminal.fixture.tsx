@@ -4,11 +4,11 @@
 // TerminalTile), recording opened tiles in `window.opened`.
 import React from "react";
 import { createRoot } from "react-dom/client";
-import { Terminal, TerminalTile } from "../src/terminal/Terminal";
+import { Terminal, TerminalTile } from "@kelpcore/web/Terminal.tsx";
 import { LiveGrid } from "../src/LiveGrid";
 import "../src/styles/base.css";
 import "../src/styles/shell.css";
-import "../src/terminal/terminal.css";
+import "@kelpcore/web/terminal.css";
 const tile = new URLSearchParams(location.search).has("tile");
 const cols = 80,
   rows = 24;

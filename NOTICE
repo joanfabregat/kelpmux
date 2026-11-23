@@ -2,6 +2,13 @@ Kelpmux
 Copyright 2026 Joan Fabregat and Kelpmux contributors
 Licensed under the Apache License, Version 2.0.
 
+KelpServer, the KelpClient terminal client core (also served to browsers as
+client-core.wasm) and the @kelpcore/web browser terminal layer come from
+KelpCore (https://github.com/joanfabregat/kelpcore), Copyright 2026 Joan
+Fabregat and Kelpmux contributors, licensed under Apache-2.0, at the revision
+pinned in Cargo.toml and web/package.json. KelpClient and the terminal layer
+were moved there from Kelpmux at commit 7179aa3.
+
 Native release archives use Alacritty's terminal engine and other Rust
 dependencies, copyright their respective authors. Exact versions, license
 expressions and upstream license texts are included under dependency-licenses/.

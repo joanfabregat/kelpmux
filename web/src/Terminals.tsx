@@ -5,7 +5,7 @@
 // (`repos`, `commands`) when the bridge offers them; the table works
 // without them.
 import { useEffect, useMemo, useState } from "react";
-import type { NumberedPane } from "./terminal/types";
+import type { NumberedPane } from "@kelpcore/web/types.ts";
 import { Icon } from "./status";
 import { age } from "./format";
 import { StateMark } from "./state/StateMark";

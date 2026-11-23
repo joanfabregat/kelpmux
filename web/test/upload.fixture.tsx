@@ -8,7 +8,7 @@
 // during the upload), `max_file=N` (a smaller per-file limit).
 import React, { useState } from "react";
 import { createRoot } from "react-dom/client";
-import type { NumberedPane } from "../src/terminal/types";
+import type { NumberedPane } from "@kelpcore/web/types.ts";
 import {
   UploadDialog,
   UploadSettings,
@@ -22,11 +22,11 @@ import {
   pastedPaths,
   type UploadLimits,
   type UploadTransport,
-} from "../src/terminal/uploads";
+} from "@kelpcore/web/uploads.ts";
 import { interfaceVariables, themeVariables } from "../src/appearance";
 import "../src/styles/base.css";
 import "../src/styles/shell.css";
-import "../src/terminal/terminal.css";
+import "@kelpcore/web/terminal.css";
 import "../src/styles/dialogs.css";
 import "../src/styles/kelpmux.css";
 
