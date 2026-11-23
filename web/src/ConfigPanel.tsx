@@ -12,6 +12,11 @@ import type { Preferences } from "./layout-store";
 import type { HardwareKeyboard } from "@kelpcore/web/touch-keys.ts";
 import { UploadSettings } from "./Upload";
 import { idleMinutes, minutesText } from "./idle";
+import {
+  NOTIFICATION_EVENTS,
+  notificationEventHint,
+  notificationEventLabel,
+} from "./toasts";
 
 const hardwareKeyboardChoices: [HardwareKeyboard, string][] = [
   ["auto", "Auto"],
@@ -140,33 +145,43 @@ export function ConfigPanel({
               setPreferences({ ...preferences, sound: event.target.checked })
             }
           />
-          Play a sound when a terminal asks a question, finishes or fails
+          Play a sound for the events below
         </label>
-        <label className="close-setting">
-          <input
-            type="checkbox"
-            checked={preferences.desktop}
-            onChange={async (event) => {
-              const desktop = event.target.checked;
-              if (
-                desktop &&
-                "Notification" in window &&
-                Notification.permission === "default"
-              )
-                await Notification.requestPermission().catch(() => "denied");
-              setPreferences({ ...preferences, desktop });
-            }}
-          />
-          Show a desktop notification while this tab is in the background
-        </label>
-        {preferences.desktop &&
-          "Notification" in window &&
-          Notification.permission === "denied" && (
-            <p className="setting-hint">
-              This browser blocks notifications for this site; allow them in its
-              site settings.
-            </p>
-          )}
+        <h3>Events</h3>
+        <div role="group" aria-label="Notification events">
+          {NOTIFICATION_EVENTS.map((event) => (
+            <label
+              key={event}
+              className="close-setting"
+              data-notification-event={event}
+            >
+              <input
+                type="checkbox"
+                checked={preferences.notificationEvents[event]}
+                onChange={(change) =>
+                  setPreferences({
+                    ...preferences,
+                    notificationEvents: {
+                      ...preferences.notificationEvents,
+                      [event]: change.target.checked,
+                    },
+                  })
+                }
+              />
+              <span>
+                <b>{notificationEventLabel[event]}</b>: when{" "}
+                {notificationEventHint[event]}
+              </span>
+            </label>
+          ))}
+        </div>
+        <p className="setting-hint">
+          An enabled event shows a toast in the top right corner, one per
+          terminal, except for the terminal you are reading; click it to open
+          that terminal. A toast goes away when its notifications are read, here
+          or in any other window, device or the TUI. A bell also marks the
+          browser tab's icon until it is read.
+        </p>
         <h3>Sidebar</h3>
         <label className="close-setting">
           <input

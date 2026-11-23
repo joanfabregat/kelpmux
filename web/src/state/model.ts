@@ -82,17 +82,18 @@ export function notificationMatches(n: Notification, pane: StatePane) {
   );
 }
 
-const isBell = (n: Notification) =>
+/** A terminal bell: KelpServer records bells with the unknown status. */
+export const isBell = (n: Notification) =>
   n.status === "unknown" && n.title.startsWith("Bell · ");
 
-/** A bell's status: the typed notification it accompanied (within two
- * seconds, same pane and process), else unknown. */
-export function notificationStatus(
+/** The typed notification a bell accompanied (within two seconds, same
+ * pane and process), if any. Undefined for any other notification. */
+export function bellCompanion(
   notifications: Notification[],
   n: Notification,
-): string {
-  if (!isBell(n)) return n.status;
-  const typed = [...notifications]
+): Notification | undefined {
+  if (!isBell(n)) return undefined;
+  return [...notifications]
     .sort((a, b) => b.id - a.id)
     .find(
       (o) =>
@@ -103,7 +104,14 @@ export function notificationStatus(
         o.origin?.run === n.origin?.run &&
         Math.abs(o.at - n.at) <= 2,
     );
-  return typed ? typed.status : n.status;
+}
+
+/** A bell's status: the typed notification it accompanied, else unknown. */
+export function notificationStatus(
+  notifications: Notification[],
+  n: Notification,
+): string {
+  return bellCompanion(notifications, n)?.status ?? n.status;
 }
 
 /** A KelpServer status as a display state (unknown and bells are alerts,

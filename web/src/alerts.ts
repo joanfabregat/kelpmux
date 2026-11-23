@@ -1,7 +1,8 @@
-// Attention alerts of this browser: an optional sound and desktop
-// notification when a workspace notification arrives (a question, a
-// finished turn, a failure or a bell), the browser equivalent of the TUI's
-// notification sound. Preferences are this browser's own.
+// Attention alerts of this browser: an optional sound when a workspace
+// notification arrives (a question, a finished turn, a failure, an exited
+// agent or a bell), the browser equivalent of the TUI's notification
+// sound. In-app toasts (toasts.ts) replace desktop notifications.
+// Preferences are this browser's own.
 import type { Notification } from "./state/model";
 
 /** Unread notifications newer than `after`, oldest first. */
@@ -39,21 +40,5 @@ export function chime() {
     }
   } catch {
     // Audio unavailable: alerts stay visual.
-  }
-}
-
-/** A desktop notification while this page is hidden, if permitted. */
-export function desktopAlert(title: string, body: string, onClick: () => void) {
-  try {
-    if (!("Notification" in window) || Notification.permission !== "granted")
-      return;
-    const note = new Notification(title, { body, tag: "kelpmux-attention" });
-    note.onclick = () => {
-      window.focus();
-      onClick();
-      note.close();
-    };
-  } catch {
-    // Notifications unavailable in this context.
   }
 }

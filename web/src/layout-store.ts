@@ -16,6 +16,11 @@ import {
   hardwareKeyboard,
   type HardwareKeyboard,
 } from "@kelpcore/web/touch-keys.ts";
+import {
+  defaultNotificationEvents,
+  notificationEvents,
+  type NotificationEvents,
+} from "./toasts.ts";
 
 export type ViewMode = "single" | "grid";
 
@@ -135,10 +140,11 @@ export type Preferences = {
   /** Sidebar width in CSS pixels. */
   sidebarWidth: number;
   sidebarFolded: boolean;
-  /** Play a sound when a terminal newly needs attention or finishes. */
+  /** Play a sound when an enabled event arrives. */
   sound: boolean;
-  /** Show a desktop notification for the same events while hidden. */
-  desktop: boolean;
+  /** Which events alert: toast, sound and, for bells, the favicon. The
+   * desktop notifications this replaced stored `desktop`, now ignored. */
+  notificationEvents: NotificationEvents;
   /** Touch devices: how a hardware keyboard enters input mode. */
   hardwareKeyboard: HardwareKeyboard;
 };
@@ -149,7 +155,7 @@ export const defaultPreferences: Preferences = {
   sidebarWidth: 248,
   sidebarFolded: false,
   sound: false,
-  desktop: false,
+  notificationEvents: defaultNotificationEvents,
   hardwareKeyboard: "auto",
 };
 export function loadPreferences(): Preferences {
@@ -163,7 +169,7 @@ export function loadPreferences(): Preferences {
         : defaultPreferences.sidebarWidth,
       sidebarFolded: value.sidebarFolded === true,
       sound: value.sound === true,
-      desktop: value.desktop === true,
+      notificationEvents: notificationEvents(value.notificationEvents),
       hardwareKeyboard: hardwareKeyboard(value.hardwareKeyboard),
     };
   } catch {

@@ -594,6 +594,156 @@ for (const engine of [chromium, webkit]) {
       assert.deepEqual(errors, []);
       await context.close();
     }
+    // 5. Attention toasts replace desktop notifications (toasts=1).
+    {
+      const { context, page, errors } = await open(
+        browser,
+        { viewport: { width: 1440, height: 900 } },
+        "?toasts=1",
+      );
+      const toast = (id) => page.locator(`.attention-toast[data-pane="${id}"]`);
+      const favicon = () =>
+        page.evaluate(() =>
+          decodeURIComponent(document.querySelector('link[rel="icon"]').href),
+        );
+      const row = (id) => page.locator(`.term-row[data-pane="${id}"]`);
+      // Notifications already there when the page loads make no toast.
+      assert.equal(await page.locator(".attention-toast").count(), 0);
+      assert.ok(!(await favicon()).includes("data-bell"));
+      // A bell on a background terminal: a toast top right, a bell dot on
+      // the favicon.
+      await page.evaluate(() => window.bell(3));
+      await toast(3).waitFor();
+      const b = await toast(3).boundingBox();
+      assert.ok(1440 - (b.x + b.width) <= 24, "toast at the right edge");
+      assert.ok(b.y < 100, "toast at the top");
+      const header = await box(page, ".grid-pane > header");
+      assert.ok(b.y >= header.y + header.height, "below the terminal header");
+      assert.match(await toast(3).textContent(), /codex 3.*Bell · agent 3/);
+      assert.ok((await favicon()).includes("data-bell"), "favicon rings");
+      // A second event of the same terminal updates its toast.
+      await page.evaluate(() => window.notify(3));
+      await page.waitForFunction(() =>
+        document
+          .querySelector('.attention-toast[data-pane="3"]')
+          ?.textContent.includes("Needs input"),
+      );
+      assert.equal(await page.locator(".attention-toast").count(), 1);
+      // None for the terminal shown alone.
+      await page.evaluate(() => window.bell(1));
+      await page.waitForFunction(() => window.acks.length > 0);
+      assert.equal(await toast(1).count(), 0);
+      await shot(page, name, "toast-desktop");
+      // Clicking it shows that terminal, which reads it: the toast goes
+      // and the favicon is restored.
+      await toast(3).locator(".attention-open").click();
+      assert.equal(
+        await row(3).locator(".term-item").getAttribute("aria-current"),
+        "page",
+      );
+      await toast(3).waitFor({ state: "detached" });
+      await page.waitForFunction(
+        () =>
+          !decodeURIComponent(
+            document.querySelector('link[rel="icon"]').href,
+          ).includes("data-bell"),
+      );
+      // Four terminals: one summary, which lists them; an entry opens its
+      // terminal, leaving three toasts.
+      await page.evaluate(() => [4, 6, 7, 8].forEach((p) => window.notify(p)));
+      const summary = page.locator(".attention-summary");
+      await summary.waitFor();
+      assert.equal(await page.locator(".attention-toast").count(), 1);
+      assert.match(await summary.textContent(), /4 terminals need attention/);
+      await summary.locator(".attention-row .attention-open").click();
+      assert.equal(await summary.locator(".attention-list li").count(), 4);
+      await shot(page, name, "toast-desktop-summary");
+      await summary.locator('.attention-list [data-pane="6"]').click();
+      assert.equal(
+        await row(6).locator(".term-item").getAttribute("aria-current"),
+        "page",
+      );
+      await summary.waitFor({ state: "detached" });
+      assert.equal(await page.locator(".attention-toast").count(), 3);
+      await shot(page, name, "toast-desktop-three");
+      // Closing one hides it; its terminal stays unread.
+      await toast(8)
+        .getByRole("button", { name: /Dismiss/ })
+        .click();
+      await toast(8).waitFor({ state: "detached" });
+      assert.equal(await row(8).locator(".unread-mark").count(), 1);
+      // The Bell toggle off: no toast and no favicon dot for a bell.
+      await page.evaluate(() =>
+        window.setEvents({
+          question: true,
+          finished: true,
+          failed: true,
+          exited: true,
+          bell: false,
+        }),
+      );
+      await page.evaluate(() => window.bell(9));
+      await page.waitForTimeout(100);
+      assert.equal(await toast(9).count(), 0);
+      assert.equal(await row(9).locator(".unread-mark").count(), 1);
+      assert.ok(!(await favicon()).includes("data-bell"));
+      assert.deepEqual(errors, []);
+      await context.close();
+    }
+    // In the read-only grid, which has no focused terminal, every terminal
+    // gets toasts.
+    {
+      const { context, page, errors } = await open(
+        browser,
+        { viewport: { width: 1440, height: 900 } },
+        "?toasts=1&view=grid",
+      );
+      await page.evaluate(() => window.bell(1));
+      await page.locator('.attention-toast[data-pane="1"]').waitFor();
+      await shot(page, name, "toast-desktop-grid");
+      await page
+        .locator('.attention-toast[data-pane="1"] .attention-open')
+        .click();
+      await page.locator('.attention-toast[data-pane="1"]').waitFor({
+        state: "detached",
+      });
+      assert.equal(await page.locator(".live-grid").count(), 0, "shown alone");
+      assert.deepEqual(errors, []);
+      await context.close();
+    }
+    // Phone: full width under the terminal bar, clear of the key bar's
+    // place at the bottom; a tap opens the terminal.
+    {
+      const { context, page, errors } = await open(
+        browser,
+        emulate("iPhone 13"),
+        "?toasts=1&pane=1",
+      );
+      const width = page.viewportSize().width;
+      await page.evaluate(() => window.bell(3));
+      const toast = page.locator('.attention-toast[data-pane="3"]');
+      await toast.waitFor();
+      const b = await toast.boundingBox();
+      const bar = await box(page, ".phone-bar");
+      assert.ok(Math.abs(b.x - 16) <= 1, "left gutter");
+      assert.ok(Math.abs(width - (b.x + b.width) - 16) <= 1, "right gutter");
+      assert.ok(b.y >= bar.y + bar.height, "below the terminal bar");
+      assert.ok(b.y + b.height < page.viewportSize().height / 2, "at the top");
+      await shot(page, name, "toast-phone");
+      await page.evaluate(() => [4, 5, 6].forEach((p) => window.notify(p)));
+      await page.locator(".attention-summary").waitFor();
+      await page
+        .locator(".attention-summary .attention-row .attention-open")
+        .click();
+      await shot(page, name, "toast-phone-summary");
+      await page.locator('.attention-list [data-pane="3"]').click();
+      assert.match(await page.locator(".phone-bar").textContent(), /codex 3/);
+      assert.deepEqual(errors, []);
+      await context.close();
+    }
+    console.log(
+      `PASS: ${name} attention toasts: top right, one per terminal, none for the shown terminal, click opens and reads, summary above three, close, Bell toggle, favicon bell, grid, phone width`,
+    );
     console.log(
       `PASS: ${name} sidebar: no full width, showing a terminal marks it read, per-terminal notifications, vitals above the two-column tools, account at the bottom, Grid entry, one read-only grid page for 3, 8, 10 and 13 terminals, opening alone from tiles and shortcuts`,
     );
