@@ -103,7 +103,8 @@ export function stickyText(
 }
 
 /** Reading output is the default on touch devices; the on-screen keyboard
- * appears only in input mode, entered explicitly. */
+ * appears only in input mode, entered explicitly or, with a hardware
+ * keyboard, by typing on it. */
 export type InputMode = "reading" | "input";
 export type InputModeEvent =
   /** A terminal was opened or switched to. */
@@ -117,14 +118,26 @@ export type InputModeEvent =
   /** The terminal's input lost focus (the system dismissed the keyboard). */
   | "blur"
   /** The terminal's input gained focus. */
-  | "focus";
+  | "focus"
+  /** A key arrived from a hardware keyboard while the terminal's input
+   * was not focused (`isHardwareKey`). */
+  | "hardware-key";
+
+/** The browser's hardware keyboard preference on touch devices. `auto`:
+ * reading by default, a key typed on a hardware keyboard enters input mode;
+ * `on`: terminals also open in input mode, without the on-screen keyboard;
+ * `off`: input mode only from the Input control or the key bar. */
+export type HardwareKeyboard = "auto" | "on" | "off";
+export const hardwareKeyboards: HardwareKeyboard[] = ["auto", "on", "off"];
 
 export function nextInputMode(
   mode: InputMode,
   event: InputModeEvent,
+  hardware: HardwareKeyboard = "off",
 ): InputMode {
   switch (event) {
     case "open-terminal":
+      return hardware === "on" ? "input" : "reading";
     case "hide":
     case "blur":
       return "reading";
@@ -133,5 +146,54 @@ export function nextInputMode(
     case "key-bar":
     case "focus":
       return "input";
+    case "hardware-key":
+      return hardware === "off" ? mode : "input";
   }
+}
+
+/** What `isHardwareKey` needs from a `keydown` event. */
+export type KeyDown = {
+  key: string;
+  metaKey: boolean;
+  isComposing: boolean;
+  defaultPrevented: boolean;
+  /** The event's target is a text field (input, textarea, select or
+   * content-editable element). */
+  editable: boolean;
+};
+const modifierKeys = new Set([
+  "Shift",
+  "Control",
+  "Alt",
+  "AltGraph",
+  "Meta",
+  "CapsLock",
+  "Fn",
+  "FnLock",
+  "Hyper",
+  "Super",
+  "OS",
+  "NumLock",
+  "ScrollLock",
+]);
+/** Whether a `keydown` comes from a hardware keyboard and should go to the
+ * terminal shown. The on-screen keyboard types only into a focused text
+ * field, so a key that reaches the page while no text field is focused
+ * comes from a hardware keyboard (iPadOS sends those to the document).
+ * Modifier presses on their own, Cmd shortcuts (the system's and the
+ * browser's), keys an IME is composing, keys without a value and keys a
+ * shortcut handler already took are left alone. */
+export function isHardwareKey(event: KeyDown): boolean {
+  if (event.editable || event.defaultPrevented || event.isComposing)
+    return false;
+  if (event.metaKey) return false;
+  if (!event.key || modifierKeys.has(event.key)) return false;
+  return !["Unidentified", "Dead", "Process"].includes(event.key);
+}
+
+/** Reads a stored hardware keyboard preference; anything else is `auto`. */
+export function hardwareKeyboard(value: unknown): HardwareKeyboard {
+  return hardwareKeyboards.includes(value as HardwareKeyboard)
+    ? (value as HardwareKeyboard)
+    : "auto";
 }

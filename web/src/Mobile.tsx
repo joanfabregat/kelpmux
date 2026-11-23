@@ -2,9 +2,9 @@
 // visual-viewport tracking that keeps the key bar above the iOS keyboard,
 // the key bar itself and the phone's top bar. Layout rules are in device.ts;
 // key encoding and input mode in terminal/touch-keys.ts.
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useRef, useState } from "react";
 import type { NumberedPane } from "./terminal/types";
-import { barKeys, type BarKey } from "./terminal/touch-keys";
+import { barKeys, isHardwareKey, type BarKey } from "./terminal/touch-keys";
 import {
   keyboardInset,
   layoutMode,
@@ -120,6 +120,53 @@ export function useVisualViewport(enabled: boolean) {
  * input, which would hide the on-screen keyboard. */
 const keepFocus = (event: React.PointerEvent | React.MouseEvent) =>
   event.preventDefault();
+
+/** Calls `onKey` with a key typed on a hardware keyboard while no text
+ * field has focus (`isHardwareKey`; iPadOS sends such keys to the
+ * document), after the application's shortcut handlers, which listen in the
+ * capture phase, had their turn. The key is taken from the page (its default
+ * action is prevented) and described so it can be dispatched again on the
+ * terminal's input. */
+export function useHardwareKeys(
+  enabled: boolean,
+  onKey: (key: KeyboardEventInit) => void,
+) {
+  const callback = useRef(onKey);
+  callback.current = onKey;
+  useEffect(() => {
+    if (!enabled) return;
+    const handler = (event: KeyboardEvent) => {
+      const target = event.target as HTMLElement | null;
+      const editable = !!target?.closest?.(
+        'input, textarea, select, [contenteditable]:not([contenteditable="false"])',
+      );
+      if (
+        !isHardwareKey({
+          key: event.key,
+          metaKey: event.metaKey,
+          isComposing: event.isComposing,
+          defaultPrevented: event.defaultPrevented,
+          editable,
+        })
+      )
+        return;
+      event.preventDefault();
+      event.stopPropagation();
+      callback.current({
+        key: event.key,
+        code: event.code,
+        location: event.location,
+        repeat: event.repeat,
+        shiftKey: event.shiftKey,
+        ctrlKey: event.ctrlKey,
+        altKey: event.altKey,
+        metaKey: event.metaKey,
+      });
+    };
+    window.addEventListener("keydown", handler);
+    return () => window.removeEventListener("keydown", handler);
+  }, [enabled]);
+}
 
 /** The fixed key bar of touch devices, above the on-screen keyboard: keys a
  * phone keyboard lacks, a sticky Ctrl, the KelpMux prefix, paste, answers

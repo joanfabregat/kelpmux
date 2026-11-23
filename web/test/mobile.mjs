@@ -8,6 +8,7 @@
 //    recording session: reading by default, the key bar entering input
 //    mode, sticky Ctrl, hiding the keyboard, one-finger history scrolling
 //    and long-press selection.
+// 3. The Hardware keyboard setting on an iPad: Auto, On and Off.
 // Run after `npm run build`.
 import { build } from "vite";
 import { chromium, webkit, devices } from "playwright";
@@ -27,17 +28,26 @@ const connection = {
   workspace: "main",
   dev: false,
 };
-/** The relay's Content-Type choice (crates/server/src/native/web_relay.rs),
- * so the test sees what a browser receives from it. */
+/** The relay's Content-Type choice (`content_type` in
+ * src/native/web_relay.rs), so the test sees what a browser receives from
+ * it. Keep the two in step. */
+const relayTypes = {
+  html: "text/html; charset=utf-8",
+  svg: "image/svg+xml",
+  js: "text/javascript; charset=utf-8",
+  mjs: "text/javascript; charset=utf-8",
+  css: "text/css; charset=utf-8",
+  wasm: "application/wasm",
+  woff2: "font/woff2",
+  png: "image/png",
+  webmanifest: "application/manifest+json",
+  json: "application/json",
+};
 function relayType(path) {
-  if (path.endsWith(".html")) return "text/html; charset=utf-8";
-  if (path.endsWith(".svg")) return "image/svg+xml";
-  if (path.endsWith(".js") || path.endsWith(".mjs"))
-    return "text/javascript; charset=utf-8";
-  if (path.endsWith(".css")) return "text/css; charset=utf-8";
-  if (path.endsWith(".wasm")) return "application/wasm";
-  if (path.endsWith(".woff2")) return "font/woff2";
-  return "application/octet-stream";
+  const dot = path.lastIndexOf(".");
+  return (
+    (dot >= 0 && relayTypes[path.slice(dot + 1)]) || "application/octet-stream"
+  );
 }
 // The relay's response headers.
 const headers = {
@@ -146,18 +156,30 @@ for (const engine of [chromium, webkit]) {
             await image.decode();
             return `${image.naturalWidth}x${image.naturalHeight}`;
           };
+          const served = async (src) =>
+            (await fetch(new URL(src, location.href).href)).headers.get(
+              "content-type",
+            );
           const icons = [];
           for (const icon of manifest.icons)
-            icons.push([icon.sizes, icon.type, await load(icon.src)]);
+            icons.push([
+              icon.sizes,
+              icon.type,
+              await load(icon.src),
+              await served(icon.src),
+            ]);
           const meta = (name) =>
             document.querySelector(`meta[name="${name}"]`)?.content;
+          const apple = document.querySelector(
+            'link[rel="apple-touch-icon"]',
+          ).href;
           return {
             ok: response.ok,
+            manifestType: response.headers.get("content-type"),
             manifest,
             icons,
-            apple: await load(
-              document.querySelector('link[rel="apple-touch-icon"]').href,
-            ),
+            apple: await load(apple),
+            appleType: await served(apple),
             capable: meta("apple-mobile-web-app-capable"),
             title: meta("apple-mobile-web-app-title"),
             status: meta("apple-mobile-web-app-status-bar-style"),
@@ -167,6 +189,9 @@ for (const engine of [chromium, webkit]) {
           };
         });
         assert.equal(app.ok, true);
+        // The relay's exact types, which nosniff makes browsers rely on.
+        assert.equal(app.manifestType, "application/manifest+json");
+        assert.equal(app.appleType, "image/png");
         assert.equal(app.manifest.name, "KelpMux");
         assert.equal(app.manifest.short_name, "KelpMux");
         assert.equal(app.manifest.display, "standalone");
@@ -174,9 +199,10 @@ for (const engine of [chromium, webkit]) {
         assert.equal(app.manifest.scope, "/");
         assert.match(app.manifest.theme_color, /^#[0-9a-f]{6}$/i);
         assert.match(app.manifest.background_color, /^#[0-9a-f]{6}$/i);
-        for (const [sizes, type, natural] of app.icons) {
+        for (const [sizes, type, natural, servedType] of app.icons) {
           if (sizes !== "any") assert.equal(natural, sizes);
           assert.match(type, /^image\/(png|svg\+xml)$/);
+          assert.equal(servedType, type, `${sizes} icon served as declared`);
         }
         assert.ok(app.manifest.icons.some((i) => i.sizes === "512x512"));
         assert.ok(app.manifest.icons.some((i) => i.purpose === "maskable"));
@@ -185,7 +211,11 @@ for (const engine of [chromium, webkit]) {
         assert.equal(app.title, "KelpMux");
         assert.equal(app.status, "black-translucent");
         assert.match(app.viewport, /viewport-fit=cover/);
-        assert.ok(app.theme);
+        // The status bar and the installed app's splash match the dark
+        // background token (--background in styles/base.css).
+        assert.equal(app.theme, "#101113");
+        assert.equal(app.manifest.theme_color, app.theme);
+        assert.equal(app.manifest.background_color, app.theme);
         assert.equal(app.serviceWorker, false);
       }
       assert.deepEqual(errors, [], name);
@@ -222,38 +252,50 @@ await build({
     minify: false,
   },
 });
+/** A context emulating `device` that serves the fixture, with a recording
+ * clipboard. */
+async function fixtureContext(browser, device) {
+  const context = await browser.newContext(emulate(device));
+  await context.route("https://terminal.test/**", (route) => {
+    const path = new URL(route.request().url()).pathname;
+    if (path === "/")
+      return route.fulfill({
+        contentType: "text/html",
+        body: '<html><head><meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover"><link rel="stylesheet" href="/mobile-fixture.css"></head><body><div id="root"></div><script src="/fixture.js"></script></body></html>',
+      });
+    if (path.endsWith(".css"))
+      return route.fulfill({
+        contentType: "text/css",
+        body: readFileSync(`${out}/mobile-fixture.css`),
+      });
+    if (path === "/fixture.js")
+      return route.fulfill({
+        contentType: "text/javascript; charset=utf-8",
+        body: readFileSync(`${out}/fixture.js`),
+      });
+    return route.abort();
+  });
+  await context.addInitScript(() => {
+    window.copied = [];
+    Object.defineProperty(navigator, "clipboard", {
+      value: {
+        writeText: async (text) => window.copied.push(text),
+        readText: async () => "pasted",
+      },
+    });
+  });
+  return context;
+}
+/** Text of the input requests the fixture's session recorded. */
+async function sentText(page) {
+  return (await page.evaluate(() => window.terminalRequests))
+    .filter((r) => r.type === "input")
+    .map((r) => String.fromCharCode(...r.params.bytes));
+}
 for (const engine of [chromium, webkit]) {
   const browser = await engine.launch({ headless: true });
   try {
-    const context = await browser.newContext(emulate("iPhone 15"));
-    await context.route("https://terminal.test/**", (route) => {
-      const path = new URL(route.request().url()).pathname;
-      if (path === "/")
-        return route.fulfill({
-          contentType: "text/html",
-          body: '<html><head><meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover"><link rel="stylesheet" href="/mobile-fixture.css"></head><body><div id="root"></div><script src="/fixture.js"></script></body></html>',
-        });
-      if (path.endsWith(".css"))
-        return route.fulfill({
-          contentType: "text/css",
-          body: readFileSync(`${out}/mobile-fixture.css`),
-        });
-      if (path === "/fixture.js")
-        return route.fulfill({
-          contentType: "text/javascript; charset=utf-8",
-          body: readFileSync(`${out}/fixture.js`),
-        });
-      return route.abort();
-    });
-    await context.addInitScript(() => {
-      window.copied = [];
-      Object.defineProperty(navigator, "clipboard", {
-        value: {
-          writeText: async (text) => window.copied.push(text),
-          readText: async () => "pasted",
-        },
-      });
-    });
+    const context = await fixtureContext(browser, "iPhone 15");
     const page = await context.newPage();
     const errors = [];
     page.on("pageerror", (error) => errors.push(error.message));
@@ -271,10 +313,7 @@ for (const engine of [chromium, webkit]) {
         document.activeElement?.classList.contains("terminal-input"),
       );
     const requests = () => page.evaluate(() => window.terminalRequests);
-    const sent = async () =>
-      (await requests())
-        .filter((r) => r.type === "input")
-        .map((r) => String.fromCharCode(...r.params.bytes));
+    const sent = () => sentText(page);
     /** Synthetic touch pointer events (both engines support them). */
     const touch = (type, x, y) =>
       canvas.evaluate(
@@ -365,6 +404,95 @@ for (const engine of [chromium, webkit]) {
     assert.deepEqual(errors, []);
     console.log(
       `PASS: ${engine.name()} touch terminal: reading by default, key bar input, sticky Ctrl, hide keyboard, history scroll, long-press copy`,
+    );
+    await context.close();
+  } finally {
+    await browser.close();
+  }
+}
+
+// 3. The Hardware keyboard setting on an iPad. Emulation cannot attach a
+// keyboard; Playwright's key presses reach the page as a hardware
+// keyboard's do on iPadOS: a keydown on the document while no text field
+// has focus.
+for (const engine of [chromium, webkit]) {
+  const browser = await engine.launch({ headless: true });
+  try {
+    const context = await fixtureContext(browser, "iPad (gen 11)");
+    const page = await context.newPage();
+    const errors = [];
+    page.on("pageerror", (error) => errors.push(error.message));
+    const open = async (hardware) => {
+      await page.goto(`https://terminal.test/?hardware=${hardware}`);
+      await page.waitForFunction(() => window.terminalReady);
+    };
+    const field = () =>
+      page.evaluate(() => {
+        const input = document.querySelector(".terminal-input");
+        return {
+          focused: document.activeElement === input,
+          inputmode: input.getAttribute("inputmode"),
+          mode: window.inputMode,
+        };
+      });
+
+    // Auto: reading at first; the first hardware key enters input mode,
+    // without the on-screen keyboard, and reaches the terminal.
+    await open("auto");
+    assert.deepEqual(await field(), {
+      focused: false,
+      inputmode: null,
+      mode: "reading",
+    });
+    await page.keyboard.press("x");
+    await page.waitForFunction(() => window.inputMode === "input");
+    assert.deepEqual(await field(), {
+      focused: true,
+      inputmode: "none",
+      mode: "input",
+    });
+    assert.deepEqual(await sentText(page), ["x"], "first key delivered");
+    await page.keyboard.press("Enter");
+    await page.keyboard.press("ArrowUp");
+    assert.deepEqual(await sentText(page), ["x", "\r", "\x1b[A"]);
+    // Leaving input mode, then a modifier on its own changes nothing.
+    await page.getByRole("button", { name: "Hide keyboard" }).click();
+    await page.waitForFunction(() => window.inputMode === "reading");
+    await page.keyboard.press("Shift");
+    assert.equal((await field()).mode, "reading", "a lone modifier reads on");
+    // The Input control still shows the on-screen keyboard.
+    await page.getByRole("button", { name: "Show keyboard" }).click();
+    await page.waitForFunction(() => window.inputMode === "input");
+    assert.deepEqual(await field(), {
+      focused: true,
+      inputmode: null,
+      mode: "input",
+    });
+
+    // On: terminals open in input mode without the on-screen keyboard.
+    await open("on");
+    await page.waitForFunction(() => window.inputMode === "input");
+    assert.deepEqual(await field(), {
+      focused: true,
+      inputmode: "none",
+      mode: "input",
+    });
+    await page.keyboard.press("a");
+    assert.deepEqual(await sentText(page), ["a"]);
+
+    // Off: hardware keys do nothing until Input is tapped.
+    await open("off");
+    await page.keyboard.press("y");
+    assert.deepEqual(await field(), {
+      focused: false,
+      inputmode: null,
+      mode: "reading",
+    });
+    assert.deepEqual(await sentText(page), []);
+
+    assert.deepEqual(errors, []);
+    console.log(
+      `PASS: ${engine.name()} iPad hardware keyboard: Auto enters input on the first key and delivers it, On opens in input, Off waits for Input`,
     );
     await context.close();
   } finally {

@@ -9,8 +9,15 @@ import { FontPicker } from "./FontPicker";
 import { Icon } from "./status";
 import { shortcuts } from "./shortcuts";
 import type { Preferences } from "./layout-store";
+import type { HardwareKeyboard } from "./terminal/touch-keys";
 import { UploadSettings } from "./Upload";
 import { idleMinutes, minutesText } from "./idle";
+
+const hardwareKeyboardChoices: [HardwareKeyboard, string][] = [
+  ["auto", "Auto"],
+  ["on", "On"],
+  ["off", "Off"],
+];
 
 export type ConfigPanelProps = {
   store: Store;
@@ -27,6 +34,8 @@ export type ConfigPanelProps = {
   uploadDestination: string;
   setUploadDestination: (path: string) => void;
   uploadUnavailable: string | null;
+  /** A touch device: the hardware keyboard setting applies. */
+  touch: boolean;
 };
 
 /** Settings dialog body. Everything here is saved in this browser only;
@@ -46,6 +55,7 @@ export function ConfigPanel({
   uploadDestination,
   setUploadDestination,
   uploadUnavailable,
+  touch,
 }: ConfigPanelProps) {
   const idle = idleMinutes(connection);
   return (
@@ -198,6 +208,36 @@ export function ConfigPanel({
           (its prefix and configuration file) are unchanged; this browser's
           tabs, grid and focus are separate from the TUI's.
         </p>
+        {touch && (
+          <>
+            <h3>Hardware keyboard</h3>
+            <div
+              className="seg setting-seg"
+              role="group"
+              aria-label="Hardware keyboard"
+            >
+              {hardwareKeyboardChoices.map(([value, label]) => (
+                <button
+                  key={value}
+                  aria-pressed={preferences.hardwareKeyboard === value}
+                  onClick={() =>
+                    setPreferences({ ...preferences, hardwareKeyboard: value })
+                  }
+                >
+                  {label}
+                </button>
+              ))}
+            </div>
+            <p className="setting-hint">
+              Auto: terminals open for reading, and the first key typed on a
+              hardware keyboard switches to input and reaches the terminal. On:
+              terminals open ready for a hardware keyboard without showing the
+              on-screen keyboard; if Safari does not let the page take the keys
+              at once, the first key typed does. Off: tap Input or a key bar key
+              first. Saved in this browser.
+            </p>
+          </>
+        )}
       </section>
       <section hidden={settingsSection !== "uploads"}>
         <UploadSettings

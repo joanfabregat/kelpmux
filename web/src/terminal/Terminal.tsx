@@ -233,13 +233,53 @@ export function Terminal({
     // The application shows or hides the on-screen keyboard, or sends key
     // bar input. Dispatched synchronously from a tap, so focus() still runs
     // inside the user gesture iOS requires to show the keyboard.
+    // `virtual: false` focuses the input for a hardware keyboard without
+    // the on-screen keyboard (`inputmode="none"`); `key` is a key typed on
+    // that keyboard before the input had focus, delivered to the terminal
+    // as if the input had received it.
     const keyboard = (event: Event) => {
-      const { pane: id, show } = (event as CustomEvent).detail || {};
+      const {
+        pane: id,
+        show,
+        virtual = true,
+        key: first,
+      } = (event as CustomEvent).detail || {};
       if (id !== pane.id) return;
+      const field = input.current;
       if (show) {
         control();
-        input.current?.focus({ preventScroll: true });
-      } else input.current?.blur();
+        if (!field) return;
+        if (virtual) field.removeAttribute("inputmode");
+        else field.setAttribute("inputmode", "none");
+        field.focus({ preventScroll: true });
+        if (!first) return;
+        const taken = !field.dispatchEvent(
+          new KeyboardEvent("keydown", {
+            ...first,
+            bubbles: true,
+            cancelable: true,
+          }),
+        );
+        // A key the keydown handler left alone is text, which a browser
+        // would insert into the focused input: deliver it the same way.
+        if (
+          !taken &&
+          !first.ctrlKey &&
+          !first.metaKey &&
+          !first.altKey &&
+          typeof first.key === "string" &&
+          Array.from(first.key).length === 1
+        ) {
+          field.value = first.key;
+          field.dispatchEvent(
+            new InputEvent("input", {
+              bubbles: true,
+              data: first.key,
+              inputType: "insertText",
+            }),
+          );
+        }
+      } else field?.blur();
     };
     const typed = (event: Event) => {
       const detail = (event as CustomEvent).detail || {};

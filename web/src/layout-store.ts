@@ -1,5 +1,6 @@
 // Per-browser web layout: the view mode, tab order, focused terminal,
-// parked terminals and sidebar and notification preferences.
+// parked terminals and sidebar, notification and hardware keyboard
+// preferences.
 // Layout is client-local by design: the TUI and every browser keep their own
 // tabs, grid and focus over the same KelpServer panes and processes
 // (ADR 0002: client UI state is keyed by server epoch and pane ID). Nothing
@@ -10,6 +11,11 @@
 //
 // Storage can be unavailable (private windows, blocked site data); every
 // access is wrapped and the UI works without it.
+
+import {
+  hardwareKeyboard,
+  type HardwareKeyboard,
+} from "./terminal/touch-keys.ts";
 
 export type ViewMode = "single" | "grid";
 
@@ -133,6 +139,8 @@ export type Preferences = {
   sound: boolean;
   /** Show a desktop notification for the same events while hidden. */
   desktop: boolean;
+  /** Touch devices: how a hardware keyboard enters input mode. */
+  hardwareKeyboard: HardwareKeyboard;
 };
 const preferencesKey = "kelpmux-web-preferences";
 export const SIDEBAR_MIN = 200;
@@ -142,6 +150,7 @@ export const defaultPreferences: Preferences = {
   sidebarFolded: false,
   sound: false,
   desktop: false,
+  hardwareKeyboard: "auto",
 };
 export function loadPreferences(): Preferences {
   try {
@@ -155,6 +164,7 @@ export function loadPreferences(): Preferences {
       sidebarFolded: value.sidebarFolded === true,
       sound: value.sound === true,
       desktop: value.desktop === true,
+      hardwareKeyboard: hardwareKeyboard(value.hardwareKeyboard),
     };
   } catch {
     return { ...defaultPreferences };

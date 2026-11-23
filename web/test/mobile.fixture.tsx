@@ -1,12 +1,20 @@
 // The touch terminal and key bar as main.tsx wires them on phones and
-// tablets, with a recording session instead of SSH (test/mobile.mjs).
-import React, { useState } from "react";
+// tablets, with a recording session instead of SSH (test/mobile.mjs). The
+// `hardware` query parameter is the Hardware keyboard setting (Auto by
+// default, as in the application).
+import React, { useEffect, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import { Terminal } from "../src/terminal/Terminal";
-import { KeyBar, useDevice, useVisualViewport } from "../src/Mobile";
+import {
+  KeyBar,
+  useDevice,
+  useHardwareKeys,
+  useVisualViewport,
+} from "../src/Mobile";
 import {
   barKeyBytes,
   consumesCtrl,
+  hardwareKeyboard,
   nextInputMode,
   type BarKey,
   type InputMode,
@@ -91,15 +99,38 @@ const pane = {
   kind: "codex",
 } as any;
 
+const setting = hardwareKeyboard(
+  new URLSearchParams(location.search).get("hardware") ?? "auto",
+);
+
 function Fixture() {
   const device = useDevice();
   useVisualViewport(device.touch);
   const [mode, setMode] = useState<InputMode>("reading");
   const [ctrl, setCtrl] = useState(false);
-  const keyboard = (show: boolean) =>
+  const keyboard = (show: boolean, virtual = true, key?: KeyboardEventInit) =>
     events.dispatchEvent(
-      new CustomEvent("terminal-keyboard", { detail: { pane: 1, show } }),
+      new CustomEvent("terminal-keyboard", {
+        detail: { pane: 1, show, virtual, key },
+      }),
     );
+  const hardware = device.touch ? setting : "off";
+  // The terminal opens once, when the fixture mounts.
+  const opened = useRef(hardware);
+  useEffect(() => {
+    const next = nextInputMode("reading", "open-terminal", opened.current);
+    setMode(next);
+    if (next === "input")
+      events.dispatchEvent(
+        new CustomEvent("terminal-keyboard", {
+          detail: { pane: 1, show: true, virtual: false },
+        }),
+      );
+  }, []);
+  useHardwareKeys(hardware !== "off", (key) => {
+    setMode((m) => nextInputMode(m, "hardware-key", hardware));
+    keyboard(true, false, key);
+  });
   const input = (bytes: string, paste = false) =>
     events.dispatchEvent(
       new CustomEvent("terminal-input", { detail: { pane: 1, bytes, paste } }),
