@@ -167,6 +167,14 @@ fn read_records(mut output: ChildStdout, sender: mpsc::Sender<Value>) {
         if output.read_exact(&mut body).is_err() {
             return;
         }
+        // A binary screen record (`binary-screens`) arrives as its payload
+        // bytes, so tests can decode it.
+        if kelpclient_protocol::screens::is_binary_record(&body) {
+            if sender.send(json!({ "Binary": body })).is_err() {
+                return;
+            }
+            continue;
+        }
         let Ok(value) = serde_json::from_slice(&body) else {
             return;
         };
@@ -974,4 +982,101 @@ fn uploads_are_relayed_end_to_end_with_flow_control() {
     bridge.expect("refused destination", |v| {
         v["Stream"]["type"] == "error" && v["Stream"]["request"] == "upload-4-begin"
     });
+}
+
+/// After the browser opts in to `binary-screens`, the bridge forwards each
+/// update's binary screen record right after it, as the server framed it,
+/// and keeps relaying JSON (leases, `Web` replies) as before.
+#[test]
+fn binary_screen_records_are_forwarded_unchanged() {
+    use kelpclient_protocol::screens::{self, ScreenMessage};
+    let server = Server::start();
+    let mut bridge = Bridge::start(&server);
+    let welcome = welcome(&mut bridge);
+    let client = welcome["client"].as_u64().unwrap();
+    assert!(
+        welcome["capabilities"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|c| c == "binary-screens")
+    );
+    let created = bridge.web(
+        1,
+        "new",
+        json!({"request": "web-binary-1", "cwd": server.root.to_str().unwrap()}),
+    );
+    let pane = created["result"]["pane"]
+        .as_u64()
+        .unwrap_or_else(|| panic!("{created}"));
+    bridge.send(json!({"Stream": {"type": "binary_screens", "enabled": true}}));
+    bridge.send(json!({"Stream": {"type": "subscribe", "panes": [pane]}}));
+    bridge.send(json!({"Stream": {"type": "claim", "pane": pane, "takeover": true}}));
+    bridge.expect("lease", |v| {
+        v["Stream"]["type"] == "lease"
+            && v["Stream"]["pane"] == pane
+            && v["Stream"]["owner"] == client
+    });
+    bridge.send(json!({"Stream": {"type": "resize", "pane": pane, "cols": 60, "rows": 12}}));
+    let typed = b"echo kelp-binary-marker\n".to_vec();
+    bridge.send(json!({"Stream": {"type": "input", "pane": pane, "bytes": typed}}));
+    // `Web` replies come from another bridge thread; none may land
+    // between an update and its record.
+    for id in 2..=21 {
+        bridge.send(json!({"Web": {"id": id, "method": "state", "params": {}}}));
+    }
+    // Reassemble the pane's screen from snapshots and patches, whichever
+    // format carries them, until the echoed marker shows.
+    let mut cells: Vec<String> = Vec::new();
+    let mut records = 0;
+    let mut awaiting = false;
+    let mut replies = 0;
+    let mut marked = false;
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        let remaining = deadline
+            .checked_duration_since(Instant::now())
+            .expect("timed out waiting for the echoed marker in binary screens");
+        let value = bridge.events.recv_timeout(remaining).expect("bridge ended");
+        if let Some(bytes) = value.get("Binary") {
+            assert!(awaiting, "a binary record follows its update");
+            awaiting = false;
+            records += 1;
+            let bytes: Vec<u8> = serde_json::from_value(bytes.clone()).unwrap();
+            for message in screens::decode(&bytes, screens::DEFAULT_MAX_CELLS).unwrap() {
+                match message {
+                    ScreenMessage::Snapshot(s) if s.pane == pane => {
+                        cells = s.screen.cells.iter().map(|c| c.text.clone()).collect();
+                    }
+                    ScreenMessage::Patch(p) if p.pane == pane => {
+                        for (index, cell) in p.into_pane_patch().changes {
+                            cells[index] = cell.text;
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            marked |= cells.concat().matches("kelp-binary-marker").count() >= 2;
+            if marked && replies == 20 {
+                break;
+            }
+            continue;
+        }
+        assert!(!awaiting, "nothing comes between an update and its record");
+        if value.get("Web").is_some() {
+            replies += 1;
+            if marked && replies == 20 {
+                break;
+            }
+        }
+        if value["Stream"]["type"] == "update" && value["Stream"]["binary_screens"] == true {
+            assert_eq!(value["Stream"]["snapshots"], json!([]));
+            assert_eq!(value["Stream"]["patches"], json!([]));
+            awaiting = true;
+        }
+    }
+    assert!(records > 0);
+    // JSON keeps flowing: a `Web` reply after the binary records.
+    let state = bridge.web(100, "state", json!({}));
+    assert_eq!(state["result"]["api_version"], 3);
 }

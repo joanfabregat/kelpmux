@@ -76,6 +76,7 @@ fn update(panes: Vec<PaneInfo>) -> Update {
         vitals: Default::default(),
         sessions,
         host: None,
+        binary_screens: false,
     }
 }
 fn screen(cols: u16, rows: u16, text: &str) -> Screen {
@@ -1456,4 +1457,165 @@ fn unused_shells_are_the_servers_observation() {
 fn without_a_notification_run_notifications_match_no_pane() {
     let c = attached(&[1]);
     assert_eq!(c.workspace.ui.notification_run, "");
+}
+
+#[test]
+fn binary_screens_are_requested_only_from_servers_offering_them() {
+    let opted = |capabilities: Vec<&'static str>| {
+        welcomed(
+            migrated(),
+            Options::default(),
+            Extras {
+                capabilities,
+                ..Extras::default()
+            },
+        )
+        .take_requests()
+        .iter()
+        .any(|r| matches!(r, Request::BinaryScreens { enabled: true }))
+    };
+    assert!(opted(vec!["binary-screens"]));
+    assert!(!opted(Vec::new()));
+}
+
+/// The same updates sent as JSON screens to one controller and as binary
+/// records (through `attach::Records`) to another leave the same screens.
+#[test]
+fn binary_screen_records_apply_like_json_screens() {
+    use super::attach::Records;
+    use crate::native::stream::PanePatch;
+    use kelpclient_protocol::screens::RecordBuilder;
+    let mut json = attached(&[1]);
+    let mut binary = attached(&[1]);
+    let mut records = Records::default();
+    let mut send = |snapshots: Vec<PaneSnapshot>, patches: Vec<(PanePatch, Screen)>| {
+        let mut plain = update(vec![info(1)]);
+        plain.subscribed = vec![1];
+        plain.snapshots = snapshots.clone();
+        plain.patches = patches.iter().map(|(p, _)| p.clone()).collect();
+        json.event(Event::Update(plain)).unwrap();
+        let mut announce = update(vec![info(1)]);
+        announce.subscribed = vec![1];
+        announce.binary_screens = true;
+        let mut record = RecordBuilder::new();
+        for s in &snapshots {
+            record.snapshot(s.pane, s.revision, &s.screen);
+        }
+        for (p, screen) in &patches {
+            record.patch(p, screen);
+        }
+        let announce = ServerMessage::Stream(Event::Update(announce));
+        assert!(
+            records
+                .accept(ServerRecord::Message(announce), 100_000)
+                .unwrap()
+                .is_none()
+        );
+        let Some(ServerMessage::Stream(event)) = records
+            .accept(ServerRecord::Screens(record.finish()), 100_000)
+            .unwrap()
+        else {
+            panic!("the record completes the update");
+        };
+        binary.event(event).unwrap();
+        assert_eq!(json.screens, binary.screens);
+        assert!(json.screens.contains_key(&1));
+    };
+    let first = screen(20, 3, "hello world");
+    send(
+        vec![PaneSnapshot {
+            pane: 1,
+            revision: 1,
+            screen: first.clone(),
+        }],
+        Vec::new(),
+    );
+    let mut next = first.clone();
+    next.cells[21].text = "x".into();
+    next.cursor = Some(Cursor {
+        position: Point { x: 2, y: 1 },
+        visible: true,
+    });
+    let patch = PanePatch {
+        pane: 1,
+        base: 1,
+        revision: 2,
+        cursor: next.cursor,
+        modes: InputModes::default(),
+        changes: vec![(21, next.cells[21].clone())],
+    };
+    send(Vec::new(), vec![(patch, next)]);
+    // A resize: a new snapshot of another geometry.
+    send(
+        vec![PaneSnapshot {
+            pane: 1,
+            revision: 1,
+            screen: screen(30, 5, "resized"),
+        }],
+        Vec::new(),
+    );
+    // An update without screen changes still has its (empty) record.
+    send(Vec::new(), Vec::new());
+}
+
+#[test]
+fn misplaced_binary_screen_records_are_protocol_errors() {
+    use super::attach::Records;
+    let announce = || {
+        let mut update = update(vec![info(1)]);
+        update.binary_screens = true;
+        ServerRecord::Message(ServerMessage::Stream(Event::Update(update)))
+    };
+    let record = || {
+        ServerRecord::Screens(kelpclient_protocol::screens::encode_snapshot(
+            &PaneSnapshot {
+                pane: 1,
+                revision: 1,
+                screen: screen(10, 2, "abc"),
+            },
+        ))
+    };
+    // Screens without their update.
+    assert!(Records::default().accept(record(), 100_000).is_err());
+    // A JSON record where the screens must follow.
+    let mut records = Records::default();
+    records.accept(announce(), 100_000).unwrap();
+    assert!(records.accept(announce(), 100_000).is_err());
+    // A record above the Welcome's cell budget.
+    let mut records = Records::default();
+    records.accept(announce(), 100_000).unwrap();
+    assert!(records.accept(record(), 10).is_err());
+    // A corrupt record.
+    let mut records = Records::default();
+    records.accept(announce(), 100_000).unwrap();
+    assert!(
+        records
+            .accept(ServerRecord::Screens(vec![0, 1, 1, 9]), 100_000)
+            .is_err()
+    );
+    // An announcing update that also carries JSON screens.
+    let mut both = update(vec![info(1)]);
+    both.binary_screens = true;
+    both.snapshots = vec![PaneSnapshot {
+        pane: 1,
+        revision: 1,
+        screen: screen(10, 2, "abc"),
+    }];
+    assert!(
+        Records::default()
+            .accept(
+                ServerRecord::Message(ServerMessage::Stream(Event::Update(both))),
+                100_000
+            )
+            .is_err()
+    );
+    // Other records pass through unchanged.
+    let lease = ServerRecord::Message(ServerMessage::Stream(Event::Lease {
+        pane: 1,
+        owner: None,
+    }));
+    assert!(matches!(
+        Records::default().accept(lease, 100_000),
+        Ok(Some(ServerMessage::Stream(Event::Lease { pane: 1, .. })))
+    ));
 }

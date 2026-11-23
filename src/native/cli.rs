@@ -738,7 +738,9 @@ impl Channel {
         }
         Ok(())
     }
-    pub(crate) fn receive(&mut self) -> Result<Vec<ServerMessage>> {
+    /// Complete records: JSON messages, and the binary screen records of a
+    /// connection that enabled `binary-screens` (see `tui::attach::Records`).
+    pub(crate) fn receive(&mut self) -> Result<Vec<ServerRecord>> {
         let mut result = vec![];
         let mut bytes = [0; 8192];
         // Yield after a bounded batch even if the server writes continuously.
@@ -769,7 +771,12 @@ impl Channel {
                 if self.input.len() < size + 4 {
                     break;
                 }
-                result.push(serde_json::from_slice(&self.input[4..size + 4])?);
+                let payload = &self.input[4..size + 4];
+                result.push(if kelpclient_protocol::screens::is_binary_record(payload) {
+                    ServerRecord::Screens(payload.to_vec())
+                } else {
+                    ServerRecord::Message(serde_json::from_slice(payload)?)
+                });
                 self.input.drain(..size + 4);
             }
         }

@@ -245,7 +245,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "39cab71617ae0d63f51a36d69f866391735b51691dbda63cf6f96d042b63efeb"
 dependencies = [
  "libc",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -504,7 +504,7 @@ dependencies = [
 [[package]]
 name = "kelpclient"
 version = "0.1.0"
-source = "git+https://github.com/joanfabregat/kelpcore?rev=92fd8f998ae15d15b45ec5308ce702441f98410b#92fd8f998ae15d15b45ec5308ce702441f98410b"
+source = "git+https://github.com/joanfabregat/kelpcore?rev=a3eccf0cb2251a92c281ca3093bcb75725570e84#a3eccf0cb2251a92c281ca3093bcb75725570e84"
 dependencies = [
  "kelpclient-protocol",
  "serde",
@@ -515,7 +515,7 @@ dependencies = [
 [[package]]
 name = "kelpclient-protocol"
 version = "0.3.0"
-source = "git+https://github.com/joanfabregat/kelpcore?rev=92fd8f998ae15d15b45ec5308ce702441f98410b#92fd8f998ae15d15b45ec5308ce702441f98410b"
+source = "git+https://github.com/joanfabregat/kelpcore?rev=a3eccf0cb2251a92c281ca3093bcb75725570e84#a3eccf0cb2251a92c281ca3093bcb75725570e84"
 dependencies = [
  "serde",
  "unicode-width",
@@ -527,6 +527,7 @@ version = "0.2.0-beta.7"
 dependencies = [
  "base64 0.22.1",
  "kelpclient",
+ "kelpclient-protocol",
  "kelpserver",
  "libc",
  "sentry",
@@ -540,7 +541,7 @@ dependencies = [
 [[package]]
 name = "kelpserver"
 version = "0.3.0-beta.2"
-source = "git+https://github.com/joanfabregat/kelpcore?rev=92fd8f998ae15d15b45ec5308ce702441f98410b#92fd8f998ae15d15b45ec5308ce702441f98410b"
+source = "git+https://github.com/joanfabregat/kelpcore?rev=a3eccf0cb2251a92c281ca3093bcb75725570e84#a3eccf0cb2251a92c281ca3093bcb75725570e84"
 dependencies = [
  "alacritty_terminal",
  "base64 0.22.1",
@@ -814,7 +815,7 @@ dependencies = [
  "errno",
  "libc",
  "linux-raw-sys",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]

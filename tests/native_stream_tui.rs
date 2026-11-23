@@ -9,6 +9,7 @@ use kelpmux::native::{
     protocol::*,
     stream::{self, Event, Request},
     tui::{
+        attach::Records,
         controller::{Controller, Options},
         state::{self, LayoutTab},
     },
@@ -131,6 +132,9 @@ struct Tui {
     socket: UnixStream,
     buffer: Vec<u8>,
     c: Controller,
+    records: Records,
+    /// Binary screen records received (`binary-screens`).
+    binary: usize,
 }
 impl Tui {
     fn attach(server: &Server) -> Self {
@@ -161,6 +165,8 @@ impl Tui {
         let mut tui = Self {
             socket,
             buffer: Vec::new(),
+            records: Records::default(),
+            binary: 0,
             c: {
                 c.dirty = false;
                 c
@@ -183,7 +189,22 @@ impl Tui {
                 let size = u32::from_be_bytes(self.buffer[..4].try_into().unwrap()) as usize;
                 if self.buffer.len() >= 4 + size {
                     let bytes: Vec<u8> = self.buffer.drain(..4 + size).skip(4).collect();
-                    return Some(serde_json::from_slice(&bytes).unwrap());
+                    // As `kelpmux attach` reads: binary screen records
+                    // complete the update before them.
+                    let record = if kelpclient_protocol::screens::is_binary_record(&bytes) {
+                        self.binary += 1;
+                        ServerRecord::Screens(bytes)
+                    } else {
+                        ServerRecord::Message(serde_json::from_slice(&bytes).unwrap())
+                    };
+                    match self
+                        .records
+                        .accept(record, self.c.limits.subscribed_cells)
+                        .unwrap()
+                    {
+                        Some(message) => return Some(message),
+                        None => continue,
+                    }
                 }
             }
             let mut chunk = [0; 65536];
@@ -271,6 +292,9 @@ fn tabs_scratch_and_input_over_a_real_server() {
         })
     });
     assert!(tui.screen_text(one).contains("stream-42"));
+    // The server offers `binary-screens`, so the screens arrived as binary
+    // records, decoded as `kelpmux attach` decodes them.
+    assert!(tui.binary > 0);
     assert_eq!(tui.c.leases().get(&one), Some(&tui.c.client));
     assert!(tui.c.frame().controller);
 
