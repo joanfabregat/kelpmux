@@ -1,7 +1,7 @@
 // Browser tab favicon and title from the live KelpServer pane statuses. The
 // badge shows the most urgent status across every pane (parked included);
 // the title counts panes that need attention.
-import type { Pane } from "./terminal/types";
+import type { Pane } from "@kelpcore/web/types.ts";
 
 export type PaneState =
   | "input_needed"

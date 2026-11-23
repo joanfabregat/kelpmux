@@ -3,8 +3,12 @@
 // the key bar itself and the phone's top bar. Layout rules are in device.ts;
 // key encoding and input mode in terminal/touch-keys.ts.
 import React, { useEffect, useRef, useState } from "react";
-import type { NumberedPane } from "./terminal/types";
-import { barKeys, isHardwareKey, type BarKey } from "./terminal/touch-keys";
+import type { NumberedPane } from "@kelpcore/web/types.ts";
+import {
+  barKeys,
+  isHardwareKey,
+  type BarKey,
+} from "@kelpcore/web/touch-keys.ts";
 import {
   keyboardInset,
   layoutMode,

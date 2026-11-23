@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { gridColumns } from "../src/terminal/layout.ts";
+import { gridColumns } from "@kelpcore/web/layout.ts";
 import { themeVariables, loadAppearance, themes } from "../src/appearance.ts";
 test("removed themes migrate to black while preserving font and size", () => {
   assert.deepEqual(Object.keys(themes).slice(0, 3), [

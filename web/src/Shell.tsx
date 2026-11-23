@@ -1,4 +1,4 @@
-import type { NumberedPane } from "./terminal/types";
+import type { NumberedPane } from "@kelpcore/web/types.ts";
 import { StateMark } from "./state/StateMark";
 import { ProviderLogo } from "./state/ProviderLogo";
 import { stateLabel, type DisplayState } from "./state/model";

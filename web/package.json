@@ -7,10 +7,11 @@
   "scripts": {
     "build": "vite build",
     "check": "tsc --noEmit",
-    "test": "node --test test/*.test.mjs && node test/wasm.mjs",
+    "test": "node --import ./test/ts-loader.mjs --test test/*.test.mjs && node test/wasm.mjs",
     "lint": "oxlint src test/*.fixture.tsx"
   },
   "dependencies": {
+    "@kelpcore/web": "github:joanfabregat/kelpcore#92fd8f998ae15d15b45ec5308ce702441f98410b",
     "@sentry/browser": "11.11.0",
     "react": "19.3.1",
     "react-dom": "19.3.1"

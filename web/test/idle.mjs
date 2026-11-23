@@ -39,7 +39,11 @@ const library = (entry, name, emptyOutDir) =>
     },
   });
 await library("./idle.fixture.tsx", "fixture", true);
-await library("../src/terminal/session-worker.ts", "worker", false);
+await library(
+  "../node_modules/@kelpcore/web/web/src/session-worker.ts",
+  "worker",
+  false,
+);
 
 // 0.05 minutes: warn after 3 s, lock 3 s later.
 const idle = { idle_warning_minutes: 0.05, idle_lock_minutes: 0.05 };

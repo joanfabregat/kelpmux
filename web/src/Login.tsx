@@ -1,7 +1,7 @@
 import type React from "react";
-import type { Connection, Identity } from "./terminal/types";
+import type { Connection, Identity } from "@kelpcore/web/types.ts";
 import { KeyMark } from "./KeyMark";
-import { keyColor } from "./terminal/key-style";
+import { keyColor } from "@kelpcore/web/key-style.ts";
 import { Icon } from "./status";
 
 /** KelpMux mark and wordmark, the same look as the rail header. */

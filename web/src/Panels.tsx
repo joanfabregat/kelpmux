@@ -4,7 +4,7 @@
 // Each is a list of rows with mouse actions; nothing here changes the TUI's
 // layout.
 import { useEffect, useRef, useState } from "react";
-import type { NumberedPane, SearchMatch } from "./terminal/types";
+import type { NumberedPane, SearchMatch } from "@kelpcore/web/types.ts";
 import { Icon } from "./status";
 import { age } from "./format";
 import { StateMark } from "./state/StateMark";

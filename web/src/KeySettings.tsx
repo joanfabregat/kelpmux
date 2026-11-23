@@ -4,11 +4,11 @@ import {
   register,
   selectExistingKey,
   registeredKeys,
-} from "./terminal/connection";
-import { unbase64 } from "./terminal/ssh/wire.mjs";
-import type { Connection, Identity } from "./terminal/types";
+} from "@kelpcore/web/connection.ts";
+import { unbase64 } from "@kelpcore/web/ssh/wire.mjs";
+import type { Connection, Identity } from "@kelpcore/web/types.ts";
 import { KeyMark } from "./KeyMark";
-import { keyColors, keyEmojis, keyColor } from "./terminal/key-style";
+import { keyColors, keyEmojis, keyColor } from "@kelpcore/web/key-style.ts";
 import { useToast } from "./Toast";
 import { Icon } from "./status";
 

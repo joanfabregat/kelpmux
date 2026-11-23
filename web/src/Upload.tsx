@@ -2,7 +2,7 @@
 // to the host where its shells run, then their shell-quoted paths are pasted
 // into that terminal. The protocol lives in terminal/uploads.ts.
 import React, { useEffect, useRef, useState } from "react";
-import type { NumberedPane } from "./terminal/types";
+import type { NumberedPane } from "@kelpcore/web/types.ts";
 import {
   cancelled,
   destinationProblem,
@@ -14,7 +14,7 @@ import {
   type UploadLimits,
   type UploadProgress,
   type UploadTransport,
-} from "./terminal/uploads";
+} from "@kelpcore/web/uploads.ts";
 import { Icon } from "./status";
 
 const destinationKey = "kelpmux-web-upload-destination";

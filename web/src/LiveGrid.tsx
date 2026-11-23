@@ -1,8 +1,8 @@
 // The live grid: one read-only page showing every running terminal at once,
 // for monitoring. Shared by main.tsx and the sidebar fixture.
 import React, { useLayoutEffect, useRef, useState } from "react";
-import type { NumberedPane } from "./terminal/types";
-import { gridColumns } from "./terminal/layout";
+import type { NumberedPane } from "@kelpcore/web/types.ts";
+import { gridColumns } from "@kelpcore/web/layout.ts";
 import { PaneLabel, UnreadMark } from "./Shell";
 import { Icon } from "./status";
 import { basename } from "./format";

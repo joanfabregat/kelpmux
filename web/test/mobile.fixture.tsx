@@ -4,7 +4,7 @@
 // default, as in the application).
 import React, { useEffect, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
-import { Terminal } from "../src/terminal/Terminal";
+import { Terminal } from "@kelpcore/web/Terminal.tsx";
 import {
   KeyBar,
   useDevice,
@@ -18,10 +18,10 @@ import {
   nextInputMode,
   type BarKey,
   type InputMode,
-} from "../src/terminal/touch-keys";
+} from "@kelpcore/web/touch-keys.ts";
 import "../src/styles/base.css";
 import "../src/styles/shell.css";
-import "../src/terminal/terminal.css";
+import "@kelpcore/web/terminal.css";
 import "../src/styles/kelpmux.css";
 import "../src/styles/mobile.css";
 const cols = 80,

@@ -1,4 +1,4 @@
-import type { Identity } from "./terminal/types";
+import type { Identity } from "@kelpcore/web/types.ts";
 export function KeyMark({ identity }: { identity: Pick<Identity, "emoji"> }) {
   return (
     <span className="key-glyph" aria-hidden="true">

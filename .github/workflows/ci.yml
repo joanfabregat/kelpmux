@@ -9,10 +9,13 @@ permissions:
 concurrency:
   group: ci-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
-# KelpServer comes from the kelpserver repository at the revision pinned once
-# in Cargo.toml [workspace.dependencies] (and Cargo.lock). Cargo builds that
-# dependency's binary with `-p kelpserver --bin kelpserver`, from the locked,
-# already fetched sources, into target/<profile>/kelpserver beside kelpmux.
+# KelpServer and the client core (kelpclient) come from the KelpCore
+# repository at the revision pinned once in Cargo.toml
+# [workspace.dependencies] (and Cargo.lock). Cargo builds the server binary
+# with `-p kelpserver --bin kelpserver` and client-core.wasm with
+# `-p kelpclient`, from the locked, already fetched sources, into target/.
+# The web client's @kelpcore/web comes from the same KelpCore commit
+# (web/package.json), fetched by `npm ci` from GitHub.
 env:
   CARGO_INCREMENTAL: '0'
   CARGO_TERM_COLOR: always
@@ -205,12 +208,17 @@ jobs:
         run: cargo +1.99.0 install cargo-audit --version 0.22.2 --locked
       - name: Fetch current RustSec advisories and audit every run
         run: cargo audit --deny warnings
-      - name: Check that the client and KelpServer share one protocol crate
+      - name: Check that the client, KelpServer and the web layer share one KelpCore revision
         run: |
           test "$(grep -c '^name = "kelpclient-protocol"$' Cargo.lock)" = 1
+          test "$(grep -c '^name = "kelpclient"$' Cargo.lock)" = 1
           server=$(grep -A2 '^name = "kelpserver"$' Cargo.lock | sed -n 's/^source = "\(.*\)#.*/\1/p')
           protocol=$(grep -A2 '^name = "kelpclient-protocol"$' Cargo.lock | sed -n 's/^source = "\(.*\)#.*/\1/p')
-          test -n "$server" && test "$server" = "$protocol"
+          client=$(grep -A2 '^name = "kelpclient"$' Cargo.lock | sed -n 's/^source = "\(.*\)#.*/\1/p')
+          test -n "$server" && test "$server" = "$protocol" && test "$server" = "$client"
+          rev=${server##*rev=}
+          test "$(jq -r '.dependencies["@kelpcore/web"]' web/package.json)" = "github:joanfabregat/kelpcore#$rev"
+          jq -e --arg rev "$rev" '.packages["node_modules/@kelpcore/web"].resolved | endswith("#" + $rev)' web/package-lock.json
       - name: Check dependency license policy
         run: |
           cargo +1.99.0 metadata --locked --format-version 1 > metadata.json

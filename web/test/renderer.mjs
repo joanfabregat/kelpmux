@@ -3,7 +3,13 @@ import { stripTypeScriptTypes } from "node:module";
 import { readFileSync } from "node:fs";
 import assert from "node:assert/strict";
 const source = stripTypeScriptTypes(
-  readFileSync(new URL("../src/terminal/renderer.ts", import.meta.url), "utf8"),
+  readFileSync(
+    new URL(
+      "../node_modules/@kelpcore/web/web/src/renderer.ts",
+      import.meta.url,
+    ),
+    "utf8",
+  ),
   {
     mode: "transform",
   },

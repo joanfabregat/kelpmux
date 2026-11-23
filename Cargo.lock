@@ -504,6 +504,7 @@ dependencies = [
 [[package]]
 name = "kelpclient"
 version = "0.1.0"
+source = "git+https://github.com/joanfabregat/kelpcore?rev=92fd8f998ae15d15b45ec5308ce702441f98410b#92fd8f998ae15d15b45ec5308ce702441f98410b"
 dependencies = [
  "kelpclient-protocol",
  "serde",
@@ -514,7 +515,7 @@ dependencies = [
 [[package]]
 name = "kelpclient-protocol"
 version = "0.3.0"
-source = "git+https://github.com/joanfabregat/kelpserver?rev=21b23391e7ab1170b9c8c5cd3d3606af13de5142#21b23391e7ab1170b9c8c5cd3d3606af13de5142"
+source = "git+https://github.com/joanfabregat/kelpcore?rev=92fd8f998ae15d15b45ec5308ce702441f98410b#92fd8f998ae15d15b45ec5308ce702441f98410b"
 dependencies = [
  "serde",
  "unicode-width",
@@ -539,7 +540,7 @@ dependencies = [
 [[package]]
 name = "kelpserver"
 version = "0.3.0-beta.2"
-source = "git+https://github.com/joanfabregat/kelpserver?rev=21b23391e7ab1170b9c8c5cd3d3606af13de5142#21b23391e7ab1170b9c8c5cd3d3606af13de5142"
+source = "git+https://github.com/joanfabregat/kelpcore?rev=92fd8f998ae15d15b45ec5308ce702441f98410b#92fd8f998ae15d15b45ec5308ce702441f98410b"
 dependencies = [
  "alacritty_terminal",
  "base64 0.22.1",

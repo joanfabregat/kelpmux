@@ -4,7 +4,7 @@
 // after the lock duration more it locks the connection. Windows report what
 // counts as activity here: keys, clicks and taps, scrolling. Terminal output
 // and mere pointer movement do not count.
-import type { Connection } from "./terminal/types";
+import type { Connection } from "@kelpcore/web/types.ts";
 
 /** Default durations, when the relay's config.json sets none. */
 export const IDLE_WARNING_MINUTES = 60;

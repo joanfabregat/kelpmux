@@ -10,21 +10,21 @@ import {
   discoverKey,
   keyFingerprint,
   registeredKeys,
-} from "./terminal/connection";
-import { SharedSession as Session } from "./terminal/shared-session";
-import { Terminal, TerminalTile, type Store } from "./terminal/Terminal";
+} from "@kelpcore/web/connection.ts";
+import { SharedSession as Session } from "@kelpcore/web/shared-session.ts";
+import { Terminal, TerminalTile, type Store } from "@kelpcore/web/Terminal.tsx";
 import type {
   Connection,
   Identity,
   NumberedPane,
   Pane,
   SignInKey,
-} from "./terminal/types";
+} from "@kelpcore/web/types.ts";
 import { LiveGrid } from "./LiveGrid";
-import { trimScreens } from "./terminal/screen-cache";
+import { trimScreens } from "@kelpcore/web/screen-cache.ts";
 import "./styles/base.css";
 import "./styles/shell.css";
-import "./terminal/terminal.css";
+import "@kelpcore/web/terminal.css";
 import "./styles/dialogs.css";
 import "./styles/login.css";
 import "./styles/kelpmux.css";
@@ -118,7 +118,7 @@ import {
   type BarKey,
   type HardwareKeyboard,
   type InputMode,
-} from "./terminal/touch-keys";
+} from "@kelpcore/web/touch-keys.ts";
 import { chime, desktopAlert, freshNotifications, newestId } from "./alerts";
 import {
   UploadDialog,
@@ -133,7 +133,7 @@ import {
   readUploadLimits,
   type UploadLimits,
   type UploadTransport,
-} from "./terminal/uploads";
+} from "@kelpcore/web/uploads.ts";
 
 /** Subscriptions per connection when the server's Welcome does not
  * advertise `limits` (servers before `stream-limits`). */
