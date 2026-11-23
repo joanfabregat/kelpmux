@@ -2058,7 +2058,6 @@ function App() {
       vitals={vitals}
       rowProps={touch ? () => ({}) : dragProps}
       rowClass={(p) => (drag === p.id && drag !== drop ? "landing" : "")}
-      colorOf={(p) => tabColor(colors, p.id)}
       onOpen={(p) => {
         if (performance.now() < suppressClick.current) return;
         openPane(p);

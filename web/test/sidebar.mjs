@@ -8,8 +8,8 @@
 //    The bell in a terminal's header opens that terminal's notifications
 //    only, on History, where one or all are also marked read. There is no
 //    global Notifications entry.
-// 3. The layout: no separator under the logo, the tools in two columns
-//    above the vitals, the account and settings below the vitals at the very
+// 3. The layout: no separator under the logo, the vitals above the tools
+//    in two columns, the account and settings below the tools at the very
 //    bottom, all fitting 800 px with ten tabs; one column when folded; the
 //    same on an iPad in portrait and a phone's terminal list. The Terminals
 //    tool's icon differs from the Grid entry's.
@@ -90,7 +90,7 @@ async function shot(page, engine, name) {
     await page.screenshot({ path: `${shots}/${name}.png` });
 }
 
-/** The bottom of the sidebar: two columns above the vitals, the account
+/** The bottom of the sidebar: the vitals above the two columns, the account
  * below them, nothing overflowing. */
 async function checkBottom(page, columns) {
   const rail = await box(page, ".rail");
@@ -101,8 +101,8 @@ async function checkBottom(page, columns) {
   const grid = await box(page, ".tool-grid");
   const vitals = await box(page, ".vitals");
   const account = await box(page, ".account");
-  assert.ok(grid.y + grid.height <= vitals.y + 1, "tools above the vitals");
-  assert.ok(vitals.y + vitals.height <= account.y + 1, "account below vitals");
+  assert.ok(vitals.y + vitals.height <= grid.y + 1, "vitals above the tools");
+  assert.ok(grid.y + grid.height <= account.y + 1, "account below the tools");
   assert.ok(
     account.y + account.height <= rail.y + rail.height + 1 &&
       rail.y + rail.height - (account.y + account.height) < 16,
@@ -144,6 +144,50 @@ async function checkGridEntry(page, grid) {
     .evaluate((el) => getComputedStyle(el).backgroundColor);
   if (grid) assert.notEqual(background, "rgba(0, 0, 0, 0)", "Grid selected");
   else assert.equal(background, "rgba(0, 0, 0, 0)");
+}
+/** Tabs look like the Grid entry (no colour stripe), a 1px rule separates
+ * each entry from the next, and + New terminal is centred on a rule like
+ * the TUI's "+ New tab" row. */
+async function checkRowLook(page) {
+  const rows = page.locator(".term-list:not([aria-label='Parked']) .term-row");
+  assert.ok((await rows.count()) >= 2, "several tabs");
+  assert.equal(
+    await rows.first().evaluate((el) => getComputedStyle(el).boxShadow),
+    "none",
+    "no colour stripe",
+  );
+  const rule = (selector, pseudo) =>
+    page
+      .locator(selector)
+      .first()
+      .evaluate((el, p) => {
+        const s = getComputedStyle(el, p);
+        return { content: s.content, height: s.height };
+      }, pseudo);
+  for (const [selector, pseudo] of [
+    [".grid-row", "::after"],
+    [".term-row + .term-row", "::before"],
+  ]) {
+    const r = await rule(selector, pseudo);
+    assert.notEqual(r.content, "none", `rule ${selector}${pseudo}`);
+    assert.equal(r.height, "1px", `rule ${selector}${pseudo}`);
+  }
+  assert.equal(
+    await rule(".term-row:first-child", "::before").then((r) => r.content),
+    "none",
+    "no rule above the first tab",
+  );
+  const button = await box(page, ".rail-new");
+  const label = await box(page, ".rail-new-label");
+  const rules = await page.locator(".rail-new-rule").all();
+  assert.equal(rules.length, 2, "a rule each side of New terminal");
+  for (const r of rules) {
+    const b = await r.boundingBox();
+    assert.ok(b.width > 4 && b.height >= 1, "New terminal rule visible");
+  }
+  const left = label.x - button.x,
+    right = button.x + button.width - (label.x + label.width);
+  assert.ok(Math.abs(left - right) <= 2, "New terminal centred");
 }
 /** One grid page holds every terminal: a tile per terminal, each wholly
  * inside the grid and the viewport, columns × rows that fit them with no
@@ -233,6 +277,7 @@ for (const engine of [chromium, webkit]) {
       // 4. The Grid entry heads the tabs, not selected in single view; the
       // shown terminal's tab is.
       await checkGridEntry(page, false);
+      await checkRowLook(page);
       assert.equal(
         await page
           .locator('.term-row[data-pane="1"] .term-item')
@@ -550,7 +595,7 @@ for (const engine of [chromium, webkit]) {
       await context.close();
     }
     console.log(
-      `PASS: ${name} sidebar: no full width, showing a terminal marks it read, per-terminal notifications, two-column tools above the vitals, account at the bottom, Grid entry, one read-only grid page for 3, 8, 10 and 13 terminals, opening alone from tiles and shortcuts`,
+      `PASS: ${name} sidebar: no full width, showing a terminal marks it read, per-terminal notifications, vitals above the two-column tools, account at the bottom, Grid entry, one read-only grid page for 3, 8, 10 and 13 terminals, opening alone from tiles and shortcuts`,
     );
   } finally {
     await browser.close();

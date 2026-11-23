@@ -15,7 +15,6 @@ import {
   type DisplayState,
   type Notification,
 } from "./state/model";
-import { paletteColor } from "./palette";
 import { Vitals } from "./Vitals";
 import { UnreadMark, type SessionMode } from "./Shell";
 
@@ -50,8 +49,6 @@ export type SidebarProps = {
   onMode: (mode: SessionMode) => void;
   rowProps: (pane: NumberedPane) => React.HTMLAttributes<HTMLDivElement>;
   rowClass: (pane: NumberedPane) => string;
-  /** The pane's tab colour in this browser (a TUI palette index). */
-  colorOf: (pane: NumberedPane) => number;
   onOpen: (pane: NumberedPane) => void;
   onClose: (pane: NumberedPane) => void;
   onPark: (pane: NumberedPane) => void;
@@ -66,15 +63,17 @@ export type SidebarProps = {
 
 /** The left sidebar, like the TUI's, and the only navigation: the state
  * counts, the live grid's entry (not on phones), every terminal in this
- * browser's order with its live state, the new-terminal row right under
- * them and the parked terminals. The grid's entry opens the grid and a
- * terminal's opens that terminal alone; the one on screen is selected. A
- * tab with unread notifications shows a bell; the notifications themselves
- * open from the terminal's header. At the bottom the tools in two columns
- * like the TUI's buttons (the Terminals table, recently closed, search,
- * help), the system vitals, then the account and its settings. Order,
- * parking and folding belong to this browser; they never change the TUI's
- * layout. The grid is read-only: a tile's click opens its terminal alone. */
+ * browser's order with its live state, a rule between entries, the
+ * new-terminal row right under them (centred on a rule, like the TUI's)
+ * and the parked terminals. The grid's entry and the terminals' look
+ * alike. The grid's entry opens the grid and a terminal's opens that
+ * terminal alone; the one on screen is selected. A tab with unread
+ * notifications shows a bell; the notifications themselves open from the
+ * terminal's header. At the bottom the system vitals, the tools in two
+ * columns like the TUI's buttons (the Terminals table, recently closed,
+ * search, help), then the account and its settings. Order, parking and
+ * folding belong to this browser; they never change the TUI's layout. The
+ * grid is read-only: a tile's click opens its terminal alone. */
 export function Sidebar(props: SidebarProps) {
   const {
     username,
@@ -103,11 +102,6 @@ export function Sidebar(props: SidebarProps) {
         data-drop-pane={isParked ? undefined : p.id}
         data-pane={p.id}
         data-state={state}
-        style={
-          {
-            "--tab-color": paletteColor(props.colorOf(p)),
-          } as React.CSSProperties
-        }
         {...(isParked ? {} : props.rowProps(p))}
         onContextMenu={(event) => {
           event.preventDefault();
@@ -282,7 +276,8 @@ export function Sidebar(props: SidebarProps) {
           {terminals.map((p) => row(p, false))}
           {!terminals.length && <p className="rail-empty">No open terminals</p>}
         </div>
-        {/* Like the TUI's "+" row, right under the tabs. */}
+        {/* Like the TUI's "+ New tab" row, right under the tabs: a rule
+            across the row with the label centred on it. */}
         <Tooltip content="New terminal (Ctrl-B Enter)">
           <button
             type="button"
@@ -290,8 +285,12 @@ export function Sidebar(props: SidebarProps) {
             aria-label="New terminal"
             onClick={props.onNew}
           >
-            <Icon name="plus" size="sm" />
-            <span className="grow">New terminal</span>
+            <span className="rail-new-rule" aria-hidden="true" />
+            <span className="rail-new-label">
+              <Icon name="plus" size="sm" />
+              <span className="rail-new-text">New terminal</span>
+            </span>
+            <span className="rail-new-rule" aria-hidden="true" />
           </button>
         </Tooltip>
         {parked.length > 0 && (
@@ -318,8 +317,17 @@ export function Sidebar(props: SidebarProps) {
           </div>
         )}
       </nav>
-      {/* The tools in two columns, like the TUI's sidebar buttons, above
-          the vitals. */}
+      {/* The vitals, then the tools in two columns like the TUI's sidebar
+          buttons. */}
+      <div className="rail-vitals">
+        <Vitals
+          vitals={vitals}
+          mounts={props.diskMounts}
+          folded={folded && !phone}
+          onOpen={() => props.onDialog("stats")}
+          onDisksHover={props.onDisksHover}
+        />
+      </div>
       <div className="rail-bottom">
         <div className="tool-grid">
           {tool("terminals", "Terminals", "Terminals", "list", "Ctrl-B o")}
@@ -329,13 +337,6 @@ export function Sidebar(props: SidebarProps) {
         </div>
       </div>
       <div className="rail-foot">
-        <Vitals
-          vitals={vitals}
-          mounts={props.diskMounts}
-          folded={folded && !phone}
-          onOpen={() => props.onDialog("stats")}
-          onDisksHover={props.onDisksHover}
-        />
         {/* The account and its settings, at the very bottom. */}
         <Tooltip content="Settings (Ctrl-B ,)">
           <button

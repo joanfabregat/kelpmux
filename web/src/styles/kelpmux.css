@@ -96,13 +96,36 @@
 }
 
 /* ───────── Sidebar terminal list ───────── */
-/* The new-terminal row right under the tabs, like the TUI's "+". */
+/* The new-terminal row right under the tabs, like the TUI's "+ New tab":
+ * a rule across the row with the label centred on it, in the accent. */
 .nav-item.rail-new {
-  margin-top: 2px;
-  color: var(--text-3);
+  justify-content: center;
+  gap: var(--s2);
+  margin-top: var(--s1);
+  color: var(--accent);
 }
 .nav-item.rail-new:hover:not(:disabled) {
-  color: var(--text);
+  color: var(--accent);
+}
+.rail-new-rule {
+  flex: 1;
+  min-width: var(--s2);
+  height: 1px;
+  background: color-mix(in srgb, var(--accent) 45%, transparent);
+}
+.rail-new-label {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  gap: var(--s1);
+  font-weight: 600;
+  white-space: nowrap;
+}
+.rail.folded .rail-new-text {
+  display: none;
+}
+.rail.folded .nav-item.rail-new {
+  gap: 2px;
 }
 .rail-head .rail-marks {
   flex: none;
@@ -116,8 +139,29 @@
 }
 .term-row {
   position: relative;
-  box-shadow: inset 2px 0 0 var(--tab-color, transparent);
   touch-action: none;
+}
+/* A rule between the sidebar's entries: under the grid's, and between
+ * terminals, drawn in the 1px gap so the rows keep their size. */
+.grid-row {
+  position: relative;
+  margin-bottom: 1px;
+}
+.grid-row::after,
+.term-row + .term-row::before {
+  position: absolute;
+  right: var(--s2);
+  left: var(--s2);
+  height: 1px;
+  background: var(--line);
+  content: "";
+  pointer-events: none;
+}
+.grid-row::after {
+  bottom: -1px;
+}
+.term-row + .term-row::before {
+  top: -1px;
 }
 .term-item {
   gap: var(--s2);
