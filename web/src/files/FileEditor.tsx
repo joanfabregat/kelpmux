@@ -1,5 +1,5 @@
 // An open file in the main area, like a terminal view: its header (name,
-// folder, dirty marker, Save, Reload, Show in folder, Close) above
+// folder, dirty marker, Save, Reload, Download, Show in folder, Close) above
 // KelpCore's CodeMirror editor, or an information view for binary, too
 // large or unreadable files. A save that finds the file changed on disk
 // offers Reload (discarding the edits), Overwrite or Cancel. CodeMirror is
@@ -16,6 +16,8 @@ import {
 } from "@kelpcore/web/files/paths.ts";
 import { Icon } from "../status";
 import type { Documents, OpenDoc } from "./documents";
+import { startDownload } from "./downloads";
+import { useToast } from "../Toast";
 
 const TextEditor = lazy(() =>
   import("@kelpcore/web/files/editor.tsx").then((m) => ({
@@ -64,6 +66,7 @@ export function FileEditor({
   // current path (after a rename) is the one that counts.
   const path = useRef(doc.path);
   path.current = doc.path;
+  const toast = useToast();
   const section = useRef<HTMLElement>(null);
   const jumped = useRef(0);
   const ready = !!doc.version && doc.status !== "binary" && doc.status !== "too_large";
@@ -243,6 +246,25 @@ export function FileEditor({
               onClick={onMove}
             >
               <Icon name={side ? "maximize-2" : "panel-right"} size="sm" />
+            </button>
+          )}
+          {documents.client?.canDownload && (
+            <button
+              type="button"
+              className="icon-btn"
+              title={
+                doc.dirty
+                  ? "Download the saved file (not your unsaved changes)"
+                  : "Download"
+              }
+              aria-label={`Download ${name}`}
+              onClick={() =>
+                startDownload(documents.client!, doc.path, false, (message, options) =>
+                  toast(message, { key: "files", ...options }),
+                )
+              }
+            >
+              <Icon name="download" size="sm" />
             </button>
           )}
           <button

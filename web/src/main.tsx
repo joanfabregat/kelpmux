@@ -151,6 +151,7 @@ import {
 } from "@kelpcore/web/files/paths.ts";
 import { FilesBrowser } from "./files/FilesBrowser";
 import { FileEditor } from "./files/FileEditor";
+import { Downloads } from "./files/downloads";
 import { SidePanel } from "./files/SidePanel";
 import { usePathLinks, type PathTarget } from "./files/PathLinks";
 import { useDocuments } from "./files/documents";
@@ -469,19 +470,24 @@ function App() {
     [side, setSide] = useState<{ id: number; jump?: FileJump } | null>(null);
   const jumps = useRef(0);
   const filesOffered = online && serverFiles && operations.has("files");
+  // An older bridge (API minor 2) relays files but not downloads.
+  const relaysDownloads = operations.has("downloads");
   useEffect(() => {
     if (!filesOffered || !fileLimits) {
       setFilesClient(null);
       return;
     }
-    const client = new FilesClient(filesTransport, { limits: fileLimits });
+    const client = new FilesClient(filesTransport, {
+      limits: fileLimits,
+      downloads: relaysDownloads,
+    });
     setFilesClient(client);
     client
       .stat("~")
       .then((result) => setHome(result.path))
       .catch(() => {});
     return () => client.close();
-  }, [filesOffered, fileLimits]);
+  }, [filesOffered, fileLimits, relaysDownloads]);
   const documents = useDocuments(filesClient);
   const unsavedFiles = documents.docs.some((doc) => doc.dirty);
   useEffect(() => {
@@ -2835,5 +2841,6 @@ function App() {
 createRoot(document.getElementById("root")!).render(
   <ToastProvider>
     <App />
+    <Downloads />
   </ToastProvider>,
 );

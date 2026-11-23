@@ -584,12 +584,24 @@ for (const engine of [chromium, webkit]) {
         0,
         "the header is the toggle",
       );
-      const lefts = await page
-        .locator(".tool-grid .tool-item")
-        .evaluateAll((els) => [
-          ...new Set(els.map((e) => Math.round(e.getBoundingClientRect().x))),
-        ]);
-      assert.equal(lefts.length, 2, "two columns on the phone too");
+      // Measured once layout has settled: the phone list slides in, and a
+      // single early read sometimes caught a tool mid-transition (a third
+      // x position).
+      let lefts = [];
+      for (let i = 0; i < 20; i += 1) {
+        lefts = await page
+          .locator(".tool-grid .tool-item")
+          .evaluateAll((els) => [
+            ...new Set(els.map((e) => Math.round(e.getBoundingClientRect().x))),
+          ]);
+        if (lefts.length === 2) break;
+        await page.waitForTimeout(100);
+      }
+      assert.equal(
+        lefts.length,
+        2,
+        `two columns on the phone too (${lefts.join(", ")})`,
+      );
       assert.equal(
         await page.locator('.term-row[data-pane="2"] .unread-mark').count(),
         1,

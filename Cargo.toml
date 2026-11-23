@@ -33,6 +33,6 @@ resolver = "2"
 # must keep the identical URL and rev, or Cargo builds two protocol crates
 # (and client-core.wasm would disagree with the server).
 [workspace.dependencies]
-kelpserver = { git = "https://github.com/joanfabregat/kelpcore", rev = "7b0636e490087e2103f1de50707db52518f4f6d9" }
-kelpclient-protocol = { git = "https://github.com/joanfabregat/kelpcore", rev = "7b0636e490087e2103f1de50707db52518f4f6d9" }
-kelpclient = { git = "https://github.com/joanfabregat/kelpcore", rev = "7b0636e490087e2103f1de50707db52518f4f6d9" }
+kelpserver = { git = "https://github.com/joanfabregat/kelpcore", rev = "6f7e65bdcc1b5b8ed57f60106abcbf548f4a1d77" }
+kelpclient-protocol = { git = "https://github.com/joanfabregat/kelpcore", rev = "6f7e65bdcc1b5b8ed57f60106abcbf548f4a1d77" }
+kelpclient = { git = "https://github.com/joanfabregat/kelpcore", rev = "6f7e65bdcc1b5b8ed57f60106abcbf548f4a1d77" }

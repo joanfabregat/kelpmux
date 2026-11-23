@@ -174,6 +174,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "crc32fast"
+version = "1.5.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2b929dd2a135771f40afabd1073f85eed59c800b7c61901e5c254270497dad64"
+dependencies = [
+ "cfg-if",
+]
+
+[[package]]
 name = "crossbeam-utils"
 version = "0.8.23"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -245,7 +254,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "39cab71617ae0d63f51a36d69f866391735b51691dbda63cf6f96d042b63efeb"
 dependencies = [
  "libc",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -259,6 +268,16 @@ name = "find-msvc-tools"
 version = "0.1.15"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1c66915cc5391097de7a2b0b972e8505aa33c0df401fd3a6811dbdb32881ba48"
+
+[[package]]
+name = "flate2"
+version = "1.1.11"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "626d4928326b646e70f65ed36fc7cf9f206bdb68a0019ee7c6b4709da4e084c4"
+dependencies = [
+ "crc32fast",
+ "miniz_oxide",
+]
 
 [[package]]
 name = "form_urlencoded"
@@ -504,7 +523,7 @@ dependencies = [
 [[package]]
 name = "kelpclient"
 version = "0.1.0"
-source = "git+https://github.com/joanfabregat/kelpcore?rev=7b0636e490087e2103f1de50707db52518f4f6d9#7b0636e490087e2103f1de50707db52518f4f6d9"
+source = "git+https://github.com/joanfabregat/kelpcore?rev=6f7e65bdcc1b5b8ed57f60106abcbf548f4a1d77#6f7e65bdcc1b5b8ed57f60106abcbf548f4a1d77"
 dependencies = [
  "kelpclient-protocol",
  "serde",
@@ -515,7 +534,7 @@ dependencies = [
 [[package]]
 name = "kelpclient-protocol"
 version = "0.3.0"
-source = "git+https://github.com/joanfabregat/kelpcore?rev=7b0636e490087e2103f1de50707db52518f4f6d9#7b0636e490087e2103f1de50707db52518f4f6d9"
+source = "git+https://github.com/joanfabregat/kelpcore?rev=6f7e65bdcc1b5b8ed57f60106abcbf548f4a1d77#6f7e65bdcc1b5b8ed57f60106abcbf548f4a1d77"
 dependencies = [
  "serde",
  "unicode-width",
@@ -541,10 +560,11 @@ dependencies = [
 [[package]]
 name = "kelpserver"
 version = "0.3.0-beta.2"
-source = "git+https://github.com/joanfabregat/kelpcore?rev=7b0636e490087e2103f1de50707db52518f4f6d9#7b0636e490087e2103f1de50707db52518f4f6d9"
+source = "git+https://github.com/joanfabregat/kelpcore?rev=6f7e65bdcc1b5b8ed57f60106abcbf548f4a1d77#6f7e65bdcc1b5b8ed57f60106abcbf548f4a1d77"
 dependencies = [
  "alacritty_terminal",
  "base64 0.22.1",
+ "flate2",
  "kelpclient-protocol",
  "libc",
  "serde",
@@ -599,6 +619,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b63fbc4a50860e98e7b2aa7804ded1db5cbc3aff9193adaff57a6931bf7c4b4c"
 dependencies = [
  "adler2",
+ "simd-adler32",
 ]
 
 [[package]]
@@ -815,7 +836,7 @@ dependencies = [
  "errno",
  "libc",
  "linux-raw-sys",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -1033,6 +1054,12 @@ dependencies = [
  "errno",
  "libc",
 ]
+
+[[package]]
+name = "simd-adler32"
+version = "0.3.10"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3a219298ac11a56ea9a6d2120044824d6f01aeb034955e7af7bc16858527deea"
 
 [[package]]
 name = "slab"

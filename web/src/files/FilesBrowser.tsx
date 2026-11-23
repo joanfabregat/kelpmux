@@ -3,10 +3,11 @@
 // first, then files, by name; hidden entries on request; size and
 // modification time. A folder or file opens with a click; every entry has a
 // menu (right-click, or its ⋯ button) to open it, type its path into the
-// last terminal, copy its path, rename it, move it to the trash or delete it
-// permanently. Entries drag onto a terminal row (typing their quoted path)
-// or onto a folder (moving them); files dragged from the desktop onto a
-// folder, or onto the list, upload into it.
+// last terminal, copy its path, download it (a folder as a .tar.gz
+// archive), rename it, move it to the trash or delete it permanently.
+// Entries drag onto a terminal row (typing their quoted path) or onto a
+// folder (moving them); files dragged from the desktop onto a folder, or
+// onto the list, upload into it.
 import React, { useEffect, useRef, useState } from "react";
 import {
   FileError,
@@ -36,6 +37,7 @@ import { Icon } from "../status";
 import type { IconName } from "../icons";
 import { dragHasFiles, droppedFiles } from "../Upload";
 import { dragHasPaths, droppedPaths, startPathDrag } from "./insert";
+import { startDownload } from "./downloads";
 import type { ConfirmAction } from "../Confirm";
 
 const hiddenKey = "kelpmux-files-hidden";
@@ -413,6 +415,17 @@ export function FilesBrowser(props: FilesBrowserProps) {
       !props.insertTarget,
     ],
     ["Copy path", () => props.onCopyPath(m.path)],
+    // A folder downloads as a `.tar.gz` archive; a link as what it points
+    // to (a file only); special files not at all.
+    ...(client.canDownload && m.entry.kind !== "other"
+      ? [
+          [
+            m.entry.kind === "dir" ? "Download as .tar.gz" : "Download",
+            () =>
+              startDownload(client, m.path, m.entry.kind === "dir", props.toast),
+          ] as [string, () => void],
+        ]
+      : []),
     [
       "Rename…",
       () =>

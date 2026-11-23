@@ -3,7 +3,8 @@
 // terminal rows, uploads into folders), over the real Session and WASM core
 // connected to a real `kelpmux web-bridge` and server through a pipe instead
 // of SSH, as test/bridge.fixture.tsx does (test/files.mjs). `?phone=1`
-// shows the phone layout (no rail: the main area only). A terminal shown
+// shows the phone layout (no rail: the main area only); `?nodownloads=1`
+// a bridge without downloads. A terminal shown
 // alone (`window.showTerminal(pane)`, or clicking its row) has the side
 // panel and Cmd/Ctrl-click path links as main.tsx wires them;
 // `window.cellPoint(x, y)` is the client point at the middle of a cell of
@@ -41,6 +42,7 @@ import {
 } from "../src/files/PathLinks";
 import { Terminal } from "@kelpcore/web/Terminal.tsx";
 import { useDocuments } from "../src/files/documents";
+import { Downloads } from "../src/files/downloads";
 import { dragHasPaths, droppedPaths, typeIntoPane } from "../src/files/insert";
 import { ConfirmDialog, type ConfirmAction } from "../src/Confirm";
 import { interfaceVariables, themeVariables } from "../src/appearance";
@@ -54,6 +56,8 @@ import "../src/styles/mobile.css";
 import "../src/styles/files.css";
 
 const phone = new URLSearchParams(location.search).has("phone");
+/** `?nodownloads=1`: a bridge that does not relay downloads (API minor 2). */
+const noDownloads = new URLSearchParams(location.search).has("nodownloads");
 const root = document.documentElement;
 root.dataset.mode = "dark";
 for (const [key, value] of Object.entries({
@@ -240,7 +244,10 @@ function App() {
       setUploadLimits(readUploadLimits(e.upload_limits));
       const limits = readFileLimits(e.file_limits);
       if (!e.capabilities.includes("files") || !limits) return;
-      const c = new FilesClient(filesTransport, { limits });
+      const c = new FilesClient(filesTransport, {
+        limits,
+        downloads: !noDownloads,
+      });
       setClient(c);
       c.stat("~").then((r) => setHome(r.path));
       w.welcome = e;
@@ -446,6 +453,7 @@ function App() {
           )}
         </div>
       </div>
+      <Downloads />
       {confirm && (
         <ConfirmDialog
           action={confirm}

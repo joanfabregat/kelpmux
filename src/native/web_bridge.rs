@@ -49,8 +49,10 @@ pub const API_VERSION: u64 = 3;
 /// their events, which a bridge of minor 0 cannot parse. Minor 2 added
 /// `files`: the bridge relays KelpServer's `file_*` stream requests and
 /// their replies (and Welcome `file_limits`) unchanged, which a bridge of
-/// minor 1 cannot parse.
-pub const API_MINOR: u64 = 2;
+/// minor 1 cannot parse. Minor 3 added `downloads`: the bridge relays
+/// KelpServer's `file_download_*` requests and events (KelpCore
+/// `file-downloads`), which a bridge of minor 2 cannot parse.
+pub const API_MINOR: u64 = 3;
 /// Largest accepted `Web` request, in bytes of JSON.
 const REQUEST_LIMIT: usize = 65536;
 /// Largest request identifier a browser can represent exactly.
@@ -347,12 +349,24 @@ impl Api {
     }
 }
 
-/// Bridge operations, reported by `state`. `uploads` and `files` are not
-/// `Web` methods: they tell the browser that this bridge relays the stream's
-/// upload and file requests.
+/// Bridge operations, reported by `state`. `uploads`, `files` and
+/// `downloads` are not `Web` methods: they tell the browser that this
+/// bridge relays the stream's upload, file and download requests.
 const OPERATIONS: &[&str] = &[
-    "state", "new", "close", "search", "history", "status", "closed", "restore", "start", "repos",
-    "commands", "uploads", "files",
+    "state",
+    "new",
+    "close",
+    "search",
+    "history",
+    "status",
+    "closed",
+    "restore",
+    "start",
+    "repos",
+    "commands",
+    "uploads",
+    "files",
+    "downloads",
 ];
 /// Most panes whose foreground program one `commands` call reports.
 const MAX_COMMAND_PANES: usize = 128;
