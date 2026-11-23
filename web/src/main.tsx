@@ -136,6 +136,25 @@ import {
   type UploadLimits,
   type UploadTransport,
 } from "@kelpcore/web/uploads.ts";
+import {
+  FilesClient,
+  isFileEvent,
+  readFileLimits,
+  type FileLimits,
+  type FilesTransport,
+} from "@kelpcore/web/files/api.ts";
+import {
+  baseName,
+  isInside,
+  parentPath,
+  typedPaths,
+} from "@kelpcore/web/files/paths.ts";
+import { FilesBrowser } from "./files/FilesBrowser";
+import { FileEditor } from "./files/FileEditor";
+import { useDocuments } from "./files/documents";
+import { dragHasPaths, droppedPaths, typeIntoPane } from "./files/insert";
+import { ConfirmDialog, type ConfirmAction } from "./Confirm";
+import "./styles/files.css";
 
 /** Subscriptions per connection when the server's Welcome does not
  * advertise `limits` (servers before `stream-limits`). */
@@ -164,6 +183,19 @@ const uploadTransport: UploadTransport = {
     const listener = (event: Event) => handler((event as CustomEvent).detail);
     store.events.addEventListener("upload-event", listener);
     return () => store.events.removeEventListener("upload-event", listener);
+  },
+};
+/** File requests (KelpServer `files`) go out on the shared stream; their
+ * replies arrive as `file-event`s on the store (see `event` in App). */
+const filesTransport: FilesTransport = {
+  send(type, params) {
+    if (!store.session) throw Error("The SSH connection is closed");
+    store.session.request(type, params);
+  },
+  listen(handler) {
+    const listener = (event: Event) => handler((event as CustomEvent).detail);
+    store.events.addEventListener("file-event", listener);
+    return () => store.events.removeEventListener("file-event", listener);
   },
 };
 /** Stream events that belong to an upload (and its correlated replies). */
@@ -414,13 +446,57 @@ function App() {
       x: number;
       y: number;
     } | null>(null);
+  /** Files (KelpServer `files`, relayed by bridges of API minor 2): the
+   * server's capability and limits, the client over this connection, the
+   * server user's home folder, the browser's folder, the open file shown
+   * (none: the browser itself) and the terminal row under dragged paths. */
+  const [serverFiles, setServerFiles] = useState(false),
+    [fileLimits, setFileLimits] = useState<FileLimits | null>(null),
+    [filesClient, setFilesClient] = useState<FilesClient | null>(null),
+    [home, setHome] = useState<string | undefined>(undefined),
+    [filesDir, setFilesDir] = useState("~"),
+    [shownDoc, setShownDoc] = useState(""),
+    [pathDropPane, setPathDropPane] = useState(0);
+  const filesOffered = online && serverFiles && operations.has("files");
+  useEffect(() => {
+    if (!filesOffered || !fileLimits) {
+      setFilesClient(null);
+      return;
+    }
+    const client = new FilesClient(filesTransport, { limits: fileLimits });
+    setFilesClient(client);
+    client
+      .stat("~")
+      .then((result) => setHome(result.path))
+      .catch(() => {});
+    return () => client.close();
+  }, [filesOffered, fileLimits]);
+  const documents = useDocuments(filesClient);
+  const unsavedFiles = documents.docs.some((doc) => doc.dirty);
+  useEffect(() => {
+    if (!unsavedFiles) return;
+    const warn = (event: BeforeUnloadEvent) => {
+      event.preventDefault();
+      event.returnValue = true;
+    };
+    window.addEventListener("beforeunload", warn);
+    return () => window.removeEventListener("beforeunload", warn);
+  }, [unsavedFiles]);
   // Phones and tablets (device.ts). A phone shows the terminal list, or one
   // terminal full screen; it has no grid. Touch devices show output without
   // the on-screen keyboard until the user enters input mode.
   const device = useDevice();
   const phone = device.mode === "phone" && !popupPane,
     touch = device.touch;
-  const view: SessionMode = phone ? "single" : savedView;
+  // The file browser shows only on a connection that offers files.
+  const view: SessionMode =
+    savedView === "files"
+      ? filesClient
+        ? "files"
+        : "single"
+      : phone
+        ? "single"
+        : savedView;
   /** The phone shows its terminal list (its home screen). */
   /** Uploads: the server's capability and limits (from its Welcome), the
    * drop being reviewed or uploaded, the terminal under dragged files and
@@ -473,15 +549,9 @@ function App() {
   }, []);
   const panesRef = useRef(panes);
   panesRef.current = panes;
-  const [confirmAction, setConfirmAction] = useState<{
-      title: string;
-      text: string;
-      buttons: {
-        label: string;
-        action: () => unknown | Promise<unknown>;
-        color?: string;
-      }[];
-    } | null>(null),
+  const [confirmAction, setConfirmAction] = useState<ConfirmAction | null>(
+      null,
+    ),
     [drag, setDrag] = useState<number | null>(null),
     [drop, setDrop] = useState<number | null>(null);
   const metadata = useRef(""),
@@ -528,11 +598,17 @@ function App() {
       if (!dragHasFiles(event)) return;
       event.preventDefault();
       const target = event.target as Element | null;
-      if (event.dataTransfer && !target?.closest?.("[data-upload-pane]"))
+      if (
+        event.dataTransfer &&
+        !target?.closest?.("[data-upload-pane], [data-upload-folder]")
+      )
         event.dataTransfer.dropEffect = "none";
       if (event.type === "drop") setDropPane(0);
     };
-    const ended = () => setDropPane(0);
+    const ended = () => {
+      setDropPane(0);
+      setPathDropPane(0);
+    };
     window.addEventListener("dragover", outside);
     window.addEventListener("drop", outside);
     window.addEventListener("dragend", ended);
@@ -643,7 +719,7 @@ function App() {
   const streamed = Math.max(1, subscriptionLimit - POPUP_SUBSCRIPTIONS);
   const visible = popupPane
       ? all.filter((p) => p.id === popupPane)
-      : phone && phoneList
+      : (phone && phoneList) || view === "files"
         ? []
         : view === "single"
           ? live.filter((p) => p.id === active)
@@ -752,7 +828,8 @@ function App() {
   }
   function chooseMode(next: SessionMode) {
     if (popupPane) return;
-    saveView(next);
+    // The file browser is not restored on reload.
+    if (next !== "files") saveView(next);
     setView(next);
   }
   function switchView() {
@@ -829,6 +906,8 @@ function App() {
         !e.shiftKey &&
         e.key.toLowerCase() === "f" &&
         !dialog &&
+        // The file editor has its own search (CodeMirror's).
+        view !== "files" &&
         !confirmAction &&
         !keyModal
       ) {
@@ -1001,7 +1080,7 @@ function App() {
    * is read-only and has no focused terminal, so they do nothing there. */
   function focusedPane() {
     if (popupPane) return all.find((p) => p.id === popupPane);
-    if (view === "grid") return undefined;
+    if (view !== "single") return undefined;
     return live.find((p) => p.id === active);
   }
   /** Opens a terminal alone, leaving the grid, and unparks a parked one.
@@ -1256,6 +1335,11 @@ function App() {
       );
       return;
     }
+    if (isFileEvent(e)) {
+      // The file browser and editors show their own errors.
+      store.events.dispatchEvent(new CustomEvent("file-event", { detail: e }));
+      return;
+    }
     if (e.type === "clipboard") {
       store.events.dispatchEvent(new CustomEvent("clipboard", { detail: e }));
       return;
@@ -1266,6 +1350,10 @@ function App() {
         Array.isArray(e.capabilities) && e.capabilities.includes("uploads"),
       );
       setUploadLimits(readUploadLimits(e.upload_limits));
+      setServerFiles(
+        Array.isArray(e.capabilities) && e.capabilities.includes("files"),
+      );
+      setFileLimits(readFileLimits(e.file_limits));
       const subscriptions = Number(e.limits?.subscriptions);
       setSubscriptionLimit(
         Number.isSafeInteger(subscriptions) && subscriptions > 0
@@ -1764,7 +1852,8 @@ function App() {
   const showRail = !bare && !phone;
   const railWidth = folded ? 56 : preferences.sidebarWidth;
   /** The phone shows its terminal list instead of a terminal. */
-  const listShown = phone && (phoneList || !focused);
+  const listShown =
+    phone && (phoneList || (!focused && view !== "files"));
   /** The sidebar's edge: a click folds or unfolds it, a drag resizes it
    * (folding below a minimum), like KelpHub's. Saved in this browser. */
   function resizeStart(e: React.PointerEvent) {
@@ -1833,21 +1922,27 @@ function App() {
     picker.value = "";
     picker.click();
   }
-  /** Drop target props for a terminal (its view or grid tile). */
+  /** Drop target props for a terminal (its view or grid tile): files from
+   * the desktop upload to it, entries from the file browser type their
+   * paths into it. */
   function dropProps(p: NumberedPane) {
+    const paths = pathDropProps(p);
     return {
       "data-upload-pane": p.id,
       onDragOver: (event: React.DragEvent) => {
+        if (dragHasPaths(event)) return paths.onDragOver(event);
         if (!dragHasFiles(event) || uploadDrop) return;
         event.preventDefault();
         event.dataTransfer.dropEffect = "copy";
         if (dropPane !== p.id) setDropPane(p.id);
       },
       onDragLeave: (event: React.DragEvent) => {
+        paths.onDragLeave(event);
         if (!event.currentTarget.contains(event.relatedTarget as Node))
           setDropPane((pane) => (pane === p.id ? 0 : pane));
       },
       onDrop: (event: React.DragEvent) => {
+        if (dragHasPaths(event)) return paths.onDrop(event);
         if (!dragHasFiles(event)) return;
         event.preventDefault();
         event.stopPropagation();
@@ -1856,6 +1951,87 @@ function App() {
         openUpload(p, files, folders);
       },
     };
+  }
+  /** Drop target props for a terminal's sidebar row (and its view): paths
+   * dragged from the file browser are typed into it. */
+  function pathDropProps(p: NumberedPane) {
+    return {
+      onDragOver: (event: React.DragEvent) => {
+        if (!dragHasPaths(event)) return;
+        event.preventDefault();
+        event.dataTransfer.dropEffect = "copy";
+        if (pathDropPane !== p.id) setPathDropPane(p.id);
+      },
+      onDragLeave: (event: React.DragEvent) => {
+        if (!event.currentTarget.contains(event.relatedTarget as Node))
+          setPathDropPane((pane) => (pane === p.id ? 0 : pane));
+      },
+      onDrop: (event: React.DragEvent) => {
+        if (!dragHasPaths(event)) return;
+        event.preventDefault();
+        event.stopPropagation();
+        setPathDropPane(0);
+        insertPaths(droppedPaths(event.dataTransfer), p);
+      },
+    };
+  }
+  /** Types shell-quoted paths into a terminal, without Enter, as uploads
+   * paste theirs. */
+  function insertPaths(paths: string[], pane: NumberedPane | undefined) {
+    if (!paths.length) return;
+    if (!pane || pane.dead) {
+      toast("Open a terminal first to insert paths into it", { key: "insert" });
+      return;
+    }
+    const text = typedPaths(paths);
+    if (text === null) {
+      toast("This path holds control characters and cannot be typed safely", {
+        key: "insert",
+        tone: "error",
+      });
+      return;
+    }
+    if (!typeIntoPane(store, pane.id, text)) return;
+    toast(
+      `Inserted ${paths.length === 1 ? `“${baseName(paths[0])}”` : `${paths.length} paths`} into terminal ${pane.number}`,
+      { key: "insert" },
+    );
+  }
+  /** The terminal Insert path types into: the one last shown alone. */
+  const insertPane = live.find((p) => p.id === active);
+  /** The open file shown in the main area; none shows the browser. */
+  const shownDocument = documents.docs.find((doc) => doc.path === shownDoc);
+  /** Shows the file browser, at `dir` when given. */
+  function openFiles(dir?: string) {
+    if (!filesClient || popupPane) return;
+    if (dir) setFilesDir(dir);
+    setShownDoc("");
+    setMenu(null);
+    setFindPane(0);
+    setPhoneList(false);
+    chooseMode("files");
+  }
+  /** Opens a file in the editor (or shows it again). */
+  function openDoc(path: string) {
+    if (!filesClient) return;
+    documents.open(path);
+    setShownDoc(path);
+    setPhoneList(false);
+    chooseMode("files");
+  }
+  /** Closes an open file, asking first when it has unsaved changes. */
+  function closeDoc(path: string) {
+    const doc = documents.docs.find((d) => d.path === path);
+    const close = () => {
+      documents.close(path);
+      if (shownDoc === path) setShownDoc("");
+    };
+    if (!doc?.dirty) return close();
+    setConfirmAction({
+      title: "Discard changes",
+      text: `“${baseName(path)}” has unsaved changes. Close it and discard them?`,
+      buttons: [{ label: "Discard changes", color: "danger", action: close }],
+    });
   }
   /** Pastes uploaded paths into their terminal as a paste (bracketed when
    * the pane has it on), without Enter. Null once pasted, else why not. */
@@ -1867,17 +2043,7 @@ function App() {
     const text = pastedPaths(paths);
     if (new TextEncoder().encode(text).length > 65536)
       return "The paths are longer than one 64 KiB paste.";
-    // A mounted terminal pastes through its own input (taking the pane at
-    // its size); otherwise take the pane and paste directly.
-    const detail: any = { pane: paneId, bytes: text, paste: true };
-    store.events.dispatchEvent(new CustomEvent("terminal-input", { detail }));
-    if (!detail.handled) {
-      store.session.control(paneId);
-      store.session.request("paste", {
-        pane: paneId,
-        bytes: Array.from(new TextEncoder().encode(text)),
-      });
-    }
+    typeIntoPane(store, paneId, text);
     toast(
       `Pasted ${paths.length === 1 ? "the path" : `${paths.length} paths`} into terminal ${pane.number}`,
       { key: "upload" },
@@ -1923,6 +2089,12 @@ function App() {
       ],
       ["Close…", () => close(p)],
     ];
+    // The file browser at the terminal's folder.
+    if (filesClient && !popupPane)
+      items.splice(items.length - 1, 0, [
+        "Browse files here",
+        () => openFiles(p.cwd || "~"),
+      ]);
     // A touch device has no popup windows: an installed web app would open
     // them in the browser instead.
     return touch
@@ -1979,6 +2151,21 @@ function App() {
   const paneActions = (p: NumberedPane, extra?: React.ReactNode) => (
     <div className="pane-actions">
       {extra}
+      {filesClient && !bare && (
+        <button
+          type="button"
+          className="icon-btn"
+          title="Files in this terminal's folder"
+          aria-label={`Browse files in the folder of ${paneLabel(p)}`}
+          data-files-here={p.id}
+          onClick={(event) => {
+            event.stopPropagation();
+            openFiles(p.cwd || "~");
+          }}
+        >
+          <Icon name="folder-open" size="sm" />
+        </button>
+      )}
       <NotificationsButton
         label={paneLabel(p)}
         count={unreadFor(notifications, p).length}
@@ -2077,8 +2264,29 @@ function App() {
       notifications={notifications}
       current={view === "single" ? active : undefined}
       vitals={vitals}
-      rowProps={touch ? () => ({}) : dragProps}
-      rowClass={(p) => (drag === p.id && drag !== drop ? "landing" : "")}
+      rowProps={(p) => ({
+        ...(touch ? {} : dragProps(p)),
+        ...(filesClient ? pathDropProps(p) : {}),
+      })}
+      rowClass={(p) =>
+        `${drag === p.id && drag !== drop ? "landing" : ""} ${pathDropPane === p.id ? "drop-target" : ""}`
+      }
+      files={
+        filesClient && !popupPane
+          ? {
+              browsing: !shownDocument,
+              docs: documents.docs.map((doc) => ({
+                path: doc.path,
+                name: baseName(doc.path),
+                dirty: doc.dirty,
+                current: doc.path === shownDocument?.path,
+              })),
+              onBrowse: () => openFiles(),
+              onOpenDoc: openDoc,
+              onCloseDoc: closeDoc,
+            }
+          : undefined
+      }
       onOpen={(p) => {
         if (performance.now() < suppressClick.current) return;
         openPane(p);
@@ -2135,6 +2343,57 @@ function App() {
         <div className="workspace">
           {listShown ? (
             <div className="phone-list">{sidebar}</div>
+          ) : view === "files" && filesClient ? (
+            shownDocument ? (
+              <FileEditor
+                key={shownDocument.id}
+                doc={shownDocument}
+                documents={documents}
+                home={home}
+                maxRead={filesClient.limits.max_read_bytes}
+                onClose={() => closeDoc(shownDocument.path)}
+                onReveal={() => openFiles(parentPath(shownDocument.path))}
+                onBack={phone ? () => setPhoneList(true) : undefined}
+              />
+            ) : (
+              <FilesBrowser
+                client={filesClient}
+                home={home}
+                dir={filesDir}
+                onDir={setFilesDir}
+                onOpenFile={openDoc}
+                insertTarget={
+                  insertPane
+                    ? { number: insertPane.number, title: paneLabel(insertPane) }
+                    : undefined
+                }
+                onInsertPath={(path) => insertPaths([path], insertPane)}
+                onCopyPath={(path) =>
+                  navigator.clipboard
+                    ?.writeText(path)
+                    .then(() => toast("Path copied", { key: "copy" }))
+                    .catch(fail)
+                }
+                confirm={setConfirmAction}
+                toast={(message, options) =>
+                  toast(message, { key: "files", ...options })
+                }
+                onRenamed={(from, to) => {
+                  documents.renamed(from, to);
+                  // The file shown follows its rename or move.
+                  setShownDoc((shown) =>
+                    isInside(shown, from) ? to + shown.slice(from.length) : shown,
+                  );
+                }}
+                onRemoved={documents.removed}
+                upload={{
+                  unavailable: uploadUnavailable,
+                  limits: uploadLimits,
+                  transport: uploadTransport,
+                }}
+                onBack={phone ? () => setPhoneList(true) : undefined}
+              />
+            )
           ) : focused ? (
             <div className="pane-grid tab-pane-layout">
               <section
@@ -2409,31 +2668,12 @@ function App() {
           </div>
         )}
         {confirmAction && (
-          <div className="modal-shade confirmation">
-            <section className="confirm-dialog" role="alertdialog">
-              <h2>{confirmAction.title}</h2>
-              <p>{confirmAction.text}</p>
-              <div className="confirm-buttons">
-                <button
-                  className="subtle"
-                  disabled={confirmPending}
-                  onClick={() => setConfirmAction(null)}
-                >
-                  Cancel
-                </button>
-                {confirmAction.buttons.map((b, index) => (
-                  <button
-                    key={b.label}
-                    className={b.color || ""}
-                    disabled={confirmPending}
-                    onClick={() => approve(index)}
-                  >
-                    {b.label}
-                  </button>
-                ))}
-              </div>
-            </section>
-          </div>
+          <ConfirmDialog
+            action={confirmAction}
+            pending={confirmPending}
+            onCancel={() => setConfirmAction(null)}
+            onApprove={approve}
+          />
         )}
         {idle && <IdleWarning notice={idle} onStay={reportActivity} />}
       </div>

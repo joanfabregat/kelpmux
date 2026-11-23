@@ -331,8 +331,10 @@ impl Controller {
             recovery_pending,
             limits,
             notification_run,
-            // The TUI has no drop target; uploads are the web client's.
+            // The TUI has no drop target or file browser; uploads and
+            // files are the web client's.
             upload_limits: _,
+            file_limits: _,
         } = welcome
         else {
             return Err("the server did not answer with a stream welcome".into());
@@ -497,11 +499,18 @@ impl Controller {
             Event::History { request, .. } | Event::Diagnostics { request, .. } => {
                 self.pending.remove(&request);
             }
-            // The TUI never begins an upload, so it has no batch to follow.
+            // The TUI never begins an upload or a file request, so it has
+            // no batch or reply to follow.
             Event::UploadStarted { .. }
             | Event::UploadProgress { .. }
             | Event::UploadDone { .. }
-            | Event::UploadFailed { .. } => {}
+            | Event::UploadFailed { .. }
+            | Event::FileList { .. }
+            | Event::FileStat { .. }
+            | Event::FileContent { .. }
+            | Event::FileWritten { .. }
+            | Event::FileRemoved { .. }
+            | Event::FileError { .. } => {}
             Event::Search {
                 request, results, ..
             } => {

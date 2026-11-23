@@ -58,6 +58,7 @@ fn welcome(client: u64, epoch: &str, capabilities: Vec<String>) -> Event {
         limits: None,
         notification_run: None,
         upload_limits: None,
+        file_limits: None,
     }
 }
 fn update(panes: Vec<PaneInfo>) -> Update {
@@ -137,6 +138,7 @@ fn welcomed(document: Document, options: Options, extras: Extras) -> Controller 
             limits: extras.limits,
             notification_run: extras.notification_run,
             upload_limits: None,
+            file_limits: None,
         })
         .unwrap();
     controller

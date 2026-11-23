@@ -40,6 +40,8 @@ impl Server {
             // Uploads without a destination land in the server's cache
             // directory: keep them inside this disposable root.
             .env("XDG_CACHE_HOME", root.join("cache"))
+            // The file operations' trash too.
+            .env("XDG_DATA_HOME", root.join("data"))
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::null())
@@ -746,11 +748,12 @@ fn repos_and_commands_report_read_only_facts_for_the_terminals_table() {
     welcome(&mut bridge);
     let state = bridge.web(1, "state", json!({}));
     assert_eq!(state["result"]["api_version"], 3);
-    assert_eq!(state["result"]["api_minor"], 1);
+    assert_eq!(state["result"]["api_minor"], 2);
     let operations = state["result"]["operations"].as_array().unwrap();
     assert!(operations.iter().any(|op| op == "repos"));
     assert!(operations.iter().any(|op| op == "commands"));
     assert!(operations.iter().any(|op| op == "uploads"));
+    assert!(operations.iter().any(|op| op == "files"));
 
     let checkout = server.root.join("checkout/src");
     let repos = bridge.web(
@@ -1079,4 +1082,176 @@ fn binary_screen_records_are_forwarded_unchanged() {
     // JSON keeps flowing: a `Web` reply after the binary records.
     let state = bridge.web(100, "state", json!({}));
     assert_eq!(state["result"]["api_version"], 3);
+}
+
+/// The file browser and editor in the browser reach the server through the
+/// relayed stream (`files`, bridge API minor 2): the bridge forwards every
+/// `file_*` request and reply unchanged, Welcome's `file_limits` survives
+/// its re-serialisation, and the files change where the shells run.
+#[test]
+fn file_requests_and_replies_are_relayed_unchanged() {
+    use base64::Engine as _;
+    let server = Server::start();
+    let mut bridge = Bridge::start(&server);
+    let welcome = welcome(&mut bridge);
+    assert!(
+        welcome["capabilities"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|c| c == "files"),
+        "{welcome}"
+    );
+    // Every limit the server announces reaches the browser.
+    let limits = &welcome["file_limits"];
+    for key in [
+        "max_read_bytes",
+        "max_write_bytes",
+        "max_list_entries",
+        "max_paths",
+        "max_in_flight",
+        "max_path_bytes",
+        "max_depth",
+    ] {
+        assert!(
+            limits[key].as_u64().is_some_and(|n| n > 0),
+            "{key}: {welcome}"
+        );
+    }
+    assert_eq!(limits["max_read_bytes"], 8 * 1024 * 1024);
+    let state = bridge.web(1, "state", json!({}));
+    assert_eq!(state["result"]["api_minor"], 2);
+    assert!(
+        state["result"]["operations"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|op| op == "files")
+    );
+
+    let root = server.root.to_str().unwrap().to_owned();
+    let reply = |bridge: &mut Bridge, request: Value| {
+        let id = request["request"].as_str().unwrap().to_owned();
+        bridge.send(json!({ "Stream": request }));
+        bridge.expect(&id.clone(), move |v| v["Stream"]["request"] == id.as_str())["Stream"].clone()
+    };
+    let docs = format!("{root}/docs");
+    let done = reply(
+        &mut bridge,
+        json!({"type": "file_mkdir", "request": "file-1", "path": docs}),
+    );
+    assert_eq!(done["type"], "done", "{done}");
+    let note = format!("{docs}/it's a note.txt");
+    let written = reply(
+        &mut bridge,
+        json!({"type": "file_write", "request": "file-2", "path": note, "content": "héllo\n", "create": true}),
+    );
+    assert_eq!(written["type"], "file_written", "{written}");
+    assert_eq!(written["created"], true);
+    assert_eq!(written["size"], 7);
+    let first = written["hash"].as_str().unwrap().to_owned();
+    assert_eq!(fs::read_to_string(&note).unwrap(), "héllo\n");
+
+    let listed = reply(
+        &mut bridge,
+        json!({"type": "file_list", "request": "file-3", "path": docs}),
+    );
+    assert_eq!(listed["type"], "file_list", "{listed}");
+    assert_eq!(listed["path"], docs.as_str());
+    assert_eq!(listed["truncated"], false);
+    let entry = &listed["entries"][0];
+    assert_eq!(entry["name"], "it's a note.txt", "{listed}");
+    assert_eq!(entry["kind"], "file");
+    assert_eq!(entry["size"], 7);
+    assert!(entry["modified"].as_i64().is_some() && entry["mode"].as_u64().is_some());
+
+    let stat = reply(
+        &mut bridge,
+        json!({"type": "file_stat", "request": "file-4", "path": note}),
+    );
+    assert_eq!(stat["entry"]["name"], "it's a note.txt", "{stat}");
+    let read = reply(
+        &mut bridge,
+        json!({"type": "file_read", "request": "file-5", "path": note}),
+    );
+    assert_eq!(read["type"], "file_content", "{read}");
+    assert_eq!(read["content"], "héllo\n");
+    assert_eq!(read["encoding"], "utf8");
+    assert_eq!(read["binary"], false);
+    assert_eq!(read["hash"], first.as_str());
+
+    // A change on disk since the read is a conflict carrying the new hash;
+    // the browser then overwrites without a base hash.
+    fs::write(&note, "changed on disk\n").unwrap();
+    let conflict = reply(
+        &mut bridge,
+        json!({"type": "file_write", "request": "file-6", "path": note, "content": "mine\n", "base_hash": first}),
+    );
+    assert_eq!(conflict["type"], "file_error", "{conflict}");
+    assert_eq!(conflict["error"]["code"], "conflict");
+    assert_eq!(
+        conflict["error"]["current_hash"].as_str().unwrap().len(),
+        64
+    );
+    assert_eq!(fs::read_to_string(&note).unwrap(), "changed on disk\n");
+    let overwritten = reply(
+        &mut bridge,
+        json!({"type": "file_write", "request": "file-7", "path": note, "content": "mine\n"}),
+    );
+    assert_eq!(overwritten["type"], "file_written", "{overwritten}");
+    assert_eq!(fs::read_to_string(&note).unwrap(), "mine\n");
+
+    // Binary content travels as base64 both ways.
+    let blob = format!("{docs}/blob.bin");
+    let bytes = [0u8, 159, 146, 150, 255];
+    let encoded = base64::engine::general_purpose::STANDARD.encode(bytes);
+    let written = reply(
+        &mut bridge,
+        json!({"type": "file_write", "request": "file-8", "path": blob, "content": encoded, "encoding": "base64", "create": true}),
+    );
+    assert_eq!(written["type"], "file_written", "{written}");
+    let read = reply(
+        &mut bridge,
+        json!({"type": "file_read", "request": "file-9", "path": blob}),
+    );
+    assert_eq!(read["binary"], true, "{read}");
+    assert_eq!(read["encoding"], "base64");
+    assert_eq!(read["content"], encoded.as_str());
+
+    let moved = format!("{root}/moved.txt");
+    let done = reply(
+        &mut bridge,
+        json!({"type": "file_rename", "request": "file-10", "from": note, "to": moved}),
+    );
+    assert_eq!(done["type"], "done", "{done}");
+    assert_eq!(fs::read_to_string(&moved).unwrap(), "mine\n");
+    let refused = reply(
+        &mut bridge,
+        json!({"type": "file_read", "request": "file-11", "path": docs}),
+    );
+    assert_eq!(refused["error"]["code"], "is_a_directory", "{refused}");
+    assert_eq!(refused["error"]["path"], docs.as_str());
+
+    let trashed = reply(
+        &mut bridge,
+        json!({"type": "file_trash", "request": "file-12", "paths": [moved]}),
+    );
+    assert_eq!(trashed["type"], "file_removed", "{trashed}");
+    let trash = server.root.join("data/Trash/files/moved.txt");
+    assert_eq!(
+        trashed["removed"][0]["trashed_as"],
+        trash.to_str().unwrap(),
+        "{trashed}"
+    );
+    assert_eq!(fs::read_to_string(&trash).unwrap(), "mine\n");
+    let deleted = reply(
+        &mut bridge,
+        json!({"type": "file_delete", "request": "file-13", "paths": [docs, format!("{root}/missing")]}),
+    );
+    assert_eq!(deleted["removed"], json!([{ "path": docs }]), "{deleted}");
+    assert_eq!(deleted["failed"][0]["error"]["code"], "not_found");
+    assert!(!server.root.join("docs").exists());
+    // Pane traffic keeps flowing on the same relayed connection.
+    let created = bridge.web(2, "new", json!({"request": "web-file-1"}));
+    assert!(created["result"]["pane"].as_u64().is_some(), "{created}");
 }

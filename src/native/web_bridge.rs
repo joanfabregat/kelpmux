@@ -5,10 +5,11 @@
 //! It never listens on TCP and never restarts or replaces a workspace server.
 //! When its own configured workspace is not running it offers one `start`
 //! operation, run only on an explicit browser request. It never
-//! changes SSH authorization and holds no project, file or Git management;
-//! it only reads, for display, which repository and branch a pane's folder
-//! is in and which program a pane runs (`web_repos`), without running `git`
-//! or any other process.
+//! changes SSH authorization and holds no project or Git management; file
+//! operations are KelpServer's `files` stream requests, relayed unchanged
+//! like typing into a pane. It only reads, for display, which repository
+//! and branch a pane's folder is in and which program a pane runs
+//! (`web_repos`), without running `git` or any other process.
 //!
 //! Its operations use KelpServer's stream session API on a separate,
 //! short-lived stream connection each (`session`), never the composed UI's
@@ -45,8 +46,11 @@ pub const API_VERSION: u64 = 3;
 /// keep working and detect newer operations from `state`'s `operations`.
 /// Minor 1 added `uploads`: the bridge relays the stream's upload requests
 /// (`upload_begin`, `upload_chunk`, `upload_finish`, `upload_cancel`) and
-/// their events, which a bridge of minor 0 cannot parse.
-pub const API_MINOR: u64 = 1;
+/// their events, which a bridge of minor 0 cannot parse. Minor 2 added
+/// `files`: the bridge relays KelpServer's `file_*` stream requests and
+/// their replies (and Welcome `file_limits`) unchanged, which a bridge of
+/// minor 1 cannot parse.
+pub const API_MINOR: u64 = 2;
 /// Largest accepted `Web` request, in bytes of JSON.
 const REQUEST_LIMIT: usize = 65536;
 /// Largest request identifier a browser can represent exactly.
@@ -343,11 +347,12 @@ impl Api {
     }
 }
 
-/// Bridge operations, reported by `state`. `uploads` is not a `Web` method:
-/// it tells the browser that this bridge relays the stream's upload requests.
+/// Bridge operations, reported by `state`. `uploads` and `files` are not
+/// `Web` methods: they tell the browser that this bridge relays the stream's
+/// upload and file requests.
 const OPERATIONS: &[&str] = &[
     "state", "new", "close", "search", "history", "status", "closed", "restore", "start", "repos",
-    "commands", "uploads",
+    "commands", "uploads", "files",
 ];
 /// Most panes whose foreground program one `commands` call reports.
 const MAX_COMMAND_PANES: usize = 128;
@@ -677,10 +682,11 @@ pub fn run(socket: &Path, state: &Path) -> Result<()> {
             // Every stream request is forwarded unchanged, notification
             // acknowledgements included: read flags belong to the workspace,
             // and the TUI marks a terminal's notifications read when it is
-            // shown, as the browser does. Upload requests too: like typing
-            // into a pane, they write only what the bridge's own user can,
-            // and the server enforces their limits, destination rules and
-            // flow-control window on this one relayed connection.
+            // shown, as the browser does. Upload and file requests too:
+            // like typing into a pane, they read and write only what the
+            // bridge's own user can, and the server enforces their limits,
+            // destination rules and flow-control window on this one
+            // relayed connection.
             let sent = writer
                 .lock()
                 .map_err(|_| "bridge writer unavailable".into())
