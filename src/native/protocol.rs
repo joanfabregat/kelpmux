@@ -13,7 +13,7 @@ use serde::{Deserialize, Serialize};
 pub use kelpclient::types::*;
 pub use kelpserver::native::protocol::{
     ClientMessage, MAX_INPUT, MAX_MESSAGE, MouseEvent, MouseKind, Notification, NotificationOrigin,
-    PaneSearchMatch, ServerMessage, read_message, write_message,
+    PaneSearchMatch, ServerMessage, ServerRecord, read_message, read_server_record, write_message,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]

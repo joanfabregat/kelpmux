@@ -370,6 +370,11 @@ impl Controller {
         if self.supports("clipboard-write") {
             self.out.push(Request::Clipboard { enabled: true });
         }
+        // Screens as binary records: `attach` decodes them (`Records`) into
+        // the updates this controller applies.
+        if self.supports(kelpclient_protocol::screens::CAPABILITY) {
+            self.out.push(Request::BinaryScreens { enabled: true });
+        }
         self.out.push(Request::Subscribe { panes: Vec::new() });
         Ok(())
     }

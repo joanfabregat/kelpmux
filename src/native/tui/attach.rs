@@ -8,7 +8,7 @@ use super::super::{
     connection::response,
     input::{Decoder, Router},
     protocol::*,
-    stream::{self, Event, Request},
+    stream::{self, Event, Request, Update},
 };
 use super::{
     controller::{Controller, Options},
@@ -16,6 +16,7 @@ use super::{
 };
 use crate::Result;
 use base64::{Engine, engine::general_purpose::STANDARD};
+use kelpclient_protocol::screens::{self, ScreenMessage};
 use std::{
     collections::VecDeque,
     io::Write,
@@ -45,6 +46,56 @@ pub fn open_store(state: &Path) -> Result<Store> {
         }
     }
     Ok(store)
+}
+
+/// Pairs each `binary_screens` update with the binary record that follows
+/// it (KelpServer `binary-screens`), so the controller receives updates
+/// whose screens are in `snapshots` and `patches` whichever format carried
+/// them. Binary patches replace whole rows; they become cell patches of every
+/// cell of those rows.
+#[derive(Default)]
+pub struct Records {
+    pending: Option<Update>,
+}
+impl Records {
+    /// The message `record` completes, if any. `max_cells` bounds a binary
+    /// record's cells (the Welcome's `subscribed_cells`). A record out of
+    /// place or failing to decode is a protocol error.
+    pub fn accept(
+        &mut self,
+        record: ServerRecord,
+        max_cells: usize,
+    ) -> Result<Option<ServerMessage>> {
+        match record {
+            ServerRecord::Screens(bytes) => {
+                let mut update = self
+                    .pending
+                    .take()
+                    .ok_or("the workspace server sent screens without their update")?;
+                for message in screens::decode(&bytes, max_cells)? {
+                    match message {
+                        ScreenMessage::Snapshot(snapshot) => update.snapshots.push(snapshot),
+                        ScreenMessage::Patch(patch) => update.patches.push(patch.into_pane_patch()),
+                    }
+                }
+                update.binary_screens = false;
+                Ok(Some(ServerMessage::Stream(Event::Update(update))))
+            }
+            ServerRecord::Message(_) if self.pending.is_some() => {
+                Err("the workspace server did not send an update's screens".into())
+            }
+            ServerRecord::Message(ServerMessage::Stream(Event::Update(update)))
+                if update.binary_screens =>
+            {
+                if !update.snapshots.is_empty() || !update.patches.is_empty() {
+                    return Err("the workspace server sent screens in two formats".into());
+                }
+                self.pending = Some(update);
+                Ok(None)
+            }
+            ServerRecord::Message(message) => Ok(Some(message)),
+        }
+    }
 }
 
 fn send(channel: &mut Channel, requests: Vec<Request>) -> Result<()> {
@@ -120,6 +171,7 @@ fn run_loop(
     channel: &mut Channel,
     mut size: (u16, u16),
 ) -> Result<()> {
+    let mut records = Records::default();
     let mut decoder = Decoder::default();
     let mut router = Router::default();
     let mut frame: Option<Frame> = None;
@@ -145,7 +197,10 @@ fn run_loop(
             let (cols, rows) = backend_size(size);
             controller.resize(cols, rows)?;
         }
-        for message in channel.receive()? {
+        for record in channel.receive()? {
+            let Some(message) = records.accept(record, controller.limits.subscribed_cells)? else {
+                continue;
+            };
             match message {
                 ServerMessage::Stream(event) => controller.event(event)?,
                 ServerMessage::Error(error) => controller.notice = Some(error),

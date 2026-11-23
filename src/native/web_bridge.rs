@@ -552,13 +552,39 @@ pub fn run(socket: &Path, state: &Path) -> Result<()> {
     let observations = runtime.clone();
     let reader = upstream.try_clone()?;
     let writer = Arc::new(Mutex::new(upstream));
-    let (sender, receiver) = mpsc::sync_channel::<Value>(2);
+    let (sender, receiver) = mpsc::sync_channel::<Outbound>(2);
     let events = sender.clone();
     let ready = Arc::new(AtomicBool::new(false));
     let handshake = ready.clone();
     std::thread::spawn(move || {
         let mut reader = reader;
-        while let Ok(Some(event)) = read_message::<ServerMessage>(&mut reader) {
+        // An update announcing `binary_screens`, held until its record.
+        let mut announced: Option<Value> = None;
+        while let Ok(Some(record)) = read_server_record(&mut reader) {
+            let event = match record {
+                ServerRecord::Message(event) => event,
+                // Binary screen records (`binary-screens`) reach the browser
+                // byte for byte; its WASM core decodes them. The record and
+                // the update before it go out as one unit, so no `Web` reply
+                // from the other thread can come between them.
+                ServerRecord::Screens(bytes) => {
+                    let Some(update) = announced.take() else {
+                        break;
+                    };
+                    if events.send(Outbound::Screens(update, bytes)).is_err() {
+                        break;
+                    }
+                    continue;
+                }
+            };
+            if announced.is_some() {
+                // The server always sends the record right after its update.
+                break;
+            }
+            let binary = matches!(
+                &event,
+                ServerMessage::Stream(stream::Event::Update(update)) if update.binary_screens
+            );
             if let ServerMessage::Stream(stream::Event::Welcome {
                 version,
                 client,
@@ -579,11 +605,15 @@ pub fn run(socket: &Path, state: &Path) -> Result<()> {
             let Ok(value) = serde_json::to_value(event) else {
                 break;
             };
-            if events.send(value).is_err() {
+            if binary {
+                announced = Some(value);
+                continue;
+            }
+            if events.send(Outbound::Message(value)).is_err() {
                 break;
             }
         }
-        let _ = events.send(json!({"__workspace_closed": true}));
+        let _ = events.send(Outbound::Closed);
     });
     let socket = socket.to_owned();
     let state = state.to_owned();
@@ -612,7 +642,7 @@ pub fn run(socket: &Path, state: &Path) -> Result<()> {
                 };
                 if id <= last_id || !ready.load(Ordering::Acquire) {
                     let reply = json!({"Web": {"id": id, "error": "duplicate request or server handshake incomplete"}});
-                    if sender.send(reply).is_err() {
+                    if sender.send(Outbound::Message(reply)).is_err() {
                         break;
                     }
                     continue;
@@ -627,7 +657,7 @@ pub fn run(socket: &Path, state: &Path) -> Result<()> {
                     Ok(result) => json!({"Web": {"id": id, "result": result}}),
                     Err(error) => json!({"Web": {"id": id, "error": error.to_string()}}),
                 };
-                if sender.send(reply).is_err() {
+                if sender.send(Outbound::Message(reply)).is_err() {
                     break;
                 }
                 continue;
@@ -666,12 +696,40 @@ pub fn run(socket: &Path, state: &Path) -> Result<()> {
             .map(|socket| socket.shutdown(std::net::Shutdown::Both));
     });
     let mut output = io::stdout().lock();
-    for value in receiver {
-        if value.get("__workspace_closed").is_some() {
-            return Err("workspace disconnected; reconnect for a fresh epoch".into());
+    for outbound in receiver {
+        match outbound {
+            Outbound::Message(value) => write_message(&mut output, &value)?,
+            Outbound::Screens(update, bytes) => {
+                write_message(&mut output, &update)?;
+                write_record(&mut output, &bytes)?;
+            }
+            Outbound::Closed => {
+                return Err("workspace disconnected; reconnect for a fresh epoch".into());
+            }
         }
-        write_message(&mut output, &value)?;
     }
+    Ok(())
+}
+
+/// What the bridge writes to the browser, in order.
+enum Outbound {
+    /// A JSON record: a server event re-serialized, or a `Web` reply.
+    Message(Value),
+    /// An update with `binary_screens` and the binary screen record after it,
+    /// exactly as the server framed its payload, written back to back.
+    Screens(Value, Vec<u8>),
+    /// The workspace connection ended.
+    Closed,
+}
+
+/// Writes one framed payload unchanged (four-byte big-endian length).
+fn write_record(writer: &mut impl io::Write, payload: &[u8]) -> Result<()> {
+    if payload.is_empty() || payload.len() > MAX_MESSAGE {
+        return Err("binary screen record has an invalid length".into());
+    }
+    writer.write_all(&(payload.len() as u32).to_be_bytes())?;
+    writer.write_all(payload)?;
+    writer.flush()?;
     Ok(())
 }
 

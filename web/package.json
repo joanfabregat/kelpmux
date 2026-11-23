@@ -11,7 +11,7 @@
     "lint": "oxlint src test/*.fixture.tsx"
   },
   "dependencies": {
-    "@kelpcore/web": "github:joanfabregat/kelpcore#92fd8f998ae15d15b45ec5308ce702441f98410b",
+    "@kelpcore/web": "github:joanfabregat/kelpcore#a3eccf0cb2251a92c281ca3093bcb75725570e84",
     "@sentry/browser": "11.11.0",
     "react": "19.3.1",
     "react-dom": "19.3.1"
