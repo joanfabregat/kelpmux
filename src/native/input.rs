@@ -62,14 +62,13 @@ impl Decoder {
             }
             if self.pending[0] != 27 {
                 let byte = self.pending.remove(0);
-                if let Some(InputEvent::Bytes(previous)) = events.last_mut() {
-                    if previous.len() < MAX_INPUT
-                        && previous.as_slice() != b"\x1b[I"
-                        && previous.as_slice() != b"\x1b[O"
-                    {
-                        previous.push(byte);
-                        continue;
-                    }
+                if let Some(InputEvent::Bytes(previous)) = events.last_mut()
+                    && previous.len() < MAX_INPUT
+                    && previous.as_slice() != b"\x1b[I"
+                    && previous.as_slice() != b"\x1b[O"
+                {
+                    previous.push(byte);
+                    continue;
                 }
                 events.push(InputEvent::Bytes(vec![byte]));
                 continue;
@@ -335,36 +334,36 @@ impl Router {
         {
             self.sidebar_drag = false;
         }
-        if let InputEvent::Mouse(mouse) = &event {
-            if mouse.kind == MouseKind::Move && mouse.button == 3 {
-                let enabled = frame.controller
-                    && !self.focus_click
-                    && !self.selecting
-                    && !self.pending_modal
-                    && !self.help_override.unwrap_or(frame.help)
-                    && frame.ui.dialog.is_none()
-                    && self.selection.is_none()
-                    && self.header_drag.is_none()
-                    && !self.sidebar_drag
-                    && self.boundary_drag.is_none();
-                if enabled
-                    && !mouse.shift
-                    && frame
-                        .panes
-                        .iter()
-                        .rev()
-                        .find(|view| view.rect.contains(mouse.position))
-                        .is_some_and(|view| {
-                            view.body.contains(mouse.position)
-                                && view.modes.mouse_motion
-                                && (!frame.ui.scratch_visible
-                                    || Some(view.pane.id) == frame.ui.scratch)
-                        })
-                {
-                    return vec![UiMessage::Mouse(*mouse)];
-                }
-                return vec![];
+        if let InputEvent::Mouse(mouse) = &event
+            && mouse.kind == MouseKind::Move
+            && mouse.button == 3
+        {
+            let enabled = frame.controller
+                && !self.focus_click
+                && !self.selecting
+                && !self.pending_modal
+                && !self.help_override.unwrap_or(frame.help)
+                && frame.ui.dialog.is_none()
+                && self.selection.is_none()
+                && self.header_drag.is_none()
+                && !self.sidebar_drag
+                && self.boundary_drag.is_none();
+            if enabled
+                && !mouse.shift
+                && frame
+                    .panes
+                    .iter()
+                    .rev()
+                    .find(|view| view.rect.contains(mouse.position))
+                    .is_some_and(|view| {
+                        view.body.contains(mouse.position)
+                            && view.modes.mouse_motion
+                            && (!frame.ui.scratch_visible || Some(view.pane.id) == frame.ui.scratch)
+                    })
+            {
+                return vec![UiMessage::Mouse(*mouse)];
             }
+            return vec![];
         }
         if let InputEvent::ThemeColor { background, rgb } = event {
             return vec![UiMessage::ThemeColor { background, rgb }];
@@ -866,34 +865,34 @@ impl Router {
         if self.pending_modal {
             return output;
         }
-        if let Some(drag) = &mut self.tab_drag {
-            if matches!(event.kind, MouseKind::Move | MouseKind::Release) {
-                drag.point = event.position;
-                if !drag.active
-                    && (drag.start.x.abs_diff(event.position.x) > 1
-                        || drag.start.y.abs_diff(event.position.y) > 1)
-                {
-                    drag.active = true;
-                    self.header_press = None;
-                    self.header_click = None;
-                }
-                if event.kind == MouseKind::Release {
-                    let drag = self.tab_drag.take().unwrap();
-                    if drag.active {
-                        output.push(UiMessage::Action(
-                            match sidebar_drop(frame, event.position) {
-                                Some(before) => Action::Reorder {
-                                    source: drag.source,
-                                    before,
-                                },
-                                None => Action::TabDrag(None),
+        if let Some(drag) = &mut self.tab_drag
+            && matches!(event.kind, MouseKind::Move | MouseKind::Release)
+        {
+            drag.point = event.position;
+            if !drag.active
+                && (drag.start.x.abs_diff(event.position.x) > 1
+                    || drag.start.y.abs_diff(event.position.y) > 1)
+            {
+                drag.active = true;
+                self.header_press = None;
+                self.header_click = None;
+            }
+            if event.kind == MouseKind::Release {
+                let drag = self.tab_drag.take().unwrap();
+                if drag.active {
+                    output.push(UiMessage::Action(
+                        match sidebar_drop(frame, event.position) {
+                            Some(before) => Action::Reorder {
+                                source: drag.source,
+                                before,
                             },
-                        ));
-                        return output;
-                    }
-                } else {
-                    return self.tick(frame);
+                            None => Action::TabDrag(None),
+                        },
+                    ));
+                    return output;
                 }
+            } else {
+                return self.tick(frame);
             }
         }
         if self.focus_click && matches!(event.kind, MouseKind::Move | MouseKind::Release) {
@@ -946,96 +945,93 @@ impl Router {
             self.sidebar_moved = false;
             return output;
         }
-        if let Some((column, row)) = self.boundary_drag {
-            if matches!(event.kind, MouseKind::Move | MouseKind::Release) {
+        if let Some((column, row)) = self.boundary_drag
+            && matches!(event.kind, MouseKind::Move | MouseKind::Release)
+        {
+            emit(
+                &mut output,
+                Action::ResizeGrid {
+                    column: column.map(|i| {
+                        (
+                            i,
+                            (u32::from(event.position.x) * 1000 / u32::from(frame.cols)) as u16,
+                        )
+                    }),
+                    row: row.map(|i| {
+                        (
+                            i,
+                            (u32::from(event.position.y) * 1000 / u32::from(frame.rows - 1)) as u16,
+                        )
+                    }),
+                },
+                true,
+            );
+            if event.kind == MouseKind::Release {
+                self.boundary_drag = None;
+            }
+            return output;
+        }
+        if let Some((pane, start)) = self.header_press
+            && matches!(event.kind, MouseKind::Move | MouseKind::Release)
+        {
+            if start.x.abs_diff(event.position.x) > 1 || start.y.abs_diff(event.position.y) > 1 {
+                self.header_press = None;
+                self.header_click = None;
+            } else if event.kind == MouseKind::Release {
+                self.header_press = None;
+                self.header_click = Some((pane, start, Instant::now()));
+            }
+        }
+        if let Some(source) = self.header_drag
+            && matches!(event.kind, MouseKind::Move | MouseKind::Release)
+        {
+            let target = frame
+                .panes
+                .iter()
+                .find(|v| {
+                    frame.reading == ReadingMode::Grid
+                        && v.rect.contains(event.position)
+                        && Some(v.pane.id) != frame.ui.scratch
+                        && v.pane.id != source
+                })
+                .map(|v| v.pane.id);
+            if event.kind == MouseKind::Release {
+                let had_hint = self.grid_hint.is_some() || frame.ui.grid_drop.is_some();
+                self.header_drag = None;
+                self.grid_hint = None;
+                if let Some(target) = target {
+                    emit(&mut output, Action::Swap { source, target }, true);
+                } else if had_hint {
+                    emit(&mut output, Action::GridDrag(None), true);
+                }
+            } else if target != self.grid_hint {
+                self.grid_hint = target;
                 emit(
                     &mut output,
-                    Action::ResizeGrid {
-                        column: column.map(|i| {
-                            (
-                                i,
-                                (u32::from(event.position.x) * 1000 / u32::from(frame.cols)) as u16,
-                            )
-                        }),
-                        row: row.map(|i| {
-                            (
-                                i,
-                                (u32::from(event.position.y) * 1000 / u32::from(frame.rows - 1))
-                                    as u16,
-                            )
-                        }),
-                    },
+                    Action::GridDrag(target.map(|target| (source, target))),
                     true,
                 );
-                if event.kind == MouseKind::Release {
-                    self.boundary_drag = None;
-                }
-                return output;
             }
-        }
-        if let Some((pane, start)) = self.header_press {
-            if matches!(event.kind, MouseKind::Move | MouseKind::Release) {
-                if start.x.abs_diff(event.position.x) > 1 || start.y.abs_diff(event.position.y) > 1
-                {
-                    self.header_press = None;
-                    self.header_click = None;
-                } else if event.kind == MouseKind::Release {
-                    self.header_press = None;
-                    self.header_click = Some((pane, start, Instant::now()));
-                }
-            }
-        }
-        if let Some(source) = self.header_drag {
-            if matches!(event.kind, MouseKind::Move | MouseKind::Release) {
-                let target = frame
-                    .panes
-                    .iter()
-                    .find(|v| {
-                        frame.reading == ReadingMode::Grid
-                            && v.rect.contains(event.position)
-                            && Some(v.pane.id) != frame.ui.scratch
-                            && v.pane.id != source
-                    })
-                    .map(|v| v.pane.id);
-                if event.kind == MouseKind::Release {
-                    let had_hint = self.grid_hint.is_some() || frame.ui.grid_drop.is_some();
-                    self.header_drag = None;
-                    self.grid_hint = None;
-                    if let Some(target) = target {
-                        emit(&mut output, Action::Swap { source, target }, true);
-                    } else if had_hint {
-                        emit(&mut output, Action::GridDrag(None), true);
-                    }
-                } else if target != self.grid_hint {
-                    self.grid_hint = target;
-                    emit(
-                        &mut output,
-                        Action::GridDrag(target.map(|target| (source, target))),
-                        true,
-                    );
-                }
-                return output;
-            }
+            return output;
         }
         if let Some(dialog) = frame.ui.dialog {
             let bounds = super::workspace::dialog_bounds_for(frame.cols, frame.rows, dialog.kind);
-            if dialog.kind == super::ui::DialogKind::Notifications && event.kind == MouseKind::Press
-            {
-                if let Some(index) = super::ui::notification_buttons(bounds)
+            if dialog.kind == super::ui::DialogKind::Notifications
+                && event.kind == MouseKind::Press
+                && let Some(index) = super::ui::notification_buttons(bounds)
                     .iter()
                     .position(|rect| rect.contains(event.position))
-                {
-                    emit(
-                        &mut output,
-                        if index == 0 {
-                            Action::NotificationHistory
-                        } else {
-                            Action::AcknowledgeAll
-                        },
-                        true,
-                    );
-                    return output;
-                }
+            {
+                emit(
+                    &mut output,
+                    if index == 0 {
+                        Action::NotificationHistory
+                    } else {
+                        Action::AcknowledgeAll
+                    },
+                    true,
+                );
+                return output;
             }
             if matches!(
                 dialog.kind,
@@ -1193,21 +1189,18 @@ impl Router {
             }
             return output;
         }
-        if frame.ui.scratch_visible {
-            if let Some(view) = frame
+        if frame.ui.scratch_visible
+            && let Some(view) = frame
                 .panes
                 .iter()
                 .find(|v| Some(v.pane.id) == frame.ui.scratch)
-            {
-                if event.kind == MouseKind::Press
-                    && (event.position.y == view.rect.y
-                        && event.position.x >= view.rect.x + view.rect.cols - 3
-                        || !view.rect.contains(event.position))
-                {
-                    emit(&mut output, Action::ScratchClose, true);
-                    return output;
-                }
-            }
+            && event.kind == MouseKind::Press
+            && (event.position.y == view.rect.y
+                && event.position.x >= view.rect.x + view.rect.cols - 3
+                || !view.rect.contains(event.position))
+        {
+            emit(&mut output, Action::ScratchClose, true);
+            return output;
         }
         let [config, mode, parked, help] = frame.controls();
         let [closed, agents] = frame.history_controls();
@@ -1277,23 +1270,23 @@ impl Router {
             emit(&mut output, Action::Help, true);
             return output;
         }
-        if let Some((pane, start, previous)) = self.selection {
-            if matches!(event.kind, MouseKind::Move | MouseKind::Release) {
-                if let Some(view) = frame.panes.iter().rev().find(|v| v.pane.id == pane) {
-                    let end = local_point(event.position, view.body);
-                    emit(&mut output, Action::SelectText { pane, start, end }, true);
-                    if event.kind == MouseKind::Release {
-                        self.selection = None;
-                        emit(&mut output, Action::Copy(pane), true);
-                    } else {
-                        self.selection = Some((pane, start, end));
-                    }
-                } else {
+        if let Some((pane, start, previous)) = self.selection
+            && matches!(event.kind, MouseKind::Move | MouseKind::Release)
+        {
+            if let Some(view) = frame.panes.iter().rev().find(|v| v.pane.id == pane) {
+                let end = local_point(event.position, view.body);
+                emit(&mut output, Action::SelectText { pane, start, end }, true);
+                if event.kind == MouseKind::Release {
                     self.selection = None;
+                    emit(&mut output, Action::Copy(pane), true);
+                } else {
+                    self.selection = Some((pane, start, end));
                 }
-                let _ = previous;
-                return output;
+            } else {
+                self.selection = None;
             }
+            let _ = previous;
+            return output;
         }
         if frame.sidebar_status() && !frame.ui.scratch_visible {
             let tabviews: Vec<_> = frame
@@ -1846,11 +1839,11 @@ fn emit(output: &mut Vec<UiMessage>, action: Action, controller: bool) {
     }
 }
 fn push_input(output: &mut Vec<UiMessage>, bytes: &[u8]) {
-    if let Some(UiMessage::Input(previous)) = output.last_mut() {
-        if previous.len() + bytes.len() <= MAX_INPUT {
-            previous.extend_from_slice(bytes);
-            return;
-        }
+    if let Some(UiMessage::Input(previous)) = output.last_mut()
+        && previous.len() + bytes.len() <= MAX_INPUT
+    {
+        previous.extend_from_slice(bytes);
+        return;
     }
     output.push(UiMessage::Input(bytes.to_vec()));
 }
@@ -1888,10 +1881,10 @@ fn frame_entries(frame: &Frame) -> Vec<u64> {
 }
 impl Router {
     fn search_event(&mut self, event: InputEvent, frame: &Frame) -> Vec<UiMessage> {
-        if let InputEvent::Bytes(bytes) = &event {
-            if !frame.controller || self.prefix || bytes.first() == Some(&frame.ui.config.prefix) {
-                return self.keys(bytes, frame);
-            }
+        if let InputEvent::Bytes(bytes) = &event
+            && (!frame.controller || self.prefix || bytes.first() == Some(&frame.ui.config.prefix))
+        {
+            return self.keys(bytes, frame);
         }
         if !frame.controller {
             return vec![];

@@ -66,10 +66,10 @@ impl Template {
                     "template working directories must be existing absolute directories".into(),
                 );
             }
-            if let Some(shell) = &pane.shell {
-                if !shell.is_absolute() {
-                    return Err("template shell must be an absolute executable file".into());
-                }
+            if let Some(shell) = &pane.shell
+                && !shell.is_absolute()
+            {
+                return Err("template shell must be an absolute executable file".into());
             }
         }
         Ok(())
@@ -80,10 +80,10 @@ impl Template {
 }
 fn no_symlinks(path: &Path) -> Result<()> {
     for ancestor in path.ancestors() {
-        if let Ok(meta) = fs::symlink_metadata(ancestor) {
-            if meta.file_type().is_symlink() {
-                return Err("template path contains a symlink".into());
-            }
+        if let Ok(meta) = fs::symlink_metadata(ancestor)
+            && meta.file_type().is_symlink()
+        {
+            return Err("template path contains a symlink".into());
         }
     }
     Ok(())

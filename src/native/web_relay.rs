@@ -100,7 +100,7 @@ impl HostKeyGate {
             let length = u32::from_be_bytes(self.pending[..4].try_into().unwrap()) as usize;
             let padding = self.pending[4] as usize;
             if !(12..=65536).contains(&length)
-                || (length + 4) % 8 != 0
+                || !(length + 4).is_multiple_of(8)
                 || padding < 4
                 || length < padding + 2
             {
@@ -401,7 +401,8 @@ fn serve(
             return Err("SSH connection budget exceeded".into());
         }
         let _permit = SshPermit { budget, ip };
-        let mut tcp = TcpStream::connect_timeout(&target, Duration::from_secs(5))?;
+        let mut tcp = TcpStream::connect_timeout(&target, Duration::from_secs(5))
+            .inspect_err(|error| bridge_error("relay.ssh_connect", error))?;
         let mut host_key = HostKeyGate::new(&config.ssh_host_key)?;
         let handshake_started = Instant::now();
         tcp.set_nonblocking(true)?;
@@ -450,7 +451,9 @@ fn serve(
                 match tcp.read(&mut buffer) {
                     Ok(0) => return Ok(()),
                     Ok(n) => {
-                        let verified = host_key.receive(&buffer[..n])?;
+                        let verified = host_key
+                            .receive(&buffer[..n])
+                            .inspect_err(|error| bridge_error("relay.ssh_handshake", error))?;
                         if verified.is_empty() {
                             continue;
                         }
@@ -574,6 +577,15 @@ fn content_type(path: &str) -> &'static str {
         _ => "application/octet-stream",
     }
 }
+/// Logs a failure of the relay's own leg to the SSH bridge, which a working
+/// browser does not cause: the target refusing or timing out, or a handshake
+/// the pinned host key rejects. Reported at most once a minute per kind (a
+/// hostile client can at worst trigger one event a minute). The text is an
+/// OS error or one of `HostKeyGate`'s fixed messages, never browser data.
+fn bridge_error(kind: &'static str, error: &dyn std::fmt::Display) {
+    eprintln!("kelpmux web-relay: {kind}: {error}");
+    super::error_reporting::report_error(kind, &error.to_string());
+}
 pub fn run(path: &Path) -> Result<()> {
     run_with_assets(path, &[])
 }
@@ -599,16 +611,19 @@ pub fn run_with_assets(path: &Path, assets: Assets) -> Result<()> {
         "Kelpmux static web + SSH byte relay: {} (workspace {})",
         config.origin, config.workspace
     );
-    // The relay's own errors and panics will be reported from here with
-    // these settings (component `relay`) once the Rust reporter lands; today
-    // only the browser reports (see super::error_reporting).
-    if let Some(settings) = config.error_reporting()? {
+    // The relay's own panics and SSH-leg errors (`bridge_error`) are reported
+    // with the same settings the browser gets (component `relay`); dropping
+    // the guard on return flushes for at most two seconds.
+    let settings = config.error_reporting()?;
+    if let Some(settings) = &settings {
         eprintln!(
-            "Browser error reporting to {} (release {})",
+            "Error reporting to {} (release {})",
             settings.dsn.origin(),
             super::error_reporting::RELEASE
         );
     }
+    let _reporting =
+        super::error_reporting::init(settings, super::error_reporting::Component::Relay);
     for socket in listener.incoming() {
         let Ok(socket) = socket else {
             continue;
@@ -664,7 +679,7 @@ mod tests {
     }
     fn packet(payload: &[u8]) -> Vec<u8> {
         let mut padding = 4;
-        while (5 + payload.len() + padding) % 8 != 0 {
+        while !(5 + payload.len() + padding).is_multiple_of(8) {
             padding += 1;
         }
         let mut bytes = ((1 + payload.len() + padding) as u32)

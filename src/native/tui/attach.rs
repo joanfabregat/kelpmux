@@ -35,10 +35,10 @@ pub fn open_store(state: &Path) -> Result<Store> {
     crate::journal::private_dir(state)?;
     let mut store = Store::open(state)?;
     if !store.document.migrated {
-        if store.document.settings.is_none() {
-            if let Some(settings) = state::legacy_settings(state) {
-                store.set_settings(settings);
-            }
+        if store.document.settings.is_none()
+            && let Some(settings) = state::legacy_settings(state)
+        {
+            store.set_settings(settings);
         }
         if store.document.layout.is_empty() {
             store.set_layout(state::legacy_layout(state));

@@ -209,19 +209,20 @@ fn compose_scene(
                     }
                 }
             }
-            if selected && !workspace.help && workspace.ui.dialog.is_none() {
-                if let Some(cursor) = screen
+            if selected
+                && !workspace.help
+                && workspace.ui.dialog.is_none()
+                && let Some(cursor) = screen
                     .cursor
                     .filter(|c| c.position.x < view.body.cols && c.position.y < view.body.rows)
-                {
-                    frame.cursor = Some(Cursor {
-                        position: Point {
-                            x: view.body.x + cursor.position.x,
-                            y: view.body.y + cursor.position.y,
-                        },
-                        visible: cursor.visible && controller,
-                    });
-                }
+            {
+                frame.cursor = Some(Cursor {
+                    position: Point {
+                        x: view.body.x + cursor.position.x,
+                        y: view.body.y + cursor.position.y,
+                    },
+                    visible: cursor.visible && controller,
+                });
             }
         }
         if view.overlay && Some(view.pane.id) == workspace.ui.scratch {
@@ -1546,10 +1547,10 @@ pub fn write_text(
             char_width(c)
         };
         if cw == 0 {
-            if let Some(index) = last {
-                if let Some(cell) = frame.cells.get_mut(index) {
-                    cell.text.push_str(&glyph);
-                }
+            if let Some(index) = last
+                && let Some(cell) = frame.cells.get_mut(index)
+            {
+                cell.text.push_str(&glyph);
             }
             continue;
         }
@@ -2640,46 +2641,46 @@ fn draw_sidebar_status(frame: &mut Frame, workspace: &Workspace, notice: Option<
             };
             write_text(frame, 1, y, 6, label, muted, bg, false);
             let (value, color) = &metric.values[0];
-            if matches!(metric.label, "CPU" | "Memory" | "Swap") {
-                if let Some((_, percent)) = value.split_once(' ') {
-                    let percent = percent.trim();
-                    let load = percent
-                        .strip_suffix('%')
-                        .and_then(|value| value.parse::<u16>().ok())
-                        .unwrap_or(0)
-                        .min(100);
-                    let start = if compact_dev { 11 } else { 10 };
-                    let percent_x = width - if compact_dev { 4 } else { 5 };
-                    let length = percent_x.saturating_sub(start + 1);
-                    let filled = (load * length + 50) / 100;
-                    for index in 0..length {
-                        write_text(
-                            frame,
-                            start + index,
-                            y,
-                            1,
-                            if index < filled { "▰" } else { "▱" },
-                            if index < filled {
-                                Color::Indexed(*color)
-                            } else {
-                                muted
-                            },
-                            bg,
-                            false,
-                        );
-                    }
+            if matches!(metric.label, "CPU" | "Memory" | "Swap")
+                && let Some((_, percent)) = value.split_once(' ')
+            {
+                let percent = percent.trim();
+                let load = percent
+                    .strip_suffix('%')
+                    .and_then(|value| value.parse::<u16>().ok())
+                    .unwrap_or(0)
+                    .min(100);
+                let start = if compact_dev { 11 } else { 10 };
+                let percent_x = width - if compact_dev { 4 } else { 5 };
+                let length = percent_x.saturating_sub(start + 1);
+                let filled = (load * length + 50) / 100;
+                for index in 0..length {
                     write_text(
                         frame,
-                        percent_x,
+                        start + index,
                         y,
-                        4,
-                        &format!("{percent:>4}"),
-                        Color::Indexed(*color),
+                        1,
+                        if index < filled { "▰" } else { "▱" },
+                        if index < filled {
+                            Color::Indexed(*color)
+                        } else {
+                            muted
+                        },
                         bg,
                         false,
                     );
-                    continue;
                 }
+                write_text(
+                    frame,
+                    percent_x,
+                    y,
+                    4,
+                    &format!("{percent:>4}"),
+                    Color::Indexed(*color),
+                    bg,
+                    false,
+                );
+                continue;
             }
             let value = safe_text(value);
             let mut display = String::new();

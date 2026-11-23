@@ -921,10 +921,10 @@ fn replacing_outdated_dev_ends_old_jobs_reuses_current_build_and_supports_rollba
     }
     let deadline = Instant::now() + Duration::from_secs(5);
     let job: u32 = loop {
-        if let Ok(text) = fs::read_to_string(dev.root.join("old-job.pid")) {
-            if let Ok(pid) = text.trim().parse() {
-                break pid;
-            }
+        if let Ok(text) = fs::read_to_string(dev.root.join("old-job.pid"))
+            && let Ok(pid) = text.trim().parse()
+        {
+            break pid;
         }
         assert!(Instant::now() < deadline);
         thread::sleep(Duration::from_millis(10));

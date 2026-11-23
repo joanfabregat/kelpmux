@@ -326,11 +326,11 @@ impl Workspace {
                 sizes.push(entry);
             }
         }
-        if let Some(id) = self.ui.scratch {
-            if !sizes.iter().any(|entry| entry.0 == id) {
-                let rect = scratch_rect(self.cols, self.rows);
-                sizes.push((id, rect.cols, rect.rows - 1));
-            }
+        if let Some(id) = self.ui.scratch
+            && !sizes.iter().any(|entry| entry.0 == id)
+        {
+            let rect = scratch_rect(self.cols, self.rows);
+            sizes.push((id, rect.cols, rect.rows - 1));
         }
         sizes
     }
@@ -962,11 +962,10 @@ impl Workspace {
                     .ui
                     .dialog
                     .is_some_and(|d| d.kind == DialogKind::RestoreConfirm)
+                    && let Some(origin) = self.restore_origin.take()
                 {
-                    if let Some(origin) = self.restore_origin.take() {
-                        self.ui.dialog = Some(origin);
-                        return Ok(());
-                    }
+                    self.ui.dialog = Some(origin);
+                    return Ok(());
                 }
                 if let Some(dialog) = self
                     .ui

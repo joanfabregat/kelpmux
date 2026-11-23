@@ -2,19 +2,33 @@
 //! install. Errors and panics only: no tracing, sessions, breadcrumbs or user
 //! data. Without a DSN nothing is initialised and nothing is sent.
 //!
-//! What is here today:
 //! - [`RELEASE`], the release name embedded at build time (see `build.rs`),
 //!   identical to the one the web client reports and uploads source maps for.
 //! - [`Dsn`] and [`Settings`]: validated settings, from the web relay's
 //!   `config.json` (`glitchtip_dsn`, `error_environment`) or, for the TUI and
 //!   `web-bridge`, from `KELPMUX_GLITCHTIP_DSN` and `KELPMUX_ERROR_ENVIRONMENT`.
+//! - [`init`]: the Rust reporter for the relay, bridge and TUI (component tags
+//!   `relay`, `bridge`, `tui`), built on the official `sentry` crate with its
+//!   in-process `ureq` + `rustls` transport. It reports panics, plus the few
+//!   errors a component passes to [`report_error`]. The browser reports with
+//!   the Sentry browser SDK from the relay's `/connection.json`.
 //!
-//! The relay already hands its DSN to the browser, which reports with the
-//! Sentry browser SDK. The Rust reporter for the relay, bridge and TUI
-//! (component tags `relay`, `bridge`, `tui`) is pending a choice of
-//! implementation; it will start from [`Settings`] and tag events with
-//! [`Component::tag`]. Nothing in this module sends anything.
+//! Privacy, as in the browser: no breadcrumbs, user, request, extra data,
+//! server name or host name; `before_send` ([`scrub`]) enforces it on every
+//! event and keeps only the `component` tag and the OS and architecture.
 use crate::Result;
+use sentry::protocol::{Context, DeviceContext, Event, Level, OsContext};
+use std::{
+    collections::BTreeMap,
+    sync::{Arc, Mutex, Once},
+    time::{Duration, Instant},
+};
+
+/// The longest a flush blocks: on a normal exit, after a TUI panic once the
+/// terminal is restored, and when the relay or bridge shuts down.
+pub const FLUSH_TIMEOUT: Duration = Duration::from_secs(2);
+/// [`report_error`] sends at most one event per kind in this interval.
+pub const ERROR_INTERVAL: Duration = Duration::from_secs(60);
 
 /// `kelpmux@<version>+<12-digit git sha>`, or `kelpmux@<version>` without Git
 /// information, unless the build set `KELPMUX_RELEASE`.
@@ -160,6 +174,205 @@ impl Settings {
     }
 }
 
+/// Keeps reporting on; dropping it flushes pending events (at most
+/// [`FLUSH_TIMEOUT`]) and turns reporting off.
+#[must_use = "reporting stops when the guard is dropped"]
+pub struct Guard {
+    client: Arc<sentry::Client>,
+}
+impl Guard {
+    /// Waits at most [`FLUSH_TIMEOUT`] for pending events to be sent.
+    pub fn flush(&self) -> bool {
+        self.client.flush(Some(FLUSH_TIMEOUT))
+    }
+}
+impl Drop for Guard {
+    fn drop(&mut self) {
+        self.client.close(Some(FLUSH_TIMEOUT));
+        sentry::Hub::main().bind_client(None);
+    }
+}
+
+/// Starts reporting for `component` when `settings` has a DSN. Without one
+/// nothing happens: no SDK, no thread, no network.
+pub fn init(settings: Option<Settings>, component: Component) -> Option<Guard> {
+    init_with_transport(settings, component, Arc::new(UreqTransport))
+}
+
+/// [`init`] from `KELPMUX_GLITCHTIP_DSN` and `KELPMUX_ERROR_ENVIRONMENT`, for
+/// the TUI and `web-bridge`. Invalid values turn reporting off with a warning
+/// on stderr (before any terminal mode change) rather than refusing to run.
+pub fn init_from_env(component: Component) -> Option<Guard> {
+    match Settings::from_env() {
+        Ok(settings) => init(settings, component),
+        Err(error) => {
+            eprintln!("kelpmux: error reporting disabled: {error}");
+            None
+        }
+    }
+}
+
+/// [`init`] with another transport; tests record events with it.
+#[doc(hidden)]
+pub fn init_with_transport(
+    settings: Option<Settings>,
+    component: Component,
+    transport: Arc<dyn sentry::TransportFactory>,
+) -> Option<Guard> {
+    let options = client_options(&settings?, component, transport)?;
+    // Not `sentry::init`: its defaults read SENTRY_*, SSL_VERIFY and proxy
+    // variables. The options here are complete.
+    let client = Arc::new(sentry::Client::from(options));
+    sentry::Hub::main().bind_client(Some(client.clone()));
+    install_panic_hook();
+    Some(Guard { client })
+}
+
+fn client_options(
+    settings: &Settings,
+    component: Component,
+    transport: Arc<dyn sentry::TransportFactory>,
+) -> Option<sentry::ClientOptions> {
+    // `ClientOptions` is non-exhaustive: start from the defaults and set
+    // every option that matters here explicitly.
+    let mut options = sentry::ClientOptions::default();
+    options.dsn = Some(settings.dsn.as_str().parse().ok()?);
+    options.release = Some(RELEASE.into());
+    options.environment = settings.environment.clone().map(Into::into);
+    options.server_name = None;
+    options.max_breadcrumbs = 0;
+    options.attach_stacktrace = false;
+    options.send_default_pii = false;
+    options.accept_invalid_certs = false;
+    options.auto_session_tracking = false;
+    options.debug = false;
+    // Only stack-trace processing (in-app frames); panics are captured by
+    // this module's own hook, see `install_panic_hook`.
+    options.default_integrations = false;
+    options.integrations = vec![Arc::new(
+        sentry::integrations::backtrace::ProcessStacktraceIntegration,
+    )];
+    options.in_app_include = vec!["kelpmux", "kelpserver", "kelpclient"];
+    options.before_breadcrumb = Some(Arc::new(|_| None));
+    options.before_send = Some(Arc::new(move |event| scrub(event, component)));
+    options.shutdown_timeout = FLUSH_TIMEOUT;
+    options.transport = Some(transport);
+    Some(options)
+}
+
+/// `before_send`: drops anything that could identify the user, host or
+/// session, whatever produced the event, and sets the `component` tag.
+pub fn scrub(mut event: Event<'static>, component: Component) -> Option<Event<'static>> {
+    event.user = None;
+    event.request = None;
+    event.server_name = None;
+    event.breadcrumbs = Default::default();
+    event.extra.clear();
+    event.modules.clear();
+    event.tags.clear();
+    event
+        .tags
+        .insert("component".into(), component.tag().into());
+    event.contexts.clear();
+    event.contexts.insert(
+        "os".into(),
+        Context::from(OsContext {
+            name: Some(std::env::consts::OS.into()),
+            ..Default::default()
+        }),
+    );
+    event.contexts.insert(
+        "device".into(),
+        Context::from(DeviceContext {
+            arch: Some(std::env::consts::ARCH.into()),
+            ..Default::default()
+        }),
+    );
+    Some(event)
+}
+
+/// Captures panics while a client is bound, then runs the previous hook, so
+/// the panic message is printed exactly as before. Nothing is flushed here:
+/// a TUI must first leave raw mode, which happens while the panic unwinds;
+/// the [`Guard`] then flushes when it is dropped.
+fn install_panic_hook() {
+    static ONCE: Once = Once::new();
+    ONCE.call_once(|| {
+        let next = std::panic::take_hook();
+        std::panic::set_hook(Box::new(move |info| {
+            let hub = sentry::Hub::main();
+            if hub.client().is_some() {
+                let event = sentry::integrations::panic::PanicIntegration::new()
+                    .event_from_panic_info(info);
+                hub.capture_event(event);
+            }
+            next(info);
+        }));
+    });
+}
+
+/// Per-kind limit of [`ERROR_INTERVAL`] for [`report_error`].
+#[derive(Default)]
+struct RateLimit(BTreeMap<&'static str, Instant>);
+impl RateLimit {
+    fn allow(&mut self, kind: &'static str, now: Instant) -> bool {
+        match self.0.get(kind) {
+            Some(last) if now.saturating_duration_since(*last) < ERROR_INTERVAL => false,
+            _ => {
+                self.0.insert(kind, now);
+                true
+            }
+        }
+    }
+}
+
+/// Reports an error message of level `error`, at most once per `kind` per
+/// [`ERROR_INTERVAL`]. A no-op unless [`init`] enabled reporting. `detail`
+/// must hold no user data: no terminal content, paths, titles or commands.
+pub fn report_error(kind: &'static str, detail: &str) -> bool {
+    static LIMIT: Mutex<RateLimit> = Mutex::new(RateLimit(BTreeMap::new()));
+    let hub = sentry::Hub::main();
+    if hub.client().is_none() {
+        return false;
+    }
+    let allowed = LIMIT
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .allow(kind, Instant::now());
+    if !allowed {
+        return false;
+    }
+    hub.capture_event(Event {
+        message: Some(format!("{kind}: {detail}")),
+        level: Level::Error,
+        fingerprint: vec![kind.into()].into(),
+        ..Default::default()
+    });
+    true
+}
+
+/// The HTTPS transport: `ureq` with `rustls`, `ring` and the bundled WebPKI
+/// roots. Certificates are always verified and requests time out.
+struct UreqTransport;
+impl sentry::TransportFactory for UreqTransport {
+    fn create_transport_with_options(
+        &self,
+        options: sentry::TransportOptions,
+    ) -> Arc<dyn sentry::Transport> {
+        use ureq::tls::{TlsConfig, TlsProvider};
+        let agent = ureq::Agent::config_builder()
+            .tls_config(TlsConfig::builder().provider(TlsProvider::Rustls).build())
+            .timeout_global(Some(Duration::from_secs(10)))
+            .build()
+            .new_agent();
+        Arc::new(
+            sentry::transports::UreqHttpTransportOptions::from(options)
+                .with_agent(agent)
+                .build(),
+        )
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -252,5 +465,87 @@ mod tests {
         assert_eq!(settings.environment.as_deref(), Some("dev"));
         assert!(Settings::from_lookup(env(&[("KELPMUX_GLITCHTIP_DSN", "http://k@g/1")])).is_err());
         assert_eq!(Component::Tui.tag(), "tui");
+    }
+    #[test]
+    fn nothing_starts_without_a_dsn() {
+        // This test binary never binds a client (tests/error_reporting.rs
+        // does, in its own process).
+        assert!(init(None, Component::Tui).is_none());
+        assert!(sentry::Hub::main().client().is_none());
+        assert!(!report_error("test.kind", "ignored"));
+    }
+    #[test]
+    fn options_disable_everything_but_errors() {
+        let settings = Settings::new(Some("https://k@g.example.com/3"), Some("dev"))
+            .unwrap()
+            .unwrap();
+        let options = client_options(&settings, Component::Relay, Arc::new(UreqTransport)).unwrap();
+        let dsn = options.dsn.unwrap();
+        assert_eq!(
+            (dsn.public_key(), dsn.secret_key(), dsn.host(), dsn.port()),
+            ("k", None, "g.example.com", 443)
+        );
+        assert_eq!(dsn.project_id().to_string(), "3");
+        assert_eq!(options.release.as_deref(), Some(RELEASE));
+        assert_eq!(options.environment.as_deref(), Some("dev"));
+        assert_eq!(options.server_name, None);
+        assert_eq!(options.max_breadcrumbs, 0);
+        assert!(!options.send_default_pii && !options.attach_stacktrace);
+        assert!(!options.accept_invalid_certs && !options.auto_session_tracking);
+        assert!(!options.default_integrations && !options.debug);
+        assert_eq!(options.integrations.len(), 1);
+        assert_eq!(options.shutdown_timeout, FLUSH_TIMEOUT);
+        let crumb = sentry::protocol::Breadcrumb::default();
+        assert!((options.before_breadcrumb.unwrap())(crumb).is_none());
+    }
+    #[test]
+    fn before_send_scrubs_identifying_data() {
+        use sentry::protocol::{Breadcrumb, Request, User};
+        let mut event = Event {
+            message: Some("boom".into()),
+            server_name: Some("host.internal".into()),
+            user: Some(User {
+                username: Some("alice".into()),
+                ..Default::default()
+            }),
+            request: Some(Request {
+                url: "https://example.com/?q=secret".parse().ok(),
+                ..Default::default()
+            }),
+            breadcrumbs: vec![Breadcrumb::default()].into(),
+            ..Default::default()
+        };
+        event.extra.insert("cwd".into(), "/home/alice".into());
+        event.tags.insert("title".into(), "secret".into());
+        event.contexts.insert(
+            "os".into(),
+            Context::from(OsContext {
+                name: Some("Linux".into()),
+                kernel_version: Some("6.0 host build".into()),
+                ..Default::default()
+            }),
+        );
+        let event = scrub(event, Component::Bridge).unwrap();
+        assert_eq!(event.message.as_deref(), Some("boom"));
+        assert!(event.user.is_none() && event.request.is_none() && event.server_name.is_none());
+        assert!(event.breadcrumbs.is_empty() && event.extra.is_empty());
+        assert_eq!(
+            event.tags.into_iter().collect::<Vec<_>>(),
+            [("component".to_owned(), "bridge".to_owned())]
+        );
+        let json = serde_json::to_string(&event.contexts).unwrap();
+        assert!(!json.contains("host build"), "{json}");
+        assert!(json.contains(std::env::consts::ARCH), "{json}");
+        assert_eq!(event.contexts.len(), 2);
+    }
+    #[test]
+    fn errors_are_limited_to_one_per_kind_per_minute() {
+        let mut limit = RateLimit::default();
+        let start = Instant::now();
+        assert!(limit.allow("a", start));
+        assert!(!limit.allow("a", start + Duration::from_secs(59)));
+        assert!(limit.allow("b", start + Duration::from_secs(1)));
+        assert!(limit.allow("a", start + ERROR_INTERVAL));
+        assert!(!limit.allow("a", start + ERROR_INTERVAL + Duration::from_secs(1)));
     }
 }
