@@ -4,7 +4,7 @@ import { readFileSync } from "node:fs";
 import { stripTypeScriptTypes } from "node:module";
 import vm from "node:vm";
 
-function harness({ welcome = true, extra = {} } = {}) {
+function harness({ welcome = true, extra = {}, connection = {} } = {}) {
   let now = 1000,
     tick;
   const calls = [],
@@ -14,7 +14,11 @@ function harness({ welcome = true, extra = {} } = {}) {
     rpId: "example.test",
     workspace: "test",
     username: "user",
+    ...connection,
   };
+  // Timers run on the injected clock: `advance` fires those now due.
+  const timers = new Map();
+  let timerId = 0;
   const context = {
     Date: { now: () => now },
     location: { origin: config.origin },
@@ -22,8 +26,11 @@ function harness({ welcome = true, extra = {} } = {}) {
     setInterval: (fn) => {
       tick = fn;
     },
-    setTimeout,
-    clearTimeout,
+    setTimeout: (fn, ms = 0) => {
+      timers.set(++timerId, { fn, at: now + ms });
+      return timerId;
+    },
+    clearTimeout: (id) => timers.delete(id),
   };
   const source = stripTypeScriptTypes(
     readFileSync(
@@ -92,8 +99,14 @@ function harness({ welcome = true, extra = {} } = {}) {
     calls,
     sessions,
     config,
-    advance: (ms) => {
+    advance: (ms, { fire = true } = {}) => {
       now += ms;
+      if (!fire) return;
+      for (const [id, timer] of [...timers].sort((a, b) => a[1].at - b[1].at))
+        if (timers.has(id) && timer.at <= now) {
+          timers.delete(id);
+          timer.fn();
+        }
     },
     tick: () => tick(),
   };
@@ -174,25 +187,131 @@ test("worker rejects input and resize from a window that lost the pane", async (
   assert.equal(h.calls.at(-1).type, "input");
 });
 
-test("passive polls and heartbeats do not prevent the 15-minute idle lock", async () => {
+const minute = 60000;
+const idleNotices = (view) =>
+  view.messages.filter((message) => message.type === "idle");
+const lockMessage = (view) =>
+  view.messages.find((message) => message.type === "closed")?.message;
+
+test("passive polls and heartbeats do not prevent the idle warning and lock", async () => {
   const h = harness(),
     a = h.attach();
   await h.join(a);
-  h.advance(14 * 60000);
+  h.advance(59 * minute);
   await h.send(a, { type: "rpc", id: 1, method: "status" });
   await h.send(a, { type: "pulse" });
   h.tick();
-  assert.notEqual(h.sessions[0].closed, true);
-  h.advance(60001);
+  assert.deepEqual(idleNotices(a), []);
+  h.advance(minute);
+  assert.deepEqual(idleNotices(a), [
+    {
+      type: "idle",
+      warning: true,
+      idleFor: "60 minutes",
+      lockAt: 1000 + 75 * minute,
+    },
+  ]);
+  await h.send(a, { type: "rpc", id: 2, method: "history" });
   await h.send(a, { type: "pulse" });
-  h.tick();
+  h.advance(15 * minute - 1);
+  assert.notEqual(h.sessions[0].closed, true);
+  assert.equal(idleNotices(a).length, 1, "polls do not lift the warning");
+  h.advance(1);
   assert.equal(h.sessions[0].closed, true);
-  assert.ok(
-    a.messages.some(
-      (message) =>
-        message.type === "closed" && message.message.includes("15 minutes"),
-    ),
+  assert.equal(
+    lockMessage(a),
+    "Session locked after 75 minutes without activity. Authenticate again to reconnect.",
   );
+});
+
+test("the warning reaches every window, and activity in any one lifts it everywhere", async () => {
+  const h = harness(),
+    a = h.attach(),
+    b = h.attach();
+  await h.join(a);
+  await h.join(b, { resumeOnly: true });
+  h.advance(60 * minute);
+  for (const view of [a, b])
+    assert.equal(idleNotices(view).at(-1)?.warning, true);
+  // A window opened during the warning shows it too.
+  const c = h.attach();
+  await h.join(c, { resumeOnly: true });
+  assert.equal(idleNotices(c).at(-1)?.warning, true);
+  h.advance(10 * minute);
+  await h.send(b, { type: "activity" });
+  for (const view of [a, b, c])
+    assert.deepEqual(idleNotices(view).at(-1), {
+      type: "idle",
+      warning: false,
+    });
+  // The clock restarted: no lock at the old deadline, a new warning later.
+  h.advance(5 * minute + 1);
+  assert.notEqual(h.sessions[0].closed, true);
+  for (const view of [a, b, c]) await h.send(view, { type: "pulse" });
+  h.advance(55 * minute - 1);
+  assert.equal(idleNotices(a).at(-1)?.warning, true);
+  assert.equal(idleNotices(a).at(-1)?.lockAt, 1000 + 145 * minute);
+  // Terminal input counts as activity too.
+  await h.send(a, { type: "request", request: "claim", params: { pane: 1 } });
+  assert.deepEqual(idleNotices(c).at(-1), { type: "idle", warning: false });
+  h.advance(60 * minute - 1);
+  for (const view of [a, b, c]) await h.send(view, { type: "pulse" });
+  h.advance(15 * minute);
+  await h.send(a, {
+    type: "request",
+    request: "input",
+    params: { pane: 1, bytes: [65] },
+  });
+  assert.deepEqual(idleNotices(a).at(-1), { type: "idle", warning: false });
+  assert.notEqual(h.sessions[0].closed, true);
+});
+
+test("activity from a window that has not joined is ignored", async () => {
+  const h = harness(),
+    a = h.attach(),
+    stranger = h.attach();
+  await h.join(a);
+  h.advance(60 * minute);
+  await h.send(stranger, { type: "activity" });
+  assert.equal(idleNotices(a).at(-1)?.warning, true);
+  assert.equal(
+    stranger.messages.some((message) => message.type === "event"),
+    false,
+  );
+});
+
+test("idle durations come from the relay's connection.json", async () => {
+  const h = harness({
+      connection: { idle_warning_minutes: 2, idle_lock_minutes: 1 },
+    }),
+    a = h.attach();
+  await h.join(a);
+  h.advance(2 * minute - 1);
+  assert.deepEqual(idleNotices(a), []);
+  h.advance(1);
+  assert.equal(idleNotices(a).at(-1)?.idleFor, "2 minutes");
+  h.advance(minute);
+  assert.equal(h.sessions[0].closed, true);
+  assert.equal(
+    lockMessage(a),
+    "Session locked after 3 minutes without activity. Authenticate again to reconnect.",
+  );
+});
+
+test("a worker that slept past both durations locks at once, unwarned", async () => {
+  for (const wake of ["tick", "message", "timer"]) {
+    const h = harness(),
+      a = h.attach();
+    await h.join(a);
+    // Suspended: no timer or interval ran while the clock moved on.
+    h.advance(75 * minute + 1, { fire: false });
+    if (wake === "tick") h.tick();
+    else if (wake === "message") await h.send(a, { type: "activity" });
+    else h.advance(0);
+    assert.equal(h.sessions[0].closed, true, wake);
+    assert.deepEqual(idleNotices(a), [], wake);
+    assert.match(lockMessage(a), /75 minutes/, wake);
+  }
 });
 
 test("a shared view cannot impersonate the SSH host and closing it leaves SSH open", async () => {
@@ -226,7 +345,7 @@ test("first input after suspension cannot revive an expired session", async () =
   await h.join(a);
   await h.send(a, { type: "request", request: "claim", params: { pane: 1 } });
   const count = h.calls.length;
-  h.advance(15 * 60000 + 1);
+  h.advance(75 * 60000 + 1, { fire: false });
   await h.send(a, {
     type: "request",
     request: "input",

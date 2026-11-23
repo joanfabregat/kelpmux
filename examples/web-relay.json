@@ -9,5 +9,7 @@
   "workspace": "main",
   "dev": false,
   "glitchtip_dsn": null,
-  "error_environment": null
+  "error_environment": null,
+  "idle_warning_minutes": null,
+  "idle_lock_minutes": null
 }

@@ -7,6 +7,13 @@ export class SharedSession extends Session {
   private ended?: () => void;
   private heartbeat?: ReturnType<typeof setInterval>;
   private pageGone = () => this.detach();
+  /** The shared connection's idle warning: shown with the time it locks,
+   * or `null` once it is lifted or the view ends (session-worker.ts). */
+  onIdle?: (notice: { idleFor: string; lockAt: number } | null) => void;
+  /** Reports user activity in this window to the idle lock. */
+  activity() {
+    if (!this.stopped) this.port?.postMessage({ type: "activity" });
+  }
   signedIdentity() {
     return this.host?.signedIdentity() ?? super.signedIdentity();
   }
@@ -100,7 +107,11 @@ export class SharedSession extends Session {
       } else if (data.type === "host_stop") {
         this.host?.close();
         this.host = undefined;
-      } else if (data.type === "status") this.onStatus(data.message);
+      } else if (data.type === "idle")
+        this.onIdle?.(
+          data.warning ? { idleFor: data.idleFor, lockAt: data.lockAt } : null,
+        );
+      else if (data.type === "status") this.onStatus(data.message);
       else if (data.type === "closed") {
         if (data.message) this.onStatus(data.message);
         this.finish();
@@ -155,6 +166,7 @@ export class SharedSession extends Session {
       pending.reject(Error("SSH view closed; commands are not replayed"));
     }
     this.pending.clear();
+    this.onIdle?.(null);
     this.ended?.();
   }
   detach() {
