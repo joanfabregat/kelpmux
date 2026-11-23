@@ -2,7 +2,7 @@ import type React from "react";
 import {
   sshKey,
   register,
-  useExistingKey,
+  selectExistingKey,
   registeredKeys,
 } from "./terminal/connection";
 import { unbase64 } from "./terminal/ssh/wire.mjs";
@@ -195,7 +195,7 @@ export function KeySettings({
                   )
                 )
                   saved.push(identity);
-                saveIdentity(await useExistingKey(connection!, saved));
+                saveIdentity(await selectExistingKey(connection!, saved));
                 toast("Existing key selected", { key: "keys" });
               } catch (error) {
                 fail(error);

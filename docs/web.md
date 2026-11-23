@@ -49,8 +49,8 @@ bash scripts/fetch-web-ssh.sh
 # 3. Locked JavaScript dependencies, without install scripts, then audit.
 (cd web && npm ci --ignore-scripts && npm audit --audit-level=high)
 
-# 4. Test, type-check and build the static client.
-(cd web && npm test && npm run check && npm run build)
+# 4. Test, type-check, lint the React hook rules (oxlint) and build the static client.
+(cd web && npm test && npm run check && npm run lint && npm run build)
 
 # 5. Build kelpmux, which embeds web/dist.
 cargo build --locked --release --bin kelpmux

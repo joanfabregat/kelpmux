@@ -5,7 +5,7 @@ import type { Connection, Identity, SignInKey } from "./types";
 import { payloadLimit, queueLimit } from "./request-limits";
 export {
   registeredKeys,
-  useExistingKey,
+  selectExistingKey,
   discoverKey,
   keyFingerprint,
   mergeProfiles,

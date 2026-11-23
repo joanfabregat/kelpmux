@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { registeredKeys, useExistingKey } from "../src/terminal/keys.ts";
+import { registeredKeys, selectExistingKey } from "../src/terminal/keys.ts";
 import { base64, unbase64 } from "../src/terminal/ssh/wire.mjs";
 const config = { origin: "https://example.test", rpId: "example.test" };
 const point = base64(
@@ -64,7 +64,7 @@ test("selection offers every known credential and resolves the physical key befo
     },
   });
   assert.equal(
-    (await useExistingKey(config, [laptop, desktop], { knownOnly: true }))
+    (await selectExistingKey(config, [laptop, desktop], { knownOnly: true }))
       .label,
     "Desktop",
   );
@@ -73,11 +73,11 @@ test("selection offers every known credential and resolves the physical key befo
     [laptop.credentialId, desktop.credentialId],
   );
   const abort = new AbortController();
-  await useExistingKey(config, [desktop], { signal: abort.signal });
+  await selectExistingKey(config, [desktop], { signal: abort.signal });
   assert.equal(requests[1].signal, abort.signal);
   assert.equal(requests[1].publicKey.allowCredentials, undefined);
   await assert.rejects(
-    useExistingKey(config, [], { knownOnly: true }),
+    selectExistingKey(config, [], { knownOnly: true }),
     /No registered keys/,
   );
 });
