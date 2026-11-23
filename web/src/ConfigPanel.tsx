@@ -172,11 +172,11 @@ export function ConfigPanel({
           Fold the sidebar to its marks (click or drag its edge too)
         </label>
         <p className="setting-hint">
-          These preferences, parked terminals, tab colours and the terminal
-          order are saved in this browser. Notification read marks are shared
-          with the TUI: showing a terminal here (or focusing its grid tile)
-          marks its notifications read in both, as the TUI does when it shows
-          the terminal.
+          These preferences, parked terminals and the terminal order are saved
+          in this browser. Notification read marks are shared with the TUI:
+          showing a terminal here (or focusing its grid tile) marks its
+          notifications read in both, as the TUI does when it shows the
+          terminal.
         </p>
       </section>
       <section hidden={settingsSection !== "shortcuts"}>

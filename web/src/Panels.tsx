@@ -18,7 +18,6 @@ import {
   type Notification,
 } from "./state/model";
 import { shortcuts } from "./shortcuts";
-import { paletteColor, paletteNames } from "./palette";
 
 const name = (p: NumberedPane) => p.title || "shell";
 
@@ -562,44 +561,3 @@ export const paneStateLabel = (
   p: NumberedPane,
   notifications: Notification[],
 ) => stateLabel[paneState(p, notifications)];
-
-/** The tab colour picker: one of the TUI's nine palette colours, kept in
- * this browser only. */
-export function ColorPanel({
-  pane,
-  color,
-  onPick,
-}: {
-  pane: NumberedPane;
-  /** The pane's current colour in this browser. */
-  color: number;
-  onPick: (color: number) => void;
-}) {
-  return (
-    <div className="panel-body">
-      <p className="setting-hint">
-        Colour for “{name(pane)}” in this browser. The TUI and other browsers
-        keep their own colours.
-      </p>
-      <div className="color-grid" role="list">
-        {paletteNames.map((label, index) => (
-          <button
-            type="button"
-            key={label}
-            className="color-swatch"
-            aria-pressed={color === index}
-            aria-label={label}
-            onClick={() => onPick(index)}
-          >
-            <span
-              className="swatch"
-              style={{ background: paletteColor(index) }}
-              aria-hidden="true"
-            />
-            {label}
-          </button>
-        ))}
-      </div>
-    </div>
-  );
-}

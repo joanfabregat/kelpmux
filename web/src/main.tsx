@@ -66,7 +66,6 @@ import {
   TerminalNotificationsPanel,
   PaneMenu,
   ParkedPanel,
-  ColorPanel,
   RecoveryPanel,
   SearchPanel,
 } from "./Panels";
@@ -87,9 +86,6 @@ import {
   saveLayout,
   savePreferences,
   saveView,
-  liveColors,
-  tabColor,
-  type TabColors,
 } from "./layout-store";
 import {
   isFinished,
@@ -398,14 +394,12 @@ function App() {
     [subscriptionLimit, setSubscriptionLimit] = useState(DEFAULT_SUBSCRIPTIONS),
     [notifications, setNotifications] = useState<Notification[]>([]),
     [parked, setParked] = useState<number[]>([]),
-    [colors, setColors] = useState<TabColors>({}),
     [preferences, setPreferences] = useState(loadPreferences),
     [terminalFilter, setTerminalFilter] = useState<TerminalFilter>("all"),
     [operations, setOperations] = useState(() => new Set<string>()),
     // The terminal whose notifications the Notifications panel shows.
     [notifyPane, setNotifyPane] = useState(0),
     [findQuery, setFindQuery] = useState(""),
-    [colorPane, setColorPane] = useState<NumberedPane | null>(null),
     [menu, setMenu] = useState<{
       pane: NumberedPane;
       x: number;
@@ -599,7 +593,7 @@ function App() {
       if (!live.has(id)) store.closing!.delete(id);
   }, [panes]);
 
-  // This browser's layout: order, parking, tab colours and focus, per
+  // This browser's layout: order, parking and focus, per
   // workspace and epoch. `all` is every pane in this browser's order; `live` the tabs and
   // grid (parked excluded).
   const all = numberPanes(orderPanes(panes, order));
@@ -617,7 +611,6 @@ function App() {
       order: all.map((p) => p.id),
       focus: active,
       parked,
-      colors,
     });
   }, [
     online,
@@ -626,16 +619,11 @@ function App() {
     active,
     all.map((p) => p.id).join(","),
     parked.join(","),
-    colors,
   ]);
   useEffect(() => {
-    // Closed terminals leave this browser's parked list and colours.
+    // Closed terminals leave this browser's parked list.
     if (panesLoaded && parked.some((id) => !panes.some((p) => p.id === id)))
       setParked(parked.filter((id) => panes.some((p) => p.id === id)));
-    if (panesLoaded)
-      setColors((current) =>
-        liveColors(current, new Set(panes.map((p) => p.id))),
-      );
   }, [panes, panesLoaded]);
   useEffect(() => {
     if (panesLoaded && !popupPane && !live.some((p) => p.id === active))
@@ -1246,7 +1234,6 @@ function App() {
         setEpoch(e.epoch);
         setOrder(layout.order);
         setParked(layout.parked);
-        setColors(layout.colors);
         if (layout.focus && !popupPane) setActive(layout.focus);
         setOnline(true);
         setConnecting(false);
@@ -1885,13 +1872,6 @@ function App() {
       ],
       isParked ? ["Unpark", () => unpark(p)] : ["Park", () => park(p)],
       [
-        "Tab colour…",
-        () => {
-          setColorPane(p);
-          setDialog("color");
-        },
-      ],
-      [
         unread ? `Notifications (${unread} unread)…` : "Notifications…",
         () => openNotifications(p),
       ],
@@ -2032,7 +2012,6 @@ function App() {
     parked: "Parked terminals",
     move: "Move terminal",
     help: "Help",
-    color: "Tab colour",
   };
   const closeDialog = () => {
     setDialog("");
@@ -2383,16 +2362,6 @@ function App() {
                 />
               )}
               {dialog === "help" && <HelpPanel />}
-              {dialog === "color" && colorPane && (
-                <ColorPanel
-                  pane={all.find((p) => p.id === colorPane.id) || colorPane}
-                  color={tabColor(colors, colorPane.id)}
-                  onPick={(color) => {
-                    setColors({ ...colors, [colorPane.id]: color });
-                    closeDialog();
-                  }}
-                />
-              )}
             </section>
           </div>
         )}
