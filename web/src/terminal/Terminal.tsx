@@ -33,6 +33,8 @@ const touchSlop = 8;
  * this window becomes active again. Sizing claims the terminal's control
  * lease, so among several windows showing the same terminal the most
  * recently active one decides its size; a background window never resizes.
+ * The lease is claimed for the size only: it gives the tile no input focus,
+ * and no keyboard action addresses a grid tile.
  */
 export function TerminalTile({
   pane,

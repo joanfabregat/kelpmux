@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { gridNeighbour, prefixAction } from "../src/prefix.ts";
+import { prefixAction } from "../src/prefix.ts";
 
 test("prefix keys follow the TUI's default bindings", () => {
   const key = (key, extra = {}) => prefixAction({ key, ...extra });
@@ -30,22 +30,14 @@ test("prefix keys follow the TUI's default bindings", () => {
   assert.equal(key("constructor"), null);
 });
 
-test("grid focus moves to neighbours and stops at edges", () => {
-  // 5 tiles in 3 columns: 0 1 2 / 3 4
-  assert.equal(gridNeighbour(0, 5, 3, 1, 0), 1);
-  assert.equal(gridNeighbour(2, 5, 3, 1, 0), 2);
-  assert.equal(gridNeighbour(0, 5, 3, -1, 0), 0);
-  assert.equal(gridNeighbour(1, 5, 3, 0, 1), 4);
-  assert.equal(gridNeighbour(2, 5, 3, 0, 1), 2);
-  assert.equal(gridNeighbour(4, 5, 3, 0, -1), 1);
-  assert.equal(gridNeighbour(-1, 5, 3, 1, 0), -1);
-  assert.equal(gridNeighbour(0, 0, 3, 1, 0), 0);
-});
-
-test("keyboard modes and grid resizing follow the TUI keys", () => {
+test("keyboard modes follow the TUI keys; the grid has no pages or splits", () => {
   assert.equal(prefixAction({ key: "[" }), "scroll-mode");
   assert.equal(prefixAction({ key: " " }), "select-mode");
-  assert.equal(prefixAction({ key: "H", shiftKey: true }), "grid-resize-left");
-  assert.equal(prefixAction({ key: "J", shiftKey: true }), "grid-resize-down");
-  assert.equal(prefixAction({ key: "=" }), "grid-equalize");
+  assert.equal(prefixAction({ key: "l" }), "focus-right");
+  // The grid is one read-only page: no paging, no resizing of tiles.
+  assert.equal(prefixAction({ key: "PageUp" }), null);
+  assert.equal(prefixAction({ key: "PageDown" }), null);
+  assert.equal(prefixAction({ key: "H", shiftKey: true }), null);
+  assert.equal(prefixAction({ key: "J", shiftKey: true }), null);
+  assert.equal(prefixAction({ key: "=" }), null);
 });

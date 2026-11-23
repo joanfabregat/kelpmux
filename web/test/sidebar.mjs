@@ -2,20 +2,24 @@
 // Chromium and WebKit, without any network or SSH endpoint:
 // 1. No full width mode: no sidebar entry and no edge handle.
 // 2. A tab with unread notifications that is not shown has a bell on its
-//    sidebar row and grid tile; showing the terminal, or focusing its tile,
-//    marks them read (other tiles keep their bells), and one that arrives
-//    while the window is in the background waits until it is looked at
-//    again. The bell in a terminal's header opens that terminal's
-//    notifications only, on History, where one or all are also marked read.
-//    There is no global Notifications entry.
+//    sidebar row and grid tile; showing the terminal alone marks them read
+//    (the read-only grid marks nothing read), and one that arrives while
+//    the window is in the background waits until it is looked at again.
+//    The bell in a terminal's header opens that terminal's notifications
+//    only, on History, where one or all are also marked read. There is no
+//    global Notifications entry.
 // 3. The layout: no separator under the logo, the tools in two columns
 //    above the vitals, the account and settings below the vitals at the very
 //    bottom, all fitting 800 px with ten tabs; one column when folded; the
-//    same on an iPad in portrait and a phone's terminal list.
+//    same on an iPad in portrait and a phone's terminal list. The Terminals
+//    tool's icon differs from the Grid entry's.
 // 4. A Grid entry heads the tabs, selected while the grid shows (no tab is
-//    then); a tab opens its terminal alone and the entry the grid. The
-//    focused tile has no border. Folded, the entry is its icon; phones have
-//    none.
+//    then). The grid is one read-only page: 3, 8, 10 and 13 terminals all
+//    fit with no pager, no tile is focused and keys typed reach no
+//    terminal. A click on a tile, a tab and every opening shortcut
+//    (Alt+digit, Ctrl-B digit, Tab, l, N) show the terminal alone; the Grid
+//    entry, Alt+Tab, Ctrl+Shift+G and Ctrl-B g / e the grid again. Folded,
+//    the entry is its icon; phones have none.
 // Set SIDEBAR_SCREENSHOTS to a directory to save screenshots of each case.
 import { build } from "vite";
 import { chromium, webkit, devices } from "playwright";
@@ -141,29 +145,55 @@ async function checkGridEntry(page, grid) {
   if (grid) assert.notEqual(background, "rgba(0, 0, 0, 0)", "Grid selected");
   else assert.equal(background, "rgba(0, 0, 0, 0)");
 }
-/** The focused grid tile has no border of its own: the same border as the
- * other tiles and no ring. */
-async function checkTileBorder(page, focused, other) {
-  await page.mouse.move(0, 0);
-  const style = (id) =>
-    page.locator(`[data-tile-pane="${id}"]`).evaluate((el) => {
-      const s = getComputedStyle(el);
-      return {
-        color: s.borderTopColor,
-        width: s.borderTopWidth,
-        shadow: s.boxShadow,
-        outline: s.outlineStyle,
-      };
-    });
-  const own = await style(focused);
-  assert.equal(
-    await page
-      .locator(`[data-tile-pane="${focused}"]`)
-      .getAttribute("aria-current"),
-    "true",
+/** One grid page holds every terminal: a tile per terminal, each wholly
+ * inside the grid and the viewport, columns × rows that fit them with no
+ * empty row, no scrolling and no pager. */
+async function checkGridFits(page, count) {
+  const grid = page.locator(".live-grid");
+  const area = await grid.boundingBox();
+  const tiles = await page.locator(".live-tile").all();
+  assert.equal(tiles.length, count, `${count} tiles`);
+  const viewport = page.viewportSize();
+  for (const tile of tiles) {
+    const b = await tile.boundingBox();
+    assert.ok(
+      b.x >= area.x - 1 &&
+        b.y >= area.y - 1 &&
+        b.x + b.width <= Math.min(area.x + area.width, viewport.width) + 1 &&
+        b.y + b.height <= Math.min(area.y + area.height, viewport.height) + 1,
+      "tile inside the grid and the viewport",
+    );
+    assert.ok(b.height > 60 && b.width > 150, "tile large enough to read");
+  }
+  const cols = Number(await grid.getAttribute("data-cols"));
+  const rows = Number(await grid.getAttribute("data-rows"));
+  assert.ok(cols * rows >= count && cols * (rows - 1) < count, "no empty row");
+  assert.ok(
+    await grid.evaluate((el) => el.scrollHeight <= el.clientHeight + 1),
+    "no scrolling",
   );
-  assert.deepEqual(own, await style(other), "focused tile like the others");
-  assert.equal(own.shadow, "none");
+  assert.equal(await page.locator(".grid-pages, .grid-page").count(), 0);
+  assert.equal(
+    await page.getByRole("button", { name: /grid page/i }).count(),
+    0,
+    "no pager",
+  );
+}
+/** No grid tile is focused: none is current, and every tile has the same
+ * border and header as the others. */
+async function checkNoFocus(page) {
+  await page.mouse.move(0, 0);
+  assert.equal(await page.locator(".live-tile[aria-current]").count(), 0);
+  assert.equal(await page.locator(".live-tile.focused").count(), 0);
+  const styles = await page.locator(".live-tile").evaluateAll((els) =>
+    els.map((el) => {
+      const s = getComputedStyle(el);
+      const h = getComputedStyle(el.querySelector("header"));
+      return `${s.borderTopWidth} ${s.boxShadow} ${h.backgroundColor}`;
+    }),
+  );
+  // Tiles needing input have their own border colour, not width.
+  assert.equal(new Set(styles).size, 1, "tiles alike");
 }
 
 for (const engine of [chromium, webkit]) {
@@ -322,39 +352,106 @@ for (const engine of [chromium, webkit]) {
       assert.deepEqual(errors, []);
       await context.close();
     }
-    // 4. Grid view, three pages: the Grid entry is selected and no tab is;
-    // the focused tile has no border; the pages take a row of the tools.
-    // A tab opens its terminal alone, and the Grid entry the grid again.
+    // 4. The read-only grid with 3, 8 and 13 terminals: one page with every
+    // tile fully visible and no pager; the Grid entry is selected and no
+    // tab is; no tile is focused and nothing is marked read.
+    for (const tabs of [3, 8, 13]) {
+      const { context, page, errors } = await open(
+        browser,
+        { viewport: { width: 1440, height: 900 } },
+        `?view=grid&tabs=${tabs}`,
+      );
+      await shot(page, name, `desktop-grid-${tabs}`);
+      await checkGridEntry(page, true);
+      await checkGridFits(page, tabs);
+      await checkNoFocus(page);
+      await checkBottom(page, 2);
+      assert.deepEqual(await page.evaluate(() => window.acks), []);
+      assert.deepEqual(errors, []);
+      await context.close();
+    }
+    // A click anywhere on a tile opens it alone; a tab does too, and the
+    // Grid entry the grid again. Keys typed in the grid reach no terminal;
+    // every opening shortcut leaves the grid, and the grid shortcuts show
+    // it again.
     {
       const { context, page, errors } = await open(
         browser,
         { viewport: { width: 1440, height: 900 } },
-        "?view=grid&pages=3",
+        "?view=grid",
       );
-      await shot(page, name, "desktop-grid");
-      await checkGridEntry(page, true);
-      await checkTileBorder(page, 1, 2);
-      await checkBottom(page, 2);
-      assert.equal(await page.locator(".view-cell .grid-pages").count(), 1);
-      await page.locator('.term-row[data-pane="3"] .term-item').click();
-      await page.locator(".tab-pane-layout").waitFor();
-      assert.equal(await page.locator(".live-grid").count(), 0);
-      await checkGridEntry(page, false);
+      // The Terminals tool's icon is not the Grid entry's.
+      const icon = (selector) =>
+        page.locator(`${selector} .svg-icon`).first().innerHTML();
+      assert.notEqual(
+        await icon('[data-tool="terminals"]'),
+        await icon('[data-view="grid"]'),
+        "Terminals and Grid icons differ",
+      );
+      await page.keyboard.type("echo grid\n");
+      await page.keyboard.press("Control+c");
+      assert.deepEqual(await page.evaluate(() => window.typed), []);
+      assert.equal(await page.locator(".live-grid").count(), 1, "still grid");
       assert.equal(
-        await page
-          .locator('.term-row[data-pane="3"] .term-item')
-          .getAttribute("aria-current"),
-        "page",
+        await page.locator(".live-grid textarea, .live-grid input").count(),
+        0,
       );
-      assert.equal(
-        await page.locator(".tab-pane-layout .grid-title").textContent(),
-        "codex 3",
+      const title = () =>
+        page.locator(".tab-pane-layout .grid-title").textContent();
+      const showsAlone = async (number, label) => {
+        await page.locator(".tab-pane-layout").waitFor();
+        assert.equal(await page.locator(".live-grid").count(), 0, label);
+        await checkGridEntry(page, false);
+        assert.equal(
+          await page
+            .locator(`.term-row[data-pane="${number}"] .term-item`)
+            .getAttribute("aria-current"),
+          "page",
+          label,
+        );
+      };
+      const backToGrid = async (keys) => {
+        for (const key of keys) await page.keyboard.press(key);
+        await page.locator(".live-grid").waitFor();
+        await checkGridEntry(page, true);
+      };
+      // A click near a tile's bottom corner, on its screen.
+      const tile = await box(page, '[data-tile-pane="4"]');
+      await page.mouse.click(
+        tile.x + tile.width - 12,
+        tile.y + tile.height - 12,
       );
-      assert.equal(await page.locator(".view-cell").count(), 0, "no pages");
+      await showsAlone(4, "tile click");
+      assert.equal(await title(), "shell");
+      // The shown terminal gets the keys.
+      await page.getByLabel("Input for terminal 4").focus();
+      await page.keyboard.type("ok");
+      assert.deepEqual(await page.evaluate(() => window.typed), ["o", "k"]);
       await page.locator('[data-view="grid"]').click();
       await page.locator(".live-grid").waitFor();
-      await checkGridEntry(page, true);
-      assert.equal(await page.locator(".view-cell .grid-pages").count(), 1);
+      await page.locator('.term-row[data-pane="3"] .term-item').click();
+      await showsAlone(3, "tab");
+      assert.equal(await title(), "codex 3");
+      await backToGrid(["Alt+Tab"]);
+      await page.keyboard.press("Alt+Digit2");
+      await showsAlone(2, "Alt+2");
+      await backToGrid(["Control+Shift+KeyG"]);
+      await page.keyboard.press("Control+b");
+      await page.keyboard.press("5");
+      await showsAlone(5, "Ctrl-B 5");
+      await backToGrid(["Control+b", "g"]);
+      await page.keyboard.press("Control+b");
+      await page.keyboard.press("Tab");
+      await showsAlone(6, "Ctrl-B Tab");
+      await backToGrid(["Control+b", "e"]);
+      await page.keyboard.press("Control+b");
+      await page.keyboard.press("l");
+      await showsAlone(7, "Ctrl-B l");
+      await backToGrid(["Alt+Tab"]);
+      // The next question: terminal 8 needs input.
+      await page.keyboard.press("Control+b");
+      await page.keyboard.press("Shift+N");
+      await showsAlone(8, "Ctrl-B N");
       assert.deepEqual(errors, []);
       await context.close();
     }
@@ -371,23 +468,32 @@ for (const engine of [chromium, webkit]) {
       const entry = page.locator('[data-view="grid"]');
       assert.ok(await entry.locator(".svg-icon").isVisible(), "Grid icon");
       assert.equal(await entry.locator(".grow").isVisible(), false);
-      await checkTileBorder(page, 1, 3);
-      // The grid tiles carry the bell too; focusing a tile marks its
-      // notifications read, and the other tiles keep theirs.
+      await checkGridFits(page, 10);
+      await checkNoFocus(page);
+      // The grid tiles carry the bell too. Nothing in the grid is marked
+      // read; a tile's click opens its terminal alone, which marks its
+      // notifications read, and the grid's other tiles keep theirs.
       const tileBell = (id) =>
         page.locator(`[data-tile-pane="${id}"] header .unread-mark`);
       assert.equal(await tileBell(2).count(), 1);
       assert.equal(await tileBell(5).count(), 1);
       assert.equal(await tileBell(1).count(), 0);
+      await page.evaluate(() => window.notify(1));
+      await page.waitForTimeout(100);
+      assert.equal(await tileBell(1).count(), 1);
       assert.deepEqual(await page.evaluate(() => window.acks), []);
       await page.locator('[data-tile-pane="2"]').click();
+      await page.locator(".tab-pane-layout").waitFor();
       await page.waitForFunction(() => window.acks.length === 2);
       assert.deepEqual(await page.evaluate(() => window.acks), [3, 2]);
-      await tileBell(2).waitFor({ state: "detached" });
+      await page.locator('[data-view="grid"]').click();
+      await page.locator(".live-grid").waitFor();
+      assert.equal(await tileBell(2).count(), 0);
       assert.equal(await tileBell(5).count(), 1);
       await page.evaluate(() => window.notify(5));
       await page.waitForTimeout(100);
       assert.equal(await tileBell(5).locator("b").textContent(), "2");
+      assert.deepEqual(await page.evaluate(() => window.acks), [3, 2]);
       assert.deepEqual(errors, []);
       await context.close();
     }
@@ -444,7 +550,7 @@ for (const engine of [chromium, webkit]) {
       await context.close();
     }
     console.log(
-      `PASS: ${name} sidebar: no full width, showing a terminal marks it read, per-terminal notifications, two-column tools above the vitals, account at the bottom, Grid entry and view switching, no focused-tile border`,
+      `PASS: ${name} sidebar: no full width, showing a terminal marks it read, per-terminal notifications, two-column tools above the vitals, account at the bottom, Grid entry, one read-only grid page for 3, 8, 10 and 13 terminals, opening alone from tiles and shortcuts`,
     );
   } finally {
     await browser.close();

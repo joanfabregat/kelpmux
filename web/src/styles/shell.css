@@ -233,27 +233,6 @@ button.rail-mark:hover:not(:disabled) {
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 1px var(--s1);
 }
-/* With several grid pages, the page buttons take a row. */
-.view-cell.wide {
-  grid-column: 1 / -1;
-  min-height: 30px;
-}
-.view-cell .grid-pages {
-  display: inline-flex;
-  flex: none;
-  align-items: center;
-  gap: 2px;
-  padding-right: 2px;
-  color: var(--text-3);
-  font-size: var(--fs-xs);
-  font-variant-numeric: tabular-nums;
-}
-.view-cell .grid-pages .icon-btn {
-  width: 22px;
-  height: 22px;
-  min-height: 0;
-  padding: 0;
-}
 .rail-foot {
   display: flex;
   flex: none;
@@ -455,9 +434,6 @@ button.rail-mark:hover:not(:disabled) {
 .rail.folded .vital-disks .disk-pies {
   justify-content: center;
   gap: var(--s1);
-}
-.rail.folded .view-cell {
-  display: none;
 }
 
 /* ───────── Main column and the phone's top bar ───────── */
@@ -713,12 +689,6 @@ button.live-tile:focus-visible {
 }
 .live-tile.needs-input {
   border-color: color-mix(in srgb, var(--st-input) 70%, transparent);
-}
-/* The focused tile, which takes the grid's keys: no border, only its
- * header's tint. */
-.live-tile.focused > header {
-  background: var(--accent-soft);
-  color: var(--text-2);
 }
 .live-tile > header {
   width: 100%;

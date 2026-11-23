@@ -160,10 +160,10 @@ test("a terminal's panel lists its own notifications, unread or history", () => 
   );
 });
 
-test("showing a terminal or focusing its tile is what marks it read", () => {
+test("showing a terminal is what marks it read", () => {
   // A terminal shown on its own.
   assert.equal(readingPane(0, 3, [3]), 3);
-  // The live grid: only the focused tile, when it is on this page.
+  // Only a terminal on screen (the read-only grid passes none shown).
   assert.equal(readingPane(0, 2, [1, 2, 3, 4]), 2);
   assert.equal(readingPane(0, 9, [1, 2, 3, 4]), 0);
   // Nothing on screen (the phone's terminal list) or nothing focused.

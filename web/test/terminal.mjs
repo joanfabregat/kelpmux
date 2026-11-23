@@ -122,6 +122,56 @@ for (const engine of [chromium, webkit]) {
     console.log(
       `PASS: ${engine.name()} actual terminal 4px inset, trusted Copy event, denied automatic clipboard fallback and Cmd+C routing`,
     );
+    // The read-only grid tile: it claims the lease to size the terminal to
+    // the tile, but keys, paste, wheel and pointer input reach nothing; a
+    // click opens the terminal alone.
+    await page.goto("https://terminal.test/?tile=1");
+    await page.waitForFunction(() => window.terminalReady);
+    await page.waitForFunction(() =>
+      window.terminalRequests.some((r) => r.type === "control"),
+    );
+    const claim = await page.evaluate(() =>
+      window.terminalRequests.find((r) => r.type === "control"),
+    );
+    assert.equal(claim.pane, 1);
+    assert.ok(claim.size.cols > 0 && claim.size.rows > 0, "sized to the tile");
+    const tile = page.locator('[data-tile-pane="1"]');
+    assert.equal(await tile.locator("textarea, input").count(), 0);
+    assert.equal(await tile.getAttribute("aria-current"), null);
+    await page.keyboard.type("echo tile");
+    await page.keyboard.press("Control+c");
+    await page.keyboard.press("ArrowUp");
+    await page.evaluate(() => {
+      let event;
+      try {
+        const data = new DataTransfer();
+        data.setData("text/plain", "pasted");
+        event = new ClipboardEvent("paste", {
+          clipboardData: data,
+          bubbles: true,
+        });
+      } catch {
+        event = new ClipboardEvent("paste", { bubbles: true });
+      }
+      document.querySelector('[data-tile-pane="1"]').dispatchEvent(event);
+    });
+    const area = await tile.locator("canvas").boundingBox();
+    await page.mouse.move(area.x + area.width / 2, area.y + area.height / 2);
+    await page.mouse.wheel(0, -200);
+    await page.waitForTimeout(100);
+    assert.deepEqual(await page.evaluate(() => window.opened), []);
+    await page.mouse.click(area.x + 20, area.y + area.height - 20);
+    assert.deepEqual(await page.evaluate(() => window.opened), [1]);
+    const kinds = await page.evaluate(() =>
+      window.terminalRequests.map((r) => r.type),
+    );
+    assert.ok(
+      kinds.every((kind) => kind === "control" || kind === "resize"),
+      `only sizing requests: ${kinds.join(", ")}`,
+    );
+    console.log(
+      `PASS: ${engine.name()} read-only grid tile: lease for its size only, no input, a click opens it`,
+    );
     await context.close();
   } finally {
     await browser.close();

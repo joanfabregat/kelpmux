@@ -484,8 +484,9 @@ export function HelpPanel() {
       <p className="setting-hint">
         The mouse works everywhere: click a terminal in the sidebar to open it,
         drag to reorder, middle-click to close and right-click for more actions.
-        Every other key goes to the focused terminal. This browser's order,
-        parking, grid and focus are separate from the TUI's.
+        Every other key goes to the terminal shown on its own; the grid is
+        read-only and a click on a tile opens it. This browser's order, parking,
+        grid and focus are separate from the TUI's.
       </p>
     </div>
   );
