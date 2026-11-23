@@ -746,6 +746,8 @@ function App() {
   /** Shows one terminal on its own. */
   function activate(id: number) {
     if (id !== active) setFindPane(0);
+    // Remembered like the view toggle, so a reload opens the same view.
+    if (!popupPane) saveView("single");
     setView("single");
     setActive(id);
     setPhoneList(false);
