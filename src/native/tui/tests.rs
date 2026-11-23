@@ -690,6 +690,156 @@ fn focusing_a_pane_acknowledges_its_notifications() {
 }
 
 #[test]
+fn new_notifications_raise_one_desktop_notification_each() {
+    use super::notify::{Protocol, Terminal};
+    use crate::native::ui::{DesktopNotifications, NotificationEvent};
+    let mut c = welcomed(
+        Document {
+            migrated: true,
+            epochs: [("e1".to_owned(), EpochState::default())].into(),
+            ..Document::default()
+        },
+        Options {
+            terminal: Terminal {
+                detected: Some(Protocol::Osc9),
+                tmux: false,
+            },
+            ..Options::default()
+        },
+        Extras {
+            capabilities: vec!["notification-run"],
+            notification_run: Some("run".into()),
+            ..Extras::default()
+        },
+    );
+    c.event(Event::Update(update(vec![info(1), info(2)])))
+        .unwrap();
+    c.take_requests();
+    assert_eq!(c.workspace.active, 1);
+    let event = |id: u64, pane: PaneId, status: Status| Notification {
+        origin: Some(NotificationOrigin {
+            run: "run".into(),
+            pid: 1000 + pane as u32,
+        }),
+        id,
+        pane,
+        title: "Done".into(),
+        status,
+        at: 1,
+        read: false,
+        workspace: "main".into(),
+    };
+    let mut notifications = Vec::new();
+    let mut notify = |c: &mut Controller, next: Notification| {
+        notifications.push(next);
+        let mut next = update(vec![info(1), info(2)]);
+        next.notifications = notifications.clone();
+        c.event(Event::Update(next)).unwrap();
+        std::mem::take(&mut c.desktop)
+    };
+    assert_eq!(
+        notify(&mut c, event(11, 2, Status::TurnFinished)),
+        vec!["\x1b]9;KelpMux: 2 Finished · tab 2\x07".to_owned()]
+    );
+    // Sound is off: no bell, only the desktop notification.
+    assert!(!c.bell);
+    // The same event in the next update is not new.
+    let mut again = update(vec![info(1), info(2)]);
+    again.notifications = vec![event(11, 2, Status::TurnFinished)];
+    c.event(Event::Update(again)).unwrap();
+    assert!(c.desktop.is_empty());
+    // Focus unknown: the shown tab notifies too. Known focus skips it but
+    // not the other tabs.
+    assert_eq!(notify(&mut c, event(12, 1, Status::InputNeeded)).len(), 1);
+    c.terminal_focus(true);
+    assert!(notify(&mut c, event(13, 1, Status::Failed)).is_empty());
+    assert_eq!(
+        notify(&mut c, event(14, 2, Status::Unknown)),
+        vec!["\x1b]9;KelpMux: 2 Bell · tab 2\x07".to_owned()]
+    );
+    c.terminal_focus(false);
+    assert_eq!(notify(&mut c, event(15, 1, Status::Exited)).len(), 1);
+    // Event kinds turned off in Settings stay silent, for sound too.
+    act(&mut c, Action::NotificationSoundToggle);
+    act(
+        &mut c,
+        Action::NotificationEventToggle(NotificationEvent::Finished),
+    );
+    assert!(notify(&mut c, event(16, 2, Status::TurnFinished)).is_empty());
+    assert!(!c.bell);
+    assert_eq!(notify(&mut c, event(17, 2, Status::Failed)).len(), 1);
+    assert!(std::mem::take(&mut c.bell));
+    // Off keeps the bell only; OSC 777 on request.
+    act(
+        &mut c,
+        Action::DesktopNotificationsSet(DesktopNotifications::Off),
+    );
+    assert!(notify(&mut c, event(18, 2, Status::Failed)).is_empty());
+    assert!(std::mem::take(&mut c.bell));
+    act(
+        &mut c,
+        Action::DesktopNotificationsSet(DesktopNotifications::Osc777),
+    );
+    assert_eq!(
+        notify(&mut c, event(19, 2, Status::InputNeeded)),
+        vec!["\x1b]777;notify;KelpMux;2 Question · tab 2\x07".to_owned()]
+    );
+    c.take_requests();
+    assert!(
+        c.store
+            .document
+            .settings
+            .as_ref()
+            .is_some_and(|s| s.desktop_notifications == DesktopNotifications::Osc777
+                && !s.notification_events.finished)
+    );
+}
+
+#[test]
+fn observers_raise_no_desktop_notifications() {
+    use super::notify::{Protocol, Terminal};
+    let mut c = welcomed(
+        Document {
+            migrated: true,
+            epochs: [("e1".to_owned(), EpochState::default())].into(),
+            ..Document::default()
+        },
+        Options {
+            terminal: Terminal {
+                detected: Some(Protocol::Osc9),
+                tmux: false,
+            },
+            ..Options::default()
+        },
+        Extras::default(),
+    );
+    let mut first = update(vec![info(1)]);
+    first.leases = vec![Lease {
+        pane: 1,
+        owner: OTHER,
+    }];
+    c.event(Event::Update(first)).unwrap();
+    c.take_requests();
+    let mut next = update(vec![info(1)]);
+    next.leases = vec![Lease {
+        pane: 1,
+        owner: OTHER,
+    }];
+    next.notifications = vec![Notification {
+        origin: None,
+        id: 1,
+        pane: 1,
+        title: "Bell · tab 1".into(),
+        status: Status::Unknown,
+        at: 1,
+        read: false,
+        workspace: "main".into(),
+    }];
+    c.event(Event::Update(next)).unwrap();
+    assert!(c.desktop.is_empty());
+}
+
+#[test]
 fn selections_copy_from_the_local_screen() {
     let mut c = attached(&[1]);
     let mut next = update(vec![info(1)]);

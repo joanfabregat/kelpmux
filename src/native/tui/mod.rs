@@ -7,6 +7,7 @@
 //! composed-protocol TUI it replaced was removed.
 pub mod attach;
 pub mod controller;
+pub mod notify;
 pub mod state;
 #[cfg(test)]
 mod tests;

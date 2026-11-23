@@ -796,6 +796,10 @@ impl Workspace {
             Action::NotificationSoundToggle => {
                 self.ui.config.notification_sound = !self.ui.config.notification_sound
             }
+            Action::DesktopNotificationsSet(mode) => self.ui.config.desktop_notifications = mode,
+            Action::NotificationEventToggle(event) => {
+                self.ui.config.notification_events.toggle(event)
+            }
             Action::AccentSet(accent) => self.ui.config.accent = accent,
             Action::RecoveryCopy(index) => {
                 self.ui
@@ -1003,7 +1007,8 @@ impl Workspace {
                     if dialog.kind == DialogKind::Config {
                         dialog.selection =
                             (dialog.selection as isize + isize::from(dx) + isize::from(dy))
-                                .rem_euclid(7) as usize;
+                                .rem_euclid(CONFIG_ENTRIES as isize)
+                                as usize;
                         return Ok(());
                     }
                     let columns = match dialog.kind {
@@ -1285,7 +1290,7 @@ pub fn dialog_entries(panes: &[Tab], dialog: Option<Dialog>) -> Vec<PaneId> {
         Some(Dialog {
             kind: DialogKind::Config,
             ..
-        }) => (0..7).collect(),
+        }) => (0..CONFIG_ENTRIES as u64).collect(),
         Some(Dialog {
             kind: DialogKind::CloseConfirm | DialogKind::ParkConfirm | DialogKind::RestoreConfirm,
             ..
@@ -1351,7 +1356,7 @@ pub fn dialog_bounds_for(cols: u16, rows: u16, kind: super::ui::DialogKind) -> R
         return dialog_bounds(cols, rows);
     }
     let (width, height) = if kind == super::ui::DialogKind::Config {
-        (72, 16)
+        (72, 18)
     } else {
         (52, 9)
     };
@@ -1364,15 +1369,78 @@ pub fn dialog_bounds_for(cols: u16, rows: u16, kind: super::ui::DialogKind) -> R
         rows: height,
     }
 }
-pub fn config_geometry(bounds: Rect) -> (u16, u16) {
-    (
-        u16::from(bounds.rows >= 10),
-        if bounds.rows >= 10 { 3 } else { 1 },
-    )
+/// Settings dialog selection indices: sound, the desktop notification
+/// mode, one per notification event, then the accent presets.
+pub const CONFIG_DESKTOP: usize = 1;
+pub const CONFIG_EVENTS: usize = 2;
+pub const CONFIG_ACCENTS: usize = CONFIG_EVENTS + super::ui::NotificationEvent::ALL.len();
+pub const CONFIG_ENTRIES: usize = CONFIG_ACCENTS + super::ui::Accent::ALL.len();
+/// Rows of the settings dialog. Roomy dialogs keep one blank row above and
+/// below the Notifications block and give the sound buttons three rows;
+/// small ones drop the heading and the padding.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ConfigLayout {
+    /// The Notifications heading row, when there is room for it.
+    pub heading: Option<u16>,
+    pub sound: u16,
+    pub sound_rows: u16,
+    pub desktop: u16,
+    pub events: u16,
+    pub accent_heading: u16,
+    pub accents: u16,
+    pub accent_rows: u16,
+    /// Width of the Desktop and Events labels before their choices.
+    pub label_cols: u16,
+}
+pub fn config_layout(bounds: Rect) -> ConfigLayout {
+    let y = bounds.y;
+    let label_cols = 9.min(bounds.cols.saturating_sub(4) / 4);
+    if bounds.rows >= 13 {
+        ConfigLayout {
+            heading: Some(y + 2),
+            sound: y + 3,
+            sound_rows: 3,
+            desktop: y + 6,
+            events: y + 7,
+            accent_heading: y + 9,
+            accents: y + 10,
+            accent_rows: (bounds.rows.saturating_sub(11) / 2).clamp(1, 3),
+            label_cols,
+        }
+    } else {
+        ConfigLayout {
+            heading: None,
+            sound: y + 1,
+            sound_rows: 1,
+            desktop: y + 2,
+            events: y + 3,
+            accent_heading: y + 4,
+            accents: y + 5,
+            accent_rows: (bounds.rows.saturating_sub(6) / 2).clamp(1, 3),
+            label_cols,
+        }
+    }
+}
+/// `count` one-row buttons after the row label, one column apart.
+fn config_row(bounds: Rect, y: u16, count: u16) -> Vec<Rect> {
+    let layout = config_layout(bounds);
+    let x = bounds.x + 2 + layout.label_cols;
+    let total = bounds
+        .cols
+        .saturating_sub(4 + layout.label_cols)
+        .saturating_sub(count - 1);
+    (0..count)
+        .map(|index| Rect {
+            x: x + total * index / count + index,
+            y,
+            cols: total * (index + 1) / count - total * index / count,
+            rows: 1,
+        })
+        .collect()
 }
 /// Logical focus index, optional explicit on/off value, and shared mouse geometry.
 pub fn config_targets(bounds: Rect) -> Vec<(usize, Option<bool>, Rect)> {
-    let (offset, height) = config_geometry(bounds);
+    let layout = config_layout(bounds);
     let mut choices = Vec::new();
     let inner = bounds.cols - 4;
     for value in 0..2u16 {
@@ -1381,19 +1449,41 @@ pub fn config_targets(bounds: Rect) -> Vec<(usize, Option<bool>, Rect)> {
             Some(value == 0),
             Rect {
                 x: bounds.x + 2 + inner / 2 + (inner - inner / 2 - 1) * value / 2 + value,
-                y: bounds.y + 2 + offset,
+                y: layout.sound,
                 cols: (inner - inner / 2 - 1) * (value + 1) / 2
                     - (inner - inner / 2 - 1) * value / 2,
-                rows: height,
+                rows: layout.sound_rows,
             },
         ));
     }
     choices
 }
+/// The desktop notification choices, one selection index for the row.
+pub fn desktop_targets(bounds: Rect) -> Vec<(super::ui::DesktopNotifications, Rect)> {
+    let all = super::ui::DesktopNotifications::ALL;
+    all.into_iter()
+        .zip(config_row(
+            bounds,
+            config_layout(bounds).desktop,
+            all.len() as u16,
+        ))
+        .collect()
+}
+/// The notification event toggles, each its own selection index.
+pub fn event_targets(bounds: Rect) -> Vec<(super::ui::NotificationEvent, Rect)> {
+    let all = super::ui::NotificationEvent::ALL;
+    all.into_iter()
+        .zip(config_row(
+            bounds,
+            config_layout(bounds).events,
+            all.len() as u16,
+        ))
+        .collect()
+}
 /// Accent choices follow the notification block with one blank row between.
 pub fn accent_targets(bounds: Rect) -> Vec<(super::ui::Accent, Rect)> {
-    let (offset, height) = config_geometry(bounds);
-    let card_height = (bounds.rows.saturating_sub(5 + offset + height) / 2).clamp(1, 3);
+    let layout = config_layout(bounds);
+    let card_height = layout.accent_rows;
     let inner = bounds.cols.saturating_sub(4);
     super::ui::Accent::ALL
         .into_iter()
@@ -1404,7 +1494,7 @@ pub fn accent_targets(bounds: Rect) -> Vec<(super::ui::Accent, Rect)> {
                 accent,
                 Rect {
                     x: bounds.x + 2 + inner * col / 3,
-                    y: bounds.y + 4 + offset + height + index as u16 / 3 * card_height,
+                    y: layout.accents + index as u16 / 3 * card_height,
                     cols: inner * (col + 1) / 3 - inner * col / 3,
                     rows: card_height,
                 },
