@@ -27,7 +27,9 @@ export const shortcuts: readonly (readonly [string, string])[] = [
   ["Ctrl-B ?", "Help"],
   ["Ctrl-B d", "Disconnect this browser"],
   ["Ctrl-B Ctrl-B", "Send Ctrl-B to the terminal"],
-  ["Ctrl/Cmd+F", "Find in the focused terminal"],
+  ["Ctrl/Cmd+F", "Find in the focused terminal, or in the open file"],
+  ["Ctrl/Cmd+S", "Save the open file"],
+  ["Ctrl/Cmd+click a path", "Open a file or folder printed in the terminal"],
   [
     "Shift+drag, Shift+wheel",
     "Local selection and history, even in mouse apps",

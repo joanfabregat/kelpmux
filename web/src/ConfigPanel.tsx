@@ -221,7 +221,7 @@ export function ConfigPanel({
         <p className="setting-hint">
           Every other key goes to the focused terminal. The TUI's own bindings
           (its prefix and configuration file) are unchanged; this browser's
-          tabs, grid and focus are separate from the TUI's.
+          order, parking, grid and focus are separate from the TUI's.
         </p>
         {touch && (
           <>

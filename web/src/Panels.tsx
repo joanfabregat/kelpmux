@@ -465,9 +465,11 @@ export function MovePanel({
   );
 }
 
+/** The Help dialog: the browser shortcuts, then a short guide to the
+ * mouse, files, the editor and alerts. Keep it in step with docs/web.md. */
 export function HelpPanel() {
   return (
-    <div className="panel-body">
+    <div className="panel-body help-panel">
       <table className="shortcut-table">
         <tbody>
           {shortcuts.map(([keys, action]) => (
@@ -480,12 +482,48 @@ export function HelpPanel() {
           ))}
         </tbody>
       </table>
+      <h3>Terminals</h3>
       <p className="setting-hint">
         The mouse works everywhere: click a terminal in the sidebar to open it,
         drag to reorder, middle-click to close and right-click for more actions.
         Every other key goes to the terminal shown on its own; the grid is
         read-only and a click on a tile opens it. This browser's order, parking,
         grid and focus are separate from the TUI's.
+      </p>
+      <h3>Files</h3>
+      <p className="setting-hint">
+        <b>Files</b> in the sidebar browses the server's files from your home
+        folder, and a terminal's folder button opens the folder it is in. New
+        file and New folder sit above the list; each entry's menu (right-click
+        or ⋯) opens it, opens it beside the terminal, inserts or copies its
+        path, renames it, moves it to the trash or deletes it permanently. Drag
+        an entry onto a folder to move it, or onto a terminal's row or view to
+        type its quoted path; drop files from your computer onto a folder to
+        upload them there.
+      </p>
+      <p className="setting-hint">
+        Hold Ctrl/Cmd over a file path printed in the terminal (path, path:line
+        or path:line:col): a path that exists is underlined, and a click opens
+        the file beside the terminal at that line, or a folder in Files.
+      </p>
+      <h3>Editor</h3>
+      <p className="setting-hint">
+        Files open in the main area and are listed under Files, with a dot while
+        they have unsaved changes, which are kept while you look elsewhere.
+        Ctrl/Cmd+S saves; if the file changed on disk meanwhile, choose Reload,
+        Overwrite or Cancel. <b>Open beside terminal</b> in a file's menu, or
+        the editor's <b>Move beside terminal</b>, shows the file in a side panel
+        to the right of the terminal; drag its edge to resize it. Phones have no
+        side panel.
+      </p>
+      <h3>Alerts</h3>
+      <p className="setting-hint">
+        A question, a finished turn, a failure, an exit or a bell shows a toast
+        in the top right corner, one per terminal (a summary above three),
+        except for the terminal you are reading. Click a toast to open its
+        terminal; it goes away once its notifications are read, here or anywhere
+        else. An unread bell also puts a dot on the browser tab's icon. Choose
+        the events in Settings → Notifications.
       </p>
     </div>
   );

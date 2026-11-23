@@ -94,6 +94,23 @@
   font-family: var(--font-mono);
   white-space: nowrap;
 }
+/* The Help dialog's guide below the shortcuts, like Settings' sections. */
+.help-panel {
+  gap: var(--s2);
+}
+.help-panel > * {
+  max-width: 640px;
+}
+.help-panel h3 {
+  margin: var(--s3) 0 0;
+  font-size: var(--fs-md);
+  font-weight: 600;
+}
+.help-panel .setting-hint {
+  margin: 0;
+  color: var(--text-2);
+  font-size: var(--fs-sm);
+}
 
 /* ───────── Sidebar terminal list ───────── */
 /* The new-terminal row right under the tabs, like the TUI's "+ New tab":
