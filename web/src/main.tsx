@@ -595,6 +595,10 @@ function App() {
   // workspace and epoch. `all` is every pane in this browser's order; `live` the tabs and
   // grid (parked excluded).
   const all = numberPanes(orderPanes(panes, order));
+  // Read by pasteUploaded after an upload finishes; declared here, above
+  // the early returns, so the hook order never changes between renders.
+  const panesNow = useRef(all);
+  panesNow.current = all;
   const parkedSet = new Set(parked);
   const live = all.filter((p) => !parkedSet.has(p.id));
   const parkedPanes = all.filter((p) => parkedSet.has(p.id));
@@ -1905,8 +1909,6 @@ function App() {
       },
     };
   }
-  const panesNow = useRef(all);
-  panesNow.current = all;
   /** Pastes uploaded paths into their terminal as a paste (bracketed when
    * the pane has it on), without Enter. Null once pasted, else why not. */
   function pasteUploaded(target: NumberedPane, paths: string[]): string | null {
