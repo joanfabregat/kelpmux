@@ -180,6 +180,46 @@
 .term-row + .term-row::before {
   top: -1px;
 }
+/* The Terminals and Files sections: a header like a tab (its label opens
+ * the section's view) with a chevron that expands or collapses it; a
+ * collapsed header keeps a count and a dot when something inside needs
+ * attention or is unsaved. */
+.rail-section + .rail-section {
+  margin-top: var(--s2);
+}
+.section-row > .section-toggle.icon-btn {
+  flex: none;
+  width: 22px;
+  height: 22px;
+  min-height: 0;
+  margin-right: var(--s1);
+  padding: 0;
+  color: var(--text-3);
+}
+.section-row > .section-toggle.icon-btn:hover {
+  color: var(--text);
+}
+.section-summary {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  gap: var(--s1);
+}
+.section-alert {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--st-input);
+}
+.section-chevron {
+  display: inline-flex;
+  flex: none;
+  color: var(--text-3);
+}
+.rail.folded .section-summary,
+.rail.folded .section-toggle {
+  display: none;
+}
 .term-item {
   gap: var(--s2);
   min-height: 34px;

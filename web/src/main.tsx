@@ -2345,6 +2345,10 @@ function App() {
       diskMounts={knownMounts}
       onDisksHover={() => void loadDiskMounts()}
       onMode={chooseMode}
+      sections={preferences.sidebarSections}
+      onSections={(sidebarSections) =>
+        setPreferences((current) => ({ ...current, sidebarSections }))
+      }
       terminals={ordered}
       parked={parkedPanes}
       notifications={notifications}

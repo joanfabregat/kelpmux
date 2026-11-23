@@ -12,14 +12,22 @@
 //    in two columns, the account and settings below the tools at the very
 //    bottom, all fitting 800 px with ten tabs; one column when folded; the
 //    same on an iPad in portrait and a phone's terminal list. The Terminals
-//    tool's icon differs from the Grid entry's.
-// 4. A Grid entry heads the tabs, selected while the grid shows (no tab is
-//    then). The grid is one read-only page: 3, 8, 10 and 13 terminals all
-//    fit with no pager, no tile is focused and keys typed reach no
-//    terminal. A click on a tile, a tab and every opening shortcut
-//    (Alt+digit, Ctrl-B digit, Tab, l, N) show the terminal alone; the Grid
-//    entry, Alt+Tab, Ctrl+Shift+G and Ctrl-B g / e the grid again. Folded,
-//    the entry is its icon; phones have none.
+//    tool's icon differs from the Terminals header's.
+// 4. The Terminals header heads the tabs and opens the live grid, selected
+//    while the grid shows (no tab is then). The grid is one read-only page:
+//    3, 8, 10 and 13 terminals all fit with no pager, no tile is focused
+//    and keys typed reach no terminal. A click on a tile, a tab and every
+//    opening shortcut (Alt+digit, Ctrl-B digit, Tab, l, N) show the
+//    terminal alone; the Terminals header, Alt+Tab, Ctrl+Shift+G and
+//    Ctrl-B g / e the grid again. Folded, the header is its icon; on phones
+//    it only expands and collapses the list.
+// 5. Attention toasts.
+// 6. Two collapsible sections, Terminals then Files: each header's label
+//    opens its view (the grid, the file browser) and is selected while it
+//    shows; its chevron, a separate button, expands or collapses it with
+//    the mouse or Enter/Space, and the state survives a reload. Collapsed,
+//    a header keeps its count and a dot for attention (Terminals) or
+//    unsaved changes (Files). The folded rail ignores collapsing.
 // Set SIDEBAR_SCREENSHOTS to a directory to save screenshots of each case.
 import { build } from "vite";
 import { chromium, webkit, devices } from "playwright";
@@ -117,16 +125,16 @@ async function checkBottom(page, columns) {
   );
 }
 
-/** The Grid entry: the first row above the tabs, a terminal row's height,
- * selected exactly while the grid shows, with no terminal tab selected
- * then. */
-async function checkGridEntry(page, grid) {
+/** The Terminals header, which opens the grid: the first row above the
+ * tabs, a terminal row's height, selected exactly while the grid shows,
+ * with no terminal tab selected then. */
+async function checkTerminalsHeader(page, grid) {
   const entry = page.locator('.grid-row [data-view="grid"]');
-  assert.equal(await entry.count(), 1, "one Grid entry");
+  assert.equal(await entry.count(), 1, "one Terminals header");
   assert.equal(await entry.getAttribute("aria-current"), grid ? "page" : null);
   const own = await entry.boundingBox();
   const first = await box(page, ".term-row .term-item");
-  assert.ok(own.y + own.height <= first.y + 1, "Grid above the tabs");
+  assert.ok(own.y + own.height <= first.y + 1, "header above the tabs");
   assert.ok(Math.abs(own.height - first.height) <= 1, "a tab's height");
   assert.ok(Math.abs(own.x - first.x) <= 1, "aligned with the tabs");
   assert.equal(
@@ -142,10 +150,10 @@ async function checkGridEntry(page, grid) {
   const background = await page
     .locator(".grid-row")
     .evaluate((el) => getComputedStyle(el).backgroundColor);
-  if (grid) assert.notEqual(background, "rgba(0, 0, 0, 0)", "Grid selected");
+  if (grid) assert.notEqual(background, "rgba(0, 0, 0, 0)", "header selected");
   else assert.equal(background, "rgba(0, 0, 0, 0)");
 }
-/** Tabs look like the Grid entry (no colour stripe), a 1px rule separates
+/** Tabs look like the Terminals header (no colour stripe), a 1px rule separates
  * each entry from the next, and + New terminal is centred on a rule like
  * the TUI's "+ New tab" row. */
 async function checkRowLook(page) {
@@ -274,9 +282,9 @@ for (const engine of [chromium, webkit]) {
         await page.locator(".tool-grid .tool-item .grow").allTextContents(),
         ["Terminals", "Closed", "Search", "Help"],
       );
-      // 4. The Grid entry heads the tabs, not selected in single view; the
+      // 4. The Terminals header heads the tabs, not selected in single view; the
       // shown terminal's tab is.
-      await checkGridEntry(page, false);
+      await checkTerminalsHeader(page, false);
       await checkRowLook(page);
       assert.equal(
         await page
@@ -398,7 +406,7 @@ for (const engine of [chromium, webkit]) {
       await context.close();
     }
     // 4. The read-only grid with 3, 8 and 13 terminals: one page with every
-    // tile fully visible and no pager; the Grid entry is selected and no
+    // tile fully visible and no pager; the Terminals header is selected and no
     // tab is; no tile is focused and nothing is marked read.
     for (const tabs of [3, 8, 13]) {
       const { context, page, errors } = await open(
@@ -407,7 +415,7 @@ for (const engine of [chromium, webkit]) {
         `?view=grid&tabs=${tabs}`,
       );
       await shot(page, name, `desktop-grid-${tabs}`);
-      await checkGridEntry(page, true);
+      await checkTerminalsHeader(page, true);
       await checkGridFits(page, tabs);
       await checkNoFocus(page);
       await checkBottom(page, 2);
@@ -416,7 +424,7 @@ for (const engine of [chromium, webkit]) {
       await context.close();
     }
     // A click anywhere on a tile opens it alone; a tab does too, and the
-    // Grid entry the grid again. Keys typed in the grid reach no terminal;
+    // Terminals header the grid again. Keys typed in the grid reach no terminal;
     // every opening shortcut leaves the grid, and the grid shortcuts show
     // it again.
     {
@@ -425,13 +433,13 @@ for (const engine of [chromium, webkit]) {
         { viewport: { width: 1440, height: 900 } },
         "?view=grid",
       );
-      // The Terminals tool's icon is not the Grid entry's.
+      // The Terminals tool's icon is not the Terminals header's.
       const icon = (selector) =>
         page.locator(`${selector} .svg-icon`).first().innerHTML();
       assert.notEqual(
         await icon('[data-tool="terminals"]'),
         await icon('[data-view="grid"]'),
-        "Terminals and Grid icons differ",
+        "Terminals tool and header icons differ",
       );
       await page.keyboard.type("echo grid\n");
       await page.keyboard.press("Control+c");
@@ -446,7 +454,7 @@ for (const engine of [chromium, webkit]) {
       const showsAlone = async (number, label) => {
         await page.locator(".tab-pane-layout").waitFor();
         assert.equal(await page.locator(".live-grid").count(), 0, label);
-        await checkGridEntry(page, false);
+        await checkTerminalsHeader(page, false);
         assert.equal(
           await page
             .locator(`.term-row[data-pane="${number}"] .term-item`)
@@ -458,7 +466,7 @@ for (const engine of [chromium, webkit]) {
       const backToGrid = async (keys) => {
         for (const key of keys) await page.keyboard.press(key);
         await page.locator(".live-grid").waitFor();
-        await checkGridEntry(page, true);
+        await checkTerminalsHeader(page, true);
       };
       // A click near a tile's bottom corner, on its screen.
       const tile = await box(page, '[data-tile-pane="4"]');
@@ -508,10 +516,10 @@ for (const engine of [chromium, webkit]) {
       );
       await shot(page, name, "desktop-folded-grid");
       await checkBottom(page, 1);
-      // The Grid entry is its icon, in the same place, selected.
-      await checkGridEntry(page, true);
+      // The Terminals header is its icon, in the same place, selected.
+      await checkTerminalsHeader(page, true);
       const entry = page.locator('[data-view="grid"]');
-      assert.ok(await entry.locator(".svg-icon").isVisible(), "Grid icon");
+      assert.ok(await entry.locator(".svg-icon").isVisible(), "header icon");
       assert.equal(await entry.locator(".grow").isVisible(), false);
       await checkGridFits(page, 10);
       await checkNoFocus(page);
@@ -557,8 +565,9 @@ for (const engine of [chromium, webkit]) {
       assert.deepEqual(errors, []);
       await context.close();
     }
-    // Phone: the terminal list has the same bottom (no Grid); a terminal's
-    // bar has its bell.
+    // Phone: the terminal list has the same bottom (no grid: the Terminals
+    // header only expands and collapses the list); a terminal's bar has
+    // its bell.
     {
       const { context, page, errors } = await open(
         browser,
@@ -566,7 +575,15 @@ for (const engine of [chromium, webkit]) {
       );
       await shot(page, name, "phone-list");
       assert.equal(await page.locator('[data-view="grid"]').count(), 0);
-      assert.equal(await page.locator(".grid-row").count(), 0);
+      const header = page.locator('[data-section="terminals"] > .nav-item');
+      assert.equal(await header.getAttribute("aria-expanded"), "true");
+      assert.equal(
+        await page
+          .locator('[data-section="terminals"] .section-toggle')
+          .count(),
+        0,
+        "the header is the toggle",
+      );
       const lefts = await page
         .locator(".tool-grid .tool-item")
         .evaluateAll((els) => [
@@ -591,6 +608,211 @@ for (const engine of [chromium, webkit]) {
       await dialog.waitFor();
       assert.equal(await dialog.locator(".list-row").count(), 3);
       await shot(page, name, "phone-notifications");
+      assert.deepEqual(errors, []);
+      await context.close();
+    }
+    // 6. The Terminals and Files sections (files=1): order, active
+    // headers, chevrons by mouse and keyboard, the state kept across a
+    // reload, and what a collapsed header still shows.
+    {
+      const { context, page, errors } = await open(
+        browser,
+        { viewport: { width: 1440, height: 900 } },
+        "?files=1",
+      );
+      const section = (key) => page.locator(`[data-section="${key}"]`);
+      const label = (key) => section(key).locator("> .nav-item");
+      const toggle = (key) => section(key).locator(".section-toggle");
+      const docRows = page.locator(".doc-row");
+      const tabRows = page.locator(
+        ".term-list[aria-label='Terminals'] .term-row",
+      );
+      const current = async () => ({
+        terminals: await label("terminals").getAttribute("aria-current"),
+        files: await label("files").getAttribute("aria-current"),
+        tabs: await page
+          .locator('.term-row .term-item[aria-current="page"]')
+          .count(),
+      });
+      await shot(page, name, "sections-expanded");
+      // Order: Terminals header, the tabs, + New terminal, then the Files
+      // header and the open files.
+      assert.deepEqual(
+        await page
+          .locator("[data-section]")
+          .evaluateAll((els) => els.map((e) => e.dataset.section)),
+        ["terminals", "files"],
+      );
+      const y = async (locator) => (await locator.boundingBox()).y;
+      assert.ok((await y(label("terminals"))) < (await y(tabRows.first())));
+      assert.ok(
+        (await y(tabRows.last())) < (await y(page.locator(".rail-new"))),
+      );
+      assert.ok(
+        (await y(page.locator(".rail-new"))) < (await y(label("files"))),
+      );
+      assert.ok((await y(label("files"))) < (await y(docRows.first())));
+      assert.equal(await tabRows.count(), 10);
+      assert.equal(await docRows.count(), 2);
+      for (const key of ["terminals", "files"]) {
+        assert.equal(await toggle(key).getAttribute("aria-expanded"), "true");
+        assert.equal(await section(key).locator(".section-summary").count(), 0);
+      }
+      assert.equal(
+        await page.locator('.grid-row [data-view="grid"]').count(),
+        1,
+        "no separate Grid entry",
+      );
+      // A terminal is shown: neither header is selected.
+      assert.deepEqual(await current(), {
+        terminals: null,
+        files: null,
+        tabs: 1,
+      });
+      // The Terminals label shows the grid; the Files label the browser;
+      // an open file's row the file.
+      await label("terminals").click();
+      await page.locator(".live-grid").waitFor();
+      assert.deepEqual(await current(), {
+        terminals: "page",
+        files: null,
+        tabs: 0,
+      });
+      await label("files").click();
+      await page
+        .locator('.files-placeholder[data-files-shown="browser"]')
+        .waitFor();
+      assert.deepEqual(await current(), {
+        terminals: null,
+        files: "page",
+        tabs: 0,
+      });
+      await docRows.nth(1).locator(".term-item").click();
+      await page
+        .locator('.files-placeholder[data-files-shown="/home/alice/app.py"]')
+        .waitFor();
+      assert.equal(await label("files").getAttribute("aria-current"), null);
+      assert.equal(
+        await docRows.nth(1).locator(".term-item").getAttribute("aria-current"),
+        "page",
+      );
+      // The chevron, a separate button, collapses Terminals without
+      // changing the view, with Enter; collapsed, the header keeps the
+      // count and the attention dot (terminals need input, others unread).
+      await toggle("terminals").focus();
+      await page.keyboard.press("Enter");
+      assert.equal(
+        await toggle("terminals").getAttribute("aria-expanded"),
+        "false",
+      );
+      assert.equal(await tabRows.count(), 0, "tabs hidden");
+      assert.equal(await page.locator(".rail-new").count(), 0);
+      assert.ok(
+        await page.locator(".files-placeholder").isVisible(),
+        "view kept",
+      );
+      const terminalsSummary = section("terminals").locator(".section-summary");
+      assert.equal(
+        await terminalsSummary.locator(".count").textContent(),
+        "10",
+      );
+      const terminalsDot = terminalsSummary.locator(".section-alert");
+      assert.ok(await terminalsDot.isVisible(), "attention dot");
+      assert.match(
+        await terminalsDot.getAttribute("aria-label"),
+        /need attention.*unread/,
+      );
+      assert.match(
+        await label("terminals").getAttribute("aria-label"),
+        /^Terminals: live grid \(10, .*need attention/,
+      );
+      await shot(page, name, "sections-terminals-collapsed");
+      // Space expands it again; the label still navigates while collapsed.
+      await page.keyboard.press("Space");
+      assert.equal(await tabRows.count(), 10);
+      await page.keyboard.press("Space");
+      await label("terminals").click();
+      await page.locator(".live-grid").waitFor();
+      assert.equal(
+        await toggle("terminals").getAttribute("aria-expanded"),
+        "false",
+        "still collapsed",
+      );
+      await toggle("terminals").click();
+      assert.equal(await tabRows.count(), 10);
+      // Files collapsed: its count and a dot for the unsaved file.
+      await toggle("files").click();
+      assert.equal(await docRows.count(), 0, "open files hidden");
+      const filesSummary = section("files").locator(".section-summary");
+      assert.equal(await filesSummary.locator(".count").textContent(), "2");
+      assert.ok(
+        await filesSummary.locator(".section-alert").isVisible(),
+        "unsaved dot",
+      );
+      await shot(page, name, "sections-files-collapsed");
+      // Both collapsed survive a reload.
+      await toggle("terminals").click();
+      await page.reload();
+      await page.waitForFunction(() => window.fixtureReady === true);
+      for (const key of ["terminals", "files"])
+        assert.equal(
+          await toggle(key).getAttribute("aria-expanded"),
+          "false",
+          `${key} still collapsed`,
+        );
+      assert.equal(await tabRows.count(), 0);
+      assert.equal(await docRows.count(), 0);
+      // With no unsaved file, a collapsed Files header has no dot.
+      await toggle("files").click();
+      await docRows.nth(1).hover();
+      await docRows
+        .nth(1)
+        .getByRole("button", { name: "Close file app.py" })
+        .click();
+      await toggle("files").click();
+      assert.equal(await filesSummary.locator(".count").textContent(), "1");
+      assert.equal(await filesSummary.locator(".section-alert").count(), 0);
+      // The folded rail ignores collapsing: every tab shows as its icon,
+      // with both sections still collapsed in this browser's preferences.
+      await page.goto(`${origin}/?files=1&folded=1`);
+      await page.waitForFunction(() => window.fixtureReady === true);
+      assert.deepEqual(
+        await page.evaluate(
+          () =>
+            JSON.parse(localStorage.getItem("kelpmux-web-preferences"))
+              .sidebarSections,
+        ),
+        { terminals: false, files: false },
+      );
+      assert.equal(await tabRows.count(), 10);
+      assert.equal(await page.locator(".section-toggle:visible").count(), 0);
+      assert.deepEqual(errors, []);
+      await context.close();
+    }
+    // Phone (files=1): the same two sections; the Terminals header toggles
+    // the list, the Files label opens the browser.
+    {
+      const { context, page, errors } = await open(
+        browser,
+        emulate("iPhone 15"),
+        "?files=1",
+      );
+      const header = page.locator('[data-section="terminals"] > .nav-item');
+      await header.click();
+      assert.equal(await header.getAttribute("aria-expanded"), "false");
+      assert.equal(await page.locator(".term-row").count(), 0);
+      assert.ok(
+        await page
+          .locator('[data-section="terminals"] .section-alert')
+          .isVisible(),
+      );
+      await shot(page, name, "phone-sections-collapsed");
+      await header.click();
+      assert.equal(await page.locator(".term-row").count(), 10);
+      await page.locator('[data-view="files"]').click();
+      await page
+        .locator('.files-placeholder[data-files-shown="browser"]')
+        .waitFor();
       assert.deepEqual(errors, []);
       await context.close();
     }
@@ -745,7 +967,7 @@ for (const engine of [chromium, webkit]) {
       `PASS: ${name} attention toasts: top right, one per terminal, none for the shown terminal, click opens and reads, summary above three, close, Bell toggle, favicon bell, grid, phone width`,
     );
     console.log(
-      `PASS: ${name} sidebar: no full width, showing a terminal marks it read, per-terminal notifications, vitals above the two-column tools, account at the bottom, Grid entry, one read-only grid page for 3, 8, 10 and 13 terminals, opening alone from tiles and shortcuts`,
+      `PASS: ${name} sidebar: no full width, showing a terminal marks it read, per-terminal notifications, vitals above the two-column tools, account at the bottom, Terminals header opens the grid, one read-only grid page for 3, 8, 10 and 13 terminals, opening alone from tiles and shortcuts, collapsible Terminals and Files sections`,
     );
   } finally {
     await browser.close();
