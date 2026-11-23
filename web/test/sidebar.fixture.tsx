@@ -5,12 +5,18 @@
 // which has none, is focused first. Right-clicking a row opens that
 // terminal's notifications, as its menu's Notifications… item does, and
 // `window.notify(pane)` adds an unread notification. The query string picks
-// the case: `mode=light`, `tabs=N`, `view=grid`, `folded=1`.
+// the case: `mode=light`, `tabs=N`, `view=grid`, `pages=N` (grid pages),
+// `folded=1`. The grid entry and the tabs switch the view as in main.tsx.
 import React, { useEffect, useState } from "react";
 import { createRoot } from "react-dom/client";
 import type { NumberedPane } from "../src/terminal/types";
 import { Sidebar } from "../src/Sidebar";
-import { NotificationsButton, PaneLabel, UnreadMark } from "../src/Shell";
+import {
+  NotificationsButton,
+  PaneLabel,
+  UnreadMark,
+  type SessionMode,
+} from "../src/Shell";
 import { TerminalNotificationsPanel } from "../src/Panels";
 import { PhoneBar, useDevice } from "../src/Mobile";
 import { Icon } from "../src/status";
@@ -99,7 +105,12 @@ function Fixture() {
     saved,
     portraitFolded,
   );
-  const grid = query.get("view") === "grid";
+  // The view, as main.tsx keeps it: the grid entry opens the grid and a
+  // tab opens its terminal alone. Phones have no grid.
+  const [view, setView] = useState<SessionMode>(
+    query.get("view") === "grid" ? "grid" : "single",
+  );
+  const grid = view === "grid" && !phone;
   const focused = panes.find((p) => p.id === current)!;
   const unread = (p: NumberedPane) => unreadFor(notifications, p).length;
   const acknowledge = (ids: number[]) => {
@@ -138,15 +149,15 @@ function Fixture() {
       phone={phone}
       mode={grid ? "grid" : "single"}
       page={0}
-      pages={1}
+      pages={Number(query.get("pages")) || 1}
       terminals={panes}
       parked={[]}
       notifications={notifications}
-      current={current}
+      current={grid ? undefined : current}
       vitals={{ cpu: 23, memory: 61, disks: [48, 92] }}
       diskMounts={["/", "/data"]}
       onDisksHover={() => {}}
-      onMode={() => {}}
+      onMode={(next) => setView(next)}
       onPage={() => {}}
       rowProps={() => ({})}
       rowClass={() => ""}
@@ -154,6 +165,7 @@ function Fixture() {
       onOpen={(p) => {
         setCurrent(p.id);
         setPhoneList(false);
+        setView("single");
       }}
       onClose={() => {}}
       onPark={() => {}}

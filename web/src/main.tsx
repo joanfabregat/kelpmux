@@ -754,7 +754,7 @@ function App() {
     setActive(id);
     setPhoneList(false);
   }
-  /** A tab's click in grid mode focuses its tile on its page. */
+  /** Grid mode: focuses a terminal's tile on its page. */
   function focusInGrid(pane: NumberedPane) {
     const index = live.findIndex((p) => p.id === pane.id);
     if (index < 0) return;
@@ -1086,12 +1086,13 @@ function App() {
     if (next) setActive(next.id);
   }
   /** Opens a terminal wherever it is: unparks a parked one, and otherwise
-   * opens it alone or focuses it in the grid. */
-  function openPane(pane: NumberedPane) {
+   * opens it alone or, in grid view, focuses it in the grid. `alone` (a
+   * sidebar tab's click) always opens it alone. */
+  function openPane(pane: NumberedPane, alone = false) {
     setMenu(null);
     if (parkedSet.has(pane.id))
       setParked(parked.filter((id) => id !== pane.id));
-    if (view === "grid" && !parkedSet.has(pane.id)) focusInGrid(pane);
+    if (!alone && view === "grid" && !parkedSet.has(pane.id)) focusInGrid(pane);
     else activate(pane.id);
     focusTerminal();
   }
@@ -2143,14 +2144,14 @@ function App() {
       terminals={ordered}
       parked={parkedPanes}
       notifications={notifications}
-      current={view === "single" || view === "grid" ? active : undefined}
+      current={view === "single" ? active : undefined}
       vitals={vitals}
       rowProps={touch ? () => ({}) : dragProps}
       rowClass={(p) => (drag === p.id && drag !== drop ? "landing" : "")}
       colorOf={(p) => tabColor(colors, p.id)}
       onOpen={(p) => {
         if (performance.now() < suppressClick.current) return;
-        openPane(p);
+        openPane(p, true);
       }}
       onClose={close}
       onPark={park}
@@ -2274,7 +2275,7 @@ function App() {
                     data-drop-axis="x"
                     data-state={state}
                     // Pressing, focusing or opening the menu of a tile
-                    // focuses it, and the sidebar highlights its row.
+                    // focuses it (its header tinted, no border).
                     onPointerDown={(event) => {
                       setActive(p.id);
                       if (!touch) dragProps(p).onPointerDown(event);

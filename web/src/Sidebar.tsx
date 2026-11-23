@@ -68,14 +68,16 @@ export type SidebarProps = {
 };
 
 /** The left sidebar, like the TUI's, and the only navigation: the state
- * counts, every terminal in this browser's order with its live state, the
- * new-terminal row right under them and the parked terminals. A tab with
- * unread notifications shows a bell; the notifications themselves open
- * from the terminal's header. At the bottom the view and tools in two
- * columns like the TUI's buttons (live grid, the Terminals table, recently
- * closed, search, help), the system vitals, then the account and its
- * settings. Order, parking and folding belong to this browser; they never
- * change the TUI's layout. */
+ * counts, the live grid's entry (not on phones), every terminal in this
+ * browser's order with its live state, the new-terminal row right under
+ * them and the parked terminals. The grid's entry opens the grid and a
+ * terminal's opens that terminal alone; the one on screen is selected. A
+ * tab with unread notifications shows a bell; the notifications themselves
+ * open from the terminal's header. At the bottom the grid's pages (while
+ * it has several), the tools in two columns like the TUI's buttons (the
+ * Terminals table, recently closed, search, help), the system vitals,
+ * then the account and its settings. Order, parking and folding belong to
+ * this browser; they never change the TUI's layout. */
 export function Sidebar(props: SidebarProps) {
   const {
     username,
@@ -205,14 +207,12 @@ export function Sidebar(props: SidebarProps) {
     icon: IconName,
     keys: string,
     onClick: () => void,
-    pressed?: boolean,
   ) => (
     <Tooltip key={key} content={`${label} (${keys})`}>
       <button
         type="button"
         className="nav-item tool-item"
         aria-label={label}
-        aria-pressed={pressed}
         data-tool={key}
         onClick={onClick}
       >
@@ -263,6 +263,27 @@ export function Sidebar(props: SidebarProps) {
         )}
       </div>
       <nav className="rail-scroll" aria-label="Terminal tabs">
+        {/* The live grid, above the tabs and selected like one while it
+            shows. Phones have no grid. */}
+        {!phone && (
+          <div className="nav-cell grid-row">
+            <Tooltip content="Live grid (Ctrl-B g; Alt+Tab toggles)">
+              <button
+                type="button"
+                className={`nav-item term-item grid-item ${grid ? "current" : ""}`}
+                aria-current={grid ? "page" : undefined}
+                aria-label="Grid"
+                data-view="grid"
+                onClick={() => props.onMode("grid")}
+              >
+                <span className="term-number" aria-hidden="true">
+                  <Icon name="layout-grid" size="sm" />
+                </span>
+                <span className="grow">Grid</span>
+              </button>
+            </Tooltip>
+          </div>
+        )}
         <div className="term-list" role="list" aria-label="Terminals">
           {terminals.map((p) => row(p, false))}
           {!terminals.length && <p className="rail-empty">No open terminals</p>}
@@ -307,46 +328,36 @@ export function Sidebar(props: SidebarProps) {
           the vitals. */}
       <div className="rail-bottom">
         <div className="tool-grid">
-          {!phone && (
-            <div className={`nav-cell view-cell ${paging ? "wide" : ""}`}>
-              {entry(
-                "grid",
-                "Live grid",
-                "Grid",
-                "layout-grid",
-                "Ctrl-B g; Alt+Tab toggles",
-                () => props.onMode(grid ? "single" : "grid"),
-                grid,
-              )}
-              {paging && (
-                <span className="grid-pages">
-                  <Tooltip content="Previous page (Ctrl-B PgUp)">
-                    <button
-                      type="button"
-                      className="icon-btn"
-                      aria-label="Previous grid page"
-                      disabled={!page}
-                      onClick={() => props.onPage(page - 1)}
-                    >
-                      <Icon name="chevron-left" size="sm" />
-                    </button>
-                  </Tooltip>
-                  <span className="grid-page" aria-live="polite">
-                    {page + 1}/{pages}
-                  </span>
-                  <Tooltip content="Next page (Ctrl-B PgDn)">
-                    <button
-                      type="button"
-                      className="icon-btn"
-                      aria-label="Next grid page"
-                      disabled={page + 1 >= pages}
-                      onClick={() => props.onPage(page + 1)}
-                    >
-                      <Icon name="chevron-right" size="sm" />
-                    </button>
-                  </Tooltip>
+          {/* The grid's pages, while it shows and has several. */}
+          {!phone && paging && (
+            <div className="nav-cell view-cell wide">
+              <span className="grid-pages">
+                <Tooltip content="Previous page (Ctrl-B PgUp)">
+                  <button
+                    type="button"
+                    className="icon-btn"
+                    aria-label="Previous grid page"
+                    disabled={!page}
+                    onClick={() => props.onPage(page - 1)}
+                  >
+                    <Icon name="chevron-left" size="sm" />
+                  </button>
+                </Tooltip>
+                <span className="grid-page" aria-live="polite">
+                  {page + 1}/{pages}
                 </span>
-              )}
+                <Tooltip content="Next page (Ctrl-B PgDn)">
+                  <button
+                    type="button"
+                    className="icon-btn"
+                    aria-label="Next grid page"
+                    disabled={page + 1 >= pages}
+                    onClick={() => props.onPage(page + 1)}
+                  >
+                    <Icon name="chevron-right" size="sm" />
+                  </button>
+                </Tooltip>
+              </span>
             </div>
           )}
           {tool(
