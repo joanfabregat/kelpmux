@@ -97,6 +97,7 @@ pub fn run(mut socket: UnixStream, state: &Path, takeover: bool) -> Result<()> {
         dev_badge: std::env::var_os("KELPMUX_DEV_BADGE").is_some_and(|value| value == "1"),
         default_shell,
         template,
+        terminal: super::notify::Terminal::from_env(),
     };
     let mut controller = Controller::new(cols, rows, open_store(state)?, options)?;
     controller.welcome(welcome)?;
@@ -173,7 +174,10 @@ fn run_loop(
                     // Focusing this terminal takes control, as in the
                     // composed TUI; the report still reaches the application.
                     controller.take_control();
+                    controller.terminal_focus(true);
                     frame = Some(controller.frame());
+                } else if matches!(&event, InputEvent::Bytes(bytes) if bytes == b"\x1b[O") {
+                    controller.terminal_focus(false);
                 }
                 let current = frame.as_ref().expect("frame composed above");
                 if let InputEvent::Mouse(mouse) = &mut event {
@@ -226,6 +230,9 @@ fn run_loop(
         }
         if std::mem::take(&mut controller.bell) {
             stdout.write_all(b"\x07")?;
+        }
+        for sequence in std::mem::take(&mut controller.desktop) {
+            stdout.write_all(sequence.as_bytes())?;
         }
         if controller.synced()
             && (controller.dirty || hover_dirty)

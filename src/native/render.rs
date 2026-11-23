@@ -1122,22 +1122,23 @@ fn draw_dialog(
             );
         }
     } else if dialog.kind == DialogKind::Config {
-        let (offset, height) = super::workspace::config_geometry(bounds);
-        {
-            fill(
-                frame,
-                Rect {
-                    x: bounds.x + 1,
-                    y: bounds.y + 1 + offset,
-                    cols: bounds.cols - 2,
-                    rows: height + 1,
-                },
-                Color::Indexed(235),
-            );
+        let layout = super::workspace::config_layout(bounds);
+        let block = layout.heading.unwrap_or(layout.sound);
+        fill(
+            frame,
+            Rect {
+                x: bounds.x + 1,
+                y: block,
+                cols: bounds.cols - 2,
+                rows: layout.events + 1 - block,
+            },
+            Color::Indexed(235),
+        );
+        if let Some(heading) = layout.heading {
             write_text(
                 frame,
                 bounds.x + 2,
-                bounds.y + 1 + offset,
+                heading,
                 bounds.cols - 4,
                 "Notifications",
                 Color::Indexed(117),
@@ -1169,22 +1170,79 @@ fn draw_dialog(
             );
         }
         let inner = bounds.cols - 4;
-        write_text(
-            frame,
-            bounds.x + 2,
-            bounds.y + 2 + offset + height / 2,
-            inner / 2 - 1,
-            "Sound",
-            Color::Indexed(250),
-            Color::Indexed(235),
-            false,
-        );
-        let choices = super::workspace::accent_targets(bounds);
-        if let Some((_, first)) = choices.first() {
+        for (y, width, label) in [
+            (layout.sound + layout.sound_rows / 2, inner / 2 - 1, "Sound"),
+            (layout.desktop, layout.label_cols, "Desktop"),
+            (layout.events, layout.label_cols, "Events"),
+        ] {
             write_text(
                 frame,
                 bounds.x + 2,
-                first.y - 1,
+                y,
+                width,
+                label,
+                Color::Indexed(250),
+                Color::Indexed(235),
+                false,
+            );
+        }
+        // One-row choices: the full label when it fits, else a short one.
+        let choice =
+            |frame: &mut Frame, rect: Rect, marker: &str, full: &str, short: &str, bg: Color| {
+                fill(frame, rect, bg);
+                let text = if usize::from(rect.cols) >= full.chars().count() + 3 {
+                    format!(" {marker} {full}")
+                } else {
+                    format!("{marker}{short}")
+                };
+                write_text(
+                    frame,
+                    rect.x,
+                    rect.y,
+                    rect.cols,
+                    &text,
+                    Color::Indexed(231),
+                    bg,
+                    true,
+                );
+            };
+        let desktop = workspace.ui.config.desktop_notifications;
+        for (mode, rect) in super::workspace::desktop_targets(bounds) {
+            let checked = mode == desktop;
+            let bg = Color::Indexed(
+                if checked && dialog.selection == super::workspace::CONFIG_DESKTOP {
+                    24
+                } else if checked {
+                    29
+                } else {
+                    238
+                },
+            );
+            let marker = if checked { "●" } else { "○" };
+            choice(frame, rect, marker, mode.label(), mode.short_label(), bg);
+        }
+        let events = workspace.ui.config.notification_events;
+        for (index, (event, rect)) in super::workspace::event_targets(bounds)
+            .into_iter()
+            .enumerate()
+        {
+            let checked = events.enabled(event);
+            let selected = dialog.selection == super::workspace::CONFIG_EVENTS + index;
+            let bg = Color::Indexed(match (checked, selected) {
+                (true, true) => 24,
+                (true, false) => 29,
+                (false, true) => 240,
+                (false, false) => 238,
+            });
+            let marker = if checked { "■" } else { "□" };
+            choice(frame, rect, marker, event.label(), event.short_label(), bg);
+        }
+        let choices = super::workspace::accent_targets(bounds);
+        if !choices.is_empty() {
+            write_text(
+                frame,
+                bounds.x + 2,
+                layout.accent_heading,
                 bounds.cols - 4,
                 "Accent color",
                 Color::Indexed(117),
@@ -1209,7 +1267,7 @@ fn draw_dialog(
                 &format!("{} {}", if checked { "●" } else { "○" }, accent.label()),
                 Color::Rgb(r, g, b),
                 bg,
-                dialog.selection == index + 1,
+                dialog.selection == super::workspace::CONFIG_ACCENTS + index,
             );
         }
     } else if matches!(dialog.kind, DialogKind::Recovery | DialogKind::Agents) {

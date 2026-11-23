@@ -37,6 +37,12 @@ pub fn target(frame: &Frame, point: Point) -> Option<Rect> {
                         .into_iter()
                         .map(|(_, _, rect)| rect),
                 );
+                regions.extend(
+                    ws::desktop_targets(bounds)
+                        .into_iter()
+                        .map(|(_, rect)| rect),
+                );
+                regions.extend(ws::event_targets(bounds).into_iter().map(|(_, rect)| rect));
                 regions.extend(ws::accent_targets(bounds).into_iter().map(|(_, rect)| rect));
             }
             DialogKind::CloseConfirm | DialogKind::ParkConfirm | DialogKind::RestoreConfirm => {

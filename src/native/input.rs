@@ -1081,11 +1081,42 @@ impl Router {
                     .enumerate()
                     .find(|(_, (_, rect))| rect.contains(event.position))
                 {
+                    let index = super::workspace::CONFIG_ACCENTS + index;
                     if event.kind == MouseKind::Press {
                         emit(&mut output, Action::AccentSet(accent), true);
-                        emit(&mut output, Action::DialogPick(index + 1), true);
+                        emit(&mut output, Action::DialogPick(index), true);
                     } else if event.kind == MouseKind::Move {
-                        emit(&mut output, Action::DialogPick(index + 1), true);
+                        emit(&mut output, Action::DialogPick(index), true);
+                    }
+                    return output;
+                }
+                if let Some((mode, _)) = super::workspace::desktop_targets(bounds)
+                    .into_iter()
+                    .find(|(_, rect)| rect.contains(event.position))
+                {
+                    let index = super::workspace::CONFIG_DESKTOP;
+                    if event.kind == MouseKind::Press {
+                        // Selecting the current choice leaves it unchanged.
+                        if mode != frame.ui.config.desktop_notifications {
+                            emit(&mut output, Action::DesktopNotificationsSet(mode), true);
+                        }
+                        emit(&mut output, Action::DialogPick(index), true);
+                    } else if event.kind == MouseKind::Move {
+                        emit(&mut output, Action::DialogPick(index), true);
+                    }
+                    return output;
+                }
+                if let Some((index, (kind, _))) = super::workspace::event_targets(bounds)
+                    .into_iter()
+                    .enumerate()
+                    .find(|(_, (_, rect))| rect.contains(event.position))
+                {
+                    let index = super::workspace::CONFIG_EVENTS + index;
+                    if event.kind == MouseKind::Press {
+                        emit(&mut output, Action::NotificationEventToggle(kind), true);
+                        emit(&mut output, Action::DialogPick(index), true);
+                    } else if event.kind == MouseKind::Move {
+                        emit(&mut output, Action::DialogPick(index), true);
                     }
                     return output;
                 }
@@ -1674,11 +1705,21 @@ impl Router {
                 .unwrap_or_default();
         }
         if dialog.kind == DialogKind::Config {
+            use super::workspace::{CONFIG_ACCENTS, CONFIG_DESKTOP, CONFIG_EVENTS};
             if index == 0 {
                 return vec![UiMessage::Action(Action::NotificationSoundToggle)];
             }
+            if index == CONFIG_DESKTOP {
+                let next = frame.ui.config.desktop_notifications.next();
+                return vec![UiMessage::Action(Action::DesktopNotificationsSet(next))];
+            }
+            if (CONFIG_EVENTS..CONFIG_ACCENTS).contains(&index) {
+                return vec![UiMessage::Action(Action::NotificationEventToggle(
+                    super::ui::NotificationEvent::ALL[index - CONFIG_EVENTS],
+                ))];
+            }
             return super::ui::Accent::ALL
-                .get(index - 1)
+                .get(index - CONFIG_ACCENTS)
                 .map(|accent| vec![UiMessage::Action(Action::AccentSet(*accent))])
                 .unwrap_or_default();
         }

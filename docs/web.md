@@ -215,6 +215,7 @@ The browser has the TUI's feature set adapted to web conventions. Status: **done
 | Attention markers and finished markers | State marks in rows, tiles, terminal headers; tab title count | added |
 | Notifications list, acknowledge, acknowledge all, history (`b`) | Per terminal: a bell on its sidebar tab and grid tile while it has unread notifications and is not shown; the bell in its header (or `Ctrl-B b`, or its menu) opens its own notifications: history (the default) / unread, mark read, mark all read. No global Notifications page | added; per terminal (owner decision) |
 | Notification sound toggle | Sound and desktop alerts per browser | added |
+| Desktop notifications through the terminal (`OSC 9`/`OSC 777`), per-event choices | Desktop alerts per browser; no per-event choices yet | added; per-event choices pending |
 | Focusing a pane marks its notifications read | Showing a terminal marks them read: the terminal shown on its own or in its window (the read-only grid marks nothing read); only while the window is visible, and arrivals only while it is also focused | done (restored, owner decision) |
 | Scratch popup (`c`) | None; a TUI scratch pane shows as an ordinary terminal | removed (owner decision): the web client has no scratch popup |
 | Recovery: recently closed and previous runs, copy command, reopen / rerun / folder (`r`) | Recently closed dialog with copy and resume / rerun / folder | added |

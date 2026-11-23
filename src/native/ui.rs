@@ -244,6 +244,147 @@ impl Accent {
         *self == Self::Blue
     }
 }
+/// How the controlling TUI raises desktop notifications through the
+/// terminal application it runs in, besides the optional bell.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DesktopNotifications {
+    /// Chosen from the attaching client's environment; off when unknown.
+    #[default]
+    Auto,
+    /// `OSC 9 ; message BEL` (iTerm2, kitty, WezTerm, Ghostty).
+    Osc9,
+    /// `OSC 777 ; notify ; title ; body BEL` (urxvt, foot, WezTerm, Ghostty).
+    Osc777,
+    Off,
+}
+impl DesktopNotifications {
+    pub const ALL: [Self; 4] = [Self::Auto, Self::Osc9, Self::Osc777, Self::Off];
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Auto => "Auto",
+            Self::Osc9 => "OSC 9",
+            Self::Osc777 => "OSC 777",
+            Self::Off => "Off",
+        }
+    }
+    pub fn short_label(self) -> &'static str {
+        match self {
+            Self::Auto => "Auto",
+            Self::Osc9 => "9",
+            Self::Osc777 => "777",
+            Self::Off => "Off",
+        }
+    }
+    /// The next choice, for keyboard activation of the settings row.
+    pub fn next(self) -> Self {
+        let index = Self::ALL.iter().position(|mode| *mode == self).unwrap_or(0);
+        Self::ALL[(index + 1) % Self::ALL.len()]
+    }
+    pub fn is_default(&self) -> bool {
+        *self == Self::Auto
+    }
+}
+/// The kinds of notification events, each of which can be silenced.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum NotificationEvent {
+    /// Input needed or a question.
+    Question,
+    /// Turn finished.
+    Finished,
+    Failed,
+    Exited,
+    /// A terminal bell from an agent.
+    Bell,
+}
+impl NotificationEvent {
+    pub const ALL: [Self; 5] = [
+        Self::Question,
+        Self::Finished,
+        Self::Failed,
+        Self::Exited,
+        Self::Bell,
+    ];
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Question => "Question",
+            Self::Finished => "Finished",
+            Self::Failed => "Failed",
+            Self::Exited => "Exited",
+            Self::Bell => "Bell",
+        }
+    }
+    pub fn short_label(self) -> &'static str {
+        match self {
+            Self::Question => WAIT_ICON,
+            Self::Finished => DONE_ICON,
+            Self::Failed => ALERT_ICON,
+            Self::Exited => "x",
+            Self::Bell => "b",
+        }
+    }
+    /// The kind of a server notification. KelpServer records bells with the
+    /// unknown status; every other status it records is noteworthy.
+    pub fn of(status: crate::model::Status) -> Self {
+        match status {
+            crate::model::Status::InputNeeded => Self::Question,
+            crate::model::Status::TurnFinished => Self::Finished,
+            crate::model::Status::Failed => Self::Failed,
+            crate::model::Status::Exited => Self::Exited,
+            _ => Self::Bell,
+        }
+    }
+}
+/// Which notification events alert (sound and desktop notifications); all
+/// of them by default.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct NotificationEvents {
+    pub question: bool,
+    pub finished: bool,
+    pub failed: bool,
+    pub exited: bool,
+    pub bell: bool,
+}
+impl Default for NotificationEvents {
+    fn default() -> Self {
+        Self {
+            question: true,
+            finished: true,
+            failed: true,
+            exited: true,
+            bell: true,
+        }
+    }
+}
+impl NotificationEvents {
+    fn slot(&mut self, event: NotificationEvent) -> &mut bool {
+        match event {
+            NotificationEvent::Question => &mut self.question,
+            NotificationEvent::Finished => &mut self.finished,
+            NotificationEvent::Failed => &mut self.failed,
+            NotificationEvent::Exited => &mut self.exited,
+            NotificationEvent::Bell => &mut self.bell,
+        }
+    }
+    pub fn enabled(&self, event: NotificationEvent) -> bool {
+        match event {
+            NotificationEvent::Question => self.question,
+            NotificationEvent::Finished => self.finished,
+            NotificationEvent::Failed => self.failed,
+            NotificationEvent::Exited => self.exited,
+            NotificationEvent::Bell => self.bell,
+        }
+    }
+    pub fn toggle(&mut self, event: NotificationEvent) {
+        let slot = self.slot(event);
+        *slot = !*slot;
+    }
+    pub fn is_default(&self) -> bool {
+        *self == Self::default()
+    }
+}
 impl TabPosition {
     pub fn resolve(self, _cols: u16, _rows: u16) -> Self {
         Self::Left
@@ -288,6 +429,10 @@ pub struct Dialog {
 pub struct UiConfig {
     pub view_modes: [Option<bool>; 3],
     pub notification_sound: bool,
+    #[serde(skip_serializing_if = "DesktopNotifications::is_default")]
+    pub desktop_notifications: DesktopNotifications,
+    #[serde(skip_serializing_if = "NotificationEvents::is_default")]
+    pub notification_events: NotificationEvents,
     pub prefix: u8,
     // Accept obsolete width preferences from existing workspaces, but never save them.
     #[serde(rename = "read_width", skip_serializing)]
@@ -315,6 +460,8 @@ impl Default for UiConfig {
         Self {
             view_modes: [None; 3],
             notification_sound: false,
+            desktop_notifications: DesktopNotifications::Auto,
+            notification_events: NotificationEvents::default(),
             prefix: 2,
             legacy_read_width: None,
             legacy_wrap_lines: None,

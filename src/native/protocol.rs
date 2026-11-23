@@ -220,6 +220,8 @@ pub enum Action {
     RerunTab(usize),
     SearchCopy(usize),
     NotificationSoundToggle,
+    DesktopNotificationsSet(super::ui::DesktopNotifications),
+    NotificationEventToggle(super::ui::NotificationEvent),
     AccentSet(super::ui::Accent),
     Acknowledge(u64),
     AcknowledgeAll,

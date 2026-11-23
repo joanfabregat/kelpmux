@@ -27,6 +27,10 @@ use std::{
     time::{Duration, Instant},
 };
 
+/// At most this many desktop notifications per update, so a burst of events
+/// (a server catching up) does not flood the desktop.
+const MAX_DESKTOP_NOTIFICATIONS: usize = 3;
+
 /// Session API capabilities the stream TUI needs from a server.
 pub const REQUIRED: &[&str] = &[
     "pane-snapshots",
@@ -101,6 +105,8 @@ pub struct Options {
     /// Tabs of the workspace's configured template (`start --template`),
     /// the initial layout when this TUI has none saved.
     pub template: Vec<LayoutTab>,
+    /// The attaching client's terminal, for desktop notifications.
+    pub terminal: super::notify::Terminal,
 }
 
 /// A text selection in pane-body coordinates.
@@ -165,6 +171,11 @@ pub struct Controller {
     /// OSC 52 payloads to write to the outer terminal.
     pub clipboard: Vec<String>,
     pub bell: bool,
+    /// Desktop notification sequences to write to the outer terminal.
+    pub desktop: Vec<String>,
+    /// Whether the outer terminal window has focus, from its focus reports;
+    /// unknown until the first one.
+    terminal_focused: Option<bool>,
     pub detached: bool,
     pub stopped: Option<String>,
     pub dirty: bool,
@@ -225,10 +236,53 @@ impl Controller {
             notice: None,
             clipboard: Vec::new(),
             bell: false,
+            desktop: Vec::new(),
+            terminal_focused: None,
             detached: false,
             stopped: None,
             dirty: true,
         })
+    }
+
+    /// A focus report from the outer terminal (`CSI I` / `CSI O`).
+    pub fn terminal_focus(&mut self, focused: bool) {
+        self.terminal_focused = Some(focused);
+    }
+
+    /// The desktop notification sequence for a new event, if Settings and
+    /// the terminal call for one. None for the tab shown while the terminal
+    /// window is known to have focus: the user is already looking at it.
+    fn desktop_notification(&self, notification: &Notification) -> Option<String> {
+        let run = &self.workspace.ui.notification_run;
+        let tab = self.workspace.panes.iter().find(|tab| {
+            if run.is_empty() {
+                tab.id == notification.pane
+            } else {
+                ui::matches(notification, tab, run)
+            }
+        });
+        if self.terminal_focused == Some(true)
+            && tab.is_some_and(|tab| tab.id == self.workspace.active)
+        {
+            return None;
+        }
+        let event = ui::NotificationEvent::of(notification.status);
+        let title = match tab {
+            Some(tab) => tab.title.as_str(),
+            None => notification
+                .title
+                .strip_prefix("Bell · ")
+                .unwrap_or(&notification.title),
+        };
+        let body = match tab.map(|tab| tab.number).filter(|number| *number > 0) {
+            Some(number) => format!("{number} {} · {title}", event.label()),
+            None => format!("{} · {title}", event.label()),
+        };
+        self.options.terminal.sequence(
+            self.workspace.ui.config.desktop_notifications,
+            "KelpMux",
+            &body,
+        )
     }
 
     /// Requests to send now, in order.
@@ -582,12 +636,27 @@ impl Controller {
         let ids: BTreeSet<_> = notifications.iter().map(|n| n.id).collect();
         if let Some(previous) = &self.seen_notifications
             && self.controlling
-            && self.workspace.ui.config.notification_sound
-            && notifications
-                .iter()
-                .any(|n| !n.read && !previous.contains(&n.id))
         {
-            self.bell = true;
+            // New unread events of the kinds Settings enables; initial
+            // attachment (no previous set) replays nothing.
+            let events = self.workspace.ui.config.notification_events;
+            let fresh: Vec<_> = notifications
+                .iter()
+                .filter(|n| {
+                    !n.read
+                        && !previous.contains(&n.id)
+                        && events.enabled(ui::NotificationEvent::of(n.status))
+                })
+                .collect();
+            if self.workspace.ui.config.notification_sound && !fresh.is_empty() {
+                self.bell = true;
+            }
+            let desktop: Vec<_> = fresh
+                .into_iter()
+                .take(MAX_DESKTOP_NOTIFICATIONS)
+                .filter_map(|n| self.desktop_notification(n))
+                .collect();
+            self.desktop.extend(desktop);
         }
         self.seen_notifications = Some(ids);
         self.workspace.ui.notifications = notifications;

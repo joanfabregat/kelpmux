@@ -4319,7 +4319,7 @@ fn config_has_one_blank_row_on_each_side_and_new_tab_only_uses_its_text_row() {
     use kelpmux::native::{
         hover,
         ui::DialogKind,
-        workspace::{TabTarget, config_targets, dialog_bounds_for, tab_targets},
+        workspace::{TabTarget, config_layout, dialog_bounds_for, tab_targets},
     };
     let mut ws = workspace((120, 40), (2, 1));
     ws.apply(&Action::Read(1)).unwrap();
@@ -4345,8 +4345,8 @@ fn config_has_one_blank_row_on_each_side_and_new_tab_only_uses_its_text_row() {
     ws.apply(&Action::Config).unwrap();
     let f = frame(&ws);
     let bounds = dialog_bounds_for(f.cols, f.rows, DialogKind::Config);
-    let controls = config_targets(bounds);
-    for y in [bounds.y + 1, controls[0].2.y + controls[0].2.rows] {
+    // Above the Notifications block and below its last row (Events).
+    for y in [bounds.y + 1, config_layout(bounds).events + 1] {
         let text: String = f.cells[usize::from(y * f.cols + bounds.x + 1)
             ..usize::from(y * f.cols + bounds.x + bounds.cols - 1)]
             .iter()
@@ -4788,7 +4788,10 @@ fn accent_presets_have_shared_click_hover_and_keyboard_targets_on_small_screens(
                 ws.apply(&action).unwrap();
             }
             assert_eq!(ws.ui.config.accent, accent);
-            assert_eq!(ws.ui.dialog.unwrap().selection, index + 1);
+            assert_eq!(
+                ws.ui.dialog.unwrap().selection,
+                kelpmux::native::workspace::CONFIG_ACCENTS + index
+            );
             // Keyboard activation uses the same preset as the clicked card.
             ws.apply(&Action::AccentSet(Accent::Blue)).unwrap();
             for action in
@@ -5355,4 +5358,126 @@ fn agents_action_button_distinguishes_open_from_unpark_and_cancel_returns_to_age
     assert_eq!(ws.ui.dialog.unwrap().kind, DialogKind::Agents);
     assert_eq!(ws.ui.dialog.unwrap().selection, 1);
     assert!(ws.panes[1].parked);
+}
+
+#[test]
+fn settings_desktop_notification_and_event_rows_fit_and_act() {
+    use kelpmux::native::{
+        hover,
+        ui::{DesktopNotifications, DialogKind, NotificationEvent, UiConfig},
+        workspace::{
+            CONFIG_DESKTOP, CONFIG_EVENTS, accent_targets, config_targets, desktop_targets,
+            dialog_bounds_for, event_targets,
+        },
+    };
+    let config = serde_json::from_str::<UiConfig>("{}").unwrap();
+    assert_eq!(config.desktop_notifications, DesktopNotifications::Auto);
+    assert!(
+        NotificationEvent::ALL
+            .iter()
+            .all(|event| config.notification_events.enabled(*event))
+    );
+    // Defaults are not written, so older TUIs keep reading the settings.
+    let saved = serde_json::to_string(&config).unwrap();
+    assert!(!saved.contains("desktop") && !saved.contains("notification_events"));
+    let mut changed = config.clone();
+    changed.desktop_notifications = DesktopNotifications::Osc777;
+    changed.notification_events.toggle(NotificationEvent::Bell);
+    let saved = serde_json::to_string(&changed).unwrap();
+    assert!(
+        saved.contains(r#""desktop_notifications":"osc777""#),
+        "{saved}"
+    );
+    assert_eq!(serde_json::from_str::<UiConfig>(&saved).unwrap(), changed);
+
+    for size in [(40, 10), (60, 14), (80, 18), (80, 20), (120, 40)] {
+        let mut ws = workspace(size, (2, 1));
+        ws.apply(&Action::Config).unwrap();
+        let bounds = dialog_bounds_for(ws.cols, ws.rows, DialogKind::Config);
+        let desktop = desktop_targets(bounds);
+        let events = event_targets(bounds);
+        let mut rects: Vec<Rect> = config_targets(bounds).iter().map(|t| t.2).collect();
+        rects.extend(desktop.iter().map(|t| t.1));
+        rects.extend(events.iter().map(|t| t.1));
+        rects.extend(accent_targets(bounds).iter().map(|t| t.1));
+        for (index, rect) in rects.iter().enumerate() {
+            assert!(rect.cols > 0, "{size:?}");
+            assert!(rect.x >= bounds.x && rect.x + rect.cols <= bounds.x + bounds.cols);
+            assert!(
+                rect.y > bounds.y && rect.y + rect.rows < bounds.y + bounds.rows,
+                "{size:?} {rect:?} {bounds:?}"
+            );
+            for other in &rects[index + 1..] {
+                let apart = rect.x + rect.cols <= other.x
+                    || other.x + other.cols <= rect.x
+                    || rect.y + rect.rows <= other.y
+                    || other.y + other.rows <= rect.y;
+                assert!(apart, "{size:?} {rect:?} overlaps {other:?}");
+            }
+        }
+        let f = frame(&ws);
+        let row: String = {
+            let rect = desktop[0].1;
+            f.cells[usize::from(rect.y * f.cols + rect.x)
+                ..usize::from(rect.y * f.cols + rect.x + rect.cols)]
+                .iter()
+                .map(|c| c.text.as_str())
+                .collect()
+        };
+        assert!(row.contains('●'), "{size:?} {row:?}");
+        for (mode, rect) in &desktop {
+            let point = Point {
+                x: rect.x,
+                y: rect.y,
+            };
+            assert_eq!(hover::target(&f, point), Some(*rect));
+            let routed = actions(Router::default().route(click(point), &f));
+            if *mode == ws.ui.config.desktop_notifications {
+                assert_eq!(routed, vec![Action::DialogPick(CONFIG_DESKTOP)]);
+            } else {
+                assert_eq!(
+                    routed,
+                    vec![
+                        Action::DesktopNotificationsSet(*mode),
+                        Action::DialogPick(CONFIG_DESKTOP)
+                    ]
+                );
+            }
+        }
+        for (index, (event, rect)) in events.iter().enumerate() {
+            let point = Point {
+                x: rect.x + rect.cols - 1,
+                y: rect.y,
+            };
+            let f = frame(&ws);
+            assert_eq!(hover::target(&f, point), Some(*rect));
+            for action in actions(Router::default().route(click(point), &f)) {
+                ws.apply(&action).unwrap();
+            }
+            assert!(!ws.ui.config.notification_events.enabled(*event));
+            assert_eq!(ws.ui.dialog.unwrap().selection, CONFIG_EVENTS + index);
+            // Enter toggles the selected event back on.
+            for action in
+                actions(Router::default().route(InputEvent::Bytes(vec![b'\r']), &frame(&ws)))
+            {
+                ws.apply(&action).unwrap();
+            }
+            assert!(ws.ui.config.notification_events.enabled(*event));
+        }
+        // Enter on the Desktop row cycles its choices.
+        ws.apply(&Action::DialogPick(CONFIG_DESKTOP)).unwrap();
+        for expected in [
+            DesktopNotifications::Osc9,
+            DesktopNotifications::Osc777,
+            DesktopNotifications::Off,
+            DesktopNotifications::Auto,
+        ] {
+            for action in
+                actions(Router::default().route(InputEvent::Bytes(vec![b'\r']), &frame(&ws)))
+            {
+                ws.apply(&action).unwrap();
+            }
+            assert_eq!(ws.ui.config.desktop_notifications, expected);
+        }
+    }
 }
