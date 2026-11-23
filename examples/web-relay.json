@@ -7,5 +7,7 @@
   "username": "alice",
   "bridge_command": "/opt/kelpmux/current/kelpmux web-bridge --workspace main",
   "workspace": "main",
-  "dev": false
+  "dev": false,
+  "glitchtip_dsn": null,
+  "error_environment": null
 }

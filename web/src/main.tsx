@@ -39,6 +39,7 @@ import {
 import "./styles/state.css";
 import "./styles/mobile.css";
 import { ToastProvider, useToast } from "./Toast";
+import { startErrorReporting } from "./errors";
 import { activityIcon } from "./activity-icon";
 import { basename } from "./format";
 import { Stats } from "./Stats";
@@ -560,6 +561,7 @@ function App() {
       })
       .then((cfg) => {
         if (canceled) return;
+        startErrorReporting(cfg);
         setConnection(cfg);
         const raw =
           storage.get("kelpmux-identity") ||

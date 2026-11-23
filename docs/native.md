@@ -107,6 +107,12 @@ UI settings include a control-key prefix number (`2` is Ctrl-B) and an ASCII key
 
 Sidebar tab accents use a half-cell strip while the sidebar divider uses a thin centered stroke, without a box-drawing line over a colored background. Its exact pixel thickness depends on the terminal font and display scale; a terminal UI cannot guarantee a two-pixel stroke.
 
+## Error reporting
+
+Optional and off by default, as for the [web client](web.md#error-reporting): errors and panics only, to a GlitchTip project, with no breadcrumbs, user data or terminal content. The TUI and `kelpmux web-bridge` will take their settings from the environment: `KELPMUX_GLITCHTIP_DSN` (the project's public DSN, `https://KEY@HOST/PROJECT_ID`) and optionally `KELPMUX_ERROR_ENVIRONMENT`, with events tagged `tui` or `bridge` and the same release name as the web client (`kelpmux@VERSION+SHA`). With no DSN nothing is initialised and nothing is sent. The relay's own errors will use its `glitchtip_dsn`.
+
+**Pending:** the Rust reporter has not been chosen yet, so these variables are not read today and the TUI, bridge and relay report nothing. `src/native/error_reporting.rs` already holds the validated settings (`Settings::from_env`) and the release name (`RELEASE`) for it. A TUI panic will keep restoring the terminal exactly as today, and its report will be flushed within two seconds without printing into the terminal UI.
+
 ## SSH and RootShell
 
 A normal interactive SSH login may automatically attach tmux before a terminal app sends its launch command. Sending a command after connection can therefore type it into an agent instead of running it in a shell. Do not use that route for Kelpmux.

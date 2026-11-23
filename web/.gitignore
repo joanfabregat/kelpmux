@@ -2,3 +2,4 @@ node_modules/
 dist/
 public/vendor/
 public/client-core.wasm
+sourcemaps/
