@@ -191,5 +191,8 @@ export const bellRinging = (
 ) =>
   events.bell &&
   all.some(
-    (n) => !n.read && isBell(n) && panes.some((p) => notificationMatches(n, p)),
+    (n) =>
+      !n.read &&
+      (isBell(n) || n.bell === true) &&
+      panes.some((p) => notificationMatches(n, p)),
   );

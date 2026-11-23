@@ -1327,6 +1327,7 @@ fn working_tabs_keep_motion_inside_cards_and_notifications_out_of_titles() {
                 continue;
             }
             ws.ui.notifications.push(Notification {
+                bell: false,
                 id: 1,
                 pane: 1,
                 title: "Question".into(),
@@ -1734,6 +1735,7 @@ fn automatic_grid_parking_controls_alert_colors_and_three_row_tabs() {
         assert_eq!(f.cells[at].text, "?");
         assert_eq!(f.cells[at].bg, Color::Rgb(93, 80, 53));
         ws.ui.notifications.push(Notification {
+            bell: false,
             id: 1,
             pane: 1,
             title: "Question".into(),
@@ -3640,6 +3642,7 @@ fn old_alerts_are_labeled_historical_and_cannot_jump_to_reused_pane_ids() {
     ws.panes[0].number = 7;
     ws.panes[0].pid = 100;
     ws.ui.notifications = vec![Notification {
+        bell: false,
         id: 1,
         pane: 1,
         title: "Bell · previous conversation".into(),
@@ -3758,6 +3761,7 @@ fn alerts_default_to_unread_history_toggle_and_bulk_acknowledgement_share_mouse_
     ws.apply(&Action::Read(1)).unwrap();
     ws.ui.notifications = (1..=3)
         .map(|id| Notification {
+            bell: false,
             id,
             pane: 2,
             title: format!("event {id}"),
@@ -4930,6 +4934,7 @@ fn typed_notifications_and_statuses_keep_completion_separate_from_attention() {
             ws.panes[0].status = status;
             ws.ui.notifications = vec![
                 Notification {
+                    bell: false,
                     id: 1,
                     pane: 1,
                     title: "Typed state".into(),
@@ -4943,6 +4948,7 @@ fn typed_notifications_and_statuses_keep_completion_separate_from_attention() {
                     }),
                 },
                 Notification {
+                    bell: false,
                     id: 2,
                     pane: 1,
                     title: "Bell · agent".into(),

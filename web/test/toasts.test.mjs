@@ -191,6 +191,10 @@ test("the favicon bell rings until the bell is read, if bells alert", () => {
   assert.equal(bellRinging([bell], panes, { ...on, bell: false }), false);
   assert.equal(bellRinging([note(2, 2, "input_needed")], panes, on), false);
   assert.equal(
+    bellRinging([{ ...note(3, 2, "input_needed"), bell: true }], panes, on),
+    true,
+  );
+  assert.equal(
     bellRinging(
       [bell],
       panes.filter((p) => p.id !== 2),

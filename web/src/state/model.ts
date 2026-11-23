@@ -58,6 +58,8 @@ export type Notification = {
   read: boolean;
   workspace: string;
   origin?: { run: string; pid: number } | null;
+  /** KelpServer with `bell-merge`: a bell rang with this typed event. */
+  bell?: boolean;
 };
 
 /** Whether KelpServer identifies the pane's program as a coding agent. */
