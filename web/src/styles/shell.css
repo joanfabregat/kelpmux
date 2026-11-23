@@ -216,11 +216,16 @@ button.rail-mark:hover:not(:disabled) {
   outline-offset: -2px;
   opacity: 0.7;
 }
-/* The bottom of the sidebar: the view and tools in two columns, like the
- * TUI's sidebar buttons, then the vitals and, at the very bottom, the
- * account and its settings. The terminal list above takes the remaining
- * height and scrolls; on a short screen the tools scroll too instead of
- * crowding it out. */
+/* The bottom of the sidebar: the vitals, the tools in two columns like the
+ * TUI's sidebar buttons, then, at the very bottom, the account and its
+ * settings. The terminal list above takes the remaining height and
+ * scrolls; on a short screen the tools scroll too instead of crowding it
+ * out. */
+.rail-vitals {
+  flex: none;
+  padding: var(--s1) var(--s2);
+  border-top: 1px solid var(--line);
+}
 .rail-bottom {
   flex: none;
   max-height: 45%;
@@ -416,6 +421,7 @@ button.rail-mark:hover:not(:disabled) {
   grid-template-columns: minmax(0, 1fr);
 }
 /* Folded vitals: short labels and values, and the two disk pies. */
+.rail.folded .rail-vitals,
 .rail.folded .rail-foot {
   padding: var(--s1);
 }
