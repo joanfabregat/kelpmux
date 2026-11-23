@@ -10,7 +10,10 @@
 // entry, the tabs, the tiles and the opening shortcuts (Alt+digit, Alt+Tab,
 // Ctrl/Cmd+Shift+G and the Ctrl-B keys through the real prefix map) switch
 // the view as in main.tsx. The shown terminal's placeholder is a text area
-// recording the keys typed into it in `window.typed`.
+// recording the keys typed into it in `window.typed`. With `toasts=1` the
+// attention toasts (AttentionToasts.tsx) and the bell favicon run through
+// the same hook as main.tsx: `window.bell(pane)` rings a bell and
+// `window.setEvents({...})` changes the Settings event toggles.
 import React, { useEffect, useState } from "react";
 import { createRoot } from "react-dom/client";
 import type { NumberedPane } from "@kelpcore/web/types.ts";
@@ -33,6 +36,13 @@ import {
   type Notification,
 } from "../src/state/model";
 import { useReadShown } from "../src/state/read";
+import { AttentionToasts, useAttentionToasts } from "../src/AttentionToasts";
+import {
+  bellRinging,
+  defaultNotificationEvents,
+  type NotificationEvents,
+} from "../src/toasts";
+import { activityIcon } from "../src/activity-icon";
 import "../src/styles/base.css";
 import "../src/styles/shell.css";
 import "@kelpcore/web/terminal.css";
@@ -43,6 +53,7 @@ import "../src/styles/state.css";
 import "../src/styles/mobile.css";
 
 const query = new URLSearchParams(location.search);
+const toastsOn = query.get("toasts") === "1";
 const mode = query.get("mode") === "light" ? "light" : "dark";
 const root = document.documentElement;
 root.dataset.mode = mode;
@@ -117,6 +128,7 @@ function Fixture() {
   const focused = panes.find((p) => p.id === current)!;
   const unread = (p: NumberedPane) => unreadFor(notifications, p).length;
   const acknowledge = (ids: number[]) => {
+    attention.markRead(ids);
     (window as any).acks.push(...ids);
     setNotifications((list) =>
       list.map((n) => (ids.includes(n.id) ? { ...n, read: true } : n)),
@@ -131,6 +143,28 @@ function Fixture() {
     notifications,
     acknowledge,
   );
+  // Attention toasts and the bell favicon, as main.tsx wires them.
+  const [events, setEvents] = useState<NotificationEvents>(
+    defaultNotificationEvents,
+  );
+  const attention = useAttentionToasts({
+    ready: toastsOn,
+    notifications,
+    panes,
+    events,
+    shown: onScreen[0] || 0,
+  });
+  const ringing = toastsOn && bellRinging(notifications, panes, events);
+  useEffect(() => {
+    if (!toastsOn) return;
+    let icon = document.querySelector<HTMLLinkElement>('link[rel="icon"]');
+    if (!icon) {
+      icon = document.createElement("link");
+      icon.rel = "icon";
+      document.head.append(icon);
+    }
+    icon.href = activityIcon(panes, ringing).url;
+  }, [ringing]);
   useEffect(() => {
     let id = 100;
     Object.assign(window, {
@@ -138,6 +172,15 @@ function Fixture() {
         const added = note(id++, pane, "input_needed");
         setNotifications((list) => [...list, added]);
       },
+      bell: (pane: number) => {
+        const added = {
+          ...note(id++, pane, "unknown"),
+          title: `Bell · agent ${pane}`,
+          at: Date.now() / 1000,
+        };
+        setNotifications((list) => [...list, added]);
+      },
+      setEvents,
     });
   }, []);
   /** Opens a terminal alone, leaving the grid, as main.tsx's openPane. */
@@ -341,6 +384,14 @@ function Fixture() {
           </div>
         )}
       </div>
+      {toastsOn && (
+        <AttentionToasts
+          toasts={attention.toasts}
+          panes={panes}
+          onOpen={openPane}
+          onDismiss={attention.dismiss}
+        />
+      )}
     </div>
   );
 }

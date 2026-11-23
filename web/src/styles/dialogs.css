@@ -280,6 +280,128 @@
   overflow-wrap: anywhere;
 }
 
+/* ───── Attention toasts (AttentionToasts.tsx) ─────
+ * Top right, below the terminal header so its buttons stay reachable, and
+ * under dialogs. Phones: full width minus the gutters, below the safe area
+ * and the terminal bar, far from the key bar at the bottom. */
+.attention-toasts {
+  position: fixed;
+  top: calc(env(safe-area-inset-top) + 42px);
+  right: calc(env(safe-area-inset-right) + var(--s4));
+  z-index: 9;
+  display: grid;
+  gap: var(--s2);
+  width: min(360px, calc(100vw - 2 * var(--s4)));
+  max-height: calc(100dvh - 120px);
+  overflow-y: auto;
+  pointer-events: none;
+}
+.touch .attention-toasts {
+  top: calc(env(safe-area-inset-top) + 48px);
+}
+.phone .attention-toasts {
+  top: calc(env(safe-area-inset-top) + 52px);
+  right: calc(env(safe-area-inset-right) + var(--s4));
+  left: calc(env(safe-area-inset-left) + var(--s4));
+  width: auto;
+}
+.attention-toast {
+  display: block;
+  padding: 0;
+  pointer-events: auto;
+}
+.attention-question,
+.attention-bell {
+  --tone: var(--st-input);
+}
+.attention-failed {
+  --tone: var(--st-failed);
+}
+.attention-finished {
+  --tone: var(--st-done);
+}
+.attention-exited {
+  --tone: var(--st-idle);
+}
+.attention-row {
+  display: flex;
+  align-items: center;
+  gap: var(--s1);
+  padding-right: var(--s1);
+}
+button.attention-open {
+  display: flex;
+  flex: 1;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+  min-height: 44px;
+  padding: var(--s2) var(--s1) var(--s2) var(--s3);
+  border: 0;
+  background: none;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+button.attention-open:hover {
+  background: none;
+}
+.attention-toast:hover {
+  background: color-mix(in srgb, var(--tone) 6%, var(--surface-2));
+}
+/* Marks and bells share one column, so the names line up. */
+.attention-toasts .state-mark,
+.attention-toasts .toast-icon.svg-icon {
+  width: 14px;
+  height: 14px;
+}
+.attention-text {
+  display: grid;
+  flex: 1;
+  min-width: 0;
+}
+.attention-terminal {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+.attention-name,
+.attention-event {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.attention-event {
+  color: var(--text-2);
+  font-size: var(--fs-sm);
+}
+.attention-chevron {
+  flex: none;
+  color: var(--text-2);
+}
+.attention-open[aria-expanded="true"] .attention-chevron {
+  transform: rotate(180deg);
+}
+.attention-list {
+  margin: 0;
+  padding: 0 0 var(--s1);
+  border-top: 1px solid var(--line);
+  list-style: none;
+}
+.attention-list li {
+  border-left: 3px solid var(--tone);
+  margin-left: -3px;
+}
+.attention-list button.attention-open {
+  min-height: 40px;
+  padding-block: var(--s1);
+}
+.attention-list button.attention-open:hover {
+  background: var(--surface-3);
+}
+
 /* ───── Settings ───── */
 .settings-layout {
   display: grid;

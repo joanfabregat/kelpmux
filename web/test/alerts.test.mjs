@@ -49,13 +49,20 @@ test("parked terminals and preferences are this browser's", () => {
     sidebarFolded: true,
     sound: true,
     desktop: "yes",
+    notificationEvents: { bell: false, finished: "no", question: 0 },
     hardwareKeyboard: "sometimes",
   });
   assert.deepEqual(loadPreferences(), {
     sidebarWidth: SIDEBAR_MAX,
     sidebarFolded: true,
     sound: true,
-    desktop: false,
+    notificationEvents: {
+      question: true,
+      finished: true,
+      failed: true,
+      exited: true,
+      bell: false,
+    },
     hardwareKeyboard: "auto",
   });
   savePreferences({ ...defaultPreferences, hardwareKeyboard: "on" });
@@ -76,4 +83,38 @@ test("move up and down swaps with the neighbour", () => {
   assert.deepEqual(moveBy([1, 2, 3], 1, -1), [1, 2, 3]);
   assert.deepEqual(moveBy([1, 2, 3], 3, 1), [1, 2, 3]);
   assert.deepEqual(moveBy([1, 2, 3], 9, 1), [1, 2, 3]);
+});
+
+test("the old desktop notification preference migrates cleanly", () => {
+  globalThis.localStorage = memoryStorage();
+  // Stored by the build with desktop notifications: kept settings load, the
+  // desktop choice is dropped and every event alerts.
+  globalThis.localStorage.setItem(
+    "kelpmux-web-preferences",
+    '{"sidebarWidth":300,"sidebarFolded":false,"sound":true,"desktop":true,"hardwareKeyboard":"auto"}',
+  );
+  const loaded = loadPreferences();
+  assert.equal(loaded.sound, true);
+  assert.equal(loaded.sidebarWidth, 300);
+  assert.equal("desktop" in loaded, false);
+  assert.deepEqual(
+    loaded.notificationEvents,
+    defaultPreferences.notificationEvents,
+  );
+  savePreferences(loaded);
+  assert.equal(
+    globalThis.localStorage
+      .getItem("kelpmux-web-preferences")
+      .includes("desktop"),
+    false,
+  );
+  globalThis.localStorage.setItem(
+    "kelpmux-web-preferences",
+    '{"notificationEvents":"all"}',
+  );
+  assert.deepEqual(
+    loadPreferences().notificationEvents,
+    defaultPreferences.notificationEvents,
+  );
+  delete globalThis.localStorage;
 });

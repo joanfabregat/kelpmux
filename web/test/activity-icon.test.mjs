@@ -28,3 +28,13 @@ test("idle and offline workspaces have a plain icon", () => {
   assert.equal(offline.label, "");
   assert.ok(!decodeURIComponent(offline.url).includes("<circle"));
 });
+
+test("an unread bell adds a dot to the favicon", () => {
+  const panes = [{ status: "idle", dead: false }];
+  const quiet = decodeURIComponent(activityIcon(panes).url);
+  const ringing = activityIcon(panes, true);
+  assert.equal(ringing.bell, true);
+  assert.ok(!quiet.includes("data-bell"));
+  assert.ok(decodeURIComponent(ringing.url).includes("data-bell"));
+  assert.equal(ringing.title, "KelpMux");
+});

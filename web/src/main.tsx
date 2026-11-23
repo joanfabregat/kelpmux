@@ -119,7 +119,9 @@ import {
   type HardwareKeyboard,
   type InputMode,
 } from "@kelpcore/web/touch-keys.ts";
-import { chime, desktopAlert, freshNotifications, newestId } from "./alerts";
+import { chime } from "./alerts";
+import { AttentionToasts, useAttentionToasts } from "./AttentionToasts";
+import { bellRinging } from "./toasts";
 import {
   UploadDialog,
   dragHasFiles,
@@ -459,8 +461,6 @@ function App() {
   useVisualViewport(touch && online);
   const notificationsRef = useRef(notifications);
   notificationsRef.current = notifications;
-  /** Newest notification already considered for alerts (-1: not yet). */
-  const alertedId = useRef(-1);
   /** Notifications this browser already acknowledged. */
   const acknowledged = useRef(new Set<number>());
   useEffect(() => {
@@ -649,7 +649,11 @@ function App() {
           ? live.filter((p) => p.id === active)
           : live.slice(0, streamed),
     visibleKey = visible.map((p) => p.id).join(",");
-  const browserActivity = activityIcon(online ? panes : null);
+  // A ringing bell marks the favicon until it is read (Bell event on).
+  const browserActivity = activityIcon(
+    online ? panes : null,
+    online && bellRinging(notifications, panes, preferences.notificationEvents),
+  );
   const attention = rollup(
     panes.filter((p) => !p.dead),
     notifications,
@@ -1074,6 +1078,7 @@ function App() {
   }
   /** Marks notifications read in the workspace (the TUI shares the marks). */
   function acknowledge(ids: number[]) {
+    attentionToasts.markRead(ids);
     for (const id of ids.slice(0, 128)) {
       if (acknowledged.current.has(id)) continue;
       acknowledged.current.add(id);
@@ -1104,6 +1109,20 @@ function App() {
     notifications,
     acknowledge,
   );
+  // In-app toasts replace desktop notifications (toasts.ts): none for the
+  // terminal shown alone; the read-only grid has no focused terminal, so
+  // its tiles get toasts as they keep their bells. Popups leave alerts to
+  // the main window.
+  const attentionToasts = useAttentionToasts({
+    ready: panesLoaded && !popupPane,
+    notifications,
+    panes,
+    events: preferences.notificationEvents,
+    shown: shownPane,
+    onAlert: () => {
+      if (preferences.sound) chime();
+    },
+  });
   // Opening or switching terminals returns to reading: the on-screen
   // keyboard never appears on its own. With the hardware keyboard setting
   // On, a touch device opens terminals in input mode instead, focusing the
@@ -1314,7 +1333,6 @@ function App() {
         setPanesLoaded(true);
         setVitals(e.vitals);
         setNotifications(e.notifications || []);
-        alertFresh(e.notifications || [], e.panes);
         if (popupPane) setActive(popupPane);
       }
       store.events.dispatchEvent(new Event("frame"));
@@ -1325,28 +1343,6 @@ function App() {
       store.events.dispatchEvent(new Event("frame"));
     }
     if (e.type === "error") setError(e.message);
-  }
-  /** Sound and desktop alerts for notifications that arrived since the
-   * last update (never for those present when this browser connected).
-   * Popups leave alerts to the main window. */
-  function alertFresh(list: Notification[], live: NumberedPane[]) {
-    if (alertedId.current < 0) {
-      alertedId.current = newestId(list);
-      return;
-    }
-    const fresh = freshNotifications(list, alertedId.current).filter((n) =>
-      live.some((p) => notificationMatches(n, p)),
-    );
-    alertedId.current = newestId(list, alertedId.current);
-    if (!fresh.length || popupPane) return;
-    if (preferences.sound) chime();
-    if (preferences.desktop && document.hidden) {
-      const n = fresh[fresh.length - 1];
-      const pane = live.find((p) => notificationMatches(n, p));
-      desktopAlert("KelpMux", n.title, () => {
-        if (pane) openPane(pane);
-      });
-    }
   }
   const latestEvent = useRef(event);
   latestEvent.current = event;
@@ -1408,7 +1404,6 @@ function App() {
     store.leases.clear();
     store.closing!.clear();
     metadata.current = "";
-    alertedId.current = -1;
     acknowledged.current.clear();
     setNotifications([]);
     setPanes([]);
@@ -2442,6 +2437,14 @@ function App() {
         )}
         {idle && <IdleWarning notice={idle} onStay={reportActivity} />}
       </div>
+      {online && !popupPane && (
+        <AttentionToasts
+          toasts={attentionToasts.toasts}
+          panes={all}
+          onOpen={openPane}
+          onDismiss={attentionToasts.dismiss}
+        />
+      )}
     </div>
   );
 }
