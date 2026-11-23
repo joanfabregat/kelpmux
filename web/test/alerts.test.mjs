@@ -47,6 +47,7 @@ test("parked terminals and preferences are this browser's", () => {
   savePreferences({
     sidebarWidth: 9999,
     sidebarFolded: true,
+    sidebarSections: { terminals: "no", files: false },
     sound: true,
     desktop: "yes",
     notificationEvents: { bell: false, finished: "no", question: 0 },
@@ -55,6 +56,7 @@ test("parked terminals and preferences are this browser's", () => {
   assert.deepEqual(loadPreferences(), {
     sidebarWidth: SIDEBAR_MAX,
     sidebarFolded: true,
+    sidebarSections: { terminals: true, files: false },
     sidePanelWidth: defaultPreferences.sidePanelWidth,
     sound: true,
     notificationEvents: {

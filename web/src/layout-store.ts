@@ -140,6 +140,8 @@ export type Preferences = {
   /** Sidebar width in CSS pixels. */
   sidebarWidth: number;
   sidebarFolded: boolean;
+  /** Which sidebar sections are expanded (both by default). */
+  sidebarSections: { terminals: boolean; files: boolean };
   /** Width of the editor beside a terminal, in CSS pixels. */
   sidePanelWidth: number;
   /** Play a sound when an enabled event arrives. */
@@ -158,6 +160,7 @@ export const SIDE_PANEL_MAX = 1600;
 export const defaultPreferences: Preferences = {
   sidebarWidth: 248,
   sidebarFolded: false,
+  sidebarSections: { terminals: true, files: true },
   sidePanelWidth: 560,
   sound: false,
   notificationEvents: defaultNotificationEvents,
@@ -173,6 +176,10 @@ export function loadPreferences(): Preferences {
         ? Math.round(Math.min(SIDEBAR_MAX, Math.max(SIDEBAR_MIN, width)))
         : defaultPreferences.sidebarWidth,
       sidebarFolded: value.sidebarFolded === true,
+      sidebarSections: {
+        terminals: value.sidebarSections?.terminals !== false,
+        files: value.sidebarSections?.files !== false,
+      },
       sidePanelWidth: Number.isFinite(Number(value.sidePanelWidth))
         ? Math.round(
             Math.min(

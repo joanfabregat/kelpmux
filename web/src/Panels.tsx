@@ -490,6 +490,12 @@ export function HelpPanel() {
         read-only and a click on a tile opens it. This browser's order, parking,
         grid and focus are separate from the TUI's.
       </p>
+      <p className="setting-hint">
+        The sidebar has two sections: click <b>Terminals</b> to show the grid
+        and <b>Files</b> to browse files. The chevron beside each heading
+        collapses or expands its section; a collapsed heading keeps a count and
+        a dot when something in it needs attention or is unsaved.
+      </p>
       <h3>Files</h3>
       <p className="setting-hint">
         <b>Files</b> in the sidebar browses the server's files from your home

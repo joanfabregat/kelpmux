@@ -6,14 +6,17 @@
 // screens) marks nothing read and has no focus. Right-clicking a row opens
 // that terminal's notifications, as its menu's Notifications… item does,
 // and `window.notify(pane)` adds an unread notification. The query string
-// picks the case: `mode=light`, `tabs=N`, `view=grid`, `folded=1`. The grid
-// entry, the tabs, the tiles and the opening shortcuts (Alt+digit, Alt+Tab,
-// Ctrl/Cmd+Shift+G and the Ctrl-B keys through the real prefix map) switch
-// the view as in main.tsx. The shown terminal's placeholder is a text area
+// picks the case: `mode=light`, `tabs=N`, `view=grid`, `folded=1`. The
+// Terminals header, the tabs, the tiles and the opening shortcuts
+// (Alt+digit, Alt+Tab, Ctrl/Cmd+Shift+G and the Ctrl-B keys through the
+// real prefix map) switch the view as in main.tsx. The shown terminal's placeholder is a text area
 // recording the keys typed into it in `window.typed`. With `toasts=1` the
 // attention toasts (AttentionToasts.tsx) and the bell favicon run through
 // the same hook as main.tsx: `window.bell(pane)` rings a bell and
-// `window.setEvents({...})` changes the Settings event toggles.
+// `window.setEvents({...})` changes the Settings event toggles. With
+// `files=1` the Files section lists two open files, one unsaved; its
+// header and rows show a placeholder for the browser or the file. The
+// sections' expanded state is kept in the real preferences store.
 import React, { useEffect, useState } from "react";
 import { createRoot } from "react-dom/client";
 import type { NumberedPane } from "@kelpcore/web/types.ts";
@@ -43,6 +46,7 @@ import {
   type NotificationEvents,
 } from "../src/toasts";
 import { activityIcon } from "../src/activity-icon";
+import { loadPreferences, savePreferences } from "../src/layout-store";
 import "../src/styles/base.css";
 import "../src/styles/shell.css";
 import "@kelpcore/web/terminal.css";
@@ -51,9 +55,11 @@ import "../src/styles/login.css";
 import "../src/styles/kelpmux.css";
 import "../src/styles/state.css";
 import "../src/styles/mobile.css";
+import "../src/styles/files.css";
 
 const query = new URLSearchParams(location.search);
 const toastsOn = query.get("toasts") === "1";
+const filesOn = query.get("files") === "1";
 const mode = query.get("mode") === "light" ? "light" : "dark";
 const root = document.documentElement;
 root.dataset.mode = mode;
@@ -125,6 +131,22 @@ function Fixture() {
     query.get("view") === "grid" ? "grid" : "single",
   );
   const grid = view === "grid" && !phone;
+  // The sidebar's sections, kept in the real preferences store.
+  const [sections, setSections] = useState(
+    () => loadPreferences().sidebarSections,
+  );
+  // Files (files=1): two open files, the second with unsaved changes;
+  // the Files header shows the browser, a file's row the file.
+  const [docs, setDocs] = useState(
+    filesOn
+      ? [
+          { path: "/home/alice/notes.md", name: "notes.md", dirty: false },
+          { path: "/home/alice/app.py", name: "app.py", dirty: true },
+        ]
+      : [],
+  );
+  const [shownDoc, setShownDoc] = useState("");
+  const files = view === "files";
   const focused = panes.find((p) => p.id === current)!;
   const unread = (p: NumberedPane) => unreadFor(notifications, p).length;
   const acknowledge = (ids: number[]) => {
@@ -137,7 +159,7 @@ function Fixture() {
   const notified = panes.find((p) => p.id === dialog);
   const listShown = phone && phoneList;
   // Only a terminal shown alone is read; grid tiles keep their bells.
-  const onScreen = listShown || grid ? [] : [current];
+  const onScreen = listShown || grid || files ? [] : [current];
   useReadShown(
     panes.find((p) => p.id === readingPane(0, current, onScreen)),
     notifications,
@@ -246,11 +268,36 @@ function Fixture() {
       folded={folded}
       touch={device.touch}
       phone={phone}
-      mode={grid ? "grid" : "single"}
+      mode={grid ? "grid" : files ? "files" : "single"}
+      sections={sections}
+      onSections={(next) => {
+        setSections(next);
+        savePreferences({ ...loadPreferences(), sidebarSections: next });
+      }}
+      files={
+        filesOn
+          ? {
+              browsing: !shownDoc,
+              docs: docs.map((d) => ({ ...d, current: d.path === shownDoc })),
+              onBrowse: () => {
+                setShownDoc("");
+                setPhoneList(false);
+                setView("files");
+              },
+              onOpenDoc: (path) => {
+                setShownDoc(path);
+                setPhoneList(false);
+                setView("files");
+              },
+              onCloseDoc: (path) =>
+                setDocs((list) => list.filter((d) => d.path !== path)),
+            }
+          : undefined
+      }
       terminals={panes}
       parked={[]}
       notifications={notifications}
-      current={grid ? undefined : current}
+      current={grid || files ? undefined : current}
       vitals={{ cpu: 23, memory: 61, disks: [48, 92] }}
       diskMounts={["/", "/data"]}
       onDisksHover={() => {}}
@@ -281,7 +328,7 @@ function Fixture() {
     >
       {!phone && <div className="rail-wrap">{sidebar}</div>}
       <div className={`app ${grid ? "grid" : "single"}`}>
-        {phone && !listShown && (
+        {phone && !listShown && !files && (
           <PhoneBar
             pane={focused}
             state={paneState(focused, notifications)}
@@ -295,6 +342,12 @@ function Fixture() {
         <div className="workspace">
           {listShown ? (
             <div className="phone-list">{sidebar}</div>
+          ) : files ? (
+            <div
+              className="files-placeholder"
+              data-files-shown={shownDoc || "browser"}
+              style={placeholder}
+            />
           ) : grid ? (
             <LiveGrid
               panes={panes}
