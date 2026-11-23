@@ -3,7 +3,11 @@
 // terminal rows, uploads into folders), over the real Session and WASM core
 // connected to a real `kelpmux web-bridge` and server through a pipe instead
 // of SSH, as test/bridge.fixture.tsx does (test/files.mjs). `?phone=1`
-// shows the phone layout (no rail: the main area only).
+// shows the phone layout (no rail: the main area only). A terminal shown
+// alone (`window.showTerminal(pane)`, or clicking its row) has the side
+// panel and Cmd/Ctrl-click path links as main.tsx wires them;
+// `window.cellPoint(x, y)` is the client point at the middle of a cell of
+// that terminal.
 // `window.screenText(pane)` reads a terminal's screen, `window.toasts` the
 // toasts shown and `window.openTerminal(pane, title)` adds a terminal row.
 import React, { useEffect, useState } from "react";
@@ -29,6 +33,13 @@ import {
 import { Sidebar } from "../src/Sidebar";
 import { FilesBrowser } from "../src/files/FilesBrowser";
 import { FileEditor } from "../src/files/FileEditor";
+import { SidePanel } from "../src/files/SidePanel";
+import {
+  cellSize,
+  usePathLinks,
+  type PathTarget,
+} from "../src/files/PathLinks";
+import { Terminal } from "@kelpcore/web/Terminal.tsx";
 import { useDocuments } from "../src/files/documents";
 import { dragHasPaths, droppedPaths, typeIntoPane } from "../src/files/insert";
 import { ConfirmDialog, type ConfirmAction } from "../src/Confirm";
@@ -99,13 +110,29 @@ const session = new PipeSession(
     }
     if (e.type === "error") w.bridgeErrors.push(e.message);
     if (e.type === "update") {
-      for (const s of e.snapshots) store.screens.set(s.pane, s);
+      for (const s of e.snapshots) {
+        store.screens.delete(s.pane);
+        store.screens.set(s.pane, s);
+      }
       for (const patch of e.patches) {
         const previous = store.screens.get(patch.pane);
-        if (previous)
+        if (previous) {
           for (const [index, cell] of patch.changes)
             previous.screen.cells[index] = cell;
+          previous.revision = patch.revision;
+          previous.screen.cursor = patch.cursor;
+          previous.screen.modes = patch.modes;
+        }
       }
+      store.leases = new Map(
+        e.leases.map((lease: any) => [lease.pane, lease.owner]),
+      );
+      store.events.dispatchEvent(new Event("frame"));
+    }
+    if (e.type === "lease") {
+      if (e.owner) store.leases.set(e.pane, e.owner);
+      else store.leases.delete(e.pane);
+      store.events.dispatchEvent(new Event("frame"));
     }
   },
   () => {},
@@ -115,6 +142,16 @@ store.session = session;
 w.session = session;
 w.bridgeRead = (base64: string) =>
   session.receive(Uint8Array.from(atob(base64), (c) => c.charCodeAt(0)));
+w.screenCols = (pane: number) => store.screens.get(pane)?.screen.cols ?? 0;
+w.cellPoint = (x: number, y: number) => {
+  const canvas = document.querySelector<HTMLCanvasElement>(".terminal canvas")!;
+  const size = cellSize(canvas)!;
+  const r = canvas.getBoundingClientRect();
+  return {
+    x: r.left + (x + 0.5) * size.width,
+    y: r.top + (y + 0.5) * size.height,
+  };
+};
 w.screenText = (pane: number) => {
   const s = store.screens.get(pane);
   if (!s) return "";
@@ -150,7 +187,54 @@ function App() {
   const [confirm, setConfirm] = useState<ConfirmAction | null>(null);
   const [panes, setPanes] = useState<NumberedPane[]>([]);
   const [dropPane, setDropPane] = useState(0);
+  /** The terminal shown alone (main.tsx's single view), if any. */
+  const [termPane, setTermPane] = useState(0);
+  const [side, setSide] = useState<{ id: number; jump?: any } | null>(null);
+  const [sideWidth, setSideWidth] = useState(560);
   const documents = useDocuments(client);
+  const focused = panes.find((p) => p.id === termPane);
+  const pathLinks = usePathLinks({
+    pane: focused,
+    store: store as any,
+    client,
+    home,
+    onOpen: (target) => openPathTarget(target),
+  });
+  const sideDoc = side
+    ? documents.docs.find((d) => d.id === side.id)
+    : undefined;
+  let jumps = 0;
+  // As main.tsx's openBeside and openPathTarget (a phone opens the editor
+  // in the main area).
+  function openBeside(path: string, jump?: any) {
+    const pane = panes[0];
+    if (phone || !pane) {
+      documents.open(path);
+      setShown(path);
+      setBrowsing(false);
+      setTermPane(0);
+      w.mainJump = jump;
+      return;
+    }
+    const id = documents.open(path);
+    if (shown === path) setShown("");
+    setSide({ id, jump });
+    setTermPane(pane.id);
+  }
+  function openPathTarget(target: PathTarget) {
+    if (target.kind === "dir") {
+      setDir(target.path);
+      setBrowsing(true);
+      setTermPane(0);
+      return;
+    }
+    openBeside(
+      target.path,
+      target.line
+        ? { line: target.line, col: target.col, seq: Date.now() + ++jumps }
+        : undefined,
+    );
+  }
   useEffect(() => {
     onWelcome = (e) => {
       setUploadLimits(readUploadLimits(e.upload_limits));
@@ -161,11 +245,13 @@ function App() {
       c.stat("~").then((r) => setHome(r.path));
       w.welcome = e;
     };
-    w.openTerminal = (id: number, title: string) =>
+    w.openTerminal = (id: number, title: string, cwd = "/") =>
       setPanes((all) => [
         ...all,
-        { id, number: all.length + 1, title, cwd: "/", status: "idle" } as any,
+        { id, number: all.length + 1, title, cwd, status: "idle" } as any,
       ]);
+    w.showTerminal = (id: number) => setTermPane(id);
+    w.showFiles = () => setTermPane(0);
   }, []);
   const toast = (message: string, options?: any) =>
     w.toasts.push({ message, ...options });
@@ -174,13 +260,15 @@ function App() {
     documents.open(path);
     setShown(path);
     setBrowsing(false);
+    setTermPane(0);
   };
   const closeDoc = (path: string) => {
     const d = documents.docs.find((x) => x.path === path);
     const close = () => {
       documents.close(path);
       if (shown === path) setShown("");
-      setBrowsing(true);
+      if (sideDoc?.path === path) setSide(null);
+      else setBrowsing(true);
     };
     if (!d?.dirty) return close();
     setConfirm({
@@ -216,28 +304,35 @@ function App() {
   });
   if (!client) return null;
   const target = panes[0];
-  const main =
-    !browsing && doc ? (
+  // As main.tsx: every open file's editor stays mounted, hidden unless
+  // shown, so unsaved edits survive other views.
+  const editors = documents.docs
+    .filter((d) => d.id !== side?.id)
+    .map((d) => (
       <FileEditor
-        key={doc.id}
-        doc={doc}
+        key={d.id}
+        doc={d}
         documents={documents}
         home={home}
         maxRead={client.limits.max_read_bytes}
-        onClose={() => closeDoc(doc.path)}
+        hidden={!!focused || browsing || d.id !== doc?.id}
+        onClose={() => closeDoc(d.path)}
         onReveal={() => {
-          setDir(parentPath(doc.path));
+          setDir(parentPath(d.path));
           setBrowsing(true);
         }}
         onBack={phone ? () => {} : undefined}
       />
-    ) : (
+    ));
+  const main =
+    !browsing && doc ? null : (
       <FilesBrowser
         client={client}
         home={home}
         dir={dir}
         onDir={setDir}
         onOpenFile={openDoc}
+        onOpenBeside={target ? (path) => openBeside(path) : undefined}
         insertTarget={
           target ? { number: target.number, title: target.title } : undefined
         }
@@ -276,7 +371,7 @@ function App() {
             onMode={() => {}}
             rowProps={pathDropProps}
             rowClass={(p) => (dropPane === p.id ? "drop-target" : "")}
-            onOpen={() => {}}
+            onOpen={(p) => setTermPane(p.id)}
             onClose={() => {}}
             onPark={() => {}}
             onUnpark={() => {}}
@@ -294,10 +389,14 @@ function App() {
                 dirty: d.dirty,
                 current: !browsing && d.path === shown,
               })),
-              onBrowse: () => setBrowsing(true),
+              onBrowse: () => {
+                setBrowsing(true);
+                setTermPane(0);
+              },
               onOpenDoc: (path) => {
                 setShown(path);
                 setBrowsing(false);
+                setTermPane(0);
               },
               onCloseDoc: closeDoc,
             }}
@@ -305,7 +404,47 @@ function App() {
         </div>
       )}
       <div className="app single">
-        <div className="workspace">{main}</div>
+        <div className="workspace">
+          <div className="workspace-main">
+            {focused ? (
+              <div className="pane-grid tab-pane-layout">
+                <section
+                  key={focused.id}
+                  className={`grid-pane first-row selected ${pathLinks.className}`}
+                  {...pathLinks.props}
+                >
+                  {pathLinks.overlay}
+                  <Terminal
+                    pane={focused}
+                    store={store as any}
+                    active
+                    layout="tabs"
+                    onActivate={() => {}}
+                    onError={(error) => w.bridgeErrors.push(String(error))}
+                  />
+                </section>
+              </div>
+            ) : (
+              main
+            )}
+            {editors}
+          </div>
+          {sideDoc && (
+            <SidePanel
+              doc={sideDoc}
+              documents={documents}
+              home={home}
+              maxRead={client.limits.max_read_bytes}
+              hidden={phone || !focused}
+              width={sideWidth}
+              onWidth={setSideWidth}
+              onClose={() => closeDoc(sideDoc.path)}
+              onReveal={() => {}}
+              onMove={() => {}}
+              jump={side?.jump}
+            />
+          )}
+        </div>
       </div>
       {confirm && (
         <ConfirmDialog

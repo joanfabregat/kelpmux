@@ -55,6 +55,7 @@ test("parked terminals and preferences are this browser's", () => {
   assert.deepEqual(loadPreferences(), {
     sidebarWidth: SIDEBAR_MAX,
     sidebarFolded: true,
+    sidePanelWidth: defaultPreferences.sidePanelWidth,
     sound: true,
     notificationEvents: {
       question: true,
@@ -72,6 +73,16 @@ test("parked terminals and preferences are this browser's", () => {
     '{"sidebarWidth":10}',
   );
   assert.equal(loadPreferences().sidebarWidth, SIDEBAR_MIN);
+  globalThis.localStorage.setItem(
+    "kelpmux-web-preferences",
+    '{"sidePanelWidth":5}',
+  );
+  assert.equal(loadPreferences().sidePanelWidth, 280);
+  globalThis.localStorage.setItem(
+    "kelpmux-web-preferences",
+    '{"sidePanelWidth":700.4}',
+  );
+  assert.equal(loadPreferences().sidePanelWidth, 700);
   globalThis.localStorage.setItem("kelpmux-web-preferences", "{bad");
   assert.deepEqual(loadPreferences(), defaultPreferences);
   delete globalThis.localStorage;

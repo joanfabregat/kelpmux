@@ -7,8 +7,13 @@
 // onto a terminal's row (its shell-quoted path appears on that terminal's
 // screen), moves it into a folder by dragging, moves a file to the trash
 // (~/.local/share/Trash/files) and deletes a folder permanently, and
-// uploads a desktop file dropped on a folder into that folder. Then the
-// phone layout. Needs a built kelpmux (KELPMUX_BINARY, default
+// uploads a desktop file dropped on a folder into that folder. With a
+// terminal shown alone, it opens a file beside it (the terminal loses
+// columns), saves an edit from the side panel with Ctrl+S, types into the
+// terminal after a click on it, closes the panel (the columns come back),
+// finds a printed path that does not exist not clickable and Ctrl-clicks
+// one that does, which opens beside the terminal at its line. Then the
+// phone layout, where Open beside terminal opens the editor full screen. Needs a built kelpmux (KELPMUX_BINARY, default
 // ../../target/release/kelpmux) and web/public/client-core.wasm. Set
 // FILES_SCREENSHOTS to a directory to save screenshots.
 import { build } from "vite";
@@ -262,10 +267,10 @@ try {
     (cwd) => window.session.rpc("new", { request: "files-term", cwd }),
     home,
   );
-  await page.evaluate((pane) => {
+  await page.evaluate(({ pane, home }) => {
     window.session.request("subscribe", { panes: [pane] });
-    window.openTerminal(pane, "shell");
-  }, pane);
+    window.openTerminal(pane, "shell", home);
+  }, { pane, home });
   await page.locator(`.term-row[data-pane="${pane}"]`).waitFor();
   await row(page, "my notes.txt").dragTo(
     page.locator(`.term-row[data-pane="${pane}"]`),
@@ -350,6 +355,171 @@ try {
   assert.deepEqual(readdirSync(join(home, "docs")).sort(), ["readme.md", "upload.txt"]);
   console.log("PASS: a desktop file dropped on a folder uploads into it");
 
+  // The side panel: a file opened beside the terminal last shown alone,
+  // which narrows that terminal; edits save from it with Ctrl+S; the
+  // terminal keeps its input; closing it gives the terminal its columns
+  // back.
+  mkdirSync(join(home, "src"));
+  writeFileSync(
+    join(home, "src/x.py"),
+    "one = 1\ntwo = 2\nthree = 3\nfour = 4\n",
+  );
+  // Unsaved edits in the main area survive showing a terminal and coming
+  // back to the file (its editor stays mounted); then they save.
+  await row(page, "docs").getByRole("button", { name: /^docs,/ }).click();
+  await row(page, "readme.md").getByRole("button", { name: /^readme.md,/ }).click();
+  const readme = page.locator(
+    '.files-editor:not([hidden])[data-path$="/readme.md"] .cm-content',
+  );
+  await readme.waitFor();
+  await readme.click();
+  await page.keyboard.press("Control+End");
+  await page.keyboard.type("kept while away\n");
+  await page.evaluate((pane) => window.showTerminal(pane), pane);
+  await page.locator(".terminal canvas").waitFor();
+  await readme.waitFor({ state: "hidden" });
+  await page
+    .locator('.doc-row[data-doc$="/readme.md"]')
+    .getByRole("button", { name: /^Open file readme.md \(unsaved changes\)/ })
+    .click();
+  await readme.waitFor();
+  assert.match(await readme.innerText(), /kept while away/);
+  await page
+    .locator('.files-editor:not([hidden])[data-path$="/readme.md"] .files-head .files-dirty')
+    .waitFor();
+  await readme.click();
+  await page.keyboard.press("Control+s");
+  await onDisk(
+    () => read(join(home, "docs/readme.md")) === "# Read me\nkept while away\n",
+    "saved after coming back",
+  );
+  console.log("PASS: unsaved edits survive switching to a terminal and back, then save");
+  await page.locator('[data-view="files"]').click();
+  await page.locator(".files-crumb", { hasText: "Home" }).click();
+  await row(page, "src").waitFor();
+
+  await page.evaluate((pane) => window.showTerminal(pane), pane);
+  const canvas = page.locator(".terminal canvas");
+  await canvas.waitFor();
+  const cols = () => page.evaluate((pane) => window.screenCols(pane), pane);
+  await page.waitForFunction((pane) => window.screenCols(pane) > 120, pane, {
+    timeout: 10000,
+  });
+  await page.waitForTimeout(400);
+  const wide = await cols();
+  await page.evaluate(() => window.showFiles());
+  await row(page, "src").getByRole("button", { name: /^src,/ }).click();
+  await action(page, "x.py", "Open beside terminal");
+  const panel = page.locator(".side-panel:not([hidden])");
+  await panel.locator(".cm-content").waitFor();
+  await canvas.waitFor();
+  await page.waitForFunction(
+    ({ pane, wide }) => window.screenCols(pane) < wide - 20,
+    { pane, wide },
+    { timeout: 10000 },
+  );
+  const narrow = await cols();
+  console.log(`PASS: Open beside terminal shows the file beside it (${wide} -> ${narrow} columns)`);
+
+  await panel.locator(".cm-content").click();
+  await page.keyboard.press("Control+End");
+  await page.keyboard.type("five = 5\n");
+  await panel.locator(".files-dirty").waitFor();
+  await page.keyboard.press("Control+s");
+  await onDisk(
+    () => read(join(home, "src/x.py"))?.endsWith("four = 4\nfive = 5\n"),
+    "saved from the side panel",
+  );
+  await panel.locator(".files-dirty").waitFor({ state: "detached" });
+  console.log("PASS: edits in the side panel save with Ctrl+S (checked on disk)");
+
+  // Clicking the terminal gives it the keyboard; the panel's file is
+  // untouched. Clear the paths typed earlier, then print two paths.
+  await canvas.click();
+  await page.keyboard.press("Control+u");
+  await page.keyboard.type("echo src/x.py:3; echo nothere/y.py:2\n");
+  const rowOf = (text) =>
+    page.evaluate(
+      ({ pane, text }) =>
+        window
+          .screenText(pane)
+          .split("\n")
+          .findLastIndex((line) => line.trimEnd() === text),
+      { pane, text },
+    );
+  await page.waitForFunction(
+    ({ pane }) =>
+      window
+        .screenText(pane)
+        .split("\n")
+        .some((line) => line.trimEnd() === "nothere/y.py:2"),
+    { pane },
+    { timeout: 10000 },
+  );
+  assert.equal(await panel.locator(".files-dirty").count(), 0);
+  assert.ok(read(join(home, "src/x.py")).endsWith("five = 5\n"));
+  console.log("PASS: clicking the terminal sends the keyboard to it, not the panel");
+
+  await panel.getByRole("button", { name: "Close x.py" }).click();
+  await page.locator(".side-panel").waitFor({ state: "detached" });
+  await page.waitForFunction(
+    ({ pane, wide }) => window.screenCols(pane) === wide,
+    { pane, wide },
+    { timeout: 10000 },
+  );
+  console.log("PASS: closing the side panel gives the terminal its columns back");
+
+  // Cmd/Ctrl-click: a path that does not exist is never underlined nor
+  // clickable; one that does opens beside the terminal at its line.
+  const point = async (text) => {
+    const y = await rowOf(text);
+    assert.ok(y >= 0, `${text} on screen`);
+    return page.evaluate((y) => window.cellPoint(4, y), y);
+  };
+  const missing = await point("nothere/y.py:2");
+  await page.keyboard.down("Control");
+  await page.mouse.move(missing.x, missing.y);
+  await page.waitForTimeout(600);
+  assert.equal(await page.locator(".path-link-underline").count(), 0);
+  await page.mouse.click(missing.x, missing.y);
+  await page.keyboard.up("Control");
+  await page.waitForTimeout(400);
+  assert.equal(await page.locator(".side-panel").count(), 0);
+  console.log("PASS: a path that does not exist is not a link");
+
+  const found = await point("src/x.py:3");
+  await page.mouse.move(found.x + 30, found.y + 60);
+  await page.keyboard.down("Control");
+  await page.mouse.move(found.x, found.y);
+  const underline = page.locator(".path-link-underline");
+  await underline.waitFor();
+  assert.equal(await underline.getAttribute("data-path"), join(home, "src/x.py"));
+  assert.equal(
+    await canvas.evaluate((c) => getComputedStyle(c).cursor),
+    "pointer",
+  );
+  await shot(page, "desktop-path-hover");
+  await page.mouse.down();
+  await page.mouse.up();
+  await page.keyboard.up("Control");
+  await panel.locator(".cm-content").waitFor();
+  await page.waitForFunction(
+    () =>
+      document.querySelector(".side-panel .cm-activeLine")?.textContent ===
+      "three = 3",
+    null,
+    { timeout: 10000 },
+  );
+  await page.waitForFunction(
+    ({ pane, wide }) => window.screenCols(pane) < wide - 20,
+    { pane, wide },
+    { timeout: 10000 },
+  );
+  await underline.waitFor({ state: "detached" });
+  await page.waitForTimeout(300);
+  await shot(page, "desktop-side-panel");
+  console.log("PASS: Ctrl-click on a printed path:line opens it beside the terminal at that line");
+
   const errors = await page.evaluate(() => window.bridgeErrors);
   assert.deepEqual(errors, []);
   await close();
@@ -365,6 +535,24 @@ try {
   );
   await row(phone.page, "docs").waitFor();
   await shot(phone.page, "phone-browser");
+  // A phone has no side panel: Open beside terminal opens the editor
+  // full screen.
+  const { pane: phonePane } = await phone.page.evaluate(
+    (cwd) => window.session.rpc("new", { request: "files-phone", cwd }),
+    home,
+  );
+  await phone.page.evaluate(
+    ({ pane, home }) => window.openTerminal(pane, "shell", home),
+    { pane: phonePane, home },
+  );
+  await action(phone.page, "todo.md", "Open beside terminal");
+  await phone.page.locator(".files-editor .cm-content").waitFor();
+  assert.equal(await phone.page.locator(".side-panel:not([hidden])").count(), 0);
+  await phone.page.waitForTimeout(200);
+  await shot(phone.page, "phone-open-beside");
+  await phone.page.getByRole("button", { name: "Close todo.md" }).click();
+  await row(phone.page, "docs").waitFor();
+  console.log("PASS: on a phone, Open beside terminal opens the editor full screen");
   await row(phone.page, "docs").getByRole("button", { name: /^docs,/ }).click();
   await row(phone.page, "readme.md").getByRole("button", { name: /^readme.md,/ }).click();
   await phone.page.locator(".files-editor .cm-content").waitFor();

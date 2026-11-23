@@ -3,8 +3,10 @@
 // KelpCore's CodeMirror editor, or an information view for binary, too
 // large or unreadable files. A save that finds the file changed on disk
 // offers Reload (discarding the edits), Overwrite or Cancel. CodeMirror is
-// loaded with the first file opened.
-import React, { Suspense, lazy, useRef } from "react";
+// loaded with the first file opened. The same view is the side panel
+// beside a terminal (`side`), and either place can move the file to the
+// other (`onMove`).
+import React, { Suspense, lazy, useEffect, useRef } from "react";
 import { formatBytes } from "@kelpcore/web/uploads.ts";
 import { canSave, languageFor } from "@kelpcore/web/files/model.ts";
 import {
@@ -29,6 +31,10 @@ export function FileEditor({
   onClose,
   onReveal,
   onBack,
+  side = false,
+  hidden = false,
+  onMove,
+  jump,
 }: {
   doc: OpenDoc;
   documents: Documents;
@@ -41,11 +47,57 @@ export function FileEditor({
   onReveal: () => void;
   /** The phone's back button to the terminal list. */
   onBack?: () => void;
+  /** Shown in the side panel beside a terminal, not the main area. */
+  side?: boolean;
+  /** Mounted but not shown (another view or file is): the buffer and
+   * its unsaved edits stay. */
+  hidden?: boolean;
+  /** Moves the file to the other place: beside the terminal from the main
+   * area, to the main area from the side panel. Only a file without
+   * unsaved changes moves (the buffer lives in the mounted editor). */
+  onMove?: () => void;
+  /** A position to show and put the cursor at (1-based); a new `seq`
+   * jumps again. */
+  jump?: { line: number; col?: number; seq: number };
 }) {
   // Editors call back with the path they were created with; the document's
   // current path (after a rename) is the one that counts.
   const path = useRef(doc.path);
   path.current = doc.path;
+  const section = useRef<HTMLElement>(null);
+  const jumped = useRef(0);
+  const ready = !!doc.version && doc.status !== "binary" && doc.status !== "too_large";
+  useEffect(() => {
+    if (!jump || !ready || jumped.current === jump.seq) return;
+    let alive = true,
+      tries = 0;
+    // The editor mounts once CodeMirror has loaded: wait for its view.
+    void import("@codemirror/view").then(({ EditorView }) => {
+      const go = () => {
+        if (!alive) return;
+        const dom = section.current?.querySelector<HTMLElement>(".cm-editor");
+        const view = dom && EditorView.findFromDOM(dom);
+        if (!view) {
+          if (tries++ < 300) requestAnimationFrame(go);
+          return;
+        }
+        jumped.current = jump.seq;
+        const text = view.state.doc;
+        const line = text.line(Math.max(1, Math.min(text.lines, jump.line)));
+        const at =
+          line.from + Math.max(0, Math.min(line.length, (jump.col || 1) - 1));
+        view.dispatch({
+          selection: { anchor: at },
+          effects: EditorView.scrollIntoView(at, { y: "center" }),
+        });
+        view.focus();
+      };
+      go();
+    });
+    return () => {
+      alive = false;
+    };
+  }, [jump, ready, doc.id]);
   const name = baseName(doc.path);
   const folder = displayPath(parentPath(doc.path), home);
   const saving = doc.status === "saving";
@@ -109,10 +161,25 @@ export function FileEditor({
     );
   return (
     <section
-      className="files-view files-editor"
-      aria-label={`Editor: ${name}`}
+      ref={section}
+      hidden={hidden}
+      className={`files-view files-editor ${side ? "files-side" : ""}`}
+      aria-label={`${side ? "Side panel" : "Editor"}: ${name}`}
       data-path={doc.path}
       onClick={(event) => event.stopPropagation()}
+      onKeyDown={(event) => {
+        // Ctrl/Cmd+S anywhere in the view (the editor handles its own).
+        if (
+          (event.ctrlKey || event.metaKey) &&
+          !event.altKey &&
+          event.key.toLowerCase() === "s" &&
+          !event.defaultPrevented
+        ) {
+          event.preventDefault();
+          if (doc.dirty && canSave(doc) && !saving)
+            void documents.save(doc.path);
+        }
+      }}
     >
       <header className="files-head">
         {onBack && (
@@ -160,6 +227,24 @@ export function FileEditor({
           >
             <Icon name="refresh-cw" size="sm" />
           </button>
+          {onMove && (
+            <button
+              type="button"
+              className="icon-btn"
+              title={
+                doc.dirty
+                  ? "Save first to move the file"
+                  : side
+                    ? "Open in the main area"
+                    : "Move beside terminal"
+              }
+              aria-label={side ? "Open in the main area" : "Move beside terminal"}
+              disabled={doc.dirty}
+              onClick={onMove}
+            >
+              <Icon name={side ? "maximize-2" : "panel-right"} size="sm" />
+            </button>
+          )}
           <button
             type="button"
             className="icon-btn"
@@ -194,9 +279,9 @@ export function FileEditor({
           <section
             className="confirm-dialog files-conflict"
             role="alertdialog"
-            aria-labelledby="files-conflict-title"
+            aria-labelledby={`files-conflict-title-${doc.id}`}
           >
-            <h2 id="files-conflict-title">{name} changed on disk</h2>
+            <h2 id={`files-conflict-title-${doc.id}`}>{name} changed on disk</h2>
             <p>
               The file changed since it was opened here. Reload it (your
               unsaved changes are lost), overwrite it with your version, or

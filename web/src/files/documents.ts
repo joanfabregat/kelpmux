@@ -54,12 +54,16 @@ export function useDocuments(client: FilesClient | null) {
     },
     [client, saveLimit],
   );
-  /** Opens a file (or shows it again when it is already open). */
+  /** Opens a file (or shows it again when it is already open); returns
+   * its document's identity. */
   const open = useCallback(
     (path: string) => {
-      if (get(path)) return;
-      setDocs((all) => [...all, { ...newDoc(path), id: ++serial }]);
+      const existing = get(path);
+      if (existing) return existing.id;
+      const id = ++serial;
+      setDocs((all) => [...all, { ...newDoc(path), id }]);
       void load(path);
+      return id;
     },
     [load],
   );

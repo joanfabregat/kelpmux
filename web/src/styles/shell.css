@@ -636,7 +636,15 @@ button.icon-btn.term-tab-close {
 }
 
 /* ───────── Terminal area ───────── */
+/* The main area, and the side panel (files.css) to its right. */
 .workspace {
+  position: relative;
+  display: flex;
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+}
+.workspace-main {
   position: relative;
   display: flex;
   flex: 1;

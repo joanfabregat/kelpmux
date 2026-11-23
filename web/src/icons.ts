@@ -69,6 +69,10 @@ export const icons = {
     '<rect width="18" height="18" x="3" y="3" rx="2" /> <path d="M9 3v18" /> <path d="m16 15-3-3 3-3" />',
   "panel-left-open":
     '<rect width="18" height="18" x="3" y="3" rx="2" /> <path d="M9 3v18" /> <path d="m14 9 3 3-3 3" />',
+  "panel-right":
+    '<rect width="18" height="18" x="3" y="3" rx="2" /> <path d="M15 3v18" />',
+  "maximize-2":
+    '<path d="M15 3h6v6" /> <path d="m21 3-7 7" /> <path d="m3 21 7-7" /> <path d="M9 21H3v-6" />',
   "folder-git-2":
     '<path d="M18 19a5 5 0 0 1-5-5v8" /> <path d="M9 20H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h3.9a2 2 0 0 1 1.69.9l.81 1.2a2 2 0 0 0 1.67.9H20a2 2 0 0 1 2 2v5" /> <circle cx="13" cy="12" r="2" /> <circle cx="20" cy="19" r="2" />',
   "arrow-right": '<path d="M5 12h14" /> <path d="m12 5 7 7-7 7" />',
