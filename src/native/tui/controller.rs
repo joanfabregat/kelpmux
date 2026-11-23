@@ -499,8 +499,8 @@ impl Controller {
             Event::History { request, .. } | Event::Diagnostics { request, .. } => {
                 self.pending.remove(&request);
             }
-            // The TUI never begins an upload or a file request, so it has
-            // no batch or reply to follow.
+            // The TUI never begins an upload, a file request or a download,
+            // so it has no batch, download or reply to follow.
             Event::UploadStarted { .. }
             | Event::UploadProgress { .. }
             | Event::UploadDone { .. }
@@ -510,7 +510,10 @@ impl Controller {
             | Event::FileContent { .. }
             | Event::FileWritten { .. }
             | Event::FileRemoved { .. }
-            | Event::FileError { .. } => {}
+            | Event::FileError { .. }
+            | Event::FileDownloadStarted { .. }
+            | Event::FileDownloadChunk { .. }
+            | Event::FileDownloadDone { .. } => {}
             Event::Search {
                 request, results, ..
             } => {

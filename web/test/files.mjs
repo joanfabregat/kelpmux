@@ -7,7 +7,11 @@
 // onto a terminal's row (its shell-quoted path appears on that terminal's
 // screen), moves it into a folder by dragging, moves a file to the trash
 // (~/.local/share/Trash/files) and deletes a folder permanently, and
-// uploads a desktop file dropped on a folder into that folder. With a
+// uploads a desktop file dropped on a folder into that folder. It downloads
+// a file from its menu (the browser's downloads), a folder as a .tar.gz
+// (through a stand-in save picker, decoded) and a file from the editor,
+// and cancels a stalled download; a bridge without downloads shows no
+// Download item or button. With a
 // terminal shown alone, it opens a file beside it (the terminal loses
 // columns), saves an edit from the side panel with Ctrl+S, types into the
 // terminal after a click on it, closes the panel (the columns come back),
@@ -355,6 +359,147 @@ try {
   assert.deepEqual(readdirSync(join(home, "docs")).sort(), ["readme.md", "upload.txt"]);
   console.log("PASS: a desktop file dropped on a folder uploads into it");
 
+  // Downloads. The save picker is a stand-in that keeps the bytes in the
+  // page (`window.saved`), with `window.hold` to stall its writes; without
+  // it the browser's downloads get a Blob.
+  await page.evaluate(() => {
+    window.saved = {};
+    window.showSaveFilePicker = async ({ suggestedName }) => ({
+      createWritable: async () => {
+        const file = (window.saved[suggestedName] = { parts: [], state: "open" });
+        return {
+          write: async (bytes) => {
+            if (window.hold) await window.hold;
+            file.parts.push(new Uint8Array(bytes));
+          },
+          close: async () => void (file.state = "closed"),
+          abort: async () => void (file.state = "aborted"),
+        };
+      },
+    });
+    window.savedBase64 = (name) => {
+      const file = window.saved[name];
+      let text = "";
+      for (const part of file.parts)
+        for (const byte of part) text += String.fromCharCode(byte);
+      return { state: file.state, data: btoa(text) };
+    };
+  });
+  const saved = async (name) => {
+    await page.waitForFunction(
+      (name) => window.saved[name]?.state === "closed",
+      name,
+      { timeout: 20000 },
+    );
+    const { data } = await page.evaluate((name) => window.savedBase64(name), name);
+    return Buffer.from(data, "base64");
+  };
+  /** A ustar archive's entries: name, type flag and content. */
+  const untar = (archive) => {
+    const entries = [];
+    for (let at = 0; at + 512 <= archive.length; ) {
+      const header = archive.subarray(at, at + 512);
+      if (header.every((b) => b === 0)) break;
+      const field = (from, length) =>
+        header.subarray(from, from + length).toString("latin1").replace(/\0.*$/s, "");
+      const size = parseInt(field(124, 12) || "0", 8);
+      const prefix = field(345, 155);
+      const name = (prefix ? `${prefix}/` : "") + field(0, 100);
+      entries.push({
+        name,
+        type: field(156, 1) || "0",
+        content: archive.subarray(at + 512, at + 512 + size).toString("utf8"),
+      });
+      at += 512 + Math.ceil(size / 512) * 512;
+    }
+    return entries;
+  };
+
+  // A file from its menu, through the browser's downloads (no picker).
+  writeFileSync(join(home, "report.txt"), "quarterly numbers\n");
+  await page.getByRole("button", { name: "Refresh" }).click();
+  await row(page, "report.txt").waitFor();
+  await page.evaluate(() => {
+    window.picker = window.showSaveFilePicker;
+    delete window.showSaveFilePicker;
+  });
+  const [download] = await Promise.all([
+    page.waitForEvent("download"),
+    action(page, "report.txt", "Download"),
+  ]);
+  assert.equal(download.suggestedFilename(), "report.txt");
+  assert.equal(readFileSync(await download.path(), "utf8"), "quarterly numbers\n");
+  await page.waitForFunction(() =>
+    window.toasts.some((t) => /Downloaded “report.txt”/.test(t.message)),
+  );
+  await page.evaluate(() => (window.showSaveFilePicker = window.picker));
+  console.log("PASS: a file downloads as itself from its menu");
+
+  // A folder as a .tar.gz archive, streamed to the picked file.
+  mkdirSync(join(home, "docs/deep"), { recursive: true });
+  writeFileSync(join(home, "docs/deep/inner.txt"), "inside\n");
+  await action(page, "docs", "Download as .tar.gz");
+  const { gunzipSync } = await import("node:zlib");
+  const entries = untar(gunzipSync(await saved("docs.tar.gz")));
+  assert.deepEqual(
+    entries.map((e) => e.name),
+    [
+      "docs/",
+      "docs/deep/",
+      "docs/deep/inner.txt",
+      "docs/readme.md",
+      "docs/upload.txt",
+    ],
+  );
+  assert.equal(entries.find((e) => e.name === "docs/deep/inner.txt").content, "inside\n");
+  assert.equal(entries.find((e) => e.name === "docs/readme.md").content, "# Read me\n");
+  await page.locator(".download-toast").waitFor({ state: "detached" });
+  console.log("PASS: a folder downloads as a .tar.gz archive (decoded)");
+
+  // From the editor's header.
+  await row(page, "report.txt").getByRole("button", { name: /^report.txt,/ }).click();
+  await page.locator('.files-editor:not([hidden])[data-path$="/report.txt"] .cm-content').waitFor();
+  await page.getByRole("button", { name: "Download report.txt" }).click();
+  assert.equal((await saved("report.txt")).toString("utf8"), "quarterly numbers\n");
+  await page.locator('.files-editor:not([hidden])[data-path$="/report.txt"]').getByRole("button", { name: "Close report.txt" }).click();
+  await row(page, "docs").waitFor();
+  console.log("PASS: the editor downloads its file");
+
+  // Cancel: with the disk stalled, the progress toast's Cancel stops the
+  // download and discards the partial file; no error is shown.
+  writeFileSync(join(home, "big.bin"), Buffer.alloc(6 * 1024 * 1024, 7));
+  await page.getByRole("button", { name: "Refresh" }).click();
+  await row(page, "big.bin").waitFor();
+  await page.evaluate(() => {
+    window.hold = new Promise((resolve) => (window.release = resolve));
+  });
+  const errorsBefore = await page.evaluate(() =>
+    window.toasts.filter((t) => t.tone === "error").length,
+  );
+  await action(page, "big.bin", "Download");
+  const progress = page.locator('.download-toast[data-download="big.bin"]');
+  await progress.waitFor();
+  await shot(page, "desktop-download-progress");
+  await progress.getByRole("button", { name: "Cancel the download of big.bin" }).click();
+  await progress.waitFor({ state: "detached" });
+  await page.waitForFunction(() => window.saved["big.bin"]?.state === "aborted");
+  await page.evaluate(() => {
+    window.release();
+    window.hold = null;
+  });
+  await page.waitForTimeout(300);
+  assert.equal(
+    await page.evaluate(() => window.toasts.filter((t) => t.tone === "error").length),
+    errorsBefore,
+  );
+  // The connection stays usable: another download completes.
+  await page.evaluate(() => (window.saved = {}));
+  await action(page, "report.txt", "Download");
+  await page.waitForFunction(
+    () => window.saved["report.txt"]?.parts.length && window.saved["report.txt"].state === "closed",
+  );
+  console.log("PASS: Cancel stops a download and discards the partial file");
+
   // The side panel: a file opened beside the terminal last shown alone,
   // which narrows that terminal; edits save from it with Ctrl+S; the
   // terminal keeps its input; closing it gives the terminal its columns
@@ -523,6 +668,25 @@ try {
   const errors = await page.evaluate(() => window.bridgeErrors);
   assert.deepEqual(errors, []);
   await close();
+
+  // A bridge that does not relay downloads (API minor 2): no Download item
+  // in the menus, no Download button in the editor.
+  const old = await open(
+    browser,
+    { viewport: { width: 1440, height: 900 }, deviceScaleFactor: 1 },
+    "?nodownloads=1",
+  );
+  await row(old.page, "docs").waitFor();
+  await row(old.page, "report.txt").hover();
+  await old.page.getByRole("button", { name: "Actions for report.txt" }).click();
+  await old.page.getByRole("menuitem", { name: "Copy path" }).waitFor();
+  assert.equal(await old.page.getByRole("menuitem", { name: /Download/ }).count(), 0);
+  await old.page.keyboard.press("Escape");
+  await row(old.page, "report.txt").getByRole("button", { name: /^report.txt,/ }).click();
+  await old.page.locator(".files-editor:not([hidden]) .cm-content").waitFor();
+  assert.equal(await old.page.getByRole("button", { name: /^Download/ }).count(), 0);
+  await old.close();
+  console.log("PASS: without downloads on the bridge, no Download item or button");
 
   // The phone: the browser and an open file, full width.
   mkdirSync(join(home, "Downloads"));

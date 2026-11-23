@@ -143,6 +143,8 @@ export function useDocuments(client: FilesClient | null) {
     );
   return {
     docs,
+    /** The files client (downloads start from the editor too). */
+    client,
     saveLimit,
     open,
     load,

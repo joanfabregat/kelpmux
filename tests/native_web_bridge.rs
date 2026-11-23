@@ -748,12 +748,13 @@ fn repos_and_commands_report_read_only_facts_for_the_terminals_table() {
     welcome(&mut bridge);
     let state = bridge.web(1, "state", json!({}));
     assert_eq!(state["result"]["api_version"], 3);
-    assert_eq!(state["result"]["api_minor"], 2);
+    assert_eq!(state["result"]["api_minor"], 3);
     let operations = state["result"]["operations"].as_array().unwrap();
     assert!(operations.iter().any(|op| op == "repos"));
     assert!(operations.iter().any(|op| op == "commands"));
     assert!(operations.iter().any(|op| op == "uploads"));
     assert!(operations.iter().any(|op| op == "files"));
+    assert!(operations.iter().any(|op| op == "downloads"));
 
     let checkout = server.root.join("checkout/src");
     let repos = bridge.web(
@@ -1120,7 +1121,7 @@ fn file_requests_and_replies_are_relayed_unchanged() {
     }
     assert_eq!(limits["max_read_bytes"], 8 * 1024 * 1024);
     let state = bridge.web(1, "state", json!({}));
-    assert_eq!(state["result"]["api_minor"], 2);
+    assert_eq!(state["result"]["api_minor"], 3);
     assert!(
         state["result"]["operations"]
             .as_array()
@@ -1254,4 +1255,97 @@ fn file_requests_and_replies_are_relayed_unchanged() {
     // Pane traffic keeps flowing on the same relayed connection.
     let created = bridge.web(2, "new", json!({"request": "web-file-1"}));
     assert!(created["result"]["pane"].as_u64().is_some(), "{created}");
+}
+
+/// Downloads (`file-downloads`, bridge API minor 3): the bridge relays the
+/// begin, every chunk and its acknowledgement, and the end unchanged, and
+/// Welcome's `file_limits.downloads` survives its re-serialisation.
+#[test]
+fn downloads_are_relayed_with_their_acknowledgements() {
+    use base64::Engine as _;
+    let server = Server::start();
+    let mut bridge = Bridge::start(&server);
+    let welcome = welcome(&mut bridge);
+    assert!(
+        welcome["capabilities"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|c| c == "file-downloads"),
+        "{welcome}"
+    );
+    let limits = &welcome["file_limits"]["downloads"];
+    for key in [
+        "chunk_bytes",
+        "max_chunks_in_flight",
+        "max_downloads",
+        "max_archive_entries",
+        "max_archive_bytes",
+    ] {
+        assert!(
+            limits[key].as_u64().is_some_and(|n| n > 0),
+            "{key}: {welcome}"
+        );
+    }
+    let state = bridge.web(1, "state", json!({}));
+    assert!(
+        state["result"]["operations"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|op| op == "downloads")
+    );
+    // Three chunks' worth, so acknowledgements matter.
+    let chunk = limits["chunk_bytes"].as_u64().unwrap() as usize;
+    let content: Vec<u8> = (0..chunk * 2 + 1000).map(|i| (i * 7 % 251) as u8).collect();
+    let path = server.root.join("data.bin");
+    fs::write(&path, &content).unwrap();
+    bridge.send(json!({"Stream": {"type": "file_download_begin", "request": "file-d1", "paths": [path.to_str().unwrap()]}}));
+    let started =
+        bridge.expect("started", |v| v["Stream"]["request"] == "file-d1")["Stream"].clone();
+    assert_eq!(started["type"], "file_download_started", "{started}");
+    assert_eq!(started["name"], "data.bin");
+    assert_eq!(started["size"], content.len());
+    let download = started["download"].as_u64().unwrap();
+    let mut received = Vec::new();
+    loop {
+        let event =
+            bridge.expect("download event", |v| v["Stream"]["download"] == download)["Stream"]
+                .clone();
+        match event["type"].as_str().unwrap() {
+            "file_download_chunk" => {
+                assert_eq!(event["offset"], received.len());
+                received.extend(
+                    base64::engine::general_purpose::STANDARD
+                        .decode(event["data"].as_str().unwrap())
+                        .unwrap(),
+                );
+                bridge.send(json!({"Stream": {"type": "file_download_ack", "download": download, "offset": received.len()}}));
+            }
+            "file_download_done" => {
+                assert_eq!(event["size"], content.len(), "{event}");
+                assert_eq!(event["hash"].as_str().unwrap().len(), 64);
+                break;
+            }
+            other => panic!("{other}: {event}"),
+        }
+    }
+    assert_eq!(received, content);
+    // A folder comes as a gzip stream; a cancel is acknowledged.
+    fs::create_dir(server.root.join("folder")).unwrap();
+    fs::write(server.root.join("folder/a.txt"), "a").unwrap();
+    bridge.send(json!({"Stream": {"type": "file_download_begin", "request": "file-d2", "paths": [server.root.join("folder").to_str().unwrap()], "archive": "tar.gz"}}));
+    let started =
+        bridge.expect("archive", |v| v["Stream"]["request"] == "file-d2")["Stream"].clone();
+    assert_eq!(started["name"], "folder.tar.gz", "{started}");
+    assert_eq!(started["archive"], "tar.gz");
+    let download = started["download"].as_u64().unwrap();
+    let first = bridge.expect("chunk", |v| v["Stream"]["download"] == download)["Stream"].clone();
+    let gzip = base64::engine::general_purpose::STANDARD
+        .decode(first["data"].as_str().unwrap())
+        .unwrap();
+    assert_eq!(&gzip[..2], [0x1f, 0x8b]);
+    bridge.send(json!({"Stream": {"type": "file_download_cancel", "request": "file-d3", "download": download}}));
+    let done = bridge.expect("cancel", |v| v["Stream"]["request"] == "file-d3")["Stream"].clone();
+    assert_eq!(done["type"], "done", "{done}");
 }
