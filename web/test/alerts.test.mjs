@@ -49,13 +49,17 @@ test("parked terminals and preferences are this browser's", () => {
     sidebarFolded: true,
     sound: true,
     desktop: "yes",
+    hardwareKeyboard: "sometimes",
   });
   assert.deepEqual(loadPreferences(), {
     sidebarWidth: SIDEBAR_MAX,
     sidebarFolded: true,
     sound: true,
     desktop: false,
+    hardwareKeyboard: "auto",
   });
+  savePreferences({ ...defaultPreferences, hardwareKeyboard: "on" });
+  assert.equal(loadPreferences().hardwareKeyboard, "on");
   globalThis.localStorage.setItem(
     "kelpmux-web-preferences",
     '{"sidebarWidth":10}',

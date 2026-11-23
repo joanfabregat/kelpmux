@@ -103,13 +103,20 @@ import {
 } from "./state/model";
 import { useReadShown } from "./state/read";
 import { prefixAction } from "./prefix";
-import { KeyBar, PhoneBar, useDevice, useVisualViewport } from "./Mobile";
+import {
+  KeyBar,
+  PhoneBar,
+  useDevice,
+  useHardwareKeys,
+  useVisualViewport,
+} from "./Mobile";
 import { sidebarFolded } from "./device";
 import {
   barKeyBytes,
   consumesCtrl,
   nextInputMode,
   type BarKey,
+  type HardwareKeyboard,
   type InputMode,
 } from "./terminal/touch-keys";
 import { chime, desktopAlert, freshNotifications, newestId } from "./alerts";
@@ -1098,16 +1105,56 @@ function App() {
     acknowledge,
   );
   // Opening or switching terminals returns to reading: the on-screen
-  // keyboard never appears on its own.
+  // keyboard never appears on its own. With the hardware keyboard setting
+  // On, a touch device opens terminals in input mode instead, focusing the
+  // input without the on-screen keyboard.
+  const hardwareKeyboard: HardwareKeyboard = touch
+    ? preferences.hardwareKeyboard
+    : "off";
+  // Read when a terminal opens; changing the setting affects the next one.
+  const hardwareOnOpen = useRef(hardwareKeyboard);
+  hardwareOnOpen.current = hardwareKeyboard;
   useEffect(() => {
-    setInputMode((mode) => nextInputMode(mode, "open-terminal"));
+    const hardware = hardwareOnOpen.current;
+    setInputMode((mode) => nextInputMode(mode, "open-terminal", hardware));
     setCtrlArmed(false);
+    if (
+      shownPane &&
+      nextInputMode("reading", "open-terminal", hardware) === "input"
+    )
+      showKeyboard(shownPane, true, false);
   }, [shownPane]);
+  // Auto and On: a key typed on a hardware keyboard while the terminal's
+  // input is not focused enters input mode and reaches the terminal.
+  useHardwareKeys(
+    hardwareKeyboard !== "off" &&
+      !!focused &&
+      !(phone && phoneList) &&
+      !overlayOpen,
+    (key) => {
+      const pane = focusedPane();
+      if (!pane || store.closing?.has(pane.id)) return;
+      setInputMode((mode) =>
+        nextInputMode(mode, "hardware-key", hardwareKeyboard),
+      );
+      showKeyboard(pane.id, true, false, key);
+    },
+  );
   /** Shows or hides the on-screen keyboard for a terminal. The store event
-   * is synchronous, so the terminal focuses its input inside this tap. */
-  function showKeyboard(pane: number, show: boolean) {
+   * is synchronous, so the terminal focuses its input inside this tap.
+   * `virtual: false` focuses the input for a hardware keyboard without
+   * showing the on-screen keyboard, and `key` (a hardware key typed while
+   * the input was not focused) is then delivered to the terminal. */
+  function showKeyboard(
+    pane: number,
+    show: boolean,
+    virtual = true,
+    key?: KeyboardEventInit,
+  ) {
     store.events.dispatchEvent(
-      new CustomEvent("terminal-keyboard", { detail: { pane, show } }),
+      new CustomEvent("terminal-keyboard", {
+        detail: { pane, show, virtual, key },
+      }),
     );
   }
   function terminalInput(pane: number, bytes: string, paste = false) {
@@ -2267,6 +2314,7 @@ function App() {
                     setUploadDestination(path);
                   }}
                   uploadUnavailable={uploadUnavailable}
+                  touch={touch}
                 />
               )}
               {dialog === "stats" && (

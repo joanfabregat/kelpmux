@@ -5,6 +5,8 @@ import {
   barKeyBytes,
   barKeys,
   consumesCtrl,
+  hardwareKeyboard,
+  isHardwareKey,
   nextInputMode,
   stickyText,
   withCtrl,
@@ -111,4 +113,59 @@ test("reading is the default; input mode is explicit", () => {
   assert.equal(nextInputMode(mode, "blur"), "reading");
   assert.equal(nextInputMode(mode, "open-terminal"), "reading");
   assert.equal(nextInputMode("reading", "focus"), "input");
+});
+
+test("the hardware keyboard setting decides how input mode starts", () => {
+  // Off, the default argument: unchanged behaviour.
+  assert.equal(nextInputMode("reading", "hardware-key"), "reading");
+  assert.equal(nextInputMode("reading", "hardware-key", "off"), "reading");
+  assert.equal(nextInputMode("input", "hardware-key", "off"), "input");
+  assert.equal(nextInputMode("input", "open-terminal", "off"), "reading");
+  // Auto: reading on open; a hardware key enters input mode.
+  assert.equal(nextInputMode("input", "open-terminal", "auto"), "reading");
+  assert.equal(nextInputMode("reading", "hardware-key", "auto"), "input");
+  // On: terminals open in input mode; a hardware key also enters it.
+  assert.equal(nextInputMode("reading", "open-terminal", "on"), "input");
+  assert.equal(nextInputMode("reading", "hardware-key", "on"), "input");
+  // Hiding, blur and the Input control behave the same in every setting.
+  for (const hardware of ["auto", "on", "off"]) {
+    assert.equal(nextInputMode("input", "hide", hardware), "reading");
+    assert.equal(nextInputMode("input", "blur", hardware), "reading");
+    assert.equal(nextInputMode("input", "input-control", hardware), "reading");
+    assert.equal(nextInputMode("reading", "input-control", hardware), "input");
+    assert.equal(nextInputMode("reading", "key-bar", hardware), "input");
+  }
+});
+
+test("a stored hardware keyboard setting is read safely", () => {
+  assert.equal(hardwareKeyboard("on"), "on");
+  assert.equal(hardwareKeyboard("off"), "off");
+  assert.equal(hardwareKeyboard("auto"), "auto");
+  for (const value of [undefined, null, "", "ON", 1, true, {}])
+    assert.equal(hardwareKeyboard(value), "auto");
+});
+
+test("only keys from a hardware keyboard outside text fields count", () => {
+  const key = (key, extra = {}) => ({
+    key,
+    metaKey: false,
+    isComposing: false,
+    defaultPrevented: false,
+    editable: false,
+    ...extra,
+  });
+  for (const k of ["a", "A", "1", " ", "Enter", "Escape", "Tab", "ArrowUp"])
+    assert.equal(isHardwareKey(key(k)), true, k);
+  assert.equal(isHardwareKey(key("c", { ctrlKey: true })), true, "Ctrl-C");
+  // The on-screen keyboard types into a focused field, never the page.
+  assert.equal(isHardwareKey(key("a", { editable: true })), false);
+  // A shortcut handler already took it.
+  assert.equal(isHardwareKey(key("b", { defaultPrevented: true })), false);
+  // Cmd shortcuts belong to the system and the browser.
+  assert.equal(isHardwareKey(key("Tab", { metaKey: true })), false);
+  assert.equal(isHardwareKey(key("a", { isComposing: true })), false);
+  for (const k of ["Shift", "Control", "Alt", "Meta", "CapsLock", "Fn"])
+    assert.equal(isHardwareKey(key(k)), false, k);
+  for (const k of ["Unidentified", "Dead", "Process", ""])
+    assert.equal(isHardwareKey(key(k)), false, k);
 });
