@@ -1,0 +1,129 @@
+/*
+ * The installed app's title bar (TitleBar.tsx). The manifest asks for
+ * `display_override: ["window-controls-overlay"]`: when the user keeps
+ * Chrome's integrated title bar, the page extends under the OS window
+ * controls, and this bar takes the title bar area. A fixed full-width
+ * surface covers the area behind the controls too; its padding keeps the
+ * content clear of them on either side (macOS on the left, Windows and
+ * Linux on the right). It is the window's drag region. Its background is
+ * --background, the colour main.tsx sets on the theme-color meta, with
+ * which Chrome paints the controls, so the bar and the controls read as
+ * one surface in every theme. Everywhere else (a browser tab, the
+ * standalone fallback when the user turns the overlay off, phones) the bar
+ * is not shown and nothing moves.
+ */
+.titlebar {
+  display: none;
+}
+
+@media (display-mode: window-controls-overlay) {
+  :root {
+    /* The title bar area between the window controls (test/sidebar.mjs
+     * sets these four in place of the env() values). */
+    --titlebar-area-x: env(titlebar-area-x, 0px);
+    --titlebar-area-y: env(titlebar-area-y, 0px);
+    --titlebar-area-width: env(titlebar-area-width, 100%);
+    --titlebar-area-height: env(titlebar-area-height, 32px);
+    /* At least 32 px tall, whatever the OS reports. */
+    --titlebar-height: max(var(--titlebar-area-height), 32px);
+    /* Where the application starts, below the bar. */
+    --app-top: calc(var(--titlebar-area-y) + var(--titlebar-height));
+  }
+  body {
+    padding-top: var(--app-top);
+  }
+  /* The shells fill what is left instead of the whole viewport. */
+  .kelpmux-shell {
+    height: 100%;
+  }
+  .kelpmux-shell.touch {
+    top: calc(var(--vv-top, 0px) + var(--app-top));
+    height: calc(var(--vv-height, 100dvh) - var(--app-top));
+  }
+  .popup-connecting {
+    min-height: 100%;
+  }
+  /* Dialogs dim the application, not the bar. */
+  .modal-shade {
+    top: var(--app-top);
+  }
+  .titlebar {
+    position: fixed;
+    z-index: 55;
+    top: 0;
+    left: 0;
+    display: flex;
+    align-items: center;
+    gap: var(--s2);
+    width: 100%;
+    height: var(--app-top);
+    padding: var(--titlebar-area-y)
+      calc(
+        100% - var(--titlebar-area-x) - var(--titlebar-area-width) + var(--s3)
+      )
+      0 calc(var(--titlebar-area-x) + var(--s3));
+    border-bottom: 1px solid var(--line);
+    background: var(--background);
+    color: var(--text-2);
+    font: 12px / 1 var(--font-ui);
+    white-space: nowrap;
+    container: titlebar / inline-size;
+    user-select: none;
+    -webkit-user-select: none;
+    -webkit-app-region: drag;
+    app-region: drag;
+  }
+  /* Nothing in the bar is interactive today; anything added must not
+   * drag the window. */
+  .titlebar :is(a, button, input, select, textarea, [tabindex]) {
+    -webkit-app-region: no-drag;
+    app-region: no-drag;
+  }
+  /* The bar carries the brand: the sidebar's header keeps its state counts
+   * (and the folded sidebar its mark). */
+  .rail:not(.folded) .rail-head .logo {
+    display: none;
+  }
+}
+
+.titlebar-brand {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: 6px;
+}
+.titlebar .logo-mark {
+  width: 18px;
+  height: 18px;
+  border-radius: 5px;
+}
+.titlebar .logo-mark .svg-icon {
+  width: 12px;
+  height: 12px;
+}
+.titlebar-name {
+  color: var(--text);
+  font-weight: 600;
+}
+.titlebar-location {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.titlebar-location::before {
+  content: "/";
+  margin-right: var(--s2);
+  color: var(--text-3);
+}
+
+/* The usable width, between the window controls. */
+@container titlebar (max-width: 220px) {
+  .titlebar-location {
+    display: none;
+  }
+}
+@container titlebar (max-width: 90px) {
+  .titlebar-name {
+    display: none;
+  }
+}

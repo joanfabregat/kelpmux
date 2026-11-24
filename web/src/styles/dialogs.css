@@ -253,7 +253,10 @@
   position: fixed;
   top: var(
     --attention-end,
-    calc(env(safe-area-inset-top) + 42px + var(--files-bar, 0px))
+    calc(
+      env(safe-area-inset-top) + var(--app-top, 0px) + 42px +
+        var(--files-bar, 0px)
+    )
   );
   right: calc(env(safe-area-inset-right) + var(--s4));
   z-index: 40;
@@ -321,7 +324,10 @@
  * and the terminal bar, far from the key bar at the bottom. */
 .attention-toasts {
   position: fixed;
-  top: calc(env(safe-area-inset-top) + 42px + var(--files-bar, 0px));
+  top: calc(
+    env(safe-area-inset-top) + var(--app-top, 0px) + 42px +
+      var(--files-bar, 0px)
+  );
   right: calc(env(safe-area-inset-right) + var(--s4));
   z-index: 9;
   display: grid;

@@ -33,6 +33,11 @@
 // 7. One toast stack, top right: the attention toasts, then download
 //    progress and confirmations, newest first, none overlapping, and on a
 //    phone full width below the terminal bar.
+// 8. The installed app's title bar (TitleBar.tsx), with the window controls
+//    overlay's rules forced on: full width, its content clear of the
+//    controls on either side, the shell below it, a drag region in the
+//    theme colour, the brand moved out of the sidebar, the location
+//    following the view and giving way in a narrow window. Off, hidden.
 // Set SIDEBAR_SCREENSHOTS to a directory to save screenshots of each case.
 import { build } from "vite";
 import { chromium, webkit, devices } from "playwright";
@@ -62,7 +67,10 @@ await build({
   },
 });
 const origin = "https://terminal.test";
-async function serve(context) {
+/** `wco`: the window controls overlay, which Playwright cannot enter: the
+ * display mode's rules apply unconditionally and the title bar area is
+ * `wco` (custom properties standing in for env(titlebar-area-*)). */
+async function serve(context, wco) {
   await context.route(`${origin}/**`, (route) => {
     const path = new URL(route.request().url()).pathname;
     if (path === "/")
@@ -73,7 +81,12 @@ async function serve(context) {
     if (path.endsWith(".css"))
       return route.fulfill({
         contentType: "text/css; charset=utf-8",
-        body: readFileSync(`${out}/sidebar-fixture.css`),
+        body: wco
+          ? readFileSync(`${out}/sidebar-fixture.css`, "utf8").replaceAll(
+              "(display-mode: window-controls-overlay)",
+              "all",
+            ) + `:root { ${wco} }`
+          : readFileSync(`${out}/sidebar-fixture.css`),
       });
     if (path === "/fixture.js")
       return route.fulfill({
@@ -87,9 +100,9 @@ function emulate(name) {
   const { defaultBrowserType, ...descriptor } = devices[name];
   return descriptor;
 }
-async function open(browser, options, search = "") {
+async function open(browser, options, search = "", wco = "") {
   const context = await browser.newContext(options);
-  await serve(context);
+  await serve(context, wco);
   const page = await context.newPage();
   const errors = [];
   page.on("pageerror", (error) => errors.push(error.message));
@@ -1032,6 +1045,109 @@ for (const engine of [chromium, webkit]) {
       assert.deepEqual(errors, []);
       await context.close();
     }
+    // 8. The installed app's title bar (window controls overlay), forced on
+    // since Playwright cannot enter the display mode: Windows/Linux
+    // controls on the right, macOS ones on the left, a narrow window. Off,
+    // the bar is not shown and the shell starts at the top.
+    {
+      const { context, page, errors } = await open(browser, {
+        viewport: { width: 1280, height: 800 },
+      });
+      assert.equal(await page.locator(".titlebar").isVisible(), false);
+      assert.equal((await box(page, ".kelpmux-shell")).y, 0);
+      assert.ok(await page.locator(".rail-head .logo").isVisible());
+      await context.close();
+    }
+    for (const [label, wco, search] of [
+      [
+        "wco-right",
+        "--titlebar-area-x: 0px; --titlebar-area-width: calc(100% - 140px); --titlebar-area-height: 33px;",
+        "",
+      ],
+      [
+        "wco-left",
+        "--titlebar-area-x: 70px; --titlebar-area-width: calc(100% - 210px); --titlebar-area-height: 28px;",
+        "?mode=light&files=1",
+      ],
+    ]) {
+      const { context, page, errors } = await open(
+        browser,
+        { viewport: { width: 1280, height: 800 } },
+        search,
+        wco,
+      );
+      const x = label === "wco-left" ? 70 : 0;
+      const right = label === "wco-left" ? 210 - 70 : 140;
+      // At least 32 px tall, whatever the OS reports.
+      const height = label === "wco-left" ? 32 : 33;
+      const bar = await box(page, ".titlebar");
+      assert.deepEqual(
+        [bar.x, bar.y, bar.width, bar.height],
+        [0, 0, 1280, height],
+        `${label}: full width, the title bar area's height`,
+      );
+      const shell = await box(page, ".kelpmux-shell");
+      assert.equal(shell.y, height, `${label}: the shell starts below`);
+      assert.equal(shell.y + shell.height, 800, `${label}: and fills the rest`);
+      const brand = await box(page, ".titlebar-brand");
+      assert.ok(brand.x >= x + 12, `${label}: clear of left controls`);
+      const location = page.locator(".titlebar-location");
+      assert.equal(await location.textContent(), "shell");
+      const text = await location.boundingBox();
+      assert.ok(
+        text.x + text.width <= 1280 - right - 12,
+        `${label}: clear of right controls`,
+      );
+      // A drag region, painted in the colour the theme-color meta gets.
+      const look = await page.locator(".titlebar").evaluate((el) => {
+        const style = getComputedStyle(el);
+        const probe = document.createElement("div");
+        probe.style.background = "var(--background)";
+        document.body.append(probe);
+        const background = getComputedStyle(probe).backgroundColor;
+        probe.remove();
+        return {
+          drag:
+            style.getPropertyValue("app-region") ||
+            style.getPropertyValue("-webkit-app-region"),
+          select: style.userSelect || style.webkitUserSelect,
+          background: style.backgroundColor === background,
+        };
+      });
+      // Chromium alone has the overlay and app-region.
+      if (name === "chromium") assert.equal(look.drag, "drag");
+      assert.deepEqual([look.select, look.background], ["none", true]);
+      // The bar carries the brand; the sidebar keeps its header.
+      assert.equal(await page.locator(".rail-head .logo").isVisible(), false);
+      await shot(page, name, `${label}-terminal`);
+      await page.locator('.rail-views [data-view="grid"]').click();
+      assert.equal(await location.textContent(), "Grid");
+      await shot(page, name, `${label}-grid`);
+      if (search.includes("files=1")) {
+        await page.locator('.rail-views [data-view="files"]').click();
+        assert.equal(await location.textContent(), "Files — ~/src");
+        await shot(page, name, `${label}-files`);
+      }
+      assert.deepEqual(errors, []);
+      await context.close();
+    }
+    {
+      // A narrow window: the location gives way, the name stays.
+      const { context, page, errors } = await open(
+        browser,
+        { viewport: { width: 900, height: 600 } },
+        "",
+        "--titlebar-area-x: 70px; --titlebar-area-width: 180px; --titlebar-area-height: 33px;",
+      );
+      assert.equal(await page.locator(".titlebar-location").isVisible(), false);
+      assert.ok(await page.locator(".titlebar-name").isVisible());
+      await shot(page, name, "wco-narrow");
+      assert.deepEqual(errors, []);
+      await context.close();
+    }
+    console.log(
+      `PASS: ${name} title bar (forced window controls overlay): full width, clear of left and right controls, shell below it, drag region in the theme colour, brand moved from the sidebar, location follows the view, narrow window drops the location; hidden otherwise`,
+    );
     console.log(
       `PASS: ${name} attention toasts: top right, one per terminal, none for the shown terminal, click opens and reads, summary above three, close, Bell toggle, favicon bell, grid, phone width`,
     );

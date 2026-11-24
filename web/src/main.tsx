@@ -168,6 +168,9 @@ import { outsideRootMessage, withinRoot } from "./files/root";
 import { dragHasPaths, droppedPaths, typeIntoPane } from "./files/insert";
 import { ConfirmDialog, type ConfirmAction } from "./Confirm";
 import "./styles/files.css";
+import "./styles/titlebar.css";
+import { TitleBar } from "./TitleBar";
+import { titleLocation } from "./title-location";
 
 /** A position in a file an editor jumps to. */
 type FileJump = { line: number; col?: number; seq: number } | undefined;
@@ -1984,62 +1987,77 @@ function App() {
     </div>
   );
   if (!online && popupPane && !popupFallback && !error && !sign && !keyModal)
-    return <PopupConnecting onFallback={() => setPopupFallback(true)} />;
+    return (
+      <>
+        <PopupConnecting onFallback={() => setPopupFallback(true)} />
+        <TitleBar location="" />
+      </>
+    );
   if (!online && stopped && store.session)
     return (
-      <StoppedWorkspace
-        workspace={stopped}
-        starting={starting}
-        error={error}
-        onStart={async () => {
-          setError("");
-          setStarting(true);
-          // The bridge then connects and sends the usual stream welcome.
-          await rpc("start", { confirmed: true });
-          setStarting(false);
-        }}
-        onSignOut={() => {
-          setStopped("");
-          store.session?.close();
-        }}
-      />
+      <>
+        <StoppedWorkspace
+          workspace={stopped}
+          starting={starting}
+          error={error}
+          onStart={async () => {
+            setError("");
+            setStarting(true);
+            // The bridge then connects and sends the usual stream welcome.
+            await rpc("start", { confirmed: true });
+            setStarting(false);
+          }}
+          onSignOut={() => {
+            setStopped("");
+            store.session?.close();
+          }}
+        />
+        <TitleBar
+          location={titleLocation({ view: "stopped", workspace: stopped })}
+        />
+      </>
     );
   if (!online)
     return (
-      <LoginScreen
-        connection={connection}
-        remembered={identity}
-        error={error}
-        status={status}
-        connecting={connecting}
-        keyBusy={keyBusy}
-        keyModal={keyModal}
-        keyManagement={keyManagement}
-        sign={sign}
-        signBusy={signBusy}
-        onSignIn={() => void (identity ? connect(false, identity) : discover())}
-        onDiscover={() => void discover()}
-        onRegister={() => {
-          setError("");
-          setKeySelected(false);
-          setKeyModal(true);
-        }}
-        onCancelConnection={() => {
-          authProgress.current.canceled = true;
-          sign?.cancel();
-          connectionAttempt.current?.close();
-          keyDiscovery.current?.abort();
-          setConnecting(false);
-        }}
-        onRetrySign={() => {
-          setError("");
-          sign?.run();
-        }}
-        onCancelSign={() => {
-          sign?.cancel();
-          setSign(null);
-        }}
-      />
+      <>
+        <LoginScreen
+          connection={connection}
+          remembered={identity}
+          error={error}
+          status={status}
+          connecting={connecting}
+          keyBusy={keyBusy}
+          keyModal={keyModal}
+          keyManagement={keyManagement}
+          sign={sign}
+          signBusy={signBusy}
+          onSignIn={() =>
+            void (identity ? connect(false, identity) : discover())
+          }
+          onDiscover={() => void discover()}
+          onRegister={() => {
+            setError("");
+            setKeySelected(false);
+            setKeyModal(true);
+          }}
+          onCancelConnection={() => {
+            authProgress.current.canceled = true;
+            sign?.cancel();
+            connectionAttempt.current?.close();
+            keyDiscovery.current?.abort();
+            setConnecting(false);
+          }}
+          onRetrySign={() => {
+            setError("");
+            sign?.run();
+          }}
+          onCancelSign={() => {
+            sign?.cancel();
+            setSign(null);
+          }}
+        />
+        <TitleBar location={titleLocation({ view: "sign-in" })} />
+      </>
     );
   const bare = !!popupPane;
   function focusTerminal() {
@@ -2613,6 +2631,21 @@ function App() {
       onToggleFold={toggleFold}
     />
   );
+  /** The place the installed app's title bar names. */
+  const barLocation = titleLocation(
+    listShown
+      ? { view: "terminals" }
+      : view === "files"
+        ? {
+            view: "files",
+            dir: filesDir,
+            file: shownDocument?.path,
+            home,
+          }
+        : view === "grid" && !popupPane
+          ? { view: "grid" }
+          : { view: "terminal", title: focused?.title },
+  );
   return (
     <div
       className={`kelpmux-shell ${bare ? "bare" : ""} ${touch ? "touch" : ""} ${phone ? "phone" : ""} ${listShown ? "phone-home" : ""}`}
@@ -3023,6 +3056,7 @@ function App() {
           onDismiss={attentionToasts.dismiss}
         />
       )}
+      <TitleBar location={barLocation} />
     </div>
   );
 }

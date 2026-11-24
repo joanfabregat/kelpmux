@@ -23,6 +23,8 @@ import React, { useEffect, useState } from "react";
 import { createRoot } from "react-dom/client";
 import type { NumberedPane } from "@kelpcore/web/types.ts";
 import { Sidebar } from "../src/Sidebar";
+import { TitleBar } from "../src/TitleBar";
+import { titleLocation } from "../src/title-location";
 import { NotificationsButton, PaneLabel, type SessionMode } from "../src/Shell";
 import { TerminalNotificationsPanel } from "../src/Panels";
 import { LiveGrid } from "../src/LiveGrid";
@@ -60,6 +62,7 @@ import "../src/styles/kelpmux.css";
 import "../src/styles/state.css";
 import "../src/styles/mobile.css";
 import "../src/styles/files.css";
+import "../src/styles/titlebar.css";
 
 const query = new URLSearchParams(location.search);
 const toastsOn = query.get("toasts") === "1";
@@ -447,6 +450,17 @@ function Fixture() {
           onDismiss={attention.dismiss}
         />
       )}
+      <TitleBar
+        location={titleLocation(
+          listShown
+            ? { view: "terminals" }
+            : files
+              ? { view: "files", dir: "/home/alice/src", home: "/home/alice" }
+              : grid
+                ? { view: "grid" }
+                : { view: "terminal", title: focused.title },
+        )}
+      />
     </div>
   );
 }
