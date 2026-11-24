@@ -195,6 +195,11 @@ for (const engine of [chromium, webkit]) {
         assert.equal(app.manifest.name, "KelpMux");
         assert.equal(app.manifest.short_name, "KelpMux");
         assert.equal(app.manifest.display, "standalone");
+        // Desktop Chrome: the integrated title bar (TitleBar.tsx), with
+        // standalone as the fallback.
+        assert.deepEqual(app.manifest.display_override, [
+          "window-controls-overlay",
+        ]);
         assert.equal(app.manifest.start_url, "/");
         assert.equal(app.manifest.scope, "/");
         assert.match(app.manifest.theme_color, /^#[0-9a-f]{6}$/i);
