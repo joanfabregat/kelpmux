@@ -291,34 +291,140 @@ button.files-open[aria-disabled="true"]:hover .files-name {
   flex: 1;
 }
 
-/* Sidebar: the open files (under Open, like Parked) and the home folder's
- * tree (FileTree.tsx), rows like the terminals' without their rules. */
-.doc-row,
+/* The Files view's tab strip under its top bar (FileTabs.tsx): the
+ * browser's tab, then a tab per open file. It scrolls sideways without a
+ * visible scrollbar; the shown tab is raised into the view below it. */
+.file-tabs {
+  display: flex;
+  flex: none;
+  align-items: stretch;
+  gap: 1px;
+  height: 32px;
+  padding: 0 var(--s2);
+  overflow-x: auto;
+  overflow-y: hidden;
+  border-bottom: 1px solid var(--line);
+  background: var(--surface-1);
+  scrollbar-width: none;
+}
+.file-tabs::-webkit-scrollbar {
+  display: none;
+}
+.file-tab {
+  position: relative;
+  display: flex;
+  flex: none;
+  align-items: center;
+  max-width: 240px;
+  margin-bottom: -1px;
+  border: 1px solid transparent;
+  border-bottom: 0;
+  border-radius: var(--r-md) var(--r-md) 0 0;
+  color: var(--text-2);
+}
+.file-tab:hover {
+  color: var(--text);
+}
+.file-tab.current {
+  border-color: var(--line);
+  background: var(--bg);
+  color: var(--text);
+}
+.file-tab.current::before {
+  position: absolute;
+  top: -1px;
+  right: -1px;
+  left: -1px;
+  height: 2px;
+  border-radius: var(--r-md) var(--r-md) 0 0;
+  background: var(--accent);
+  content: "";
+}
+.file-tab-main {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  height: 100%;
+  padding: 0 var(--s1) 0 var(--s2);
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font-size: var(--fs-sm);
+  white-space: nowrap;
+}
+.file-tab-main:hover:not(:disabled) {
+  filter: none;
+  background: transparent;
+}
+.browser-tab .file-tab-main {
+  padding-right: var(--s3);
+}
+.file-tab-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.file-tab-hint {
+  overflow: hidden;
+  color: var(--text-3);
+  font-size: var(--fs-xs);
+  text-overflow: ellipsis;
+}
+.file-tab .files-dirty {
+  width: 7px;
+  height: 7px;
+  margin: 0 7px;
+}
+button.file-tab-close {
+  width: 20px;
+  height: 20px;
+  min-height: 0;
+  margin-right: var(--s1);
+  padding: 0;
+  visibility: hidden;
+}
+/* The × shows on the tab shown and under the pointer; an unsaved file's
+ * dot takes its place otherwise. */
+.file-tab.current button.file-tab-close,
+.file-tab:hover button.file-tab-close,
+.file-tab:focus-within button.file-tab-close {
+  visibility: visible;
+}
+.file-tab.dirty:not(.current):not(:hover):not(:focus-within) .file-tab-close {
+  display: none;
+}
+.file-tab.dirty.current .files-dirty,
+.file-tab.dirty:hover .files-dirty,
+.file-tab.dirty:focus-within .files-dirty {
+  margin-right: 0;
+}
+.phone .file-tabs {
+  height: 36px;
+  padding: 0 var(--s1);
+}
+.touch .file-tabs button.file-tab-close {
+  width: 28px;
+  height: 28px;
+  visibility: visible;
+}
+.touch .file-tab .file-tab-main {
+  padding: 0 var(--s1) 0 var(--s2);
+}
+
+/* Sidebar: the home folder's tree (FileTree.tsx), rows like the
+ * terminals' without their rules. */
 .file-row {
   position: relative;
 }
-.doc-row .term-item {
-  min-height: 30px;
-}
-.doc-row .term-title,
 .file-row .term-title {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-.doc-row:hover .term-row-actions,
-.doc-row:focus-within .term-row-actions,
 .file-row:hover .term-row-actions,
 .file-row:focus-within .term-row-actions,
 .file-row.selected .term-row-actions {
   display: inline-flex;
-}
-.open-files {
-  margin-bottom: var(--s1);
-}
-.open-files .rail-fold .files-dirty {
-  width: 6px;
-  height: 6px;
 }
 .file-tree {
   display: flex;
@@ -387,9 +493,6 @@ button.files-open[aria-disabled="true"]:hover .files-name {
 }
 .touch .file-item.term-item {
   min-height: 44px;
-}
-.rail.folded .doc-row .term-item {
-  padding-left: 0;
 }
 
 .spin {

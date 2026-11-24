@@ -14,6 +14,9 @@
 //    file to its folder, with a toast, replacing the entry; KelpHub-era
 //    URLs keep their other parameters.
 // 3. A phone: its list → a terminal → Back → the list → Forward.
+// 4. The Files view's tabs: switching tabs (the browser's included) pushes,
+//    closing the shown tab replaces its entry with the neighbour tab's or,
+//    for the last one, the browser's.
 import { build } from "vite";
 import { chromium, webkit } from "playwright";
 import { readFileSync } from "node:fs";
@@ -316,8 +319,61 @@ for (const [name, engine] of [
       assert.deepEqual(errors, []);
       await context.close();
     }
+    // 4. The Files view's tabs: switching tabs pushes (the browser's tab
+    // keeps its folder), closing the shown tab replaces its entry with its
+    // neighbour's, and the last one with the browser's.
+    {
+      const { context, page, errors } = await open(browser);
+      await at(page, "grid", "?view=grid");
+      const folder = ["folder /home/me/src", "?view=files&dir=/home/me/src"];
+      const main = [
+        "file /home/me/src/main.rs",
+        "?view=files&file=/home/me/src/main.rs",
+      ];
+      const notes = [
+        "file /home/me/notes.md",
+        "?view=files&file=/home/me/notes.md",
+      ];
+      await page.click("#src");
+      await at(page, ...folder);
+      await page.click("#open-file");
+      await at(page, ...main);
+      await page.click("#open-notes");
+      await at(page, ...notes);
+      const tab = (path) => page.locator(`[data-tab="${path}"]`);
+      assert.equal(await page.locator("[data-tab]").count(), 2);
+      const start = await length(page);
+      await tab("/home/me/src/main.rs").click();
+      await at(page, ...main);
+      await page.click("#tab-browser");
+      await at(page, ...folder);
+      await tab("/home/me/notes.md").click();
+      await at(page, ...notes);
+      assert.equal(await length(page), start + 3, "each tab switch pushes");
+      await back(page);
+      await at(page, ...folder);
+      await back(page);
+      await at(page, ...main);
+      await forward(page);
+      await at(page, ...folder);
+      await forward(page);
+      await at(page, ...notes);
+      // Closing notes.md (the last tab) shows main.rs, replacing.
+      await page.click("#close-tab");
+      await at(page, ...main);
+      assert.equal(await length(page), start + 3, "closing replaces");
+      // Closing main.rs (the only tab) shows the browser, replacing.
+      await page.click("#close-tab");
+      await at(page, ...folder);
+      assert.equal(await page.locator("[data-tab]").count(), 0);
+      assert.equal(await length(page), start + 3, "closing replaces");
+      await back(page);
+      await at(page, ...folder);
+      assert.deepEqual(errors, []);
+      await context.close();
+    }
     console.log(
-      `PASS: ${name} history: terminal, grid, folder, file and Settings entries walked back and forward, Back closes panels, no duplicates, replacements for normalised folders, lines, closed files and swapped panels, deep links with fallbacks, legacy URLs, phone list and terminal`,
+      `PASS: ${name} history: terminal, grid, folder, file and Settings entries walked back and forward, Back closes panels, no duplicates, replacements for normalised folders, lines, closed files and swapped panels, deep links with fallbacks, legacy URLs, phone list and terminal, file tabs (switching pushes, closing the shown tab replaces with its neighbour or the browser)`,
     );
   } finally {
     await browser.close();

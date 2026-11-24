@@ -1,6 +1,7 @@
 // The file browser and editor as main.tsx wires them (the Files section,
-// its open files and home folder tree in the real Sidebar, the browser,
-// the editor, path drops on terminal rows, uploads into folders), over
+// its home folder tree in the real Sidebar, the browser and the editor
+// with the Files view's tab strip, path drops on terminal rows, uploads
+// into folders), over
 // the real Session and WASM core
 // connected to a real `kelpmux web-bridge` and server through a pipe instead
 // of SSH, as test/bridge.fixture.tsx does (test/files.mjs). `?phone=1`
@@ -36,6 +37,8 @@ import {
 import { Sidebar } from "../src/Sidebar";
 import { FilesBrowser } from "../src/files/FilesBrowser";
 import { FileEditor } from "../src/files/FileEditor";
+import { FileTabs } from "../src/files/FileTabs";
+import { neighbourTab } from "../src/files/tabs";
 import { SidePanel } from "../src/files/SidePanel";
 import {
   cellSize,
@@ -213,6 +216,8 @@ function App() {
   const sideDoc = side
     ? documents.docs.find((d) => d.id === side.id)
     : undefined;
+  // The Files view's tabs: the files open in the main area.
+  const tabDocs = documents.docs.filter((d) => d.id !== side?.id);
   let jumps = 0;
   // As main.tsx's openBeside and openPathTarget (a phone opens the editor
   // in the main area).
@@ -277,11 +282,18 @@ function App() {
   };
   const closeDoc = (path: string) => {
     const d = documents.docs.find((x) => x.path === path);
+    // As main.tsx: the file shown gives way to its neighbour tab (or the
+    // browser).
     const close = () => {
       documents.close(path);
-      if (shown === path) setShown("");
-      if (sideDoc?.path === path) setSide(null);
-      else setBrowsing(true);
+      if (sideDoc?.path === path) return setSide(null);
+      if (browsing || shown !== path) return;
+      const next = neighbourTab(
+        tabDocs.map((d) => d.path),
+        path,
+      );
+      setShown(next);
+      setBrowsing(!next);
     };
     if (!d?.dirty) return close();
     setConfirm({
@@ -319,9 +331,16 @@ function App() {
   const target = panes[0];
   // As main.tsx: every open file's editor stays mounted, hidden unless
   // shown, so unsaved edits survive other views.
-  const editors = documents.docs
-    .filter((d) => d.id !== side?.id)
-    .map((d) => (
+  const tabs = (
+    <FileTabs
+      docs={tabDocs}
+      current={browsing || !doc ? "" : doc.path}
+      onBrowse={() => setBrowsing(true)}
+      onShow={openDoc}
+      onClose={closeDoc}
+    />
+  );
+  const editors = tabDocs.map((d) => (
       <FileEditor
         key={d.id}
         doc={d}
@@ -335,6 +354,7 @@ function App() {
           setBrowsing(true);
         }}
         onBack={phone ? () => {} : undefined}
+        tabs={!browsing && d.id === doc?.id ? tabs : undefined}
       />
     ));
   // As main.tsx's fileActions: shared by the browser and the sidebar's tree.
@@ -365,6 +385,7 @@ function App() {
         dir={dir}
         onDir={setDir}
         onBack={phone ? () => {} : undefined}
+        tabs={tabs}
       />
     );
   return (
@@ -411,12 +432,6 @@ function App() {
                 setBrowsing(true);
                 setTermPane(0);
               },
-              onOpenDoc: (path) => {
-                setShown(path);
-                setBrowsing(false);
-                setTermPane(0);
-              },
-              onCloseDoc: closeDoc,
               tree: actions,
             }}
           />

@@ -113,24 +113,36 @@
 }
 
 /* ───────── Sidebar terminal list ───────── */
-/* The New terminal row right under the tabs, like the TUI's "+ New tab": a
- * row like a terminal's, its plus in the number column and its label
- * muted, brightened by the hover every row gets. */
+/* The New terminal row right under the tabs, like the TUI's "+ New tab",
+ * but secondary: shorter, smaller and muted, its small plus indented under
+ * the terminals' names (past the number, state and provider columns), and
+ * a hover that only brightens the text. Folded: just the plus. */
 .nav-item.rail-new {
+  gap: 6px;
+  min-height: 24px;
+  padding-left: calc(4 * var(--s2) + 40px);
   color: var(--text-3);
+  font-size: var(--fs-sm);
 }
-.nav-item.rail-new .term-number {
-  color: inherit;
+.rail-new-plus {
+  display: inline-grid;
+  flex: none;
+  place-items: center;
+}
+.rail-new-plus .svg-icon {
+  width: 11px;
+  height: 11px;
 }
 .nav-item.rail-new:hover:not(:disabled),
 .nav-item.rail-new:focus-visible {
+  background: transparent;
   color: var(--text);
-}
-.nav-item.rail-new:hover:not(:disabled) .term-number {
-  color: var(--accent);
 }
 .rail.folded .rail-new-text {
   display: none;
+}
+.rail.folded .nav-item.rail-new {
+  padding: 0;
 }
 .rail-head .rail-marks {
   flex: none;

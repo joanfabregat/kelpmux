@@ -15,6 +15,11 @@
 // folder, opens a file in the editor, types the path of a row dragged onto
 // a terminal row, moves a row dropped on a folder row and uploads a desktop
 // file dropped on one; the browser and the tree list each other's changes.
+// The Files view's tabs: the browser's first (never closable), then one
+// per open file in opening order, same-name files told apart by their
+// folder, switching, an unsaved dot, closing (asking first for unsaved
+// changes, middle-click too) with the neighbour shown next, and no Open
+// group in the sidebar; the same strip on a phone.
 // It downloads
 // a file from its menu (the browser's downloads), a folder as a .tar.gz
 // (through a stand-in save picker, decoded) and a file from the editor,
@@ -351,12 +356,12 @@ try {
   await editor.click();
   await page.keyboard.type('print("hello")\n');
   await page
-    .locator('.doc-row[data-doc$="/hello.py"] .files-dirty')
+    .locator('.file-tab[data-tab$="/hello.py"] .files-dirty')
     .waitFor();
   await page.keyboard.press("Control+s");
   await onDisk(() => read(join(home, "hello.py")) === 'print("hello")\n', "saved");
   await page
-    .locator('.doc-row[data-doc$="/hello.py"] .files-dirty')
+    .locator('.file-tab[data-tab$="/hello.py"] .files-dirty')
     .waitFor({ state: "detached" });
   await page.waitForTimeout(200);
   await shot(page, "desktop-editor");
@@ -444,7 +449,7 @@ try {
     existsSync(join(home, ".local/share/Trash/info/hello.py.trashinfo")),
   );
   await page
-    .locator('.doc-row[data-doc$="/hello.py"]')
+    .locator('.file-tab[data-tab$="/hello.py"]')
     .waitFor({ state: "detached" });
   console.log("PASS: moves a file to the trash (its editor closes)");
 
@@ -526,7 +531,7 @@ try {
   await onDisk(() => existsSync(join(home, "archive/upload.txt")), "moved");
   // The open editor follows the move.
   await page
-    .locator('.doc-row[data-doc$="/archive/upload.txt"]')
+    .locator('.file-tab[data-tab$="/archive/upload.txt"]')
     .waitFor();
   console.log("PASS: a tree row dragged onto a tree folder moves it there");
   await page.evaluate((path) => {
@@ -552,9 +557,9 @@ try {
   await row(page, "tree.txt").waitFor();
   await page.locator(".files-crumb", { hasText: "Home" }).click();
   await row(page, "docs").waitFor();
-  const uploaded = page.locator('.doc-row[data-doc$="/archive/upload.txt"]');
+  const uploaded = page.locator('.file-tab[data-tab$="/archive/upload.txt"]');
   await uploaded.hover();
-  await uploaded.getByRole("button", { name: /^Close file/ }).click();
+  await uploaded.getByRole("button", { name: "Close tab upload.txt" }).click();
   await uploaded.waitFor({ state: "detached" });
   // Back where the downloads below expect it.
   renameSync(join(home, "archive/upload.txt"), join(home, "docs/upload.txt"));
@@ -728,9 +733,11 @@ try {
   await page.evaluate((pane) => window.showTerminal(pane), pane);
   await page.locator(".terminal canvas").waitFor();
   await readme.waitFor({ state: "hidden" });
+  // Back to the Files view: its tab strip shows the file, unsaved.
+  await page.evaluate(() => window.showFiles());
   await page
-    .locator('.doc-row[data-doc$="/readme.md"]')
-    .getByRole("button", { name: /^Open file readme.md \(unsaved changes\)/ })
+    .locator(".file-tabs")
+    .getByRole("tab", { name: "readme.md, unsaved changes" })
     .click();
   await readme.waitFor();
   assert.match(await readme.innerText(), /kept while away/);
@@ -744,6 +751,99 @@ try {
     "saved after coming back",
   );
   console.log("PASS: unsaved edits survive switching to a terminal and back, then save");
+
+  // The Files view's tabs: the browser's tab first (never closable), then
+  // one per open file in opening order; same-name files carry their
+  // folder; a dot marks unsaved changes; × or a middle-click closes, an
+  // unsaved file after confirming; the shown tab's neighbour takes its
+  // place. The sidebar has no Open group.
+  writeFileSync(join(home, "src/readme.md"), "# src\n");
+  writeFileSync(join(home, "src/main.rs"), "fn main() {}\n");
+  const strip = page.locator(".files-view:not([hidden]) > .file-tabs");
+  const fileTab = (path) => strip.locator(`.file-tab[data-tab="${path}"]`);
+  const shownEditor = (path) =>
+    page.locator(`.files-editor:not([hidden])[data-path="${path}"] .cm-content`);
+  const docsReadme = join(home, "docs/readme.md");
+  const srcReadme = join(home, "src/readme.md");
+  const mainRs = join(home, "src/main.rs");
+  await strip.getByRole("tab", { name: "Files" }).click();
+  await page.locator(".files-crumb", { hasText: "Home" }).click();
+  await row(page, "src").getByRole("button", { name: /^src,/ }).click();
+  await row(page, "readme.md").getByRole("button", { name: /^readme.md,/ }).click();
+  await shownEditor(srcReadme).waitFor();
+  await strip.getByRole("tab", { name: "Files" }).click();
+  await row(page, "main.rs").getByRole("button", { name: /^main.rs,/ }).click();
+  await shownEditor(mainRs).waitFor();
+  assert.deepEqual(
+    await strip
+      .locator(".file-tab")
+      .evaluateAll((tabs) => tabs.map((tab) => tab.dataset.tab)),
+    ["", docsReadme, srcReadme, mainRs],
+    "the browser's tab, then the files in opening order",
+  );
+  assert.equal(await strip.locator(".browser-tab .file-tab-close").count(), 0);
+  assert.equal(await fileTab(docsReadme).locator(".file-tab-hint").innerText(), "docs");
+  assert.equal(await fileTab(srcReadme).locator(".file-tab-hint").innerText(), "src");
+  assert.equal(await fileTab(mainRs).locator(".file-tab-hint").count(), 0);
+  assert.equal(await fileTab(mainRs).getAttribute("title"), null);
+  assert.equal(
+    await fileTab(mainRs).getByRole("tab").getAttribute("title"),
+    mainRs,
+  );
+  assert.equal(
+    await fileTab(mainRs).getByRole("tab").getAttribute("aria-selected"),
+    "true",
+  );
+  assert.equal(await page.locator(".open-files, .doc-row").count(), 0);
+  assert.equal(
+    await page.locator('.rail [aria-label="Open files"]').count(),
+    0,
+    "no Open group in the sidebar",
+  );
+  // Switching: a tab shows its file; editing it marks the tab.
+  await fileTab(docsReadme).getByRole("tab").click();
+  await shownEditor(docsReadme).waitFor();
+  await shownEditor(docsReadme).click();
+  await page.keyboard.press("Control+End");
+  await page.keyboard.type("unsaved in a tab\n");
+  await fileTab(docsReadme).locator(".files-dirty").waitFor();
+  await fileTab(mainRs).getByRole("tab").click();
+  await shownEditor(mainRs).waitFor();
+  assert.equal(
+    await fileTab(docsReadme).getByRole("tab").getAttribute("aria-label"),
+    "readme.md (docs), unsaved changes",
+  );
+  await page.mouse.move(700, 600);
+  await page.waitForTimeout(200);
+  for (const dismiss of await page.getByRole("button", { name: "Dismiss confirmation" }).all())
+    await dismiss.click();
+  await shot(page, "desktop-tabs");
+  await fileTab(srcReadme).getByRole("tab").click();
+  await shownEditor(srcReadme).waitFor();
+  // Closing the unsaved file asks first: Cancel keeps it.
+  await fileTab(docsReadme).hover();
+  await fileTab(docsReadme).getByRole("button", { name: "Close tab readme.md" }).click();
+  const discard = page.getByRole("alertdialog");
+  await discard.getByRole("button", { name: "Cancel" }).click();
+  await discard.waitFor({ state: "detached" });
+  assert.equal(await fileTab(docsReadme).count(), 1);
+  await fileTab(docsReadme).hover();
+  await fileTab(docsReadme).getByRole("button", { name: "Close tab readme.md" }).click();
+  await discard.getByRole("button", { name: "Discard changes" }).click();
+  await fileTab(docsReadme).waitFor({ state: "detached" });
+  assert.equal(read(docsReadme), "# Read me\nkept while away\n");
+  await shownEditor(srcReadme).waitFor();
+  // A middle-click closes the shown tab; the next one shows.
+  await fileTab(srcReadme).click({ button: "middle" });
+  await fileTab(srcReadme).waitFor({ state: "detached" });
+  await shownEditor(mainRs).waitFor();
+  // The last file closed: the browser.
+  await fileTab(mainRs).getByRole("button", { name: "Close tab main.rs" }).click();
+  await row(page, "main.rs").waitFor();
+  assert.equal(await strip.locator(".file-tab").count(), 1);
+  console.log(
+    "PASS: open files are tabs after the browser's (switching, unsaved dot, closing with confirmation, middle-click, same names told apart, no Open group)",
+  );
   await page.locator('[data-view="files"]').click();
   await page.locator(".files-crumb", { hasText: "Home" }).click();
   await row(page, "src").waitFor();
@@ -950,6 +1050,17 @@ try {
   await phone.page.locator(".files-editor .cm-content").waitFor();
   await phone.page.waitForTimeout(200);
   await shot(phone.page, "phone-editor");
+  // The same tab strip on a phone, under the editor's bar.
+  const phoneStrip = phone.page.locator(".files-view:not([hidden]) > .file-tabs");
+  await phoneStrip.getByRole("tab", { name: "Files" }).click();
+  await phone.page.locator(".files-crumb", { hasText: "Home" }).click();
+  await row(phone.page, "todo.md").getByRole("button", { name: /^todo.md,/ }).click();
+  await phone.page
+    .locator('.files-editor:not([hidden])[data-path$="/todo.md"] .cm-content')
+    .waitFor();
+  assert.equal(await phoneStrip.locator(".file-tab").count(), 3);
+  await phone.page.waitForTimeout(200);
+  await shot(phone.page, "phone-tabs");
   const width = await phone.page.evaluate(() => document.documentElement.scrollWidth);
   assert.ok(width <= 390, `no horizontal scroll on a phone (${width})`);
   await phone.close();

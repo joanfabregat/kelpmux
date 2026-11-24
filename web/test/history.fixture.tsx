@@ -15,6 +15,7 @@ import {
   type AppLocation,
 } from "../src/navigation";
 import { outsideRootMessage, withinRoot } from "../src/files/root";
+import { neighbourTab } from "../src/files/tabs";
 
 const panes = [11, 12, 13];
 /** The server's file root (Welcome `file_limits.root`). */
@@ -31,6 +32,8 @@ function App() {
   const [phoneList, setPhoneList] = useState(true);
   const [filesDir, setFilesDir] = useState("~");
   const [shownDoc, setShownDoc] = useState("");
+  /** The Files view's tabs: the files open in the main area. */
+  const [tabs, setTabs] = useState<string[]>([]);
   const [line, setLine] = useState(0);
   const [side, setSide] = useState("");
   const [dialog, setDialog] = useState("");
@@ -93,12 +96,14 @@ function App() {
         return;
       }
       setShownDoc(target.file);
+      addTab(target.file);
       setLine(target.line);
       // The server's answer arrives later.
       setTimeout(() => {
         if (files.has(target.file)) return;
         setToast(`“${target.file}” is not available`);
         navigation.automatic();
+        setTabs((all) => all.filter((path) => path !== target.file));
         setShownDoc("");
         setFilesDir(parentPath(target.file));
       }, 50);
@@ -116,7 +121,11 @@ function App() {
     setPhoneList(false);
     setView("files");
   };
+  function addTab(path: string) {
+    setTabs((all) => (all.includes(path) ? all : [...all, path]));
+  }
   const openDoc = (path: string, at = 0) => {
+    addTab(path);
     setShownDoc(path);
     setLine(at);
     setPhoneList(false);
@@ -196,10 +205,36 @@ function App() {
           id="close-file"
           onClick={() => {
             navigation.automatic();
+            setTabs((all) => all.filter((path) => path !== shownDoc));
             setShownDoc("");
           }}
         >
           Close file
+        </button>
+        <button id="open-notes" onClick={() => openDoc("/home/me/notes.md")}>
+          notes.md
+        </button>
+        {/* The Files view's tabs (main.tsx's FileTabs): the browser's,
+            then the open files'; closing the shown one shows its
+            neighbour (or the browser) in place of its entry. */}
+        <button id="tab-browser" onClick={() => openFiles()}>
+          Files tab
+        </button>
+        {tabs.map((path) => (
+          <button key={path} data-tab={path} onClick={() => openDoc(path)}>
+            {path}
+          </button>
+        ))}
+        <button
+          id="close-tab"
+          onClick={() => {
+            navigation.automatic();
+            setTabs((all) => all.filter((path) => path !== shownDoc));
+            setShownDoc(neighbourTab(tabs, shownDoc));
+            setLine(0);
+          }}
+        >
+          Close the shown tab
         </button>
         <button id="settings" onClick={() => setDialog("config")}>
           Settings
