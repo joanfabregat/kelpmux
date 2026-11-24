@@ -112,6 +112,12 @@ import {
 } from "./Mobile";
 import { sidebarFolded } from "./device";
 import {
+  dialogFromParam,
+  locationOf,
+  useHistorySync,
+  type AppLocation,
+} from "./navigation";
+import {
   barKeyBytes,
   consumesCtrl,
   nextInputMode,
@@ -704,6 +710,148 @@ function App() {
   const parkedSet = new Set(parked);
   const live = all.filter((p) => !parkedSet.has(p.id));
   const parkedPanes = all.filter((p) => parkedSet.has(p.id));
+  // Navigation history (navigation.ts): the place shown, mirrored into the
+  // URL; Back, Forward and a loaded URL apply theirs. Popup windows keep
+  // none. Declared before the effects that call `navigation.automatic()`.
+  const shownTerminal = live.find((p) => p.id === active);
+  const sideDoc = side
+    ? documents.docs.find((doc) => doc.id === side.id)
+    : undefined;
+  const mainDoc =
+    view === "files"
+      ? documents.docs.find(
+          (doc) => doc.path === shownDoc && doc.id !== side?.id,
+        )
+      : undefined;
+  const sideVisible =
+    !!sideDoc && !phone && view === "single" && !!shownTerminal;
+  const here = popupPane
+    ? null
+    : locationOf({
+        phoneHome: phone && (phoneList || (!shownTerminal && view !== "files")),
+        view,
+        terminal: shownTerminal?.id || 0,
+        filesDir,
+        file: mainDoc?.path || "",
+        fileLine: mainJump?.line,
+        side: sideVisible ? sideDoc.path : "",
+        sideLine: side?.jump?.line,
+        dialog,
+        notifyPane,
+      });
+  const navigation = useHistorySync({
+    here,
+    ready:
+      online &&
+      panesLoaded &&
+      // Files are known: not offered, or their client is ready.
+      (!(filesOffered && fileLimits) || !!filesClient),
+    context: phone ? "phone" : "wide",
+    apply: applyLocation,
+  });
+  /** Shows a location from the history or the loaded URL. What no longer
+   * exists falls back (a closed terminal to the grid or the phone's list,
+   * a missing file to its folder) and replaces the entry. */
+  function applyLocation(target: AppLocation) {
+    setMenu(null);
+    const opened = dialogFromParam(target.dialog);
+    setDialog(opened);
+    if (!opened) setQuery("");
+    if (target.of) setNotifyPane(target.of);
+    const jump = (line: number): FileJump =>
+      line ? { line, seq: ++jumps.current } : undefined;
+    /** The side panel's file; one with unsaved changes stays (its buffer
+     * lives in the panel's editor). */
+    const placeSide = (path: string, line: number) => {
+      if (sideDoc?.path === path && !line) return;
+      if (sideDoc?.dirty && sideDoc.path !== path) return;
+      if (!path || phone || !filesClient) {
+        if (sideDoc) setSide(null);
+        return;
+      }
+      const id = documents.open(path);
+      if (shownDoc === path) setShownDoc("");
+      setSide({ id, jump: jump(line) });
+    };
+    switch (target.view) {
+      case "home":
+        // A wider screen has no list: it keeps its place.
+        if (phone) {
+          setPhoneList(true);
+          setFindPane(0);
+        }
+        return;
+      case "grid":
+        // A phone has no grid: its list is the overview.
+        if (phone) setPhoneList(true);
+        else setView("grid");
+        return;
+      case "terminal": {
+        const id = target.terminal;
+        if (id && !panesRef.current.some((p) => p.id === id)) {
+          toast(`Terminal ${id} is closed`, { key: "navigation" });
+          navigation.automatic();
+          if (phone) setPhoneList(true);
+          else setView("grid");
+          return;
+        }
+        setPhoneList(false);
+        setView("single");
+        if (id) {
+          if (parked.includes(id)) setParked(parked.filter((p) => p !== id));
+          if (id !== active) setFindPane(0);
+          setActive(id);
+        }
+        placeSide(target.side, target.line);
+        return;
+      }
+      case "files": {
+        if (!filesClient) {
+          toast("Files are not available on this connection", {
+            key: "navigation",
+          });
+          navigation.automatic();
+          return;
+        }
+        setPhoneList(false);
+        setView("files");
+        const path = target.file;
+        if (!path) {
+          setShownDoc("");
+          if (target.dir) setFilesDir(target.dir);
+          return;
+        }
+        if (sideDoc?.path === path) {
+          if (sideDoc.dirty) return;
+          setSide(null);
+        }
+        const opened = documents.docs.some((doc) => doc.path === path);
+        documents.open(path);
+        setShownDoc(path);
+        setMainJump(jump(target.line));
+        if (opened) return;
+        // A file that no longer exists shows its folder instead.
+        const shown = (folder: string) => {
+          navigation.automatic();
+          documents.close(path);
+          setShownDoc((current) => (current === path ? "" : current));
+          setFilesDir(folder);
+        };
+        filesClient.stat(path).then(
+          (result) => {
+            if (result.entry.kind === "dir") shown(result.path);
+          },
+          () => {
+            toast(`“${baseName(path)}” is not available`, {
+              key: "navigation",
+            });
+            shown(parentPath(path));
+          },
+        );
+        return;
+      }
+    }
+  }
   useEffect(() => {
     if (!online || !panesLoaded || !workspace || !epoch || popupPane) return;
     saveLayout(workspace, {
@@ -726,8 +874,11 @@ function App() {
       setParked(parked.filter((id) => panes.some((p) => p.id === id)));
   }, [panes, panesLoaded]);
   useEffect(() => {
-    if (panesLoaded && !popupPane && !live.some((p) => p.id === active))
+    if (panesLoaded && !popupPane && !live.some((p) => p.id === active)) {
+      // A closed or parked terminal: its entry becomes the next one's.
+      navigation.automatic();
       setActive(live[0]?.id || 0);
+    }
   }, [panes, order, panesLoaded, parked.join(",")]);
 
   // The grid shows every live terminal; it streams as many as the server
@@ -2114,6 +2265,8 @@ function App() {
   function closeDoc(path: string) {
     const doc = documents.docs.find((d) => d.path === path);
     const close = () => {
+      // Closing a file is not a move: its entry becomes what shows next.
+      navigation.automatic();
       documents.close(path);
       if (shownDoc === path) setShownDoc("");
       if (sideDocument?.path === path) setSide(null);
@@ -2447,7 +2600,11 @@ function App() {
                   client={filesClient}
                   home={home}
                   dir={filesDir}
-                  onDir={setFilesDir}
+                  onDir={(dir, normalised) => {
+                    // `~` or a symbolic link read as its real folder.
+                    if (normalised) navigation.automatic();
+                    setFilesDir(dir);
+                  }}
                   onOpenFile={(path) => openDoc(path)}
                   onOpenBeside={
                     insertPane ? (path) => openBeside(path) : undefined
