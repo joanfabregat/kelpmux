@@ -217,6 +217,31 @@ A narrow fold handle sits vertically centred on the sidebar's edge; the folded r
 
 The mouse covers the rest: click a sidebar row to open that terminal alone or the **Terminals** header's label to open the grid (its chevron expands or collapses the section), click anywhere on a grid tile to open that terminal alone, drag rows (or grid tiles) to reorder, right-click a row or tile for its menu (open, open in a window, find, move up/down, park/unpark, notifications, upload files, browse files here, close), drop files onto the terminal shown on its own to upload them, Cmd/Ctrl-click a file path printed in it to open the file beside it ([path links](#files)), middle-click a row to close it, click the sidebar's state counts to jump to the next terminal in that state, click the fold handle or the sidebar's edge to fold it, and drag the edge to resize it.
 
+## Navigation
+
+The page URL names the place shown, so the browser's Back and Forward (its buttons, a mouse's back and forward buttons, `Alt+←`/`Alt+→` outside a terminal that takes them, a two-finger swipe on a Mac, a phone's back gesture) move through the places visited, and a reload, a bookmark or a link opens the same place. Everything stays in one page: Back and Forward never reload it and never leave a terminal's session. `web/src/navigation.ts` encodes, decodes and decides; `main.tsx` mirrors its state into the history after every change and applies the location of each `popstate`.
+
+| Place | URL query |
+| --- | --- |
+| One terminal on its own | `?view=terminal&terminal=<pane id>` |
+| …with a file in the [side panel](#files) | `?view=terminal&terminal=<pane id>&side=<path>[&line=<n>]` |
+| The live grid | `?view=grid` |
+| The file browser at a folder | `?view=files&dir=<folder>` |
+| An open file in the main area | `?view=files&file=<path>[&line=<n>]` |
+| A phone's terminal list | `?view=home` |
+| A panel over any of them | `…&dialog=<settings, help, terminals, search, closed, parked, move, status or notifications>[&of=<pane id>]` |
+
+A terminal is named by its server pane id, which stays the same while terminals are reordered, parked or renumbered, never by its position. Paths keep `/` and `~` readable and escape the rest. `of` is the terminal whose notifications the panel shows; `line` is where the file opened (from a path link). Parameters the client does not own are kept: KelpHub-era links keep `project`, `workspace` and `scratch`, and their `view=terminals` (with or without `terminal`) opens that terminal or the grid, `view=files` the browser, and `view=overview` or `view=events` the client's own default. `pane` is reserved for windows opened with **Open in a window**, which show one terminal and keep no history; each window or tab has its own history, and the shared connection is unaffected.
+
+Which changes add an entry:
+
+- **Push**: every move to another place, whether from the sidebar, a grid tile, a toast, a panel's list or a keyboard shortcut (`Ctrl-B` digits, `Tab`, `g`, `N`, `Alt+digit`, `Alt+Tab`, …), and opening a panel that covers the application (Settings, Help, Terminals, Search, Recently closed, Parked, Move, System status, a terminal's notifications), so Back closes it, as phones expect. Each folder opened in the file browser is a place.
+- **Back instead of push**: closing a panel (its close button, `Esc`, a click outside) returns to the entry under it rather than adding one, so the panel can be reopened with Forward and Back never shows the same place twice. Leaving a panel for another place (a terminal opened from the Terminals table or Search) takes the panel's entry, so Back returns to where the panel was opened.
+- **Replace**: the first location after loading or reconnecting, a panel swapped for another, another line in the same file, and changes nobody asked for: a terminal that closed or was parked while shown (its next terminal takes the entry), the browser's `~` or a symbolic link read as its real folder, a file closed, a phone turned into a tablet layout, and every fallback below.
+- **Nothing**: selecting the place already shown, and everything transient: menus, tooltips, toasts, the find bar, confirmations, the upload review, security key prompts, scrolling, selections and Settings' own sections.
+
+A loaded URL is applied once the client is signed in, the terminals are listed and the files capability is known; until then the URL is left untouched. A terminal that no longer exists falls back to the grid (a phone's list) with a toast, a file that no longer exists to its folder in the browser, a folder to the browser at it, files on a connection without them stay where the client is; each fallback replaces the entry. Going back to a place whose terminal has since closed falls back the same way. A file with unsaved changes in the side panel stays there when Back or Forward goes to a place without it (its buffer lives in the panel's editor); a file without changes moves to the list of open files. Each entry's `history.state` carries `{ kelpmux: { v: 1, overlay } }`: `overlay` marks a panel pushed over the entry below, and the version lets a later format migrate older entries (the URL alone is enough to restore a place).
+
 ## Phones and tablets
 
 The same client adapts to iPhone and iPad (Safari first; [ADR 0003](adr/0003-web-client-in-kelpmux.md#addendum-phones-and-tablets) records the decisions). The layout follows the viewport and the primary pointer (`web/src/device.ts`): a touch screen whose short side is under 600 CSS pixels is a **phone** (every iPhone, both orientations), any other touch screen a **tablet** (every iPad), and a mouse-driven window narrower than 600 pixels also gets the phone layout.

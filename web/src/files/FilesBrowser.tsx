@@ -95,7 +95,9 @@ export type FilesBrowserProps = {
   home?: string;
   /** The folder shown. */
   dir: string;
-  onDir: (dir: string) => void;
+  /** Shows a folder; `normalised` when it is the folder just listed under
+   * its real name (`~`, a symbolic link), which is not a move. */
+  onDir: (dir: string, normalised?: boolean) => void;
   onOpenFile: (path: string) => void;
   /** Opens a file in the side panel beside the terminal last shown alone
    * (no item without it: no terminal, or a popup window). */
@@ -142,7 +144,7 @@ export function FilesBrowser(props: FilesBrowserProps) {
       setListing(result);
       setError(null);
       // `~` and symlinked folders come back normalised.
-      if (result.path !== dir) props.onDir(result.path);
+      if (result.path !== dir) props.onDir(result.path, true);
     } catch (failure) {
       if (mine !== generation.current) return;
       setError(

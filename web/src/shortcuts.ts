@@ -27,6 +27,10 @@ export const shortcuts: readonly (readonly [string, string])[] = [
   ["Ctrl-B ?", "Help"],
   ["Ctrl-B d", "Disconnect this browser"],
   ["Ctrl-B Ctrl-B", "Send Ctrl-B to the terminal"],
+  [
+    "Browser Back / Forward",
+    "Previous / next place: terminal, grid, folder, file or panel",
+  ],
   ["Ctrl/Cmd+F", "Find in the focused terminal, or in the open file"],
   ["Ctrl/Cmd+S", "Save the open file"],
   ["Ctrl/Cmd+click a path", "Open a file or folder printed in the terminal"],
