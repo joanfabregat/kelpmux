@@ -499,15 +499,22 @@ export function HelpPanel() {
       <h3>Files</h3>
       <p className="setting-hint">
         Click <b>Files</b> at the bottom of the sidebar for the file browser; a
-        terminal's folder button opens the folder it is in. New file and New
-        folder sit above the browser's list; each entry's menu (right-click or
-        ⋯) opens it, opens it beside the terminal, inserts or copies its path,
-        downloads it, renames it, moves it to the trash or deletes it
-        permanently. Drag an entry onto a folder to move it, or onto a
-        terminal's row or view to type its quoted path; drop files from your
-        computer onto a folder to upload them there. Browsing stays inside your
-        home folder (or the folder the server was started with): links that
-        point outside it are shown dimmed and do not open.
+        terminal's folder button opens the folder it is in. It shows columns
+        like the Finder: selecting a folder opens it in the next column,
+        selecting a file shows its details (and the first lines of a small text
+        file) at the right, and a double-click or Enter opens it. Each entry
+        shows its date and size under its name. Arrow keys move: ↑ and ↓ within
+        a column, → into a folder, ← back; type a name to jump to it. Drag a
+        column's right edge to resize it. Phones show one folder at a time. New
+        file and New folder (above the columns) create in the column you are in;
+        each entry's menu (right-click or ⋯) opens it, opens it beside the
+        terminal, inserts or copies its path, downloads it, renames it, moves it
+        to the trash or deletes it permanently. Drag an entry onto a folder to
+        move it, or onto a terminal's row or view to type its quoted path; drop
+        files from your computer onto a folder or a column to upload them there.
+        Browsing stays inside your home folder (or the folder the server was
+        started with): links that point outside it are shown dimmed and do not
+        open.
       </p>
       <p className="setting-hint">
         Hold Ctrl/Cmd over a file path printed in the terminal (path, path:line

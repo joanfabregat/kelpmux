@@ -6,7 +6,9 @@
 // connected to a real `kelpmux web-bridge` and server through a pipe instead
 // of SSH, as test/bridge.fixture.tsx does (test/files.mjs). `?phone=1`
 // shows the phone layout (no rail: the main area only); `?nodownloads=1`
-// a bridge without downloads. A terminal shown
+// a bridge without downloads, `?dir=<folder>` a deep link to a folder
+// (as `?view=files&dir=`); `window.dirs` records each folder shown with
+// whether it replaced the history entry (main.tsx's onDir). A terminal shown
 // alone (`window.showTerminal(pane)`, or clicking its row) has the side
 // panel and Cmd/Ctrl-click path links as main.tsx wires them;
 // `window.cellPoint(x, y)` is the client point at the middle of a cell of
@@ -77,6 +79,7 @@ const w = window as any;
 w.bridgeErrors = [];
 w.toasts = [];
 w.stats = [];
+w.dirs = [];
 class PipeSession extends Session {
   send(message: any) {
     if (this.stopped) return;
@@ -194,7 +197,9 @@ function App() {
   const [client, setClient] = useState<FilesClient | null>(null);
   const [uploadLimits, setUploadLimits] = useState<UploadLimits | null>(null);
   const [home, setHome] = useState<string>();
-  const [dir, setDir] = useState("~");
+  const [dir, setDir] = useState(
+    new URLSearchParams(location.search).get("dir") || "~",
+  );
   const [shown, setShown] = useState("");
   const [browsing, setBrowsing] = useState(true);
   const [confirm, setConfirm] = useState<ConfirmAction | null>(null);
@@ -383,7 +388,11 @@ function App() {
       <FilesBrowser
         {...actions}
         dir={dir}
-        onDir={setDir}
+        onDir={(folder, replace) => {
+          w.dirs.push([folder, !!replace]);
+          setDir(folder);
+        }}
+        phone={phone}
         onBack={phone ? () => {} : undefined}
         tabs={tabs}
       />

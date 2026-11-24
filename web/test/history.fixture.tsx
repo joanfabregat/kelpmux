@@ -183,6 +183,33 @@ function App() {
         <button id="src" onClick={() => openFiles("/home/me/src")}>
           src
         </button>
+        {/* The column view (FilesBrowser's onDir, as main.tsx wires it):
+            a folder clicked in a column pushes; the keyboard, or a file
+            selected in an earlier column, replaces. */}
+        <button
+          id="column-click"
+          onClick={() => setFilesDir("/home/me/src/lib")}
+        >
+          lib clicked
+        </button>
+        <button
+          id="column-key"
+          onClick={() => {
+            navigation.automatic();
+            setFilesDir("/home/me/src/bin");
+          }}
+        >
+          bin by keyboard
+        </button>
+        <button
+          id="column-file"
+          onClick={() => {
+            navigation.automatic();
+            setFilesDir("/home/me");
+          }}
+        >
+          a file selected in the home column
+        </button>
         <button id="open-file" onClick={() => openDoc("/home/me/src/main.rs")}>
           main.rs
         </button>
