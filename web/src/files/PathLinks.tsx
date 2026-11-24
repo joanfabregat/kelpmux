@@ -12,12 +12,13 @@
 // terminal, which opens it on any click; a `file://` one is used as the
 // path. Rows only: the screen model has no soft-wrap marks, so a path
 // wrapped across rows is not joined. Terminal history (scrolled back) has
-// no links.
+// no links. Paths outside the server's file root are never links.
 import React, { useEffect, useRef, useState } from "react";
 import type { Store } from "@kelpcore/web/Terminal.tsx";
 import type { FilesClient, FileKind } from "@kelpcore/web/files/api.ts";
 import type { NumberedPane } from "@kelpcore/web/types.ts";
 import { fileUrlPath, pathLinkAt, type Location } from "./path-links";
+import { withinRoot } from "./root";
 
 /** What a link opens: the server's path and its kind. */
 export type PathTarget = Location & { kind: FileKind };
@@ -86,8 +87,16 @@ export function usePathLinks({
     setHover(null);
   }, [client, pane?.id]);
 
-  /** The path under a point, before any existence check. */
+  /** The path under a point, before any existence check. Only paths
+   * inside the file root are candidates: nothing is asked about the
+   * others, which the server refuses. */
   function find(point: { clientX: number; clientY: number }): Found | null {
+    const found = locate(point);
+    return found && withinRoot(found.path, latest.current.client?.limits.root)
+      ? found
+      : null;
+  }
+  function locate(point: { clientX: number; clientY: number }): Found | null {
     const { pane, client, home } = latest.current;
     const root = section.current;
     if (!pane || !client || !root) return null;

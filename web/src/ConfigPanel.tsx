@@ -39,6 +39,8 @@ export type ConfigPanelProps = {
   uploadDestination: string;
   setUploadDestination: (path: string) => void;
   uploadUnavailable: string | null;
+  /** The file root a destination must lie in, if the server has one. */
+  uploadRoot?: string;
   /** A touch device: the hardware keyboard setting applies. */
   touch: boolean;
 };
@@ -60,6 +62,7 @@ export function ConfigPanel({
   uploadDestination,
   setUploadDestination,
   uploadUnavailable,
+  uploadRoot,
   touch,
 }: ConfigPanelProps) {
   const idle = idleMinutes(connection);
@@ -259,6 +262,7 @@ export function ConfigPanel({
           destination={uploadDestination}
           onChange={setUploadDestination}
           unavailable={uploadUnavailable}
+          root={uploadRoot}
         />
       </section>
       <section hidden={settingsSection !== "keys"}>{keyContent}</section>

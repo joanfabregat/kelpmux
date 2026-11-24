@@ -254,7 +254,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "39cab71617ae0d63f51a36d69f866391735b51691dbda63cf6f96d042b63efeb"
 dependencies = [
  "libc",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -523,7 +523,7 @@ dependencies = [
 [[package]]
 name = "kelpclient"
 version = "0.1.0"
-source = "git+https://github.com/joanfabregat/kelpcore?rev=6f7e65bdcc1b5b8ed57f60106abcbf548f4a1d77#6f7e65bdcc1b5b8ed57f60106abcbf548f4a1d77"
+source = "git+https://github.com/joanfabregat/kelpcore?rev=3a7d99c8ef9a0e0f5211ba173562efcccd262b44#3a7d99c8ef9a0e0f5211ba173562efcccd262b44"
 dependencies = [
  "kelpclient-protocol",
  "serde",
@@ -534,7 +534,7 @@ dependencies = [
 [[package]]
 name = "kelpclient-protocol"
 version = "0.3.0"
-source = "git+https://github.com/joanfabregat/kelpcore?rev=6f7e65bdcc1b5b8ed57f60106abcbf548f4a1d77#6f7e65bdcc1b5b8ed57f60106abcbf548f4a1d77"
+source = "git+https://github.com/joanfabregat/kelpcore?rev=3a7d99c8ef9a0e0f5211ba173562efcccd262b44#3a7d99c8ef9a0e0f5211ba173562efcccd262b44"
 dependencies = [
  "serde",
  "unicode-width",
@@ -560,7 +560,7 @@ dependencies = [
 [[package]]
 name = "kelpserver"
 version = "0.3.0-beta.2"
-source = "git+https://github.com/joanfabregat/kelpcore?rev=6f7e65bdcc1b5b8ed57f60106abcbf548f4a1d77#6f7e65bdcc1b5b8ed57f60106abcbf548f4a1d77"
+source = "git+https://github.com/joanfabregat/kelpcore?rev=3a7d99c8ef9a0e0f5211ba173562efcccd262b44#3a7d99c8ef9a0e0f5211ba173562efcccd262b44"
 dependencies = [
  "alacritty_terminal",
  "base64 0.22.1",
@@ -836,7 +836,7 @@ dependencies = [
  "errno",
  "libc",
  "linux-raw-sys",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]

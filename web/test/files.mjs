@@ -1,7 +1,10 @@
 // The file browser and editor (test/files.fixture.tsx) in Chromium, against
 // a real `kelpmux server` and `kelpmux web-bridge` in a temporary HOME,
 // with a pipe in place of SSH as in test/bridge.mjs. It lists the home
-// folder (hidden entries only on request), navigates, creates a folder and
+// folder (hidden entries only on request), navigates, starts at the file
+// root (the home folder) with no crumb above it, shows symbolic links
+// pointing outside the root without opening them (in the browser and the
+// tree, menus without Open or Download, the link deletable), creates a folder and
 // a file, edits and saves the file (checked on disk), meets a conflict when
 // the file changed on disk and overwrites it, renames an entry, drags it
 // onto a terminal's row (its shell-quoted path appears on that terminal's
@@ -20,7 +23,8 @@
 // terminal shown alone, it opens a file beside it (the terminal loses
 // columns), saves an edit from the side panel with Ctrl+S, types into the
 // terminal after a click on it, closes the panel (the columns come back),
-// finds a printed path that does not exist not clickable and Ctrl-clicks
+// finds a printed path that does not exist, or lies outside the root (no
+// stat sent), not clickable and Ctrl-clicks
 // one that does, which opens beside the terminal at its line. Then the
 // phone layout, where Open beside terminal opens the editor full screen. Needs a built kelpmux (KELPMUX_BINARY, default
 // ../../target/release/kelpmux) and web/public/client-core.wasm. Set
@@ -35,6 +39,7 @@ import {
   readFileSync,
   renameSync,
   rmSync,
+  symlinkSync,
   writeFileSync,
 } from "node:fs";
 import { connect } from "node:net";
@@ -218,6 +223,115 @@ try {
   await page.locator(".files-crumb", { hasText: "Home" }).click();
   await row(page, "notes.txt").waitFor();
   console.log("PASS: navigates into a folder and back by its breadcrumbs");
+
+  // The file root (the server user's home folder): the browser starts
+  // there, with no crumb above it and no parent folder.
+  assert.equal(
+    await page.evaluate(() => window.welcome.file_limits.root),
+    home,
+  );
+  assert.deepEqual(
+    await page.locator(".files-crumb").allInnerTexts(),
+    ["Home"],
+  );
+  assert.ok(
+    await page.getByRole("button", { name: "Parent folder" }).isDisabled(),
+  );
+  // Symbolic links pointing outside it are shown, marked, and open
+  // nothing; one pointing inside opens what it names. The link itself can
+  // still be deleted. (The folder is made in the browser, so the sidebar's
+  // tree lists it too.)
+  await page.getByRole("button", { name: "New folder" }).click();
+  await page.getByLabel("New folder name").fill("gate");
+  await page.getByLabel("New folder name").press("Enter");
+  await row(page, "gate").waitFor();
+  writeFileSync(join(root, "outside.txt"), "outside\n");
+  symlinkSync("/etc", join(home, "gate/etc-link"));
+  symlinkSync("../../outside.txt", join(home, "gate/up-link"));
+  symlinkSync("../docs", join(home, "gate/docs-link"));
+  await row(page, "gate").getByRole("button", { name: /^gate,/ }).click();
+  await row(page, "etc-link").waitFor();
+  assert.deepEqual(
+    await page.locator(".files-crumb").allInnerTexts(),
+    ["Home", "gate"],
+  );
+  for (const [name, target] of [
+    ["etc-link", "/etc"],
+    ["up-link", "../../outside.txt"],
+  ]) {
+    assert.equal(await row(page, name).getAttribute("data-outside"), "true");
+    const open = row(page, name).locator(".files-open");
+    assert.match(await open.getAttribute("title"), new RegExp(`→ ${target.replace(/\./g, "\\.")} \\(outside`));
+    // aria-disabled: a click only says why it does not open.
+    await open.click({ force: true });
+    await page.waitForFunction(
+      (name) =>
+        window.toasts.some(
+          (t) =>
+            t.message === `“${name}”: Outside the folders this server lets you browse`,
+        ),
+      name,
+    );
+    assert.equal(
+      await page.locator('.files-crumb[aria-current="location"]').innerText(),
+      "gate",
+    );
+    assert.equal(await page.locator(".files-editor").count(), 0);
+    await row(page, name).hover();
+    await row(page, name)
+      .getByRole("button", { name: `Actions for ${name}` })
+      .click();
+    const items = await page.getByRole("menuitem").allInnerTexts();
+    assert.ok(!items.includes("Open"), items.join());
+    assert.ok(!items.some((item) => item.startsWith("Download")), items.join());
+    assert.ok(!items.includes("Open beside terminal"), items.join());
+    for (const item of ["Copy path", "Rename…", "Move to trash", "Delete permanently…"])
+      assert.ok(items.includes(item), `${item} in ${items.join()}`);
+    await page.keyboard.press("Escape");
+  }
+  assert.equal(await row(page, "docs-link").getAttribute("data-outside"), null);
+  await row(page, "etc-link").waitFor();
+  // The sidebar's tree marks them too.
+  const gateTree = (name) =>
+    page.locator(`.file-tree .file-row[data-path="${join(home, "gate", name)}"]`);
+  await page
+    .locator(`.file-tree .file-row[data-path="${join(home, "gate")}"] .file-item`)
+    .click();
+  await gateTree("etc-link").waitFor();
+  assert.equal(await gateTree("etc-link").getAttribute("data-outside"), "true");
+  assert.equal(await gateTree("docs-link").getAttribute("data-outside"), null);
+  await page
+    .locator(`.file-tree .file-row[data-path="${join(home, "gate")}"] .file-item`)
+    .click();
+  // Deleting the link removes the link, not what it points to.
+  await action(page, "up-link", "Delete permanently…");
+  await page
+    .getByRole("alertdialog")
+    .getByRole("button", { name: "Delete permanently" })
+    .click();
+  await row(page, "up-link").waitFor({ state: "detached" });
+  assert.equal(read(join(root, "outside.txt")), "outside\n");
+  // The inside link opens the folder it names (under the link's name: the
+  // server resolves it beneath the root without renaming it).
+  await row(page, "docs-link").locator(".files-open").click();
+  await row(page, "readme.md").waitFor();
+  assert.deepEqual(
+    await page.locator(".files-crumb").allInnerTexts(),
+    ["Home", "gate", "docs-link"],
+  );
+  // The gate folder goes, through the browser so both views list again.
+  await page.locator(".files-crumb", { hasText: "Home" }).click();
+  await action(page, "gate", "Delete permanently…");
+  await page
+    .getByRole("alertdialog")
+    .getByRole("button", { name: "Delete permanently" })
+    .click();
+  await row(page, "gate").waitFor({ state: "detached" });
+  assert.ok(!existsSync(join(home, "gate")));
+  await shot(page, "desktop-root");
+  console.log(
+    "PASS: starts at the file root with no crumb above it; links outside it show but do not open",
+  );
 
   // A new folder and a new file (which opens in the editor).
   await page.getByRole("button", { name: "New folder" }).click();
@@ -670,10 +784,12 @@ try {
   console.log("PASS: edits in the side panel save with Ctrl+S (checked on disk)");
 
   // Clicking the terminal gives it the keyboard; the panel's file is
-  // untouched. Clear the paths typed earlier, then print two paths.
+  // untouched. Clear the paths typed earlier, then print three paths.
   await canvas.click();
   await page.keyboard.press("Control+u");
-  await page.keyboard.type("echo src/x.py:3; echo nothere/y.py:2\n");
+  await page.keyboard.type(
+    "echo src/x.py:3; echo /etc/passwd; echo nothere/y.py:2\n",
+  );
   const rowOf = (text) =>
     page.evaluate(
       ({ pane, text }) =>
@@ -722,6 +838,25 @@ try {
   await page.waitForTimeout(400);
   assert.equal(await page.locator(".side-panel").count(), 0);
   console.log("PASS: a path that does not exist is not a link");
+
+  // A path outside the file root (the home folder) exists but is never a
+  // candidate: no stat is sent and nothing is underlined or opened.
+  const outsidePath = await point("/etc/passwd");
+  const statsBefore = await page.evaluate(() => window.stats.length);
+  await page.keyboard.down("Control");
+  await page.mouse.move(outsidePath.x, outsidePath.y);
+  await page.waitForTimeout(600);
+  assert.equal(await page.locator(".path-link-underline").count(), 0);
+  await page.mouse.click(outsidePath.x, outsidePath.y);
+  await page.keyboard.up("Control");
+  await page.waitForTimeout(400);
+  assert.equal(await page.locator(".side-panel").count(), 0);
+  assert.deepEqual(
+    (await page.evaluate(() => window.stats)).slice(statsBefore),
+    [],
+    "no stat for a path outside the root",
+  );
+  console.log("PASS: a path outside the file root is not a link (no stat sent)");
 
   const found = await point("src/x.py:3");
   await page.mouse.move(found.x + 30, found.y + 60);

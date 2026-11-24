@@ -257,6 +257,23 @@ for (const [name, engine] of [
       await ready(page);
       await at(page, "folder /home/me", "?view=files&dir=/home/me");
       assert.match(await page.locator("#toast").textContent(), /gone\.txt/);
+      // A folder or file outside the file root: the root, with a toast,
+      // in place of the entry.
+      for (const search of [
+        "?view=files&dir=/etc",
+        "?view=files&dir=/home/me/../other",
+        "?view=files&file=/etc/passwd&line=2",
+      ]) {
+        const before = await length(page);
+        await page.goto(`${origin}/${search}`);
+        await ready(page);
+        await at(page, "folder /home/me", "?view=files&dir=/home/me");
+        assert.equal(
+          await page.locator("#toast").textContent(),
+          "Outside the folders this server lets you browse",
+        );
+        assert.equal(await length(page), before + 1, "replaced, not pushed");
+      }
       // A KelpHub-era URL keeps its project parameters.
       await page.goto(`${origin}/?scratch=1&view=terminals&terminal=12`);
       await ready(page);

@@ -8,18 +8,18 @@
 // Entries drag onto a terminal row (typing their quoted path) or onto a
 // folder (moving them); files dragged from the desktop onto a folder, or
 // onto the list, upload into it. The menu, moves, uploads and the hidden
-// setting are shared with the sidebar's file tree (actions.tsx).
+// setting are shared with the sidebar's file tree (actions.tsx). Browsing
+// starts at the server's file root and never goes above it; a symbolic
+// link pointing outside it is shown but does not open (root.ts).
 import React, { useEffect, useRef, useState } from "react";
 import {
   FileError,
-  describeCode,
   type FileEntry,
   type FileListing,
   type FilesClient,
 } from "@kelpcore/web/files/api.ts";
 import {
   baseName,
-  breadcrumbs,
   joinPath,
   nameProblem,
   parentPath,
@@ -29,8 +29,17 @@ import { formatBytes } from "@kelpcore/web/uploads.ts";
 import { Icon } from "../status";
 import { startPathDrag } from "./insert";
 import {
+  canGoUp,
+  errorMessage,
+  leadsOutside,
+  outsideRootMessage,
+  rootCrumbs,
+  withinRoot,
+} from "./root";
+import {
   FileMenu,
   NameInput,
+  entryTitle,
   filesChanged,
   kindIcon,
   kindLabel,
@@ -84,7 +93,16 @@ export function FilesBrowser(props: FilesBrowserProps) {
   const generation = useRef(0);
   const picker = useRef<HTMLInputElement>(null);
   const actions = useFileActions(props, props.onDir);
-  const { busy, uploading, dropOn, folderDrop } = actions;
+  const { root, busy, uploading, dropOn, folderDrop } = actions;
+  /** The folder to show instead of `dir`: the root for `~` when the root
+   * is not the home folder, and for a folder outside the root. */
+  const start =
+    root &&
+    (dir === "~"
+      ? !home || !withinRoot(home, root)
+      : !withinRoot(dir, root, home))
+      ? root
+      : dir;
 
   async function load(path = dir) {
     const mine = ++generation.current;
@@ -108,18 +126,25 @@ export function FilesBrowser(props: FilesBrowserProps) {
       if (mine === generation.current) setLoading(false);
     }
   }
-  // The latest load and listing, for the effect that follows the folder.
-  const latest = useRef({ load, listed: listing?.path });
-  latest.current = { load, listed: listing?.path };
+  // The latest load, listing and props, for the effect that follows the
+  // folder.
+  const latest = useRef({ load, listed: listing?.path, props });
+  latest.current = { load, listed: listing?.path, props };
   const lastClient = useRef<FilesClient | null>(null);
   useEffect(() => {
     setEditing(null);
     setMenu(null);
+    // Outside the root: the root, in place of this folder (not a move).
+    if (start !== dir) {
+      const { toast, onDir } = latest.current.props;
+      if (dir !== "~") toast(outsideRootMessage, { tone: "error" });
+      return onDir(start, true);
+    }
     // A new connection lists again; the same one only another folder.
     if (lastClient.current !== client || latest.current.listed !== dir)
       void latest.current.load(dir);
     lastClient.current = client;
-  }, [dir, client]);
+  }, [dir, start, client]);
   // A change here or in the sidebar's tree lists this folder again.
   useFilesChanged((paths) => {
     if (touches(paths, listing?.path || dir)) void load();
@@ -162,7 +187,10 @@ export function FilesBrowser(props: FilesBrowserProps) {
   const hiddenCount = listing
     ? listing.entries.length - sortEntries(listing.entries).length
     : 0;
-  const crumbs = breadcrumbs(dir, home);
+  const crumbs = rootCrumbs(dir, root, home);
+  /** Where the error's button goes back to: the root, else the home
+   * folder. */
+  const top = root || home;
   const menuItems = (m: Menu) =>
     actions.menuItems(m.entry, m.path, () =>
       setEditing({
@@ -219,7 +247,9 @@ export function FilesBrowser(props: FilesBrowserProps) {
                 {...folderDrop(crumb.path)}
               >
                 {crumb.label === "~" ? <Icon name="house" size="sm" /> : null}
-                <span>{crumb.label === "~" ? "Home" : crumb.label}</span>
+                <span title={index === 0 ? crumb.path : undefined}>
+                  {crumb.label === "~" ? "Home" : crumb.label}
+                </span>
               </button>
             </React.Fragment>
           ))}
@@ -230,7 +260,7 @@ export function FilesBrowser(props: FilesBrowserProps) {
             className="icon-btn"
             title="Parent folder"
             aria-label="Parent folder"
-            disabled={dir === "/"}
+            disabled={!canGoUp(dir, root)}
             onClick={() => props.onDir(parentPath(dir))}
           >
             <Icon name="arrow-up" size="sm" />
@@ -364,11 +394,11 @@ export function FilesBrowser(props: FilesBrowserProps) {
                 ? `${dir} does not exist.`
                 : error.code === "not_a_directory"
                   ? `${dir} is not a folder.`
-                  : error.message || describeCode(error.code)}
+                  : errorMessage(error)}
             </p>
-            {home && dir !== home && (
-              <button type="button" className="subtle small" onClick={() => props.onDir(home)}>
-                Go to the home folder
+            {top && dir !== top && (
+              <button type="button" className="subtle small" onClick={() => props.onDir(top)}>
+                {top === home ? "Go to the home folder" : `Go to ${top}`}
               </button>
             )}
           </div>
@@ -384,13 +414,16 @@ export function FilesBrowser(props: FilesBrowserProps) {
           const path = joinPath(listing!.path, entry.name);
           const renaming = editing?.kind === "rename" && editing.path === path;
           const folder = entry.kind === "dir";
+          // A link pointing outside the root: shown, never opened.
+          const outside = leadsOutside(entry, path, root);
           return (
             <div
               key={entry.name}
-              className={`files-row ${dropOn === path ? "drop-target" : ""} ${menu?.path === path ? "selected" : ""}`}
+              className={`files-row ${dropOn === path ? "drop-target" : ""} ${menu?.path === path ? "selected" : ""} ${outside ? "outside" : ""}`}
               role="row"
               data-path={path}
               data-kind={entry.kind}
+              data-outside={outside || undefined}
               draggable={!renaming}
               onDragStart={(event) => startPathDrag(event, [path])}
               onContextMenu={(event) => {
@@ -411,12 +444,9 @@ export function FilesBrowser(props: FilesBrowserProps) {
                   <button
                     type="button"
                     className="files-open"
-                    title={
-                      entry.kind === "symlink" && entry.target
-                        ? `${entry.name} → ${entry.target}`
-                        : entry.name
-                    }
-                    aria-label={`${entry.name}, ${kindLabel[entry.kind]}`}
+                    title={entryTitle(entry, entry.name, path, root)}
+                    aria-label={`${entry.name}, ${kindLabel[entry.kind]}${outside ? ", outside the browsable folders" : ""}`}
+                    aria-disabled={outside || undefined}
                     onClick={() => void open(entry, path)}
                   >
                     <span className="files-name">{entry.name}</span>

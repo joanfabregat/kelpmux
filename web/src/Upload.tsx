@@ -16,6 +16,7 @@ import {
   type UploadTransport,
 } from "@kelpcore/web/uploads.ts";
 import { Icon } from "./status";
+import { destinationRootProblem } from "./files/root";
 
 const destinationKey = "kelpmux-web-upload-destination";
 /** The default destination folder chosen in Settings → Uploads (this
@@ -80,6 +81,7 @@ type Phase =
 export function UploadDialog({
   drop,
   unavailable,
+  root,
   limits,
   transport,
   defaultDestination,
@@ -91,6 +93,8 @@ export function UploadDialog({
   drop: UploadDrop;
   /** Why this connection cannot upload, if it cannot. */
   unavailable: string | null;
+  /** The file root a chosen destination must lie in, if known. */
+  root?: string;
   limits: UploadLimits | null;
   transport: UploadTransport | null;
   defaultDestination: string;
@@ -116,7 +120,7 @@ export function UploadDialog({
       : files.length
         ? uploadProblem(files, limits)
         : "Only folders were dropped; drop files instead.") ||
-    destinationProblem(dest);
+    destinationRootProblem(dest, root);
   const busy = phase.kind === "uploading";
   useEffect(() => {
     dialog.current
@@ -363,15 +367,18 @@ export function UploadSettings({
   destination,
   onChange,
   unavailable,
+  root,
 }: {
   destination: string;
   onChange: (path: string) => void;
   unavailable: string | null;
+  /** The file root the folder must lie in, if known. */
+  root?: string;
 }) {
   const [draft, setDraft] = useState(destination);
   useEffect(() => setDraft(destination), [destination]);
   const path = normalizeDestination(draft);
-  const problem = destinationProblem(path);
+  const problem = destinationRootProblem(path, root);
   return (
     <form
       className="upload-settings"

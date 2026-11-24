@@ -1,4 +1,5 @@
-// The sidebar's file tree: the home folder's entries listed like the
+// The sidebar's file tree: the file root's entries (the home folder unless
+// the server names another, root.ts) listed like the
 // terminals, folders first. A folder's row expands it in place (listed
 // when expanded, and again each time it is expanded); a file's row opens
 // it in the main area, as a terminal's row opens the terminal, and the
@@ -10,8 +11,6 @@
 // folders are expanded is kept in this browser.
 import React, { useEffect, useRef, useState } from "react";
 import {
-  FileError,
-  describeCode,
   type FileEntry,
   type FileListing,
   type FilesClient,
@@ -26,9 +25,11 @@ import {
 } from "@kelpcore/web/files/paths.ts";
 import { Icon } from "../status";
 import { startPathDrag } from "./insert";
+import { errorMessage, leadsOutside } from "./root";
 import {
   FileMenu,
   NameInput,
+  entryTitle,
   kindIcon,
   kindLabel,
   renameError,
@@ -82,6 +83,9 @@ export function FileTree(props: FileTreeProps) {
   const [renaming, setRenaming] = useState<Renaming | null>(null);
   const actions = useFileActions(props.actions, props.onBrowse);
   const { busy, dropOn, folderDrop, uploading } = actions;
+  /** The tree's top: the file root (from the Welcome, so known at once),
+   * else the home folder (older servers). */
+  const root = actions.root || home;
   /** Requests sent and not answered, so a folder is listed once. */
   const pending = useRef(new Map<string, FilesClient>());
 
@@ -93,12 +97,7 @@ export function FileTree(props: FileTreeProps) {
     try {
       next = { listing: await client.list(path) };
     } catch (failure) {
-      next = {
-        error:
-          failure instanceof FileError
-            ? failure.message || describeCode(failure.code)
-            : String(failure),
-      };
+      next = { error: errorMessage(failure) };
     }
     if (pending.current.get(path) !== client) return;
     pending.current.delete(path);
@@ -215,13 +214,16 @@ export function FileTree(props: FileTreeProps) {
     const on = props.current === path;
     const editing = renaming?.path === path ? renaming : null;
     const state = doc?.dirty ? ", unsaved changes" : doc ? ", open" : "";
+    // A link pointing outside the root: shown, never opened.
+    const outside = leadsOutside(entry, path, actions.root);
     return (
       <div
         key={path}
-        className={`nav-cell file-row ${dropOn === path ? "drop-target" : ""} ${menu?.path === path ? "selected" : ""}`}
+        className={`nav-cell file-row ${dropOn === path ? "drop-target" : ""} ${menu?.path === path ? "selected" : ""} ${outside ? "outside" : ""}`}
         style={{ "--depth": depth } as React.CSSProperties}
         data-path={path}
         data-kind={entry.kind}
+        data-outside={outside || undefined}
         data-open={doc ? (doc.dirty ? "dirty" : "open") : undefined}
         draggable={!editing}
         onDragStart={(event) => startPathDrag(event, [path])}
@@ -257,12 +259,9 @@ export function FileTree(props: FileTreeProps) {
             className={`nav-item term-item file-item ${on ? "current" : ""}`}
             aria-current={on ? "page" : undefined}
             aria-expanded={folder ? expandedNow : undefined}
-            aria-label={`${entry.name}, ${kindLabel[entry.kind]}${state}`}
-            title={
-              entry.kind === "symlink" && entry.target
-                ? `${path} → ${entry.target}`
-                : path
-            }
+            aria-label={`${entry.name}, ${kindLabel[entry.kind]}${state}${outside ? ", outside the browsable folders" : ""}`}
+            aria-disabled={outside || undefined}
+            title={entryTitle(entry, path, path, actions.root)}
             onClick={() =>
               folder ? toggle(path) : void actions.open(entry, path)
             }
@@ -312,7 +311,6 @@ export function FileTree(props: FileTreeProps) {
     );
   }
 
-  const root = home;
   const content = root ? rows(root, 0) : [message("home", 0, "Loading…")];
   // The folders shown without a listing are listed after rendering.
   const wanted = missing.join("\n");
@@ -327,7 +325,7 @@ export function FileTree(props: FileTreeProps) {
     <div
       className={`file-tree ${root && dropOn === root ? "drop-target" : ""}`}
       role="list"
-      aria-label="Home folder"
+      aria-label={!actions.root || root === home ? "Home folder" : root}
       {...(root ? folderDrop(root) : {})}
     >
       {content}

@@ -421,6 +421,7 @@ fn concurrent_starters_keep_winning_configuration_consistent_with_live_shells() 
             cwd: Some(cwd),
             upload_dir: None,
             upload_retention_days: None,
+            files_root: None,
         };
         fs::write(&config, serde_json::to_vec(&settings).unwrap()).unwrap();
         let mut command = fixture.command("start");

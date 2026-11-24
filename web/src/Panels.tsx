@@ -510,11 +510,15 @@ export function HelpPanel() {
         it, moves it to the trash or deletes it permanently. Drag an entry onto
         a folder to move it, or onto a terminal's row or view to type its quoted
         path; drop files from your computer onto a folder to upload them there.
+        Browsing stays inside your home folder (or the folder the server was
+        started with): links that point outside it are shown dimmed and do not
+        open.
       </p>
       <p className="setting-hint">
         Hold Ctrl/Cmd over a file path printed in the terminal (path, path:line
-        or path:line:col): a path that exists is underlined, and a click opens
-        the file beside the terminal at that line, or a folder in Files.
+        or path:line:col): a path that exists inside the browsable folders is
+        underlined, and a click opens the file beside the terminal at that line,
+        or a folder in Files.
       </p>
       <h3>Editor</h3>
       <p className="setting-hint">

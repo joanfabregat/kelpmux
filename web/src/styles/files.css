@@ -167,6 +167,19 @@ button.files-open:hover .files-name {
 .files-meta {
   display: none;
 }
+/* A symbolic link pointing outside the file root: shown, not opened. */
+.files-row.outside .files-open,
+.file-row.outside .file-item {
+  cursor: not-allowed;
+}
+.files-row.outside .files-name,
+.file-row.outside .term-title {
+  color: var(--text-3);
+  font-style: italic;
+}
+button.files-open[aria-disabled="true"]:hover .files-name {
+  text-decoration: none;
+}
 .files-size,
 .files-modified {
   overflow: hidden;

@@ -8,6 +8,7 @@ import { FileError, type FilesClient } from "@kelpcore/web/files/api.ts";
 import { saveDownload, downloadName } from "@kelpcore/web/files/save.ts";
 import { formatBytes } from "@kelpcore/web/uploads.ts";
 import { Icon } from "../status";
+import { errorMessage } from "./root";
 
 export type RunningDownload = {
   id: number;
@@ -84,7 +85,7 @@ export function startDownload(
     .catch((failure) => {
       if (failure instanceof FileError && failure.code === "cancelled") return;
       notify(
-        `Could not download “${name}”: ${failure instanceof Error ? failure.message : String(failure)}`,
+        `Could not download “${name}”: ${errorMessage(failure)}`,
         { tone: "error" },
       );
     })
