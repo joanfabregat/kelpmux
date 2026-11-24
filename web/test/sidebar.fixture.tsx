@@ -229,7 +229,8 @@ function Fixture() {
     () => loadPreferences().sidebarSections,
   );
   // Files (files=1): two open files, the second with unsaved changes;
-  // the Files header shows the browser, a file's row the file.
+  // the Files header shows the browser, a file opened from the tree the
+  // file (the tree marks the open files).
   const [docs, setDocs] = useState(
     filesOn
       ? [
@@ -367,7 +368,12 @@ function Fixture() {
     setView("files");
   };
   useEffect(() => {
-    Object.assign(window, { toast: (text: string) => toast(text) });
+    Object.assign(window, {
+      toast: (text: string) => toast(text),
+      // The Files view's tab × (main.tsx's closeDoc, without asking).
+      closeDoc: (path: string) =>
+        setDocs((list) => list.filter((d) => d.path !== path)),
+    });
   }, [toast]);
   const fileActions: FileActionsProps = {
     client: fakeFiles,
@@ -418,13 +424,6 @@ function Fixture() {
                 setPhoneList(false);
                 setView("files");
               },
-              onOpenDoc: (path) => {
-                setShownDoc(path);
-                setPhoneList(false);
-                setView("files");
-              },
-              onCloseDoc: (path) =>
-                setDocs((list) => list.filter((d) => d.path !== path)),
               tree: fileActions,
             }
           : undefined

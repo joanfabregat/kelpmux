@@ -158,6 +158,8 @@ import {
 import { FilesBrowser } from "./files/FilesBrowser";
 import type { FileActionsProps } from "./files/actions";
 import { FileEditor } from "./files/FileEditor";
+import { FileTabs } from "./files/FileTabs";
+import { neighbourTab } from "./files/tabs";
 import { Downloads } from "./files/downloads";
 import { SidePanel } from "./files/SidePanel";
 import { usePathLinks, type PathTarget } from "./files/PathLinks";
@@ -2217,6 +2219,19 @@ function App() {
   const sideDocument = side
     ? documents.docs.find((doc) => doc.id === side.id)
     : undefined;
+  /** The files open in the main area (the Files view's tabs, in opening
+   * order); the side panel's file has none (one buffer per path). */
+  const tabDocs = documents.docs.filter((doc) => doc.id !== side?.id);
+  /** The Files view's tab strip, under the top bar of the view shown. */
+  const fileTabs = (
+    <FileTabs
+      docs={tabDocs}
+      current={shownDocument?.path || ""}
+      onBrowse={() => openFiles()}
+      onShow={(path) => openDoc(path)}
+      onClose={closeDoc}
+    />
+  );
   /** The side panel shows beside the terminal shown alone (never on a
    * phone); otherwise it stays mounted but hidden. */
   const sideShown =
@@ -2285,14 +2300,23 @@ function App() {
       () => openBeside(target.path, jump),
     );
   }
-  /** Closes an open file, asking first when it has unsaved changes. */
+  /** Closes an open file, asking first when it has unsaved changes. The
+   * file shown gives way to its neighbour tab (or the browser). */
   function closeDoc(path: string) {
     const doc = documents.docs.find((d) => d.path === path);
     const close = () => {
       // Closing a file is not a move: its entry becomes what shows next.
       navigation.automatic();
       documents.close(path);
-      if (shownDoc === path) setShownDoc("");
+      if (shownDoc === path) {
+        setShownDoc(
+          neighbourTab(
+            tabDocs.map((d) => d.path),
+            path,
+          ),
+        );
+        setMainJump(undefined);
+      }
       if (sideDocument?.path === path) setSide(null);
     };
     if (!doc?.dirty) return close();
@@ -2586,8 +2610,6 @@ function App() {
                 current: doc.path === shownDocument?.path,
               })),
               onBrowse: (dir) => openFiles(dir),
-              onOpenDoc: openDoc,
-              onCloseDoc: closeDoc,
               tree: fileActions || undefined,
             }
           : undefined
@@ -2661,6 +2683,7 @@ function App() {
                     setFilesDir(dir);
                   }}
                   onBack={phone ? () => setPhoneList(true) : undefined}
+                  tabs={fileTabs}
                 />
               )
             ) : focused ? (
@@ -2743,9 +2766,7 @@ function App() {
                 so its unsaved buffer survives switching to a terminal, the
                 grid or another file; the side panel's file is the panel's. */}
             {filesClient &&
-              documents.docs
-                .filter((doc) => doc.id !== side?.id)
-                .map((doc) => (
+              tabDocs.map((doc) => (
                   <FileEditor
                     key={doc.id}
                     doc={doc}
@@ -2766,6 +2787,7 @@ function App() {
                         : undefined
                     }
                     jump={doc.id === shownDocument?.id ? mainJump : undefined}
+                    tabs={doc.id === shownDocument?.id ? fileTabs : undefined}
                   />
                 ))}
           </div>

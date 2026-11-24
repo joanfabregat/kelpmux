@@ -501,18 +501,17 @@ export function HelpPanel() {
       <h3>Files</h3>
       <p className="setting-hint">
         The Files section lists your home folder like the terminals: click a
-        folder to expand it, a file to open it. The files you have open are
-        listed first, under <b>Open</b>. Click the <b>Files</b> heading for the
-        full file browser; a terminal's folder button opens the folder it is in.
-        New file and New folder sit above the browser's list; each entry's menu
-        (right-click or ⋯), in the browser or the sidebar, opens it, opens it
-        beside the terminal, inserts or copies its path, downloads it, renames
-        it, moves it to the trash or deletes it permanently. Drag an entry onto
-        a folder to move it, or onto a terminal's row or view to type its quoted
-        path; drop files from your computer onto a folder to upload them there.
-        Browsing stays inside your home folder (or the folder the server was
-        started with): links that point outside it are shown dimmed and do not
-        open.
+        folder to expand it, a file to open it; open files are marked there.
+        Click the <b>Files</b> heading for the full file browser; a terminal's
+        folder button opens the folder it is in. New file and New folder sit
+        above the browser's list; each entry's menu (right-click or ⋯), in the
+        browser or the sidebar, opens it, opens it beside the terminal, inserts
+        or copies its path, downloads it, renames it, moves it to the trash or
+        deletes it permanently. Drag an entry onto a folder to move it, or onto
+        a terminal's row or view to type its quoted path; drop files from your
+        computer onto a folder to upload them there. Browsing stays inside your
+        home folder (or the folder the server was started with): links that
+        point outside it are shown dimmed and do not open.
       </p>
       <p className="setting-hint">
         Hold Ctrl/Cmd over a file path printed in the terminal (path, path:line
@@ -522,13 +521,15 @@ export function HelpPanel() {
       </p>
       <h3>Editor</h3>
       <p className="setting-hint">
-        Files open in the main area and are listed under Open, with a dot while
-        they have unsaved changes, which are kept while you look elsewhere.
-        Ctrl/Cmd+S saves; if the file changed on disk meanwhile, choose Reload,
-        Overwrite or Cancel. <b>Open beside terminal</b> in a file's menu, or
-        the editor's <b>Move beside terminal</b>, shows the file in a side panel
-        to the right of the terminal; drag its edge to resize it. Phones have no
-        side panel.
+        Files open in the main area as tabs under the Files view's bar: the
+        first tab is the file browser, then one per open file, with a dot while
+        it has unsaved changes, which are kept while you look elsewhere. Click a
+        tab to show it; its × or a middle-click closes it (asking first when it
+        has unsaved changes), and the next tab shows. Ctrl/Cmd+S saves; if the
+        file changed on disk meanwhile, choose Reload, Overwrite or Cancel.{" "}
+        <b>Open beside terminal</b> in a file's menu, or the editor's{" "}
+        <b>Move beside terminal</b>, shows the file in a side panel to the right
+        of the terminal; drag its edge to resize it. Phones have no side panel.
       </p>
       <h3>Alerts</h3>
       <p className="setting-hint">

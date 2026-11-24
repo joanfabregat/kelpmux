@@ -29,16 +29,17 @@
 //    a header keeps its count and a dot for attention (Terminals) or
 //    unsaved changes (Files). The folded rail ignores collapsing.
 // 7. The Files section lists the home folder as a tree, rows like the
-//    terminals' under the Open group (the open files): folders expand in
-//    place (kept across a reload), a file opens in the main area and is
-//    selected, open and unsaved files are marked, and every row has the
-//    file browser's menu (insert path, rename, trash, open a folder in
-//    the browser). Folded, only the open files show; phones show the tree
+//    terminals' (no Open group: the open files are the Files view's tabs):
+//    folders expand in place (kept across a reload), a file opens in the
+//    main area and is selected, open and unsaved files are marked, and
+//    every row has the file browser's menu (insert path, rename, trash,
+//    open a folder in the browser). Folded, only the Files header shows;
+//    phones show the tree with each row's menu button.
 //    with each row's menu button.
 // 8. One toast stack, top right: the attention toasts, then download
 //    progress and confirmations, newest first, none overlapping, and on a
 //    phone full width below the terminal bar. No rule under the section
-//    headers; New terminal is a row like a terminal's.
+//    headers; New terminal is a secondary row (smaller, muted, indented).
 // Set SIDEBAR_SCREENSHOTS to a directory to save screenshots of each case.
 import { build } from "vite";
 import { chromium, webkit, devices } from "playwright";
@@ -166,8 +167,9 @@ async function checkTerminalsHeader(page, grid) {
 }
 /** Tabs look like the Terminals header (no colour stripe), a 1px rule
  * separates each terminal from the next but none is under a section
- * header, and New terminal is a row like a terminal's: aligned with them,
- * its plus in their number column, its label muted. */
+ * header, and New terminal is secondary: as wide as them but shorter,
+ * smaller and muted, its small plus past their number column, its hover
+ * brightening the text without filling the row. */
 async function checkRowLook(page) {
   const rows = page.locator(".term-list:not([aria-label='Parked']) .term-row");
   assert.ok((await rows.count()) >= 2, "several tabs");
@@ -200,24 +202,43 @@ async function checkRowLook(page) {
       `no rule at ${selector}${pseudo}`,
     );
   assert.equal(await page.locator(".rail-new-rule").count(), 0);
+  // Secondary to the terminals' rows: shorter, smaller and muted, its
+  // small plus indented past the number column, a hover that brightens
+  // the text without filling the row.
   const button = await box(page, ".rail-new");
   const tab = await box(page, ".term-row .term-item");
   assert.ok(Math.abs(button.x - tab.x) <= 1, "New terminal aligned");
   assert.ok(Math.abs(button.width - tab.width) <= 1, "a tab's width");
-  assert.ok(Math.abs(button.height - tab.height) <= 1, "a tab's height");
-  const plus = await box(page, ".rail-new .term-number");
+  assert.ok(button.height < tab.height - 4, "shorter than a terminal's row");
+  assert.equal(await page.locator(".rail-new .term-number").count(), 0);
+  const plus = await box(page, ".rail-new .rail-new-plus");
   const number = await box(page, ".term-row .term-number");
-  assert.ok(Math.abs(plus.x - number.x) <= 1, "plus in the number column");
-  const colour = (selector) =>
+  assert.ok(plus.x > number.x + number.width + 4, "plus past the numbers");
+  assert.ok(plus.width < number.width, "a smaller plus");
+  const style = (selector) =>
     page
       .locator(selector)
       .first()
-      .evaluate((el) => getComputedStyle(el).color);
-  assert.notEqual(
-    await colour(".rail-new"),
-    await colour(".term-row .term-title"),
-    "New terminal muted",
+      .evaluate((el) => {
+        const s = getComputedStyle(el);
+        return {
+          color: s.color,
+          size: s.fontSize,
+          background: s.backgroundColor,
+        };
+      });
+  const newRow = await style(".rail-new");
+  const title = await style(".term-row .term-title");
+  assert.notEqual(newRow.color, title.color, "New terminal muted");
+  assert.ok(
+    parseFloat(newRow.size) < parseFloat(title.size),
+    `smaller text (${newRow.size} < ${title.size})`,
   );
+  await page.locator(".rail-new").hover();
+  const hovered = await style(".rail-new");
+  assert.notEqual(hovered.color, newRow.color, "hover brightens the text");
+  assert.equal(hovered.background, "rgba(0, 0, 0, 0)", "no filled hover");
+  await page.mouse.move(0, 0);
   assert.equal(
     await page.locator(".rail-new").getAttribute("aria-label"),
     "New terminal",
@@ -661,7 +682,9 @@ for (const engine of [chromium, webkit]) {
       const section = (key) => page.locator(`[data-section="${key}"]`);
       const label = (key) => section(key).locator("> .nav-item");
       const toggle = (key) => section(key).locator(".section-toggle");
-      const docRows = page.locator(".doc-row");
+      const fileRows = page.locator(".file-tree .file-row");
+      const fileRow = (path) =>
+        page.locator(`.file-row[data-path="/home/alice/${path}"]`);
       const tabRows = page.locator(
         ".term-list[aria-label='Terminals'] .term-row",
       );
@@ -674,7 +697,7 @@ for (const engine of [chromium, webkit]) {
       });
       await shot(page, name, "sections-expanded");
       // Order: Terminals header, the tabs, + New terminal, then the Files
-      // header and the open files.
+      // header and the home folder's tree (no Open group).
       assert.deepEqual(
         await page
           .locator("[data-section]")
@@ -689,9 +712,9 @@ for (const engine of [chromium, webkit]) {
       assert.ok(
         (await y(page.locator(".rail-new"))) < (await y(label("files"))),
       );
-      assert.ok((await y(label("files"))) < (await y(docRows.first())));
+      assert.ok((await y(label("files"))) < (await y(fileRows.first())));
       assert.equal(await tabRows.count(), 10);
-      assert.equal(await docRows.count(), 2);
+      assert.equal(await page.locator(".doc-row, .open-files").count(), 0);
       for (const key of ["terminals", "files"]) {
         assert.equal(await toggle(key).getAttribute("aria-expanded"), "true");
         assert.equal(await section(key).locator(".section-summary").count(), 0);
@@ -708,7 +731,7 @@ for (const engine of [chromium, webkit]) {
         tabs: 1,
       });
       // The Terminals label shows the grid; the Files label the browser;
-      // an open file's row the file.
+      // a file's tree row the file.
       await label("terminals").click();
       await page.locator(".live-grid").waitFor();
       assert.deepEqual(await current(), {
@@ -725,13 +748,15 @@ for (const engine of [chromium, webkit]) {
         files: "page",
         tabs: 0,
       });
-      await docRows.nth(1).locator(".term-item").click();
+      await fileRow("app.py").locator(".file-item").click();
       await page
         .locator('.files-placeholder[data-files-shown="/home/alice/app.py"]')
         .waitFor();
       assert.equal(await label("files").getAttribute("aria-current"), null);
       assert.equal(
-        await docRows.nth(1).locator(".term-item").getAttribute("aria-current"),
+        await fileRow("app.py")
+          .locator(".file-item")
+          .getAttribute("aria-current"),
         "page",
       );
       // The chevron, a separate button, collapses Terminals without
@@ -780,7 +805,7 @@ for (const engine of [chromium, webkit]) {
       assert.equal(await tabRows.count(), 10);
       // Files collapsed: its count and a dot for the unsaved file.
       await toggle("files").click();
-      assert.equal(await docRows.count(), 0, "open files hidden");
+      assert.equal(await fileRows.count(), 0, "tree hidden");
       const filesSummary = section("files").locator(".section-summary");
       assert.equal(await filesSummary.locator(".count").textContent(), "2");
       assert.ok(
@@ -799,14 +824,10 @@ for (const engine of [chromium, webkit]) {
           `${key} still collapsed`,
         );
       assert.equal(await tabRows.count(), 0);
-      assert.equal(await docRows.count(), 0);
+      assert.equal(await fileRows.count(), 0);
       // With no unsaved file, a collapsed Files header has no dot.
       await toggle("files").click();
-      await docRows.nth(1).hover();
-      await docRows
-        .nth(1)
-        .getByRole("button", { name: "Close file app.py" })
-        .click();
+      await page.evaluate(() => window.closeDoc("/home/alice/app.py"));
       await toggle("files").click();
       assert.equal(await filesSummary.locator(".count").textContent(), "1");
       assert.equal(await filesSummary.locator(".section-alert").count(), 0);
@@ -855,7 +876,7 @@ for (const engine of [chromium, webkit]) {
       await context.close();
     }
     // 7. The Files section's tree (files=1): the home folder listed like the
-    // terminals under the Open group, folders expanding in place, files
+    // terminals, folders expanding in place, files
     // opening like terminals, the browser's menu on every row, and the
     // expanded folders kept across a reload.
     {
@@ -875,7 +896,7 @@ for (const engine of [chromium, webkit]) {
           );
       await fileRow("repos").waitFor();
       // Folders first, then files; hidden entries left out (the browser's
-      // setting); the Open group above the tree.
+      // setting); no Open group above the tree.
       assert.deepEqual(await names(), [
         "repos",
         "scratch",
@@ -883,13 +904,10 @@ for (const engine of [chromium, webkit]) {
         "notes.md",
         "README.md",
       ]);
-      const openLabel = page.locator(".open-files .rail-fold");
-      assert.match(await openLabel.textContent(), /Open.*2/);
-      const y = async (locator) => (await locator.boundingBox()).y;
-      assert.ok(
-        (await y(page.locator(".doc-row").last())) <
-          (await y(fileRow("repos"))),
-        "Open above the tree",
+      assert.equal(
+        await page.locator(".open-files, .doc-row").count(),
+        0,
+        "no Open group",
       );
       // Rows like the terminals': the same left edge, no rule between them.
       const tab = await box(page, ".term-row .term-item");
@@ -938,22 +956,15 @@ for (const engine of [chromium, webkit]) {
       );
       assert.equal(
         await page.locator('.term-item[aria-current="page"]').count(),
-        2,
-        "the tree row and its open file's row",
+        1,
+        "the tree row only (the open files are tabs in the Files view)",
       );
-      assert.equal(await page.locator(".doc-row").count(), 3);
       assert.equal(
         await fileRow("repos/todo.txt").getAttribute("data-open"),
         "open",
       );
       await page.mouse.move(800, 500);
       await shot(page, name, "files-tree");
-      // The Open group folds like Parked.
-      await openLabel.click();
-      assert.equal(await page.locator(".doc-row").count(), 0);
-      assert.equal(await openLabel.getAttribute("aria-expanded"), "false");
-      await openLabel.click();
-      assert.equal(await page.locator(".doc-row").count(), 3);
       // Right-click: the browser's menu.
       await fileRow("README.md").click({ button: "right" });
       const menu = page.locator(".files-menu");
@@ -990,8 +1001,8 @@ for (const engine of [chromium, webkit]) {
       await fileRow("ideas.md").waitFor();
       assert.equal(await fileRow("notes.md").count(), 0);
       assert.equal(
-        await page.locator('.doc-row[data-doc="/home/alice/ideas.md"]').count(),
-        1,
+        await fileRow("ideas.md").getAttribute("data-open"),
+        "open",
         "the open file follows",
       );
       // Move to trash: the row goes, a toast says so.
@@ -1008,7 +1019,7 @@ for (const engine of [chromium, webkit]) {
         .locator('.files-placeholder[data-files-shown="browser"]')
         .waitFor();
       // The expanded folders survive a reload; collapsing the section hides
-      // the tree; the folded rail shows the open files only.
+      // the tree; the folded rail shows the Files header only.
       await page.reload();
       await page.waitForFunction(() => window.fixtureReady === true);
       await fileRow("repos/kelpserver").waitFor();
@@ -1023,7 +1034,7 @@ for (const engine of [chromium, webkit]) {
       await page.goto(`${origin}/?files=1&tabs=4&folded=1`);
       await page.waitForFunction(() => window.fixtureReady === true);
       assert.equal(await page.locator(".file-row").count(), 0);
-      assert.equal(await page.locator(".doc-row").count(), 2);
+      assert.equal(await page.locator(".doc-row, .open-files").count(), 0);
       assert.deepEqual(errors, []);
       await context.close();
     }
@@ -1302,7 +1313,7 @@ for (const engine of [chromium, webkit]) {
       `PASS: ${name} attention toasts: top right, one per terminal, none for the shown terminal, click opens and reads, summary above three, close, Bell toggle, favicon bell, grid, phone width`,
     );
     console.log(
-      `PASS: ${name} sidebar: no full width, showing a terminal marks it read, per-terminal notifications, vitals above the two-column tools, account at the bottom, Terminals header opens the grid, one read-only grid page for 3, 8, 10 and 13 terminals, opening alone from tiles and shortcuts, collapsible Terminals and Files sections, New terminal row, the home folder tree (expand, open, marks, menu, rename, trash), one top right toast stack`,
+      `PASS: ${name} sidebar: no full width, showing a terminal marks it read, per-terminal notifications, vitals above the two-column tools, account at the bottom, Terminals header opens the grid, one read-only grid page for 3, 8, 10 and 13 terminals, opening alone from tiles and shortcuts, collapsible Terminals and Files sections, a secondary New terminal row, the home folder tree (expand, open, marks, menu, rename, trash) with no Open group, one top right toast stack`,
     );
   } finally {
     await browser.close();

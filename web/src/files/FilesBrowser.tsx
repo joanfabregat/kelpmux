@@ -80,6 +80,8 @@ export type FilesBrowserProps = FileActionsProps & {
   onDir: (dir: string, normalised?: boolean) => void;
   /** The phone's back button to the terminal list. */
   onBack?: () => void;
+  /** The Files view's tab strip, under the header. */
+  tabs?: React.ReactNode;
 };
 
 export function FilesBrowser(props: FilesBrowserProps) {
@@ -337,6 +339,7 @@ export function FilesBrowser(props: FilesBrowserProps) {
           />
         </div>
       </header>
+      {props.tabs}
       {uploading && (
         <div className="files-progress" role="status">
           <Icon name="loader-circle" size="sm" className="spin" />
