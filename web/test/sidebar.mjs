@@ -28,6 +28,17 @@
 //    the mouse or Enter/Space, and the state survives a reload. Collapsed,
 //    a header keeps its count and a dot for attention (Terminals) or
 //    unsaved changes (Files). The folded rail ignores collapsing.
+// 7. The Files section lists the home folder as a tree, rows like the
+//    terminals' under the Open group (the open files): folders expand in
+//    place (kept across a reload), a file opens in the main area and is
+//    selected, open and unsaved files are marked, and every row has the
+//    file browser's menu (insert path, rename, trash, open a folder in
+//    the browser). Folded, only the open files show; phones show the tree
+//    with each row's menu button.
+// 8. One toast stack, top right: the attention toasts, then download
+//    progress and confirmations, newest first, none overlapping, and on a
+//    phone full width below the terminal bar. No rule under the section
+//    headers; New terminal is a row like a terminal's.
 // Set SIDEBAR_SCREENSHOTS to a directory to save screenshots of each case.
 import { build } from "vite";
 import { chromium, webkit, devices } from "playwright";
@@ -153,9 +164,10 @@ async function checkTerminalsHeader(page, grid) {
   if (grid) assert.notEqual(background, "rgba(0, 0, 0, 0)", "header selected");
   else assert.equal(background, "rgba(0, 0, 0, 0)");
 }
-/** Tabs look like the Terminals header (no colour stripe), a 1px rule separates
- * each entry from the next, and + New terminal is centred on a rule like
- * the TUI's "+ New tab" row. */
+/** Tabs look like the Terminals header (no colour stripe), a 1px rule
+ * separates each terminal from the next but none is under a section
+ * header, and New terminal is a row like a terminal's: aligned with them,
+ * its plus in their number column, its label muted. */
 async function checkRowLook(page) {
   const rows = page.locator(".term-list:not([aria-label='Parked']) .term-row");
   assert.ok((await rows.count()) >= 2, "several tabs");
@@ -172,30 +184,44 @@ async function checkRowLook(page) {
         const s = getComputedStyle(el, p);
         return { content: s.content, height: s.height };
       }, pseudo);
+  const between = await rule(".term-row + .term-row", "::before");
+  assert.notEqual(between.content, "none", "rule between terminals");
+  assert.equal(between.height, "1px", "rule between terminals");
   for (const [selector, pseudo] of [
     [".grid-row", "::after"],
-    [".term-row + .term-row", "::before"],
-  ]) {
-    const r = await rule(selector, pseudo);
-    assert.notEqual(r.content, "none", `rule ${selector}${pseudo}`);
-    assert.equal(r.height, "1px", `rule ${selector}${pseudo}`);
-  }
-  assert.equal(
-    await rule(".term-row:first-child", "::before").then((r) => r.content),
-    "none",
-    "no rule above the first tab",
-  );
+    [".grid-row", "::before"],
+    [".term-row:first-child", "::before"],
+    [".rail-new", "::before"],
+    [".rail-new", "::after"],
+  ])
+    assert.equal(
+      (await rule(selector, pseudo)).content,
+      "none",
+      `no rule at ${selector}${pseudo}`,
+    );
+  assert.equal(await page.locator(".rail-new-rule").count(), 0);
   const button = await box(page, ".rail-new");
-  const label = await box(page, ".rail-new-label");
-  const rules = await page.locator(".rail-new-rule").all();
-  assert.equal(rules.length, 2, "a rule each side of New terminal");
-  for (const r of rules) {
-    const b = await r.boundingBox();
-    assert.ok(b.width > 4 && b.height >= 1, "New terminal rule visible");
-  }
-  const left = label.x - button.x,
-    right = button.x + button.width - (label.x + label.width);
-  assert.ok(Math.abs(left - right) <= 2, "New terminal centred");
+  const tab = await box(page, ".term-row .term-item");
+  assert.ok(Math.abs(button.x - tab.x) <= 1, "New terminal aligned");
+  assert.ok(Math.abs(button.width - tab.width) <= 1, "a tab's width");
+  assert.ok(Math.abs(button.height - tab.height) <= 1, "a tab's height");
+  const plus = await box(page, ".rail-new .term-number");
+  const number = await box(page, ".term-row .term-number");
+  assert.ok(Math.abs(plus.x - number.x) <= 1, "plus in the number column");
+  const colour = (selector) =>
+    page
+      .locator(selector)
+      .first()
+      .evaluate((el) => getComputedStyle(el).color);
+  assert.notEqual(
+    await colour(".rail-new"),
+    await colour(".term-row .term-title"),
+    "New terminal muted",
+  );
+  assert.equal(
+    await page.locator(".rail-new").getAttribute("aria-label"),
+    "New terminal",
+  );
 }
 /** One grid page holds every terminal: a tile per terminal, each wholly
  * inside the grid and the viewport, columns × rows that fit them with no
@@ -828,6 +854,303 @@ for (const engine of [chromium, webkit]) {
       assert.deepEqual(errors, []);
       await context.close();
     }
+    // 7. The Files section's tree (files=1): the home folder listed like the
+    // terminals under the Open group, folders expanding in place, files
+    // opening like terminals, the browser's menu on every row, and the
+    // expanded folders kept across a reload.
+    {
+      const { context, page, errors } = await open(
+        browser,
+        { viewport: { width: 1440, height: 900 } },
+        "?files=1&tabs=4",
+      );
+      const fileRow = (path) =>
+        page.locator(`.file-row[data-path="/home/alice/${path}"]`);
+      const item = (path) => fileRow(path).locator(".file-item");
+      const names = () =>
+        page
+          .locator(".file-tree .file-row")
+          .evaluateAll((els) =>
+            els.map((e) => e.dataset.path.replace("/home/alice/", "")),
+          );
+      await fileRow("repos").waitFor();
+      // Folders first, then files; hidden entries left out (the browser's
+      // setting); the Open group above the tree.
+      assert.deepEqual(await names(), [
+        "repos",
+        "scratch",
+        "app.py",
+        "notes.md",
+        "README.md",
+      ]);
+      const openLabel = page.locator(".open-files .rail-fold");
+      assert.match(await openLabel.textContent(), /Open.*2/);
+      const y = async (locator) => (await locator.boundingBox()).y;
+      assert.ok(
+        (await y(page.locator(".doc-row").last())) <
+          (await y(fileRow("repos"))),
+        "Open above the tree",
+      );
+      // Rows like the terminals': the same left edge, no rule between them.
+      const tab = await box(page, ".term-row .term-item");
+      const first = await item("repos").boundingBox();
+      assert.ok(Math.abs(first.x - tab.x) <= 1, "aligned with the tabs");
+      assert.equal(
+        await fileRow("scratch").evaluate(
+          (el) => getComputedStyle(el, "::before").content,
+        ),
+        "none",
+      );
+      // Open files are marked, the unsaved one with a dot.
+      assert.equal(await fileRow("app.py").getAttribute("data-open"), "dirty");
+      assert.equal(await fileRow("app.py").locator(".files-dirty").count(), 1);
+      assert.equal(await fileRow("notes.md").getAttribute("data-open"), "open");
+      assert.equal(await fileRow("README.md").getAttribute("data-open"), null);
+      // A folder's row expands it in place, indented; again collapses it.
+      assert.equal(await item("repos").getAttribute("aria-expanded"), "false");
+      await item("repos").click();
+      await fileRow("repos/todo.txt").waitFor();
+      assert.equal(await item("repos").getAttribute("aria-expanded"), "true");
+      assert.deepEqual((await names()).slice(0, 4), [
+        "repos",
+        "repos/kelpmux",
+        "repos/kelpserver",
+        "repos/todo.txt",
+      ]);
+      const icon = (path) => fileRow(path).locator(".files-kind").boundingBox();
+      assert.ok(
+        (await icon("repos/todo.txt")).x > (await icon("repos")).x + 8,
+        "children indented",
+      );
+      await item("repos/kelpserver").click();
+      await page.getByText("Empty folder").waitFor();
+      // A file's row opens it in the main area, selected like the shown
+      // terminal; it joins the open files.
+      await item("repos/todo.txt").click();
+      await page
+        .locator(
+          '.files-placeholder[data-files-shown="/home/alice/repos/todo.txt"]',
+        )
+        .waitFor();
+      assert.equal(
+        await item("repos/todo.txt").getAttribute("aria-current"),
+        "page",
+      );
+      assert.equal(
+        await page.locator('.term-item[aria-current="page"]').count(),
+        2,
+        "the tree row and its open file's row",
+      );
+      assert.equal(await page.locator(".doc-row").count(), 3);
+      assert.equal(
+        await fileRow("repos/todo.txt").getAttribute("data-open"),
+        "open",
+      );
+      await page.mouse.move(800, 500);
+      await shot(page, name, "files-tree");
+      // The Open group folds like Parked.
+      await openLabel.click();
+      assert.equal(await page.locator(".doc-row").count(), 0);
+      assert.equal(await openLabel.getAttribute("aria-expanded"), "false");
+      await openLabel.click();
+      assert.equal(await page.locator(".doc-row").count(), 3);
+      // Right-click: the browser's menu.
+      await fileRow("README.md").click({ button: "right" });
+      const menu = page.locator(".files-menu");
+      await menu.waitFor();
+      assert.deepEqual(await menu.locator(".menu-item").allTextContents(), [
+        "Open",
+        "Open beside terminal",
+        "Insert path into terminal 1",
+        "Copy path",
+        "Download",
+        "Rename…",
+        "Move to trash",
+        "Delete permanently…",
+      ]);
+      await shot(page, name, "files-tree-menu");
+      await menu.getByRole("menuitem", { name: /Insert path/ }).click();
+      assert.ok(
+        (await page.evaluate(() => window.typed)).includes(
+          "/home/alice/README.md",
+        ),
+      );
+      // The ⋯ button opens it too (on hover; always on touch); Rename
+      // edits the name in place, Enter renames.
+      await fileRow("notes.md").hover();
+      await fileRow("notes.md")
+        .getByRole("button", { name: "Actions for notes.md" })
+        .click();
+      await menu.getByRole("menuitem", { name: "Rename…" }).click();
+      const field = page.getByRole("textbox", {
+        name: "New name for notes.md",
+      });
+      await field.fill("ideas.md");
+      await field.press("Enter");
+      await fileRow("ideas.md").waitFor();
+      assert.equal(await fileRow("notes.md").count(), 0);
+      assert.equal(
+        await page.locator('.doc-row[data-doc="/home/alice/ideas.md"]').count(),
+        1,
+        "the open file follows",
+      );
+      // Move to trash: the row goes, a toast says so.
+      await fileRow("README.md").click({ button: "right" });
+      await menu.getByRole("menuitem", { name: "Move to trash" }).click();
+      await fileRow("README.md").waitFor({ state: "detached" });
+      await page
+        .locator(".toast", { hasText: "Moved to the trash: README.md" })
+        .waitFor();
+      // A folder's Open shows it in the file browser.
+      await fileRow("scratch").click({ button: "right" });
+      await menu.getByRole("menuitem", { name: "Open" }).click();
+      await page
+        .locator('.files-placeholder[data-files-shown="browser"]')
+        .waitFor();
+      // The expanded folders survive a reload; collapsing the section hides
+      // the tree; the folded rail shows the open files only.
+      await page.reload();
+      await page.waitForFunction(() => window.fixtureReady === true);
+      await fileRow("repos/kelpserver").waitFor();
+      assert.equal(
+        await item("repos/kelpserver").getAttribute("aria-expanded"),
+        "true",
+      );
+      await page.locator('[data-section="files"] .section-toggle').click();
+      assert.equal(await page.locator(".file-row").count(), 0);
+      await page.locator('[data-section="files"] .section-toggle').click();
+      await fileRow("repos").waitFor();
+      await page.goto(`${origin}/?files=1&tabs=4&folded=1`);
+      await page.waitForFunction(() => window.fixtureReady === true);
+      assert.equal(await page.locator(".file-row").count(), 0);
+      assert.equal(await page.locator(".doc-row").count(), 2);
+      assert.deepEqual(errors, []);
+      await context.close();
+    }
+    // The tree on a phone's list: the same rows, each with its menu button.
+    {
+      const { context, page, errors } = await open(
+        browser,
+        emulate("iPhone 15"),
+        "?files=1&tabs=3",
+      );
+      const repos = page.locator('.file-row[data-path="/home/alice/repos"]');
+      await repos.waitFor();
+      assert.ok(
+        await repos
+          .getByRole("button", { name: "Actions for repos" })
+          .isVisible(),
+        "menu button shown on touch",
+      );
+      await repos.locator(".file-item").click();
+      const todo = page.locator(
+        '.file-row[data-path="/home/alice/repos/todo.txt"]',
+      );
+      await todo.waitFor();
+      await shot(page, name, "phone-files-tree");
+      await todo.locator(".file-item").click();
+      await page
+        .locator(
+          '.files-placeholder[data-files-shown="/home/alice/repos/todo.txt"]',
+        )
+        .waitFor();
+      assert.deepEqual(errors, []);
+      await context.close();
+    }
+    // 8. One toast stack, top right: attention toasts, then download
+    // progress and confirmations (newest first), none overlapping; on a
+    // phone, full width under the terminal bar.
+    {
+      const { context, page, errors } = await open(
+        browser,
+        { viewport: { width: 1440, height: 900 } },
+        "?files=1&toasts=1&tabs=6",
+      );
+      await page.evaluate(() => window.bell(3));
+      const attention = page.locator('.attention-toast[data-pane="3"]');
+      await attention.waitFor();
+      await page
+        .locator('.file-row[data-path="/home/alice/README.md"]')
+        .click({ button: "right" });
+      await page.getByRole("menuitem", { name: "Download" }).click();
+      const download = page.locator(
+        '.download-toast[data-download="README.md"]',
+      );
+      await download.waitFor();
+      await page.evaluate(() => window.toast("First confirmation"));
+      await page.evaluate(() => window.toast("Second confirmation"));
+      const confirmations = page.locator(".toast-region .toast");
+      await page.waitForFunction(
+        () => document.querySelectorAll(".toast-region .toast").length === 2,
+      );
+      assert.match(
+        await confirmations.first().textContent(),
+        /Second confirmation/,
+        "newest first",
+      );
+      const header = await box(page, ".grid-pane > header");
+      const boxes = [
+        await attention.boundingBox(),
+        await download.boundingBox(),
+        await confirmations.nth(0).boundingBox(),
+        await confirmations.nth(1).boundingBox(),
+      ];
+      assert.ok(boxes[0].y >= header.y + header.height, "below the header");
+      for (const [index, b] of boxes.entries()) {
+        assert.ok(1440 - (b.x + b.width) <= 24, `toast ${index} at the right`);
+        assert.ok(
+          Math.abs(b.x + b.width - (boxes[0].x + boxes[0].width)) <= 1,
+          `toast ${index} right-aligned with the others`,
+        );
+        if (index)
+          assert.ok(
+            b.y >= boxes[index - 1].y + boxes[index - 1].height + 4,
+            `toast ${index} below the previous one`,
+          );
+      }
+      assert.ok(boxes[3].y + boxes[3].height < 450, "all at the top");
+      await shot(page, name, "toast-stack");
+      // Dismissing the attention toast moves the others up.
+      const before = (await download.boundingBox()).y;
+      await attention.getByRole("button", { name: /Dismiss/ }).click();
+      await attention.waitFor({ state: "detached" });
+      await page.waitForFunction(
+        (y) =>
+          document.querySelector(".download-toast").getBoundingClientRect().y <
+          y - 20,
+        before,
+      );
+      await download
+        .getByRole("button", { name: "Cancel the download of README.md" })
+        .click();
+      await download.waitFor({ state: "detached" });
+      assert.deepEqual(errors, []);
+      await context.close();
+    }
+    {
+      const { context, page, errors } = await open(
+        browser,
+        emulate("iPhone 13"),
+        "?toasts=1&pane=1",
+      );
+      const width = page.viewportSize().width;
+      await page.evaluate(() => window.bell(3));
+      const attention = page.locator('.attention-toast[data-pane="3"]');
+      await attention.waitFor();
+      await page.evaluate(() => window.toast("Path copied"));
+      const toast = page.locator(".toast-region .toast");
+      await toast.waitFor();
+      const b = await toast.boundingBox();
+      const a = await attention.boundingBox();
+      const bar = await box(page, ".phone-bar");
+      assert.ok(Math.abs(b.x - 16) <= 1, "left gutter");
+      assert.ok(Math.abs(width - (b.x + b.width) - 16) <= 1, "right gutter");
+      assert.ok(b.y >= a.y + a.height, "below the attention toast");
+      assert.ok(a.y >= bar.y + bar.height, "below the terminal bar");
+      await shot(page, name, "toast-stack-phone");
+      assert.deepEqual(errors, []);
+      await context.close();
+    }
     // 5. Attention toasts replace desktop notifications (toasts=1).
     {
       const { context, page, errors } = await open(
@@ -979,7 +1302,7 @@ for (const engine of [chromium, webkit]) {
       `PASS: ${name} attention toasts: top right, one per terminal, none for the shown terminal, click opens and reads, summary above three, close, Bell toggle, favicon bell, grid, phone width`,
     );
     console.log(
-      `PASS: ${name} sidebar: no full width, showing a terminal marks it read, per-terminal notifications, vitals above the two-column tools, account at the bottom, Terminals header opens the grid, one read-only grid page for 3, 8, 10 and 13 terminals, opening alone from tiles and shortcuts, collapsible Terminals and Files sections`,
+      `PASS: ${name} sidebar: no full width, showing a terminal marks it read, per-terminal notifications, vitals above the two-column tools, account at the bottom, Terminals header opens the grid, one read-only grid page for 3, 8, 10 and 13 terminals, opening alone from tiles and shortcuts, collapsible Terminals and Files sections, New terminal row, the home folder tree (expand, open, marks, menu, rename, trash), one top right toast stack`,
     );
   } finally {
     await browser.close();

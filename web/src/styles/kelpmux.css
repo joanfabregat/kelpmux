@@ -113,36 +113,24 @@
 }
 
 /* ───────── Sidebar terminal list ───────── */
-/* The new-terminal row right under the tabs, like the TUI's "+ New tab":
- * a rule across the row with the label centred on it, in the accent. */
+/* The New terminal row right under the tabs, like the TUI's "+ New tab": a
+ * row like a terminal's, its plus in the number column and its label
+ * muted, brightened by the hover every row gets. */
 .nav-item.rail-new {
-  justify-content: center;
-  gap: var(--s2);
-  margin-top: var(--s1);
+  color: var(--text-3);
+}
+.nav-item.rail-new .term-number {
+  color: inherit;
+}
+.nav-item.rail-new:hover:not(:disabled),
+.nav-item.rail-new:focus-visible {
+  color: var(--text);
+}
+.nav-item.rail-new:hover:not(:disabled) .term-number {
   color: var(--accent);
-}
-.nav-item.rail-new:hover:not(:disabled) {
-  color: var(--accent);
-}
-.rail-new-rule {
-  flex: 1;
-  min-width: var(--s2);
-  height: 1px;
-  background: color-mix(in srgb, var(--accent) 45%, transparent);
-}
-.rail-new-label {
-  display: inline-flex;
-  flex: none;
-  align-items: center;
-  gap: var(--s1);
-  font-weight: 600;
-  white-space: nowrap;
 }
 .rail.folded .rail-new-text {
   display: none;
-}
-.rail.folded .nav-item.rail-new {
-  gap: 2px;
 }
 .rail-head .rail-marks {
   flex: none;
@@ -158,15 +146,14 @@
   position: relative;
   touch-action: none;
 }
-/* A rule between the sidebar's entries: under the grid's, and between
- * terminals, drawn in the 1px gap so the rows keep their size. */
+/* A rule between terminals, drawn in the 1px gap so the rows keep their
+ * size. Section headers have none: spacing separates the sections. */
 .grid-row {
   position: relative;
-  margin-bottom: 1px;
 }
-.grid-row::after,
 .term-row + .term-row::before {
   position: absolute;
+  top: -1px;
   right: var(--s2);
   left: var(--s2);
   height: 1px;
@@ -174,18 +161,12 @@
   content: "";
   pointer-events: none;
 }
-.grid-row::after {
-  bottom: -1px;
-}
-.term-row + .term-row::before {
-  top: -1px;
-}
 /* The Terminals and Files sections: a header like a tab (its label opens
  * the section's view) with a chevron that expands or collapses it; a
  * collapsed header keeps a count and a dot when something inside needs
  * attention or is unsaved. */
 .rail-section + .rail-section {
-  margin-top: var(--s2);
+  margin-top: var(--s4);
 }
 .section-row > .section-toggle.icon-btn {
   flex: none;

@@ -494,18 +494,22 @@ export function HelpPanel() {
         The sidebar has two sections: click <b>Terminals</b> to show the grid
         and <b>Files</b> to browse files. The chevron beside each heading
         collapses or expands its section; a collapsed heading keeps a count and
-        a dot when something in it needs attention or is unsaved.
+        a dot when something in it needs attention or is unsaved.{" "}
+        <b>New terminal</b>, under the terminals, opens a new one (Ctrl-B
+        Enter).
       </p>
       <h3>Files</h3>
       <p className="setting-hint">
-        <b>Files</b> in the sidebar browses the server's files from your home
-        folder, and a terminal's folder button opens the folder it is in. New
-        file and New folder sit above the list; each entry's menu (right-click
-        or ⋯) opens it, opens it beside the terminal, inserts or copies its
-        path, renames it, moves it to the trash or deletes it permanently. Drag
-        an entry onto a folder to move it, or onto a terminal's row or view to
-        type its quoted path; drop files from your computer onto a folder to
-        upload them there.
+        The Files section lists your home folder like the terminals: click a
+        folder to expand it, a file to open it. The files you have open are
+        listed first, under <b>Open</b>. Click the <b>Files</b> heading for the
+        full file browser; a terminal's folder button opens the folder it is in.
+        New file and New folder sit above the browser's list; each entry's menu
+        (right-click or ⋯), in the browser or the sidebar, opens it, opens it
+        beside the terminal, inserts or copies its path, downloads it, renames
+        it, moves it to the trash or deletes it permanently. Drag an entry onto
+        a folder to move it, or onto a terminal's row or view to type its quoted
+        path; drop files from your computer onto a folder to upload them there.
       </p>
       <p className="setting-hint">
         Hold Ctrl/Cmd over a file path printed in the terminal (path, path:line
@@ -514,7 +518,7 @@ export function HelpPanel() {
       </p>
       <h3>Editor</h3>
       <p className="setting-hint">
-        Files open in the main area and are listed under Files, with a dot while
+        Files open in the main area and are listed under Open, with a dot while
         they have unsaved changes, which are kept while you look elsewhere.
         Ctrl/Cmd+S saves; if the file changed on disk meanwhile, choose Reload,
         Overwrite or Cancel. <b>Open beside terminal</b> in a file's menu, or
@@ -526,10 +530,11 @@ export function HelpPanel() {
       <p className="setting-hint">
         A question, a finished turn, a failure, an exit or a bell shows a toast
         in the top right corner, one per terminal (a summary above three),
-        except for the terminal you are reading. Click a toast to open its
-        terminal; it goes away once its notifications are read, here or anywhere
-        else. An unread bell also puts a dot on the browser tab's icon. Choose
-        the events in Settings → Notifications.
+        except for the terminal you are reading; downloads and confirmations
+        stack below them. Click a toast to open its terminal; it goes away once
+        its notifications are read, here or anywhere else. An unread bell also
+        puts a dot on the browser tab's icon. Choose the events in Settings →
+        Notifications.
       </p>
     </div>
   );

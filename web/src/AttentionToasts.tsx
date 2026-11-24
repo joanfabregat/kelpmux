@@ -2,8 +2,16 @@
 // terminal, or above TOAST_LIMIT one summary that expands into the list.
 // A toast or a summary entry opens its terminal, as choosing it in the
 // sidebar does; the close button only hides it (its notifications stay
-// unread). Toasts have no timer: they go when read.
-import { useCallback, useEffect, useRef, useState } from "react";
+// unread). Toasts have no timer: they go when read. The other toasts
+// (Toast.tsx) stack below them: `--attention-end` on the root says where
+// these end.
+import {
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useRef,
+  useState,
+} from "react";
 import type { NumberedPane } from "@kelpcore/web/types.ts";
 import { Icon } from "./status";
 import { StateMark } from "./state/StateMark";
@@ -86,8 +94,32 @@ export function AttentionToasts({
     if (!summary) setExpanded(false);
   }, [summary]);
   const tone = (toast: TerminalToast) => `attention-${toast.event}`;
+  // Where the other toasts start: below these (and a gap), or where these
+  // would start when there are none.
+  const region = useRef<HTMLDivElement>(null);
+  useLayoutEffect(() => {
+    const element = region.current;
+    if (!element) return;
+    const root = document.documentElement;
+    const update = () => {
+      const box = element.getBoundingClientRect();
+      const gap = parseFloat(getComputedStyle(element).rowGap) || 0;
+      const end = element.childElementCount ? box.bottom + gap : box.top;
+      root.style.setProperty("--attention-end", `${Math.round(end)}px`);
+    };
+    update();
+    const observer = new ResizeObserver(update);
+    observer.observe(element);
+    window.addEventListener("resize", update);
+    return () => {
+      observer.disconnect();
+      window.removeEventListener("resize", update);
+      root.style.removeProperty("--attention-end");
+    };
+  }, []);
   return (
     <div
+      ref={region}
       className="attention-toasts"
       role="region"
       aria-label="Terminal notifications"

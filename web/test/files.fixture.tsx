@@ -1,6 +1,7 @@
-// The file browser and editor as main.tsx wires them (the Files entry and
-// open files in the real Sidebar, the browser, the editor, path drops on
-// terminal rows, uploads into folders), over the real Session and WASM core
+// The file browser and editor as main.tsx wires them (the Files section,
+// its open files and home folder tree in the real Sidebar, the browser,
+// the editor, path drops on terminal rows, uploads into folders), over
+// the real Session and WASM core
 // connected to a real `kelpmux web-bridge` and server through a pipe instead
 // of SSH, as test/bridge.fixture.tsx does (test/files.mjs). `?phone=1`
 // shows the phone layout (no rail: the main area only); `?nodownloads=1`
@@ -43,6 +44,8 @@ import {
 import { Terminal } from "@kelpcore/web/Terminal.tsx";
 import { useDocuments } from "../src/files/documents";
 import { Downloads } from "../src/files/downloads";
+import type { FileActionsProps } from "../src/files/actions";
+import { ToastProvider } from "../src/Toast";
 import { dragHasPaths, droppedPaths, typeIntoPane } from "../src/files/insert";
 import { ConfirmDialog, type ConfirmAction } from "../src/Confirm";
 import { interfaceVariables, themeVariables } from "../src/appearance";
@@ -331,29 +334,33 @@ function App() {
         onBack={phone ? () => {} : undefined}
       />
     ));
+  // As main.tsx's fileActions: shared by the browser and the sidebar's tree.
+  const actions: FileActionsProps = {
+    client,
+    home,
+    onOpenFile: openDoc,
+    onOpenBeside: target ? (path) => openBeside(path) : undefined,
+    insertTarget: target
+      ? { number: target.number, title: target.title }
+      : undefined,
+    onInsertPath: (path) => target && insertPaths([path], target),
+    onCopyPath: (path) => toast(`copied ${path}`),
+    confirm: setConfirm,
+    toast,
+    onRenamed: documents.renamed,
+    onRemoved: documents.removed,
+    upload: {
+      unavailable: null,
+      limits: uploadLimits,
+      transport: uploadTransport,
+    },
+  };
   const main =
     !browsing && doc ? null : (
       <FilesBrowser
-        client={client}
-        home={home}
+        {...actions}
         dir={dir}
         onDir={setDir}
-        onOpenFile={openDoc}
-        onOpenBeside={target ? (path) => openBeside(path) : undefined}
-        insertTarget={
-          target ? { number: target.number, title: target.title } : undefined
-        }
-        onInsertPath={(path) => target && insertPaths([path], target)}
-        onCopyPath={(path) => toast(`copied ${path}`)}
-        confirm={setConfirm}
-        toast={toast}
-        onRenamed={documents.renamed}
-        onRemoved={documents.removed}
-        upload={{
-          unavailable: null,
-          limits: uploadLimits,
-          transport: uploadTransport,
-        }}
         onBack={phone ? () => {} : undefined}
       />
     );
@@ -396,7 +403,8 @@ function App() {
                 dirty: d.dirty,
                 current: !browsing && d.path === shown,
               })),
-              onBrowse: () => {
+              onBrowse: (path) => {
+                if (path) setDir(path);
                 setBrowsing(true);
                 setTermPane(0);
               },
@@ -406,6 +414,7 @@ function App() {
                 setTermPane(0);
               },
               onCloseDoc: closeDoc,
+              tree: actions,
             }}
           />
         </div>
@@ -453,7 +462,6 @@ function App() {
           )}
         </div>
       </div>
-      <Downloads />
       {confirm && (
         <ConfirmDialog
           action={confirm}
@@ -468,7 +476,12 @@ function App() {
     </div>
   );
 }
-createRoot(document.getElementById("root")!).render(<App />);
+// Download progress in the top right toast stack, as main.tsx mounts it.
+createRoot(document.getElementById("root")!).render(
+  <ToastProvider aside={<Downloads />}>
+    <App />
+  </ToastProvider>,
+);
 (async () => {
   const module = await WebAssembly.instantiateStreaming(
     fetch("/client-core.wasm"),

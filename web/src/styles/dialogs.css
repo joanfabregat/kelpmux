@@ -242,16 +242,32 @@
   outline-offset: -3px;
 }
 
-/* ───── Toasts ───── */
-.toast-region {
+/* ───── Toasts ─────
+ * One stack in the top right corner: the attention toasts first (below),
+ * then the running downloads and the confirmations, newest first, starting
+ * where the attention toasts end (`--attention-end`, set by
+ * AttentionToasts.tsx), so they never overlap. Above dialogs, unlike the
+ * attention toasts. Phones: full width minus the gutters, below the
+ * terminal bar, like the attention toasts. */
+.toast-stack {
   position: fixed;
-  right: var(--s4);
-  bottom: max(52px, env(safe-area-inset-bottom));
+  top: var(--attention-end, calc(env(safe-area-inset-top) + 42px));
+  right: calc(env(safe-area-inset-right) + var(--s4));
   z-index: 40;
-  display: grid;
-  gap: var(--s2);
-  max-width: min(420px, calc(100vw - 32px));
+  display: flex;
+  flex-direction: column;
+  width: min(360px, calc(100vw - 2 * var(--s4)));
   pointer-events: none;
+}
+:root:has(.kelpmux-shell.phone) .toast-stack {
+  left: calc(env(safe-area-inset-left) + var(--s4));
+  width: auto;
+}
+/* Spaced by margins: an empty region (a live region stays in the page)
+ * takes no room. */
+.toast-stack .toast,
+.toast-stack .download-toast {
+  margin-bottom: var(--s2);
 }
 .toast {
   --tone: var(--st-done);
