@@ -3,7 +3,15 @@
 // with a pipe in place of SSH as in test/bridge.mjs. It lists the home
 // folder (hidden entries only on request), with the sidebar's plain Files
 // entry selected and no tree, and the Files view's tab strip as its
-// topmost bar with the breadcrumbs under it; navigates, starts at the file
+// topmost bar with the breadcrumbs under it; navigates; the column view
+// (a column per selected folder, deeper ones replaced from an earlier
+// column, the info column of a selected file with its size, date and a
+// small file's first lines, the date and size under each name, the
+// keyboard's ↑/↓/→/← and Enter and typing a name, double-click and Open,
+// rename, a move onto a folder row and an upload dropped on a column from
+// the columns, which follow a renamed folder, a `?dir=` deep link building
+// the columns, folder clicks recorded as pushes and the rest as
+// replacements); starts at the file
 // root (the home folder) with no crumb above it, shows symbolic links
 // pointing outside the root without opening them (menus without Open or
 // Download, the link deletable), creates a folder and
@@ -30,7 +38,8 @@
 // finds a printed path that does not exist, or lies outside the root (no
 // stat sent), not clickable and Ctrl-clicks
 // one that does, which opens beside the terminal at its line. Then the
-// phone layout, where Open beside terminal opens the editor full screen. Needs a built kelpmux (KELPMUX_BINARY, default
+// phone layout, where Open beside terminal opens the editor full screen and
+// the browser shows one folder at a time (no info column). Needs a built kelpmux (KELPMUX_BINARY, default
 // ../../target/release/kelpmux) and web/public/client-core.wasm. Set
 // FILES_SCREENSHOTS to a directory to save screenshots.
 import { build } from "vite";
@@ -245,6 +254,259 @@ try {
   await page.locator(".files-crumb", { hasText: "Home" }).click();
   await row(page, "notes.txt").waitFor();
   console.log("PASS: navigates into a folder and back by its breadcrumbs");
+
+  // The column view: a column per folder from the root down; selecting a
+  // folder in an earlier column replaces the deeper ones; a file shows the
+  // info column; the date and size under each name.
+  mkdirSync(join(home, "cols/a/b"), { recursive: true });
+  mkdirSync(join(home, "cols/y"));
+  writeFileSync(join(home, "cols/a/b/leaf.txt"), "leaf\n");
+  writeFileSync(join(home, "cols/a/note.md"), "# Note\nsecond line\n");
+  writeFileSync(join(home, "cols/z.txt"), "z".repeat(4200));
+  await page.getByRole("button", { name: "Refresh" }).click();
+  await row(page, "cols").waitFor();
+  const tree = join(home, "cols");
+  const columnFolders = () =>
+    page
+      .locator(".files-browser .files-column")
+      .evaluateAll((els) => els.map((e) => e.dataset.folder));
+  const columnsAre = (folders) =>
+    page.waitForFunction(
+      (folders) =>
+        JSON.stringify(
+          Array.from(document.querySelectorAll(".files-browser .files-column")).map(
+            (e) => e.dataset.folder,
+          ),
+        ) === JSON.stringify(folders),
+      folders,
+    );
+  const highlighted = () =>
+    page
+      .locator(".files-browser .files-row.highlighted")
+      .evaluateAll((els) => els.map((e) => e.dataset.path));
+  const focusedRow = () =>
+    page.evaluate(() => document.activeElement?.closest(".files-row")?.dataset.path);
+  const entry = (name) =>
+    row(page, name).getByRole("button", {
+      name: new RegExp(`^${name.replace(/\./g, "\\.")},`),
+    });
+  const info = page.locator(".files-browser .files-info-column");
+  await page.evaluate(() => (window.dirs = []));
+  await entry("cols").click();
+  await row(page, "a").waitFor();
+  assert.deepEqual(await columnFolders(), [home, tree]);
+  await entry("a").click();
+  await row(page, "b").waitFor();
+  await entry("b").click();
+  await row(page, "leaf.txt").waitFor();
+  assert.deepEqual(await columnFolders(), [home, tree, `${tree}/a`, `${tree}/a/b`]);
+  assert.deepEqual(await highlighted(), [tree, `${tree}/a`, `${tree}/a/b`]);
+  assert.equal(
+    await page.locator('.files-crumb[aria-current="location"]').innerText(),
+    "b",
+  );
+  // Folders have the Finder's chevron, files none.
+  assert.equal(await row(page, "a").locator(".files-chevron").count(), 1);
+  assert.equal(await row(page, "z.txt").locator(".files-chevron").count(), 0);
+  // A folder selected in an earlier column replaces the deeper ones.
+  await entry("y").click();
+  await columnsAre([home, tree, `${tree}/y`]);
+  assert.equal(await row(page, "b").count(), 0);
+  await page.locator(".files-column", { hasText: "Empty folder" }).waitFor();
+  // A file: selected in its column (the deeper ones go) and shown in the
+  // info column with its size, date and folder.
+  await entry("z.txt").click();
+  await info.waitFor();
+  await columnsAre([home, tree]);
+  assert.deepEqual(await highlighted(), [tree, `${tree}/z.txt`]);
+  assert.equal(await info.locator(".files-info-name").innerText(), "z.txt");
+  assert.equal(
+    await info.locator('[data-fact="size"]').innerText(),
+    "4.2 KB (4,200 bytes)",
+  );
+  assert.match(await info.locator('[data-fact="modified"]').innerText(), /\d{4}/);
+  assert.equal(await info.locator('[data-fact="where"]').innerText(), "~/cols");
+  for (const name of ["Open", "Open beside terminal", "Download"])
+    assert.equal(
+      await info.getByRole("button", { name, exact: true }).count(),
+      name === "Open beside terminal" ? 0 : 1,
+      name,
+    );
+  // The second line under each name: date, then size (folders: Folder).
+  assert.match(
+    await row(page, "z.txt").locator(".files-meta").innerText(),
+    /^Today .+ · 4\.2 KB$/,
+  );
+  assert.match(
+    await row(page, "a").locator(".files-meta").innerText(),
+    /^Today .+ · Folder$/,
+  );
+  // Folder clicks add history entries; a file selected in an earlier
+  // column replaces.
+  assert.deepEqual(await page.evaluate(() => window.dirs), [
+    [tree, false],
+    [`${tree}/a`, false],
+    [`${tree}/a/b`, false],
+    [`${tree}/y`, false],
+    [tree, true],
+  ]);
+  console.log(
+    "PASS: columns open as folders are selected, replacing deeper ones; a file shows the info column; date and size under each name",
+  );
+
+  // The keyboard, as in the Finder: ↑/↓ within a column (a folder shows
+  // its column), → into the selected folder, ← back to the parent
+  // column, typing selects by name, Enter opens.
+  await page.evaluate(() => (window.dirs = []));
+  assert.equal(await focusedRow(), `${tree}/z.txt`);
+  await page.keyboard.press("ArrowUp");
+  await columnsAre([home, tree, `${tree}/y`]);
+  await page.waitForFunction((path) => document.activeElement?.closest(".files-row")?.dataset.path === path, `${tree}/y`);
+  await info.waitFor({ state: "detached" });
+  await page.keyboard.press("ArrowUp");
+  await columnsAre([home, tree, `${tree}/a`]);
+  await page.keyboard.press("ArrowRight");
+  await columnsAre([home, tree, `${tree}/a`, `${tree}/a/b`]);
+  await page.waitForFunction((path) => document.activeElement?.closest(".files-row")?.dataset.path === path, `${tree}/a/b`);
+  assert.equal(
+    await page.locator(".files-column.active").getAttribute("data-folder"),
+    `${tree}/a`,
+  );
+  await page.keyboard.press("ArrowRight");
+  await info.waitFor();
+  assert.equal(await info.locator(".files-info-name").innerText(), "leaf.txt");
+  assert.equal(await focusedRow(), `${tree}/a/b/leaf.txt`);
+  await page.keyboard.press("ArrowLeft");
+  await info.waitFor({ state: "detached" });
+  await page.waitForFunction((path) => document.activeElement?.closest(".files-row")?.dataset.path === path, `${tree}/a/b`);
+  assert.deepEqual(await columnFolders(), [home, tree, `${tree}/a`, `${tree}/a/b`]);
+  await page.keyboard.press("ArrowLeft");
+  await page.waitForFunction((path) => document.activeElement?.closest(".files-row")?.dataset.path === path, `${tree}/a`);
+  await page.keyboard.press("ArrowDown");
+  await columnsAre([home, tree, `${tree}/y`]);
+  await page.keyboard.press("z");
+  await info.waitFor();
+  assert.equal(await info.locator(".files-info-name").innerText(), "z.txt");
+  // Every keyboard move replaced the history entry.
+  assert.ok(
+    (await page.evaluate(() => window.dirs)).every(([, replace]) => replace),
+  );
+  await page.keyboard.press("Enter");
+  const zEditor = page.locator('.files-editor:not([hidden])[data-path$="/z.txt"]');
+  await zEditor.locator(".cm-content").waitFor();
+  await zEditor.getByRole("button", { name: "Close z.txt" }).click();
+  await row(page, "z.txt").waitFor();
+  console.log("PASS: the keyboard moves with ↑/↓/→/←, selects by typing and opens with Enter");
+
+  // Double-click opens a file; the info column shows a small text file's
+  // first lines and opens it too.
+  await entry("a").click();
+  await entry("note.md").dblclick();
+  const noteEditor = page.locator('.files-editor:not([hidden])[data-path$="/note.md"]');
+  await noteEditor.locator(".cm-content").waitFor();
+  await noteEditor.getByRole("button", { name: "Close note.md" }).click();
+  await row(page, "note.md").waitFor();
+  await entry("note.md").click();
+  await info.locator(".files-preview").waitFor();
+  assert.equal(await info.locator(".files-preview").innerText(), "# Note\nsecond line\n");
+  await page.mouse.move(700, 850);
+  await page.waitForTimeout(200);
+  await shot(page, "desktop-columns");
+  await info.getByRole("button", { name: "Open", exact: true }).click();
+  await noteEditor.locator(".cm-content").waitFor();
+  await noteEditor.getByRole("button", { name: "Close note.md" }).click();
+  await row(page, "note.md").waitFor();
+  console.log("PASS: double-click and the info column's Open open a file; small text files preview");
+
+  // The entry actions work from any column: rename in a deeper column,
+  // move by dragging onto a folder row of an earlier column, upload by
+  // dropping on a column's empty area (that column's folder).
+  await entry("b").click();
+  await row(page, "leaf.txt").waitFor();
+  await action(page, "leaf.txt", "Rename…");
+  await page.getByLabel("New name for leaf.txt").fill("leaf2.txt");
+  await page.getByLabel("New name for leaf.txt").press("Enter");
+  await row(page, "leaf2.txt").waitFor();
+  assert.ok(existsSync(join(tree, "a/b/leaf2.txt")));
+  await row(page, "leaf2.txt").dragTo(row(page, "y"));
+  await row(page, "leaf2.txt").waitFor({ state: "detached" });
+  await onDisk(() => existsSync(join(tree, "y/leaf2.txt")), "moved to y");
+  await page.evaluate((folder) => {
+    const column = Array.from(document.querySelectorAll(".files-column")).find(
+      (e) => e.dataset.folder === folder,
+    );
+    const data = new DataTransfer();
+    data.items.add(new File(["dropped\n"], "dropped.txt", { type: "text/plain" }));
+    for (const type of ["dragenter", "dragover", "drop"])
+      column.dispatchEvent(
+        new DragEvent(type, { bubbles: true, cancelable: true, dataTransfer: data }),
+      );
+  }, `${tree}/a`);
+  await onDisk(() => read(join(tree, "a/dropped.txt")) === "dropped\n", "uploaded to a");
+  await row(page, "dropped.txt").waitFor();
+  // A renamed folder shown as a column: the columns follow it.
+  await action(page, "b", "Rename…");
+  await page.getByLabel("New name for b").fill("bee");
+  await page.getByLabel("New name for b").press("Enter");
+  await columnsAre([home, tree, `${tree}/a`, `${tree}/a/bee`]);
+  console.log(
+    "PASS: rename, move onto a folder row and an upload dropped on a column work from the columns, which follow a renamed folder",
+  );
+
+  // A deep link builds the columns from the root down, each with the next
+  // folder highlighted, without another history entry.
+  {
+    const deep = await open(
+      browser,
+      { viewport: { width: 1440, height: 900 }, deviceScaleFactor: 1 },
+      `?dir=${encodeURIComponent(`${tree}/a/bee`)}`,
+    );
+    await deep.page.locator(".files-column .files-row").first().waitFor();
+    await deep.page.waitForFunction(
+      (n) => document.querySelectorAll(".files-column").length === n,
+      4,
+    );
+    assert.deepEqual(
+      await deep.page
+        .locator(".files-column")
+        .evaluateAll((els) => els.map((e) => e.dataset.folder)),
+      [home, tree, `${tree}/a`, `${tree}/a/bee`],
+    );
+    await deep.page.locator('.files-row.highlighted[data-path$="/a/bee"]').waitFor();
+    assert.deepEqual(
+      await deep.page
+        .locator(".files-row.highlighted")
+        .evaluateAll((els) => els.map((e) => e.dataset.path)),
+      [tree, `${tree}/a`, `${tree}/a/bee`],
+    );
+    assert.deepEqual(
+      await deep.page.locator(".files-crumb").allInnerTexts(),
+      ["Home", "cols", "a", "bee"],
+    );
+    assert.deepEqual(await deep.page.evaluate(() => window.dirs), []);
+    await deep.close();
+  }
+  console.log("PASS: a deep link builds the columns from the root down");
+  // Dragging a column's right edge resizes it; a double-click restores it.
+  {
+    const column = page.locator(".files-column").first();
+    const edge = column.locator(".files-column-edge");
+    assert.equal(Math.round((await column.boundingBox()).width), 260);
+    const box = await edge.boundingBox();
+    await page.mouse.move(box.x + 4, box.y + 200);
+    await page.mouse.down();
+    await page.mouse.move(box.x + 104, box.y + 200, { steps: 5 });
+    await page.mouse.up();
+    assert.equal(Math.round((await column.boundingBox()).width), 360);
+    await edge.dblclick();
+    assert.equal(Math.round((await column.boundingBox()).width), 260);
+  }
+  console.log("PASS: a column resizes by dragging its right edge");
+  await page.locator(".files-crumb", { hasText: "Home" }).click();
+  await columnsAre([home]);
+  rmSync(tree, { recursive: true, force: true });
+  await page.getByRole("button", { name: "Refresh" }).click();
+  await row(page, "cols").waitFor({ state: "detached" });
 
   // The file root (the server user's home folder): the browser starts
   // there, with no crumb above it and no parent folder.
@@ -593,7 +855,7 @@ try {
   console.log("PASS: a folder downloads as a .tar.gz archive (decoded)");
 
   // From the editor's header.
-  await row(page, "report.txt").getByRole("button", { name: /^report.txt,/ }).click();
+  await row(page, "report.txt").getByRole("button", { name: /^report.txt,/ }).dblclick();
   await page.locator('.files-editor:not([hidden])[data-path$="/report.txt"] .cm-content').waitFor();
   await page.getByRole("button", { name: "Download report.txt" }).click();
   assert.equal((await saved("report.txt")).toString("utf8"), "quarterly numbers\n");
@@ -652,7 +914,7 @@ try {
   // Unsaved edits in the main area survive showing a terminal and coming
   // back to the file (its editor stays mounted); then they save.
   await row(page, "docs").getByRole("button", { name: /^docs,/ }).click();
-  await row(page, "readme.md").getByRole("button", { name: /^readme.md,/ }).click();
+  await row(page, "readme.md").getByRole("button", { name: /^readme.md,/ }).dblclick();
   const readme = page.locator(
     '.files-editor:not([hidden])[data-path$="/readme.md"] .cm-content',
   );
@@ -699,10 +961,10 @@ try {
   await strip.getByRole("tab", { name: "Files" }).click();
   await page.locator(".files-crumb", { hasText: "Home" }).click();
   await row(page, "src").getByRole("button", { name: /^src,/ }).click();
-  await row(page, "readme.md").getByRole("button", { name: /^readme.md,/ }).click();
+  await row(page, "readme.md").getByRole("button", { name: /^readme.md,/ }).dblclick();
   await shownEditor(srcReadme).waitFor();
   await strip.getByRole("tab", { name: "Files" }).click();
-  await row(page, "main.rs").getByRole("button", { name: /^main.rs,/ }).click();
+  await row(page, "main.rs").getByRole("button", { name: /^main.rs,/ }).dblclick();
   await shownEditor(mainRs).waitFor();
   assert.deepEqual(
     await strip
@@ -957,7 +1219,7 @@ try {
   await old.page.getByRole("menuitem", { name: "Copy path" }).waitFor();
   assert.equal(await old.page.getByRole("menuitem", { name: /Download/ }).count(), 0);
   await old.page.keyboard.press("Escape");
-  await row(old.page, "report.txt").getByRole("button", { name: /^report.txt,/ }).click();
+  await row(old.page, "report.txt").getByRole("button", { name: /^report.txt,/ }).dblclick();
   await old.page.locator(".files-editor:not([hidden]) .cm-content").waitFor();
   assert.equal(await old.page.getByRole("button", { name: /^Download/ }).count(), 0);
   await old.close();
@@ -992,8 +1254,29 @@ try {
   await phone.page.getByRole("button", { name: "Close todo.md" }).click();
   await row(phone.page, "docs").waitFor();
   console.log("PASS: on a phone, Open beside terminal opens the editor full screen");
+  // One column at a time on a phone (no info column): a tap on a folder
+  // drills down, the crumbs go back up; a tap on a file opens it.
+  assert.equal(await phone.page.locator(".files-column").count(), 1);
+  await row(phone.page, "docs").getByRole("button", { name: /^docs,/ }).click();
+  await row(phone.page, "readme.md").waitFor();
+  assert.deepEqual(
+    await phone.page
+      .locator(".files-column")
+      .evaluateAll((els) => els.map((e) => e.dataset.folder)),
+    [join(home, "docs")],
+  );
+  assert.match(
+    await row(phone.page, "readme.md").locator(".files-meta").innerText(),
+    /^Today .+ · \d+ bytes$/,
+  );
+  assert.equal(await phone.page.locator(".files-column-edge").count(), 0);
+  await shot(phone.page, "phone-folder");
+  await phone.page.locator(".files-crumb", { hasText: "Home" }).click();
+  await row(phone.page, "todo.md").waitFor();
+  assert.equal(await phone.page.locator(".files-column").count(), 1);
   await row(phone.page, "docs").getByRole("button", { name: /^docs,/ }).click();
   await row(phone.page, "readme.md").getByRole("button", { name: /^readme.md,/ }).click();
+  assert.equal(await phone.page.locator(".files-info-column").count(), 0);
   await phone.page.locator(".files-editor .cm-content").waitFor();
   await phone.page.waitForTimeout(200);
   await shot(phone.page, "phone-editor");

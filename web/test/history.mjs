@@ -17,6 +17,9 @@
 // 4. The Files view's tabs: switching tabs (the browser's included) pushes,
 //    closing the shown tab replaces its entry with the neighbour tab's or,
 //    for the last one, the browser's.
+// 5. The file browser's columns: a folder clicked in a column pushes, a
+//    keyboard move or a file selected in an earlier column replaces, and
+//    a deep link to a nested folder opens it.
 import { build } from "vite";
 import { chromium, webkit } from "playwright";
 import { readFileSync } from "node:fs";
@@ -372,8 +375,54 @@ for (const [name, engine] of [
       assert.deepEqual(errors, []);
       await context.close();
     }
+    // 5. The file browser's columns: a folder clicked in a column pushes
+    // (the deepest folder is the URL's), keyboard moves and a file
+    // selected in an earlier column replace; a deep link to a nested
+    // folder opens it as is (the browser builds its columns).
+    {
+      const { context, page, errors } = await open(browser);
+      await at(page, "grid", "?view=grid");
+      await page.click("#src");
+      await at(page, "folder /home/me/src", "?view=files&dir=/home/me/src");
+      const start = await length(page);
+      await page.click("#column-click");
+      await at(
+        page,
+        "folder /home/me/src/lib",
+        "?view=files&dir=/home/me/src/lib",
+      );
+      assert.equal(await length(page), start + 1, "a folder clicked pushes");
+      await page.click("#column-key");
+      await at(
+        page,
+        "folder /home/me/src/bin",
+        "?view=files&dir=/home/me/src/bin",
+      );
+      assert.equal(await length(page), start + 1, "the keyboard replaces");
+      await page.click("#column-file");
+      await at(page, "folder /home/me", "?view=files&dir=/home/me");
+      assert.equal(await length(page), start + 1, "a file selected replaces");
+      await back(page);
+      await at(page, "folder /home/me/src", "?view=files&dir=/home/me/src");
+      await back(page);
+      await at(page, "grid", "?view=grid");
+      await forward(page);
+      await at(page, "folder /home/me/src", "?view=files&dir=/home/me/src");
+      await forward(page);
+      await at(page, "folder /home/me", "?view=files&dir=/home/me");
+      assert.deepEqual(errors, []);
+      await context.close();
+      const deep = await open(browser, "?view=files&dir=/home/me/src/lib/deep");
+      await at(
+        deep.page,
+        "folder /home/me/src/lib/deep",
+        "?view=files&dir=/home/me/src/lib/deep",
+      );
+      assert.deepEqual(deep.errors, []);
+      await deep.context.close();
+    }
     console.log(
-      `PASS: ${name} history: terminal, grid, folder, file and Settings entries walked back and forward, Back closes panels, no duplicates, replacements for normalised folders, lines, closed files and swapped panels, deep links with fallbacks, legacy URLs, phone list and terminal, file tabs (switching pushes, closing the shown tab replaces with its neighbour or the browser)`,
+      `PASS: ${name} history: terminal, grid, folder, file and Settings entries walked back and forward, Back closes panels, no duplicates, replacements for normalised folders, lines, closed files and swapped panels, deep links with fallbacks, legacy URLs, phone list and terminal, file tabs (switching pushes, closing the shown tab replaces with its neighbour or the browser), file browser columns (a folder click pushes, keyboard and file selection replace, nested deep links)`,
     );
   } finally {
     await browser.close();

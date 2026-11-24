@@ -2659,11 +2659,14 @@ function App() {
                 <FilesBrowser
                   {...fileActions}
                   dir={filesDir}
-                  onDir={(dir, normalised) => {
-                    // `~` or a symbolic link read as its real folder.
-                    if (normalised) navigation.automatic();
+                  onDir={(dir, replace) => {
+                    // `~` or a symbolic link read as its real folder,
+                    // keyboard browsing, a file selected in another
+                    // column: no entry of their own.
+                    if (replace) navigation.automatic();
                     setFilesDir(dir);
                   }}
+                  phone={phone}
                   onBack={phone ? () => setPhoneList(true) : undefined}
                   tabs={fileTabs}
                 />

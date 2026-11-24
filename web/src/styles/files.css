@@ -80,49 +80,104 @@ button.files-crumb[aria-current] {
   flex: 1;
   min-width: 0;
 }
-.files-list {
+/* The column view (FilesBrowser.tsx): a column per folder from the root
+ * down, side by side, scrolling sideways, then the info column of the
+ * selected file. Each column scrolls on its own and is resized by
+ * dragging its right edge. */
+.files-columns {
+  position: relative;
+  display: flex;
   flex: 1;
+  align-items: stretch;
   min-height: 0;
-  overflow: auto;
-  padding-bottom: var(--s5);
+  overflow-x: auto;
+  overflow-y: hidden;
 }
+.files-column {
+  position: relative;
+  display: flex;
+  flex: none;
+  flex-direction: column;
+  min-height: 0;
+  border-right: 1px solid var(--line);
+  outline: none;
+}
+.files-column-body {
+  position: relative;
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-height: 0;
+  padding: var(--s1) 0 var(--s5);
+  overflow-x: hidden;
+  overflow-y: auto;
+}
+.files-column.drop-target {
+  outline: 2px dashed var(--accent);
+  outline-offset: -2px;
+  background: var(--accent-soft);
+}
+/* The right edge: drag to resize, double-click for the default width. */
+.files-column-edge {
+  position: absolute;
+  top: 0;
+  right: -4px;
+  bottom: 0;
+  z-index: 2;
+  width: 8px;
+  cursor: col-resize;
+  touch-action: none;
+}
+.files-column-edge:hover,
+body.files-resizing .files-column-edge:active {
+  background: linear-gradient(
+    to right,
+    transparent 3px,
+    var(--accent) 3px,
+    var(--accent) 5px,
+    transparent 5px
+  );
+}
+body.files-resizing {
+  cursor: col-resize;
+  user-select: none;
+}
+/* A row: icon, then the name over its date and size, then ⋯ and a
+ * folder's chevron. */
 .files-row {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) 88px 168px 36px;
+  display: flex;
+  flex: none;
   align-items: center;
   gap: var(--s2);
-  min-height: 32px;
-  padding: 0 var(--s2) 0 var(--s3);
-  border-bottom: 1px solid color-mix(in srgb, var(--line) 60%, transparent);
+  min-height: 40px;
+  margin: 0 var(--s1);
+  padding: 0 var(--s1) 0 var(--s2);
+  border-radius: var(--r-md);
   font-size: 13px;
 }
-.files-row:not(.files-columns):hover,
-.files-row.selected {
+.files-row:hover {
   background: var(--surface-1);
 }
-.files-row.files-columns {
-  position: sticky;
-  top: 0;
-  z-index: 1;
-  min-height: 28px;
-  background: var(--bg);
-  color: var(--text-3);
-  font-size: var(--fs-xs);
-  font-weight: 600;
+/* The highlighted entry: grey in the other columns, the accent in the
+ * column the keyboard is in. */
+.files-row.highlighted,
+.files-row.menu-open {
+  background: var(--surface-2);
+}
+.files-column.active .files-row.highlighted {
+  background: var(--accent-soft);
+}
+/* The keyboard's focus ring (a click shows the highlight only). */
+.files-row:has(.files-open:focus-visible) {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
 }
 .files-row.drop-target,
-.files-list.drop-target,
 button.files-crumb.drop-target,
 .term-row.drop-target {
   outline: 2px dashed var(--accent);
   outline-offset: -2px;
   background: var(--accent-soft);
-}
-.files-name-col {
-  display: flex;
-  align-items: center;
-  gap: var(--s2);
-  min-width: 0;
 }
 .files-kind {
   flex: none;
@@ -132,11 +187,14 @@ button.files-crumb.drop-target,
   color: var(--accent);
 }
 button.files-open {
+  display: flex;
   flex: 1;
-  justify-content: flex-start;
-  gap: var(--s2);
+  flex-direction: column;
+  align-items: flex-start;
+  justify-content: center;
+  gap: 1px;
   min-width: 0;
-  min-height: 28px;
+  min-height: 38px;
   padding: 0;
   overflow: hidden;
   border: 0;
@@ -144,28 +202,26 @@ button.files-open {
   color: var(--text);
   font-weight: 400;
   text-align: left;
+  outline: none;
 }
 button.files-open:hover:not(:disabled) {
   filter: none;
 }
-button.files-open:hover .files-name {
-  text-decoration: underline;
-}
-.files-name {
+.files-name,
+.files-meta {
+  max-width: 100%;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-.files-target,
 .files-meta {
-  overflow: hidden;
   color: var(--text-3);
   font-size: var(--fs-xs);
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
 }
-.files-meta {
-  display: none;
+.files-chevron {
+  flex: none;
+  color: var(--text-3);
 }
 /* A symbolic link pointing outside the file root: shown, not opened. */
 .files-row.outside .files-open {
@@ -175,32 +231,93 @@ button.files-open:hover .files-name {
   color: var(--text-3);
   font-style: italic;
 }
-button.files-open[aria-disabled="true"]:hover .files-name {
-  text-decoration: none;
-}
-.files-size,
-.files-modified {
-  overflow: hidden;
-  color: var(--text-3);
-  font-size: var(--fs-sm);
-  font-variant-numeric: tabular-nums;
-  text-align: right;
-  white-space: nowrap;
-}
-.files-actions {
-  display: flex;
-  justify-content: flex-end;
-}
-.files-actions .icon-btn {
+button.files-more {
+  flex: none;
   width: 26px;
   height: 26px;
 }
-/* Hover devices show a row's actions on hover; touch devices always. */
+/* Hover devices show a row's ⋯ on hover; touch devices always. */
 .kelpmux-shell:not(.touch)
-  .files-row:not(:hover):not(:focus-within):not(.selected)
-  .files-actions
-  .icon-btn {
+  .files-row:not(:hover):not(:focus-within):not(.menu-open)
+  .files-more {
   opacity: 0;
+}
+.files-row.editing {
+  padding-top: 3px;
+  padding-bottom: 3px;
+}
+.files-row.editing:hover {
+  background: transparent;
+}
+/* The info column of the selected file. */
+.files-info-column {
+  display: flex;
+  flex: none;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--s2);
+  width: 300px;
+  min-height: 0;
+  padding: var(--s4) var(--s3) var(--s5);
+  overflow-y: auto;
+  font-size: var(--fs-sm);
+}
+.files-info-column > .files-kind {
+  width: 56px;
+  height: 56px;
+  stroke-width: 1.25;
+}
+.files-info-name {
+  max-width: 100%;
+  margin: 0;
+  color: var(--text);
+  font-size: var(--fs-lg);
+  font-weight: 600;
+  text-align: center;
+  overflow-wrap: anywhere;
+}
+.files-preview {
+  align-self: stretch;
+  max-height: 260px;
+  margin: 0;
+  padding: var(--s2);
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: var(--r-md);
+  background: var(--surface-1);
+  color: var(--text-2);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  line-height: 1.4;
+  white-space: pre;
+}
+.files-facts {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-self: stretch;
+  gap: 4px var(--s3);
+  margin: var(--s2) 0 0;
+  padding-top: var(--s2);
+  border-top: 1px solid var(--line);
+}
+.files-facts dt {
+  color: var(--text-3);
+  text-align: right;
+}
+.files-facts dd {
+  margin: 0;
+  color: var(--text);
+  overflow-wrap: anywhere;
+}
+.files-info-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: var(--s2);
+  margin-top: var(--s2);
+}
+.files-info-actions button {
+  gap: 6px;
 }
 .files-name-edit {
   display: flex;
@@ -427,27 +544,16 @@ button.file-tab-close {
   }
 }
 
-/* Phones: one column, size and time under the name. */
+/* Phones: one column at a time, full width, no info column; a tap
+ * opens. */
+.single-column .files-column {
+  flex: 1;
+  border-right: 0;
+}
 .phone .files-row {
-  grid-template-columns: minmax(0, 1fr) 40px;
-  min-height: 44px;
+  min-height: 48px;
 }
-.phone .files-row .files-size,
-.phone .files-row .files-modified {
-  display: none;
-}
-.phone .files-columns {
-  display: none;
-}
-.phone button.files-open {
-  flex-direction: column;
-  align-items: flex-start;
-  gap: 0;
-}
-.phone .files-meta {
-  display: block;
-}
-.phone .files-actions .icon-btn {
+.phone button.files-more {
   width: 36px;
   height: 36px;
 }
