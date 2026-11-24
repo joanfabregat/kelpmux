@@ -1,8 +1,8 @@
-// What the file browser and the sidebar's file tree share: an entry's menu
+// The file browser's entry actions, kept apart from its view: an entry's menu
 // (open, open beside the terminal, insert or copy its path, download,
 // rename, trash, delete), moving entries dragged onto a folder, uploading
 // desktop files dropped on one, the inline name field, the show-hidden
-// setting, and the notice that entries changed, so each view lists the
+// setting, and the notice that entries changed, so the browser lists the
 // folders a change touched again.
 import React, {
   useEffect,
@@ -95,7 +95,7 @@ const subscribeHidden = (listener: () => void) => {
   hiddenListeners.add(listener);
   return () => hiddenListeners.delete(listener);
 };
-/** The show-hidden setting, the same in the browser and the tree. */
+/** The show-hidden setting, shared by every mounted browser. */
 export function useShowHidden(): [boolean, (shown: boolean) => void] {
   const shown = useSyncExternalStore(subscribeHidden, () => hiddenShown);
   return [
@@ -164,7 +164,7 @@ export function entryTitle(
 }
 
 /** The actions on entries, for one view. `onFolder` opens a folder (the
- * browser shows it; the tree opens it in the browser). */
+ * browser shows it). */
 export function useFileActions(
   props: FileActionsProps,
   onFolder: (path: string) => void,

@@ -113,36 +113,40 @@
 }
 
 /* ───────── Sidebar terminal list ───────── */
-/* The New terminal row right under the tabs, like the TUI's "+ New tab",
- * but secondary: shorter, smaller and muted, its small plus indented under
- * the terminals' names (past the number, state and provider columns), and
- * a hover that only brightens the text. Folded: just the plus. */
+/* The New terminal row right under the tabs, like the TUI's "+ New tab":
+ * a rule on each side of the label centred between them, in the accent,
+ * with room above and below to set it apart from the tabs. Folded: the
+ * plus between two short rules. */
 .nav-item.rail-new {
-  gap: 6px;
-  min-height: 24px;
-  padding-left: calc(4 * var(--s2) + 40px);
-  color: var(--text-3);
-  font-size: var(--fs-sm);
+  justify-content: center;
+  gap: var(--s2);
+  min-height: 34px;
+  margin: var(--s2) 0;
+  color: var(--accent);
 }
-.rail-new-plus {
-  display: inline-grid;
+.nav-item.rail-new:hover:not(:disabled) {
+  color: var(--accent);
+}
+.rail-new-rule {
+  flex: 1;
+  min-width: var(--s2);
+  height: 1px;
+  background: color-mix(in srgb, var(--accent) 45%, transparent);
+}
+.rail-new-label {
+  display: inline-flex;
   flex: none;
-  place-items: center;
-}
-.rail-new-plus .svg-icon {
-  width: 11px;
-  height: 11px;
-}
-.nav-item.rail-new:hover:not(:disabled),
-.nav-item.rail-new:focus-visible {
-  background: transparent;
-  color: var(--text);
+  align-items: center;
+  gap: var(--s1);
+  font-weight: 600;
+  white-space: nowrap;
 }
 .rail.folded .rail-new-text {
   display: none;
 }
 .rail.folded .nav-item.rail-new {
-  padding: 0;
+  gap: 2px;
+  padding: 0 var(--s1);
 }
 .rail-head .rail-marks {
   flex: none;
@@ -159,10 +163,7 @@
   touch-action: none;
 }
 /* A rule between terminals, drawn in the 1px gap so the rows keep their
- * size. Section headers have none: spacing separates the sections. */
-.grid-row {
-  position: relative;
-}
+ * size. */
 .term-row + .term-row::before {
   position: absolute;
   top: -1px;
@@ -173,49 +174,19 @@
   content: "";
   pointer-events: none;
 }
-/* The Terminals and Files sections: a header like a tab (its label opens
- * the section's view) with a chevron that expands or collapses it; a
- * collapsed header keeps a count and a dot when something inside needs
- * attention or is unsaved. */
-.rail-section + .rail-section {
-  margin-top: var(--s4);
-}
-.section-row > .section-toggle.icon-btn {
+/* The other views' entries (Grid, Files) at the bottom, above the
+ * vitals: plain rows, their icon in the tabs' number column. */
+.rail-views {
+  display: flex;
   flex: none;
-  width: 22px;
-  height: 22px;
-  min-height: 0;
-  margin-right: var(--s1);
-  padding: 0;
-  color: var(--text-3);
-}
-.section-row > .section-toggle.icon-btn:hover {
-  color: var(--text);
-}
-.section-summary {
-  display: inline-flex;
-  flex: none;
-  align-items: center;
-  gap: var(--s1);
-}
-.section-alert {
-  width: 8px;
-  height: 8px;
-  border-radius: 50%;
-  background: var(--st-input);
-}
-.section-chevron {
-  display: inline-flex;
-  flex: none;
-  color: var(--text-3);
-}
-.rail.folded .section-summary,
-.rail.folded .section-toggle {
-  display: none;
+  flex-direction: column;
+  gap: 1px;
+  padding: var(--s1) var(--s2);
+  border-top: 1px solid var(--line);
 }
 .term-item {
   gap: var(--s2);
-  min-height: 34px;
+  min-height: 40px;
 }
 .term-number {
   display: inline-grid;

@@ -17,8 +17,6 @@ import {
 } from "./state/model";
 import { Vitals } from "./Vitals";
 import { UnreadMark, type SessionMode } from "./Shell";
-import { FileTree } from "./files/FileTree";
-import type { FileActionsProps } from "./files/actions";
 
 /** What a state shortcut in the sidebar summary opens. */
 const openStateLabel: Partial<Record<DisplayState, string>> = {
@@ -61,55 +59,26 @@ export type SidebarProps = {
   onDialog: (dialog: string) => void;
   onResizeStart: (event: React.PointerEvent) => void;
   onToggleFold: () => void;
-  /** The file browser's entry and the home folder's tree, when this
-   * connection offers files (KelpServer `files` through the bridge). */
-  files?: SidebarFiles;
-  /** Which sections are expanded (this browser's preference); without it
-   * the sidebar keeps its own, both expanded. */
-  sections?: SidebarSections;
-  onSections?: (sections: SidebarSections) => void;
-};
-
-/** The sidebar's two collapsible sections: the terminals (with + New
- * terminal and the parked ones) and the home folder's tree. */
-export type SidebarSections = { terminals: boolean; files: boolean };
-
-/** The Files section: the browser's entry and the home folder's tree,
- * which marks the files open in the editor. */
-export type SidebarFiles = {
-  /** The browser (not an open file) is shown. */
-  browsing: boolean;
-  /** The files open in the main area (the Files view's tabs): the tree
-   * marks them, and a collapsed header counts them. */
-  docs: { path: string; name: string; dirty: boolean; current: boolean }[];
-  /** Shows the file browser, at `dir` when given. */
-  onBrowse: (dir?: string) => void;
-  /** The home folder's tree and its entries' actions; without it the
-   * section is its header only. */
-  tree?: FileActionsProps;
+  /** Shows the file browser; given when this connection offers files
+   * (KelpServer `files` through the bridge), else there is no Files
+   * entry. */
+  onFiles?: () => void;
 };
 
 /** The left sidebar, like the TUI's, and the only navigation: the state
- * counts, then two collapsible sections. **Terminals** holds every
- * terminal in this browser's order with its live state, a rule between
- * terminals, the New terminal row right under them (secondary: smaller,
- * muted, indented under the names) and the parked terminals; its header
- * opens the live grid (not on phones). **Files**, when the connection
- * offers files, holds the home folder as a tree whose rows look and
- * behave like the terminals' (FileTree), marking the open files (they are
- * tabs in the Files view, not sidebar rows); its header opens the file
- * browser. Each header's
- * chevron expands or collapses its section, and a collapsed header keeps
- * a count and a dot when something in it needs attention (or is unsaved),
- * so collapsing never hides an alert. The folded rail ignores collapsing.
- * The headers and the terminals' rows look alike. A terminal's row opens
- * that terminal alone; the view on screen is selected. A tab with unread
- * notifications shows a bell; the notifications themselves open from the
- * terminal's header. At the bottom the system vitals, the tools in two
- * columns like the TUI's buttons (the Terminals table, recently closed,
- * search, help), then the account and its settings. Order, parking and
- * folding belong to this browser; they never change the TUI's layout. The
- * grid is read-only: a tile's click opens its terminal alone. */
+ * counts, then every terminal in this browser's order with its live state
+ * and a rule between terminals, the New terminal row right under them
+ * (centred on a rule, like the TUI's "+ New tab") and the parked
+ * terminals. A terminal's row opens that terminal alone; the view on
+ * screen is selected. A tab with unread notifications shows a bell; the
+ * notifications themselves open from the terminal's header. At the
+ * bottom, two entries for the other views: **Grid** (the live grid; not
+ * on phones) and **Files** (the file browser, when the connection offers
+ * files), then the system vitals, the tools in two columns like the TUI's
+ * buttons (the Terminals table, recently closed, search, help) and the
+ * account with its settings. Order, parking and folding belong to this
+ * browser; they never change the TUI's layout. The grid is read-only: a
+ * tile's click opens its terminal alone. */
 export function Sidebar(props: SidebarProps) {
   const {
     username,
@@ -122,146 +91,36 @@ export function Sidebar(props: SidebarProps) {
     notifications,
     current,
     vitals,
-    files,
   } = props;
   const [parkedOpen, setParkedOpen] = useState(true);
-  const [ownSections, setOwnSections] = useState<SidebarSections>({
-    terminals: true,
-    files: true,
-  });
-  const sections = props.sections || ownSections;
-  const toggleSection = (key: keyof SidebarSections) => {
-    const next = { ...sections, [key]: !sections[key] };
-    if (props.onSections) props.onSections(next);
-    else setOwnSections(next);
-  };
-  // The folded rail shows every row as its icon: collapsing is ignored.
-  const terminalsOpen = folded || sections.terminals;
-  const filesOpen = folded || sections.files;
   const summary = rollup(terminals.concat(parked), notifications);
-  const grid = mode === "grid";
-  /** What a collapsed Terminals section still shows: terminals needing
-   * input or failed, and unread notifications, parked ones included. */
-  const attention = terminals.concat(parked).reduce(
-    (total, p) => {
-      const state = paneState(p, notifications);
-      return {
-        states:
-          total.states +
-          (state === "input_needed" || state === "failed" ? 1 : 0),
-        unread: total.unread + unreadFor(notifications, p).length,
-      };
-    },
-    { states: 0, unread: 0 },
-  );
-  const attentionText = [
-    attention.states &&
-      `${attention.states} need${attention.states === 1 ? "s" : ""} attention`,
-    attention.unread && `${attention.unread} unread`,
-  ]
-    .filter(Boolean)
-    .join(", ");
-  const dirtyDocs = files ? files.docs.filter((d) => d.dirty).length : 0;
-  /** A section's header: its label opens the section's view, its chevron
-   * (a separate button) expands or collapses it. Collapsed, the label
-   * keeps a count and, while something inside needs it, a dot. */
-  const sectionHeader = (options: {
-    key: keyof SidebarSections;
+  /** An entry for another view (the grid, the files): a row like a tab's
+   * with an icon in the number column, selected while its view shows. */
+  const viewEntry = (options: {
+    view: SessionMode;
     label: string;
     icon: IconName;
-    /** The label's accessible name when it differs from `label`. */
-    name?: string;
     tooltip: string;
-    view?: string;
-    current: boolean;
-    open: boolean;
-    count: number;
-    /** Text of the collapsed section's dot; empty: no dot. */
-    alert: string;
-    /** Whether the section has anything to expand. */
-    toggle: boolean;
-    onOpen?: () => void;
+    onOpen: () => void;
   }) => {
-    const id = `rail-section-${options.key}`;
-    /** The label's accessible name, with what a collapsed section hides. */
-    const name = `${options.name || options.label}${
-      options.open
-        ? ""
-        : ` (${options.count}${options.alert ? `, ${options.alert}` : ""})`
-    }`;
-    const collapsed = !options.open && (
-      <span className="section-summary">
-        <span className="count">{options.count}</span>
-        {options.alert && (
-          <span
-            className="section-alert"
-            role="img"
-            aria-label={options.alert}
-            title={options.alert}
-          />
-        )}
-      </span>
-    );
-    const chevron = (
-      <button
-        type="button"
-        className="icon-btn section-toggle"
-        aria-expanded={options.open}
-        aria-controls={id}
-        aria-label={`${options.label} section`}
-        title={options.open ? "Collapse" : "Expand"}
-        onClick={() => toggleSection(options.key)}
-      >
-        <Icon
-          name={options.open ? "chevron-down" : "chevron-right"}
-          size="sm"
-        />
-      </button>
-    );
+    const on = mode === options.view;
     return (
-      <div className="nav-cell grid-row section-row" data-section={options.key}>
-        {options.onOpen ? (
-          <Tooltip content={options.tooltip}>
-            <button
-              type="button"
-              className={`nav-item term-item grid-item ${options.current ? "current" : ""}`}
-              aria-current={options.current ? "page" : undefined}
-              aria-label={name}
-              data-view={options.view}
-              onClick={options.onOpen}
-            >
-              <span className="term-number" aria-hidden="true">
-                <Icon name={options.icon} size="sm" />
-              </span>
-              <span className="grow">{options.label}</span>
-              {collapsed}
-            </button>
-          </Tooltip>
-        ) : (
-          // Nothing to open (the phone's terminals): the whole header
-          // toggles the section.
+      <div className="nav-cell view-row">
+        <Tooltip content={options.tooltip}>
           <button
             type="button"
-            className="nav-item term-item grid-item"
-            aria-label={name}
-            aria-expanded={options.open}
-            aria-controls={id}
-            onClick={() => toggleSection(options.key)}
+            className={`nav-item view-item ${on ? "current" : ""}`}
+            aria-current={on ? "page" : undefined}
+            aria-label={options.label}
+            data-view={options.view}
+            onClick={options.onOpen}
           >
             <span className="term-number" aria-hidden="true">
               <Icon name={options.icon} size="sm" />
             </span>
             <span className="grow">{options.label}</span>
-            {collapsed}
-            <span className="section-chevron" aria-hidden="true">
-              <Icon
-                name={options.open ? "chevron-down" : "chevron-right"}
-                size="sm"
-              />
-            </span>
           </button>
-        )}
-        {options.toggle && !folded && options.onOpen && chevron}
+        </Tooltip>
       </div>
     );
   };
@@ -426,119 +285,77 @@ export function Sidebar(props: SidebarProps) {
         )}
       </div>
       <nav className="rail-scroll" aria-label="Terminal tabs">
-        {/* Terminals: the header opens the live grid (phones have none)
-            and is selected like a tab while it shows; then the tabs,
-            + New terminal and the parked terminals. */}
-        <section className="rail-section" aria-label="Terminals section">
-          {sectionHeader({
-            key: "terminals",
-            label: "Terminals",
-            icon: "layout-grid",
-            name: phone ? undefined : "Terminals: live grid",
-            tooltip: "Live grid (Ctrl-B g; Alt+Tab toggles)",
-            view: "grid",
-            current: grid && !phone,
-            open: terminalsOpen,
-            count: terminals.length,
-            alert: attentionText,
-            toggle: true,
-            onOpen: phone ? undefined : () => props.onMode("grid"),
-          })}
-          {terminalsOpen && (
-            <div id="rail-section-terminals" className="rail-section-body">
-              <div className="term-list" role="list" aria-label="Terminals">
-                {terminals.map((p) => row(p, false))}
-                {!terminals.length && (
-                  <p className="rail-empty">No open terminals</p>
-                )}
+        {/* The tabs, + New terminal and the parked terminals. */}
+        <div className="term-list" role="list" aria-label="Terminals">
+          {terminals.map((p) => row(p, false))}
+          {!terminals.length && <p className="rail-empty">No open terminals</p>}
+        </div>
+        {/* Like the TUI's "+ New tab" row, right under the tabs: a rule
+            on each side of the label centred between them. Folded, the
+            plus between two short rules. */}
+        <Tooltip content="New terminal (Ctrl-B Enter)">
+          <button
+            type="button"
+            className="nav-item rail-new"
+            aria-label="New terminal"
+            aria-keyshortcuts="Control+B Enter"
+            onClick={props.onNew}
+          >
+            <span className="rail-new-rule" aria-hidden="true" />
+            <span className="rail-new-label">
+              <Icon name="plus" size="sm" />
+              <span className="rail-new-text">New terminal</span>
+            </span>
+            <span className="rail-new-rule" aria-hidden="true" />
+          </button>
+        </Tooltip>
+        {parked.length > 0 && (
+          <div className="parked-section">
+            <button
+              type="button"
+              className="rail-label rail-fold"
+              aria-expanded={parkedOpen}
+              onClick={() => setParkedOpen(!parkedOpen)}
+            >
+              <Icon
+                name={parkedOpen ? "chevron-down" : "chevron-right"}
+                size="sm"
+              />
+              <span className="grow">Parked</span>
+              <StateCounts rollup={rollup(parked, notifications)} />
+              <span className="count">{parked.length}</span>
+            </button>
+            {parkedOpen && (
+              <div className="term-list" role="list" aria-label="Parked">
+                {parked.map((p) => row(p, true))}
               </div>
-              {/* Like the TUI's "+ New tab" row, right under the tabs, but
-                  secondary: shorter and smaller than a terminal's row,
-                  muted, its small plus indented under the names rather
-                  than in the number column; a hover brightens the text. */}
-              <Tooltip content="New terminal (Ctrl-B Enter)">
-                <button
-                  type="button"
-                  className="nav-item rail-new"
-                  aria-label="New terminal"
-                  aria-keyshortcuts="Control+B Enter"
-                  onClick={props.onNew}
-                >
-                  <span className="rail-new-plus" aria-hidden="true">
-                    <Icon name="plus" />
-                  </span>
-                  <span className="grow rail-new-text">New terminal</span>
-                </button>
-              </Tooltip>
-              {parked.length > 0 && (
-                <div className="parked-section">
-                  <button
-                    type="button"
-                    className="rail-label rail-fold"
-                    aria-expanded={parkedOpen}
-                    onClick={() => setParkedOpen(!parkedOpen)}
-                  >
-                    <Icon
-                      name={parkedOpen ? "chevron-down" : "chevron-right"}
-                      size="sm"
-                    />
-                    <span className="grow">Parked</span>
-                    <StateCounts rollup={rollup(parked, notifications)} />
-                    <span className="count">{parked.length}</span>
-                  </button>
-                  {parkedOpen && (
-                    <div className="term-list" role="list" aria-label="Parked">
-                      {parked.map((p) => row(p, true))}
-                    </div>
-                  )}
-                </div>
-              )}
-            </div>
-          )}
-        </section>
-        {/* Files: the header opens the file browser; the home folder's
-            tree follows, marking the open files (a dot while one has
-            unsaved changes). The open files themselves are tabs in the
-            Files view (FileTabs). The folded rail shows the header only. */}
-        {files && (
-          <section className="rail-section" aria-label="Files section">
-            {sectionHeader({
-              key: "files",
+            )}
+          </div>
+        )}
+      </nav>
+      {/* The other views, at the bottom above the vitals: the live grid
+          (phones have none) and the file browser (when the connection
+          offers files). */}
+      {(!phone || props.onFiles) && (
+        <nav className="rail-views" aria-label="Views">
+          {!phone &&
+            viewEntry({
+              view: "grid",
+              label: "Grid",
+              icon: "layout-grid",
+              tooltip: "Live grid (Ctrl-B g; Alt+Tab toggles)",
+              onOpen: () => props.onMode("grid"),
+            })}
+          {props.onFiles &&
+            viewEntry({
+              view: "files",
               label: "Files",
               icon: "folder",
               tooltip: "File browser",
-              view: "files",
-              current: mode === "files" && files.browsing,
-              open: filesOpen || !files.tree,
-              count: files.docs.length,
-              alert: dirtyDocs ? `${dirtyDocs} with unsaved changes` : "",
-              toggle: !!files.tree,
-              onOpen: () => files.onBrowse(),
+              onOpen: props.onFiles,
             })}
-            {filesOpen && files.tree && !folded && (
-              <div id="rail-section-files" className="rail-section-body">
-                {files.tree && (
-                  <FileTree
-                    actions={files.tree}
-                    open={
-                      new Map(
-                        files.docs.map((d) => [d.path, { dirty: d.dirty }]),
-                      )
-                    }
-                    current={
-                      mode === "files"
-                        ? files.docs.find((d) => d.current)?.path
-                        : undefined
-                    }
-                    touch={props.touch}
-                    onBrowse={(dir) => files.onBrowse(dir)}
-                  />
-                )}
-              </div>
-            )}
-          </section>
-        )}
-      </nav>
+        </nav>
+      )}
       {/* The vitals, then the tools in two columns like the TUI's sidebar
           buttons. */}
       <div className="rail-vitals">

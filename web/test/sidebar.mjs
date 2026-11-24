@@ -12,34 +12,27 @@
 //    in two columns, the account and settings below the tools at the very
 //    bottom, all fitting 800 px with ten tabs; one column when folded; the
 //    same on an iPad in portrait and a phone's terminal list. The Terminals
-//    tool's icon differs from the Terminals header's.
-// 4. The Terminals header heads the tabs and opens the live grid, selected
-//    while the grid shows (no tab is then). The grid is one read-only page:
-//    3, 8, 10 and 13 terminals all fit with no pager, no tile is focused
-//    and keys typed reach no terminal. A click on a tile, a tab and every
-//    opening shortcut (Alt+digit, Ctrl-B digit, Tab, l, N) show the
-//    terminal alone; the Terminals header, Alt+Tab, Ctrl+Shift+G and
-//    Ctrl-B g / e the grid again. Folded, the header is its icon; on phones
-//    it only expands and collapses the list.
+//    tool's icon differs from the Grid entry's.
+// 4. The Grid entry, at the bottom above the vitals, opens the live grid,
+//    selected while the grid shows (no tab is then). The grid is one
+//    read-only page: 3, 8, 10 and 13 terminals all fit with no pager, no
+//    tile is focused and keys typed reach no terminal. A click on a tile, a
+//    tab and every opening shortcut (Alt+digit, Ctrl-B digit, Tab, l, N)
+//    show the terminal alone; the Grid entry, Alt+Tab, Ctrl+Shift+G and
+//    Ctrl-B g / e the grid again. Folded, the entry is its icon; phones
+//    have none.
 // 5. Attention toasts.
-// 6. Two collapsible sections, Terminals then Files: each header's label
-//    opens its view (the grid, the file browser) and is selected while it
-//    shows; its chevron, a separate button, expands or collapses it with
-//    the mouse or Enter/Space, and the state survives a reload. Collapsed,
-//    a header keeps its count and a dot for attention (Terminals) or
-//    unsaved changes (Files). The folded rail ignores collapsing.
-// 7. The Files section lists the home folder as a tree, rows like the
-//    terminals' (no Open group: the open files are the Files view's tabs):
-//    folders expand in place (kept across a reload), a file opens in the
-//    main area and is selected, open and unsaved files are marked, and
-//    every row has the file browser's menu (insert path, rename, trash,
-//    open a folder in the browser). Folded, only the Files header shows;
-//    phones show the tree with each row's menu button.
-//    with each row's menu button.
-// 8. One toast stack, top right: the attention toasts, then download
+// 6. The order (files=1, two parked): the terminals first with no section
+//    header, a rule between them, New terminal centred between two rules
+//    with room around it, the Parked subsection, then at the bottom the
+//    Grid and Files entries above the vitals: no tree, no counts, no
+//    chevrons. Files opens the file browser and is selected while it
+//    shows. Folded: the tabs' icons, the plus between two short rules, and
+//    the Grid and Files icons above the vitals. On a phone the same order
+//    without the Grid entry.
+// 7. One toast stack, top right: the attention toasts, then download
 //    progress and confirmations, newest first, none overlapping, and on a
-//    phone full width below the terminal bar. No rule under the section
-//    headers; New terminal is a secondary row (smaller, muted, indented).
+//    phone full width below the terminal bar.
 // Set SIDEBAR_SCREENSHOTS to a directory to save screenshots of each case.
 import { build } from "vite";
 import { chromium, webkit, devices } from "playwright";
@@ -137,17 +130,19 @@ async function checkBottom(page, columns) {
   );
 }
 
-/** The Terminals header, which opens the grid: the first row above the
- * tabs, a terminal row's height, selected exactly while the grid shows,
- * with no terminal tab selected then. */
-async function checkTerminalsHeader(page, grid) {
-  const entry = page.locator('.grid-row [data-view="grid"]');
-  assert.equal(await entry.count(), 1, "one Terminals header");
+/** The Grid entry, which opens the grid: at the bottom, below the tabs
+ * and New terminal and above the vitals, aligned with the tabs, selected
+ * exactly while the grid shows, with no terminal tab selected then. */
+async function checkGridEntry(page, grid) {
+  const entry = page.locator('.rail-views [data-view="grid"]');
+  assert.equal(await entry.count(), 1, "one Grid entry");
   assert.equal(await entry.getAttribute("aria-current"), grid ? "page" : null);
   const own = await entry.boundingBox();
   const first = await box(page, ".term-row .term-item");
-  assert.ok(own.y + own.height <= first.y + 1, "header above the tabs");
-  assert.ok(Math.abs(own.height - first.height) <= 1, "a tab's height");
+  const add = await box(page, ".rail-new");
+  const vitals = await box(page, ".vitals");
+  assert.ok(own.y >= add.y + add.height, "below New terminal");
+  assert.ok(own.y + own.height <= vitals.y + 1, "above the vitals");
   assert.ok(Math.abs(own.x - first.x) <= 1, "aligned with the tabs");
   assert.equal(
     await page.locator('.term-row .term-item[aria-current="page"]').count(),
@@ -160,16 +155,15 @@ async function checkTerminalsHeader(page, grid) {
   );
   // The selected entry's highlight is its cell's, as a tab's.
   const background = await page
-    .locator(".grid-row")
+    .locator(".view-row:has([data-view='grid'])")
     .evaluate((el) => getComputedStyle(el).backgroundColor);
-  if (grid) assert.notEqual(background, "rgba(0, 0, 0, 0)", "header selected");
+  if (grid) assert.notEqual(background, "rgba(0, 0, 0, 0)", "entry selected");
   else assert.equal(background, "rgba(0, 0, 0, 0)");
 }
-/** Tabs look like the Terminals header (no colour stripe), a 1px rule
- * separates each terminal from the next but none is under a section
- * header, and New terminal is secondary: as wide as them but shorter,
- * smaller and muted, its small plus past their number column, its hover
- * brightening the text without filling the row. */
+/** Tabs have no colour stripe and a little more height than the tools, a
+ * 1px rule separates each terminal from the next (none above the first),
+ * and New terminal is centred between two rules in the accent colour,
+ * with room above and below it. */
 async function checkRowLook(page) {
   const rows = page.locator(".term-list:not([aria-label='Parked']) .term-row");
   assert.ok((await rows.count()) >= 2, "several tabs");
@@ -178,6 +172,8 @@ async function checkRowLook(page) {
     "none",
     "no colour stripe",
   );
+  const tab = await box(page, ".term-row .term-item");
+  assert.ok(tab.height >= 40, `taller tabs (${tab.height})`);
   const rule = (selector, pseudo) =>
     page
       .locator(selector)
@@ -189,56 +185,52 @@ async function checkRowLook(page) {
   const between = await rule(".term-row + .term-row", "::before");
   assert.notEqual(between.content, "none", "rule between terminals");
   assert.equal(between.height, "1px", "rule between terminals");
-  for (const [selector, pseudo] of [
-    [".grid-row", "::after"],
-    [".grid-row", "::before"],
-    [".term-row:first-child", "::before"],
-    [".rail-new", "::before"],
-    [".rail-new", "::after"],
-  ])
-    assert.equal(
-      (await rule(selector, pseudo)).content,
-      "none",
-      `no rule at ${selector}${pseudo}`,
-    );
-  assert.equal(await page.locator(".rail-new-rule").count(), 0);
-  // Secondary to the terminals' rows: shorter, smaller and muted, its
-  // small plus indented past the number column, a hover that brightens
-  // the text without filling the row.
+  assert.equal(
+    (await rule(".term-row:first-child", "::before")).content,
+    "none",
+    "no rule above the first terminal",
+  );
+  // No section header, chevron or tree.
+  assert.equal(
+    await page
+      .locator(
+        "[data-section], .section-toggle, .section-summary, .file-tree, .file-row",
+      )
+      .count(),
+    0,
+  );
+  // New terminal: as wide as a tab, its label centred between two rules,
+  // set apart from the last tab.
   const button = await box(page, ".rail-new");
-  const tab = await box(page, ".term-row .term-item");
   assert.ok(Math.abs(button.x - tab.x) <= 1, "New terminal aligned");
   assert.ok(Math.abs(button.width - tab.width) <= 1, "a tab's width");
-  assert.ok(button.height < tab.height - 4, "shorter than a terminal's row");
-  assert.equal(await page.locator(".rail-new .term-number").count(), 0);
-  const plus = await box(page, ".rail-new .rail-new-plus");
-  const number = await box(page, ".term-row .term-number");
-  assert.ok(plus.x > number.x + number.width + 4, "plus past the numbers");
-  assert.ok(plus.width < number.width, "a smaller plus");
-  const style = (selector) =>
+  const label = await box(page, ".rail-new .rail-new-label");
+  assert.ok(
+    Math.abs(label.x + label.width / 2 - (button.x + button.width / 2)) <= 2,
+    "label centred",
+  );
+  const rules = await page.locator(".rail-new .rail-new-rule").all();
+  assert.equal(rules.length, 2, "a rule on each side");
+  const [left, right] = await Promise.all(rules.map((r) => r.boundingBox()));
+  assert.ok(left.x + left.width <= label.x + 1, "left rule");
+  assert.ok(right.x >= label.x + label.width - 1, "right rule");
+  assert.ok(left.width > 16 && right.width > 16, "visible rules");
+  assert.equal(Math.round(left.height), 1);
+  const last = await rows.last().boundingBox();
+  assert.ok(
+    button.y - (last.y + last.height) >= 6,
+    `room above New terminal (${button.y - (last.y + last.height)})`,
+  );
+  const color = (selector) =>
     page
       .locator(selector)
       .first()
-      .evaluate((el) => {
-        const s = getComputedStyle(el);
-        return {
-          color: s.color,
-          size: s.fontSize,
-          background: s.backgroundColor,
-        };
-      });
-  const newRow = await style(".rail-new");
-  const title = await style(".term-row .term-title");
-  assert.notEqual(newRow.color, title.color, "New terminal muted");
-  assert.ok(
-    parseFloat(newRow.size) < parseFloat(title.size),
-    `smaller text (${newRow.size} < ${title.size})`,
+      .evaluate((el) => getComputedStyle(el).color);
+  assert.notEqual(
+    await color(".rail-new"),
+    await color(".term-row .term-title"),
+    "New terminal in the accent",
   );
-  await page.locator(".rail-new").hover();
-  const hovered = await style(".rail-new");
-  assert.notEqual(hovered.color, newRow.color, "hover brightens the text");
-  assert.equal(hovered.background, "rgba(0, 0, 0, 0)", "no filled hover");
-  await page.mouse.move(0, 0);
   assert.equal(
     await page.locator(".rail-new").getAttribute("aria-label"),
     "New terminal",
@@ -329,9 +321,9 @@ for (const engine of [chromium, webkit]) {
         await page.locator(".tool-grid .tool-item .grow").allTextContents(),
         ["Terminals", "Closed", "Search", "Help"],
       );
-      // 4. The Terminals header heads the tabs, not selected in single view; the
+      // 4. The Grid entry is at the bottom, not selected in single view; the
       // shown terminal's tab is.
-      await checkTerminalsHeader(page, false);
+      await checkGridEntry(page, false);
       await checkRowLook(page);
       assert.equal(
         await page
@@ -453,7 +445,7 @@ for (const engine of [chromium, webkit]) {
       await context.close();
     }
     // 4. The read-only grid with 3, 8 and 13 terminals: one page with every
-    // tile fully visible and no pager; the Terminals header is selected and no
+    // tile fully visible and no pager; the Grid entry is selected and no
     // tab is; no tile is focused and nothing is marked read.
     for (const tabs of [3, 8, 13]) {
       const { context, page, errors } = await open(
@@ -462,7 +454,7 @@ for (const engine of [chromium, webkit]) {
         `?view=grid&tabs=${tabs}`,
       );
       await shot(page, name, `desktop-grid-${tabs}`);
-      await checkTerminalsHeader(page, true);
+      await checkGridEntry(page, true);
       await checkGridFits(page, tabs);
       await checkNoFocus(page);
       await checkBottom(page, 2);
@@ -471,7 +463,7 @@ for (const engine of [chromium, webkit]) {
       await context.close();
     }
     // A click anywhere on a tile opens it alone; a tab does too, and the
-    // Terminals header the grid again. Keys typed in the grid reach no terminal;
+    // Grid entry the grid again. Keys typed in the grid reach no terminal;
     // every opening shortcut leaves the grid, and the grid shortcuts show
     // it again.
     {
@@ -480,13 +472,13 @@ for (const engine of [chromium, webkit]) {
         { viewport: { width: 1440, height: 900 } },
         "?view=grid",
       );
-      // The Terminals tool's icon is not the Terminals header's.
+      // The Terminals tool's icon is not the Grid entry's.
       const icon = (selector) =>
         page.locator(`${selector} .svg-icon`).first().innerHTML();
       assert.notEqual(
         await icon('[data-tool="terminals"]'),
         await icon('[data-view="grid"]'),
-        "Terminals tool and header icons differ",
+        "Terminals tool and Grid entry icons differ",
       );
       await page.keyboard.type("echo grid\n");
       await page.keyboard.press("Control+c");
@@ -501,7 +493,7 @@ for (const engine of [chromium, webkit]) {
       const showsAlone = async (number, label) => {
         await page.locator(".tab-pane-layout").waitFor();
         assert.equal(await page.locator(".live-grid").count(), 0, label);
-        await checkTerminalsHeader(page, false);
+        await checkGridEntry(page, false);
         assert.equal(
           await page
             .locator(`.term-row[data-pane="${number}"] .term-item`)
@@ -513,7 +505,7 @@ for (const engine of [chromium, webkit]) {
       const backToGrid = async (keys) => {
         for (const key of keys) await page.keyboard.press(key);
         await page.locator(".live-grid").waitFor();
-        await checkTerminalsHeader(page, true);
+        await checkGridEntry(page, true);
       };
       // A click near a tile's bottom corner, on its screen.
       const tile = await box(page, '[data-tile-pane="4"]');
@@ -563,10 +555,10 @@ for (const engine of [chromium, webkit]) {
       );
       await shot(page, name, "desktop-folded-grid");
       await checkBottom(page, 1);
-      // The Terminals header is its icon, in the same place, selected.
-      await checkTerminalsHeader(page, true);
+      // The Grid entry is its icon, in the same place, selected.
+      await checkGridEntry(page, true);
       const entry = page.locator('[data-view="grid"]');
-      assert.ok(await entry.locator(".svg-icon").isVisible(), "header icon");
+      assert.ok(await entry.locator(".svg-icon").isVisible(), "entry icon");
       assert.equal(await entry.locator(".grow").isVisible(), false);
       await checkGridFits(page, 10);
       await checkNoFocus(page);
@@ -612,9 +604,9 @@ for (const engine of [chromium, webkit]) {
       assert.deepEqual(errors, []);
       await context.close();
     }
-    // Phone: the terminal list has the same bottom (no grid: the Terminals
-    // header only expands and collapses the list); a terminal's bar has
-    // its bell.
+    // Phone: the terminal list has the same bottom (no grid, so no Grid
+    // entry, and without files no Files entry either); a terminal's bar
+    // has its bell.
     {
       const { context, page, errors } = await open(
         browser,
@@ -622,15 +614,8 @@ for (const engine of [chromium, webkit]) {
       );
       await shot(page, name, "phone-list");
       assert.equal(await page.locator('[data-view="grid"]').count(), 0);
-      const header = page.locator('[data-section="terminals"] > .nav-item');
-      assert.equal(await header.getAttribute("aria-expanded"), "true");
-      assert.equal(
-        await page
-          .locator('[data-section="terminals"] .section-toggle')
-          .count(),
-        0,
-        "the header is the toggle",
-      );
+      assert.equal(await page.locator(".rail-views").count(), 0);
+      assert.equal(await page.locator("[data-section]").count(), 0);
       // Measured once layout has settled: the phone list slides in, and a
       // single early read sometimes caught a tool mid-transition (a third
       // x position).
@@ -670,405 +655,146 @@ for (const engine of [chromium, webkit]) {
       assert.deepEqual(errors, []);
       await context.close();
     }
-    // 6. The Terminals and Files sections (files=1): order, active
-    // headers, chevrons by mouse and keyboard, the state kept across a
-    // reload, and what a collapsed header still shows.
+    // 6. The order (files=1, two parked): the tabs, New terminal, Parked,
+    // then the Grid and Files entries above the vitals; Files opens the
+    // browser and is selected while it shows.
     {
       const { context, page, errors } = await open(
         browser,
         { viewport: { width: 1440, height: 900 } },
-        "?files=1",
+        "?files=1&tabs=8&parked=2",
       );
-      const section = (key) => page.locator(`[data-section="${key}"]`);
-      const label = (key) => section(key).locator("> .nav-item");
-      const toggle = (key) => section(key).locator(".section-toggle");
-      const fileRows = page.locator(".file-tree .file-row");
-      const fileRow = (path) =>
-        page.locator(`.file-row[data-path="/home/alice/${path}"]`);
+      await shot(page, name, "order");
+      await checkRowLook(page);
+      await checkGridEntry(page, false);
       const tabRows = page.locator(
         ".term-list[aria-label='Terminals'] .term-row",
       );
-      const current = async () => ({
-        terminals: await label("terminals").getAttribute("aria-current"),
-        files: await label("files").getAttribute("aria-current"),
-        tabs: await page
-          .locator('.term-row .term-item[aria-current="page"]')
-          .count(),
-      });
-      await shot(page, name, "sections-expanded");
-      // Order: Terminals header, the tabs, + New terminal, then the Files
-      // header and the home folder's tree (no Open group).
+      assert.equal(await tabRows.count(), 6);
+      const y = async (selector) => (await box(page, selector)).y;
+      const bottom = async (selector) => {
+        const b = await box(page, selector);
+        return b.y + b.height;
+      };
+      // The tabs come first: nothing above them in the list.
+      assert.ok(
+        Math.abs((await y(".rail-scroll")) + 8 - (await y(".term-row"))) <= 1,
+        "tabs at the top of the list",
+      );
+      assert.ok(
+        (await bottom(".term-row:last-child")) <= (await y(".rail-new")),
+      );
+      assert.ok((await bottom(".rail-new")) <= (await y(".parked-section")));
+      assert.equal(
+        await page.locator(".term-list[aria-label='Parked'] .term-row").count(),
+        2,
+      );
+      // The two entries, in that order, at the bottom above the vitals.
       assert.deepEqual(
         await page
-          .locator("[data-section]")
-          .evaluateAll((els) => els.map((e) => e.dataset.section)),
-        ["terminals", "files"],
+          .locator(".rail-views .nav-item")
+          .evaluateAll((els) => els.map((e) => e.dataset.view)),
+        ["grid", "files"],
       );
-      const y = async (locator) => (await locator.boundingBox()).y;
-      assert.ok((await y(label("terminals"))) < (await y(tabRows.first())));
+      assert.deepEqual(
+        await page.locator(".rail-views .nav-item .grow").allTextContents(),
+        ["Grid", "Files"],
+      );
       assert.ok(
-        (await y(tabRows.last())) < (await y(page.locator(".rail-new"))),
+        (await bottom(".parked-section")) <= (await y(".rail-views")),
+        "entries below the list",
       );
       assert.ok(
-        (await y(page.locator(".rail-new"))) < (await y(label("files"))),
+        Math.abs((await bottom(".rail-views")) - (await y(".rail-vitals"))) <=
+          1,
+        "entries right above the vitals",
       );
-      assert.ok((await y(label("files"))) < (await y(fileRows.first())));
-      assert.equal(await tabRows.count(), 10);
-      assert.equal(await page.locator(".doc-row, .open-files").count(), 0);
-      for (const key of ["terminals", "files"]) {
-        assert.equal(await toggle(key).getAttribute("aria-expanded"), "true");
-        assert.equal(await section(key).locator(".section-summary").count(), 0);
-      }
+      // Plain entries: an icon each, no count, dot or chevron.
+      assert.equal(await page.locator(".rail-views .svg-icon").count(), 2);
       assert.equal(
-        await page.locator('.grid-row [data-view="grid"]').count(),
-        1,
-        "no separate Grid entry",
+        await page.locator(".rail-views .count, .rail-views button").count(),
+        2,
+        "two buttons and no count",
       );
-      // A terminal is shown: neither header is selected.
-      assert.deepEqual(await current(), {
-        terminals: null,
-        files: null,
-        tabs: 1,
-      });
-      // The Terminals label shows the grid; the Files label the browser;
-      // a file's tree row the file.
-      await label("terminals").click();
-      await page.locator(".live-grid").waitFor();
-      assert.deepEqual(await current(), {
-        terminals: "page",
-        files: null,
-        tabs: 0,
-      });
-      await label("files").click();
+      const files = page.locator('.rail-views [data-view="files"]');
+      assert.equal(await files.getAttribute("aria-current"), null);
+      await files.click();
       await page
         .locator('.files-placeholder[data-files-shown="browser"]')
         .waitFor();
-      assert.deepEqual(await current(), {
-        terminals: null,
-        files: "page",
-        tabs: 0,
-      });
-      await fileRow("app.py").locator(".file-item").click();
-      await page
-        .locator('.files-placeholder[data-files-shown="/home/alice/app.py"]')
-        .waitFor();
-      assert.equal(await label("files").getAttribute("aria-current"), null);
-      assert.equal(
-        await fileRow("app.py")
-          .locator(".file-item")
-          .getAttribute("aria-current"),
-        "page",
-      );
-      // The chevron, a separate button, collapses Terminals without
-      // changing the view, with Enter; collapsed, the header keeps the
-      // count and the attention dot (terminals need input, others unread).
-      await toggle("terminals").focus();
-      await page.keyboard.press("Enter");
-      assert.equal(
-        await toggle("terminals").getAttribute("aria-expanded"),
-        "false",
-      );
-      assert.equal(await tabRows.count(), 0, "tabs hidden");
-      assert.equal(await page.locator(".rail-new").count(), 0);
-      assert.ok(
-        await page.locator(".files-placeholder").isVisible(),
-        "view kept",
-      );
-      const terminalsSummary = section("terminals").locator(".section-summary");
-      assert.equal(
-        await terminalsSummary.locator(".count").textContent(),
-        "10",
-      );
-      const terminalsDot = terminalsSummary.locator(".section-alert");
-      assert.ok(await terminalsDot.isVisible(), "attention dot");
-      assert.match(
-        await terminalsDot.getAttribute("aria-label"),
-        /need attention.*unread/,
-      );
-      assert.match(
-        await label("terminals").getAttribute("aria-label"),
-        /^Terminals: live grid \(10, .*need attention/,
-      );
-      await shot(page, name, "sections-terminals-collapsed");
-      // Space expands it again; the label still navigates while collapsed.
-      await page.keyboard.press("Space");
-      assert.equal(await tabRows.count(), 10);
-      await page.keyboard.press("Space");
-      await label("terminals").click();
-      await page.locator(".live-grid").waitFor();
-      assert.equal(
-        await toggle("terminals").getAttribute("aria-expanded"),
-        "false",
-        "still collapsed",
-      );
-      await toggle("terminals").click();
-      assert.equal(await tabRows.count(), 10);
-      // Files collapsed: its count and a dot for the unsaved file.
-      await toggle("files").click();
-      assert.equal(await fileRows.count(), 0, "tree hidden");
-      const filesSummary = section("files").locator(".section-summary");
-      assert.equal(await filesSummary.locator(".count").textContent(), "2");
-      assert.ok(
-        await filesSummary.locator(".section-alert").isVisible(),
-        "unsaved dot",
-      );
-      await shot(page, name, "sections-files-collapsed");
-      // Both collapsed survive a reload.
-      await toggle("terminals").click();
-      await page.reload();
-      await page.waitForFunction(() => window.fixtureReady === true);
-      for (const key of ["terminals", "files"])
-        assert.equal(
-          await toggle(key).getAttribute("aria-expanded"),
-          "false",
-          `${key} still collapsed`,
-        );
-      assert.equal(await tabRows.count(), 0);
-      assert.equal(await fileRows.count(), 0);
-      // With no unsaved file, a collapsed Files header has no dot.
-      await toggle("files").click();
-      await page.evaluate(() => window.closeDoc("/home/alice/app.py"));
-      await toggle("files").click();
-      assert.equal(await filesSummary.locator(".count").textContent(), "1");
-      assert.equal(await filesSummary.locator(".section-alert").count(), 0);
-      // The folded rail ignores collapsing: every tab shows as its icon,
-      // with both sections still collapsed in this browser's preferences.
-      await page.goto(`${origin}/?files=1&folded=1`);
-      await page.waitForFunction(() => window.fixtureReady === true);
-      assert.deepEqual(
-        await page.evaluate(
-          () =>
-            JSON.parse(localStorage.getItem("kelpmux-web-preferences"))
-              .sidebarSections,
-        ),
-        { terminals: false, files: false },
-      );
-      assert.equal(await tabRows.count(), 10);
-      assert.equal(await page.locator(".section-toggle:visible").count(), 0);
-      assert.deepEqual(errors, []);
-      await context.close();
-    }
-    // Phone (files=1): the same two sections; the Terminals header toggles
-    // the list, the Files label opens the browser.
-    {
-      const { context, page, errors } = await open(
-        browser,
-        emulate("iPhone 15"),
-        "?files=1",
-      );
-      const header = page.locator('[data-section="terminals"] > .nav-item');
-      await header.click();
-      assert.equal(await header.getAttribute("aria-expanded"), "false");
-      assert.equal(await page.locator(".term-row").count(), 0);
-      assert.ok(
-        await page
-          .locator('[data-section="terminals"] .section-alert')
-          .isVisible(),
-      );
-      await shot(page, name, "phone-sections-collapsed");
-      await header.click();
-      assert.equal(await page.locator(".term-row").count(), 10);
-      await page.locator('[data-view="files"]').click();
-      await page
-        .locator('.files-placeholder[data-files-shown="browser"]')
-        .waitFor();
-      assert.deepEqual(errors, []);
-      await context.close();
-    }
-    // 7. The Files section's tree (files=1): the home folder listed like the
-    // terminals, folders expanding in place, files
-    // opening like terminals, the browser's menu on every row, and the
-    // expanded folders kept across a reload.
-    {
-      const { context, page, errors } = await open(
-        browser,
-        { viewport: { width: 1440, height: 900 } },
-        "?files=1&tabs=4",
-      );
-      const fileRow = (path) =>
-        page.locator(`.file-row[data-path="/home/alice/${path}"]`);
-      const item = (path) => fileRow(path).locator(".file-item");
-      const names = () =>
-        page
-          .locator(".file-tree .file-row")
-          .evaluateAll((els) =>
-            els.map((e) => e.dataset.path.replace("/home/alice/", "")),
-          );
-      await fileRow("repos").waitFor();
-      // Folders first, then files; hidden entries left out (the browser's
-      // setting); no Open group above the tree.
-      assert.deepEqual(await names(), [
-        "repos",
-        "scratch",
-        "app.py",
-        "notes.md",
-        "README.md",
-      ]);
-      assert.equal(
-        await page.locator(".open-files, .doc-row").count(),
-        0,
-        "no Open group",
-      );
-      // Rows like the terminals': the same left edge, no rule between them.
-      const tab = await box(page, ".term-row .term-item");
-      const first = await item("repos").boundingBox();
-      assert.ok(Math.abs(first.x - tab.x) <= 1, "aligned with the tabs");
-      assert.equal(
-        await fileRow("scratch").evaluate(
-          (el) => getComputedStyle(el, "::before").content,
-        ),
-        "none",
-      );
-      // Open files are marked, the unsaved one with a dot.
-      assert.equal(await fileRow("app.py").getAttribute("data-open"), "dirty");
-      assert.equal(await fileRow("app.py").locator(".files-dirty").count(), 1);
-      assert.equal(await fileRow("notes.md").getAttribute("data-open"), "open");
-      assert.equal(await fileRow("README.md").getAttribute("data-open"), null);
-      // A folder's row expands it in place, indented; again collapses it.
-      assert.equal(await item("repos").getAttribute("aria-expanded"), "false");
-      await item("repos").click();
-      await fileRow("repos/todo.txt").waitFor();
-      assert.equal(await item("repos").getAttribute("aria-expanded"), "true");
-      assert.deepEqual((await names()).slice(0, 4), [
-        "repos",
-        "repos/kelpmux",
-        "repos/kelpserver",
-        "repos/todo.txt",
-      ]);
-      const icon = (path) => fileRow(path).locator(".files-kind").boundingBox();
-      assert.ok(
-        (await icon("repos/todo.txt")).x > (await icon("repos")).x + 8,
-        "children indented",
-      );
-      await item("repos/kelpserver").click();
-      await page.getByText("Empty folder").waitFor();
-      // A file's row opens it in the main area, selected like the shown
-      // terminal; it joins the open files.
-      await item("repos/todo.txt").click();
-      await page
-        .locator(
-          '.files-placeholder[data-files-shown="/home/alice/repos/todo.txt"]',
-        )
-        .waitFor();
-      assert.equal(
-        await item("repos/todo.txt").getAttribute("aria-current"),
-        "page",
-      );
+      assert.equal(await files.getAttribute("aria-current"), "page");
       assert.equal(
         await page.locator('.term-item[aria-current="page"]').count(),
-        1,
-        "the tree row only (the open files are tabs in the Files view)",
+        0,
+      );
+      await shot(page, name, "files-selected");
+      await page.locator('.rail-views [data-view="grid"]').click();
+      await page.locator(".live-grid").waitFor();
+      assert.equal(await files.getAttribute("aria-current"), null);
+      // Folded: the tabs' icons, the plus between two short rules, then
+      // the Grid and Files icons above the vitals.
+      await page.goto(`${origin}/?files=1&tabs=8&parked=2&folded=1`);
+      await page.waitForFunction(() => window.fixtureReady === true);
+      await shot(page, name, "order-folded");
+      assert.equal(await tabRows.count(), 6);
+      assert.ok(await page.locator(".rail-new .svg-icon").isVisible());
+      assert.equal(
+        await page.locator(".rail-new .rail-new-text").isVisible(),
+        false,
       );
       assert.equal(
-        await fileRow("repos/todo.txt").getAttribute("data-open"),
-        "open",
+        await page.locator(".rail-new .rail-new-rule:visible").count(),
+        2,
       );
-      await page.mouse.move(800, 500);
-      await shot(page, name, "files-tree");
-      // Right-click: the browser's menu.
-      await fileRow("README.md").click({ button: "right" });
-      const menu = page.locator(".files-menu");
-      await menu.waitFor();
-      assert.deepEqual(await menu.locator(".menu-item").allTextContents(), [
-        "Open",
-        "Open beside terminal",
-        "Insert path into terminal 1",
-        "Copy path",
-        "Download",
-        "Rename…",
-        "Move to trash",
-        "Delete permanently…",
-      ]);
-      await shot(page, name, "files-tree-menu");
-      await menu.getByRole("menuitem", { name: /Insert path/ }).click();
+      for (const view of ["grid", "files"]) {
+        const entry = page.locator(`.rail-views [data-view="${view}"]`);
+        assert.ok(await entry.locator(".svg-icon").isVisible(), view);
+        assert.equal(await entry.locator(".grow").isVisible(), false, view);
+      }
       assert.ok(
-        (await page.evaluate(() => window.typed)).includes(
-          "/home/alice/README.md",
+        Math.abs((await bottom(".rail-views")) - (await y(".rail-vitals"))) <=
+          1,
+        "folded entries right above the vitals",
+      );
+      assert.ok((await bottom(".rail-new")) <= (await y(".rail-views")));
+      // An old stored sections preference is ignored.
+      await page.evaluate(() =>
+        localStorage.setItem(
+          "kelpmux-web-preferences",
+          JSON.stringify({ sidebarSections: { terminals: false } }),
         ),
       );
-      // The ⋯ button opens it too (on hover; always on touch); Rename
-      // edits the name in place, Enter renames.
-      await fileRow("notes.md").hover();
-      await fileRow("notes.md")
-        .getByRole("button", { name: "Actions for notes.md" })
-        .click();
-      await menu.getByRole("menuitem", { name: "Rename…" }).click();
-      const field = page.getByRole("textbox", {
-        name: "New name for notes.md",
-      });
-      await field.fill("ideas.md");
-      await field.press("Enter");
-      await fileRow("ideas.md").waitFor();
-      assert.equal(await fileRow("notes.md").count(), 0);
-      assert.equal(
-        await fileRow("ideas.md").getAttribute("data-open"),
-        "open",
-        "the open file follows",
-      );
-      // Move to trash: the row goes, a toast says so.
-      await fileRow("README.md").click({ button: "right" });
-      await menu.getByRole("menuitem", { name: "Move to trash" }).click();
-      await fileRow("README.md").waitFor({ state: "detached" });
-      await page
-        .locator(".toast", { hasText: "Moved to the trash: README.md" })
-        .waitFor();
-      // A folder's Open shows it in the file browser.
-      await fileRow("scratch").click({ button: "right" });
-      await menu.getByRole("menuitem", { name: "Open" }).click();
-      await page
-        .locator('.files-placeholder[data-files-shown="browser"]')
-        .waitFor();
-      // The expanded folders survive a reload; collapsing the section hides
-      // the tree; the folded rail shows the Files header only.
       await page.reload();
       await page.waitForFunction(() => window.fixtureReady === true);
-      await fileRow("repos/kelpserver").waitFor();
-      assert.equal(
-        await item("repos/kelpserver").getAttribute("aria-expanded"),
-        "true",
-      );
-      await page.locator('[data-section="files"] .section-toggle').click();
-      assert.equal(await page.locator(".file-row").count(), 0);
-      await page.locator('[data-section="files"] .section-toggle').click();
-      await fileRow("repos").waitFor();
-      await page.goto(`${origin}/?files=1&tabs=4&folded=1`);
-      await page.waitForFunction(() => window.fixtureReady === true);
-      assert.equal(await page.locator(".file-row").count(), 0);
-      assert.equal(await page.locator(".doc-row, .open-files").count(), 0);
+      assert.equal(await tabRows.count(), 6);
       assert.deepEqual(errors, []);
       await context.close();
     }
-    // The tree on a phone's list: the same rows, each with its menu button.
+    // Phone (files=1): the same order with no Grid entry; Files at the
+    // bottom opens the browser.
     {
       const { context, page, errors } = await open(
         browser,
         emulate("iPhone 15"),
-        "?files=1&tabs=3",
+        "?files=1&tabs=6",
       );
-      const repos = page.locator('.file-row[data-path="/home/alice/repos"]');
-      await repos.waitFor();
-      assert.ok(
-        await repos
-          .getByRole("button", { name: "Actions for repos" })
-          .isVisible(),
-        "menu button shown on touch",
-      );
-      await repos.locator(".file-item").click();
-      const todo = page.locator(
-        '.file-row[data-path="/home/alice/repos/todo.txt"]',
-      );
-      await todo.waitFor();
-      await shot(page, name, "phone-files-tree");
-      await todo.locator(".file-item").click();
+      await page.waitForTimeout(300);
+      await shot(page, name, "phone-files");
+      assert.equal(await page.locator('[data-view="grid"]').count(), 0);
+      assert.equal(await page.locator(".term-row").count(), 6);
+      const files = await box(page, '.rail-views [data-view="files"]');
+      const add = await box(page, ".rail-new");
+      const vitals = await box(page, ".vitals");
+      assert.ok(files.y >= add.y + add.height, "Files below New terminal");
+      assert.ok(files.y + files.height <= vitals.y + 1, "above the vitals");
+      await page.locator('.rail-views [data-view="files"]').click();
       await page
-        .locator(
-          '.files-placeholder[data-files-shown="/home/alice/repos/todo.txt"]',
-        )
+        .locator('.files-placeholder[data-files-shown="browser"]')
         .waitFor();
       assert.deepEqual(errors, []);
       await context.close();
     }
-    // 8. One toast stack, top right: attention toasts, then download
+    // 7. One toast stack, top right: attention toasts, then download
     // progress and confirmations (newest first), none overlapping; on a
     // phone, full width under the terminal bar.
     {
@@ -1080,10 +806,7 @@ for (const engine of [chromium, webkit]) {
       await page.evaluate(() => window.bell(3));
       const attention = page.locator('.attention-toast[data-pane="3"]');
       await attention.waitFor();
-      await page
-        .locator('.file-row[data-path="/home/alice/README.md"]')
-        .click({ button: "right" });
-      await page.getByRole("menuitem", { name: "Download" }).click();
+      await page.evaluate(() => window.download("/home/alice/README.md"));
       const download = page.locator(
         '.download-toast[data-download="README.md"]',
       );
@@ -1313,7 +1036,7 @@ for (const engine of [chromium, webkit]) {
       `PASS: ${name} attention toasts: top right, one per terminal, none for the shown terminal, click opens and reads, summary above three, close, Bell toggle, favicon bell, grid, phone width`,
     );
     console.log(
-      `PASS: ${name} sidebar: no full width, showing a terminal marks it read, per-terminal notifications, vitals above the two-column tools, account at the bottom, Terminals header opens the grid, one read-only grid page for 3, 8, 10 and 13 terminals, opening alone from tiles and shortcuts, collapsible Terminals and Files sections, a secondary New terminal row, the home folder tree (expand, open, marks, menu, rename, trash) with no Open group, one top right toast stack`,
+      `PASS: ${name} sidebar: no full width, showing a terminal marks it read, per-terminal notifications, vitals above the two-column tools, account at the bottom, tabs first with a centred New terminal between rules then Parked, Grid and Files entries above the vitals (Grid opens the grid, Files the browser, none on phones for Grid), folded rail, one read-only grid page for 3, 8, 10 and 13 terminals, opening alone from tiles and shortcuts, one top right toast stack`,
     );
   } finally {
     await browser.close();

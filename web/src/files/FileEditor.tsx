@@ -62,7 +62,7 @@ export function FileEditor({
   /** A position to show and put the cursor at (1-based); a new `seq`
    * jumps again. */
   jump?: { line: number; col?: number; seq: number };
-  /** The Files view's tab strip, under the header (the main area only). */
+  /** The Files view's tab strip, above the header (the main area only). */
   tabs?: React.ReactNode;
 }) {
   // Editors call back with the path they were created with; the document's
@@ -187,6 +187,7 @@ export function FileEditor({
         }
       }}
     >
+      {tabs}
       <header className="files-head">
         {onBack && (
           <button
@@ -290,7 +291,6 @@ export function FileEditor({
           </button>
         </div>
       </header>
-      {tabs}
       {(doc.error && doc.version > 0) || doc.readOnly ? (
         <div
           className={`notice compact ${doc.error ? "error" : ""}`}
