@@ -37,6 +37,9 @@ impl Server {
             .arg(root.join("state/control.sock"))
             .args(["--shell", "/bin/sh", "--cwd"])
             .arg(&root)
+            // The file root is HOME: make it this disposable root, which
+            // holds every path the file tests use.
+            .env("HOME", &root)
             // Uploads without a destination land in the server's cache
             // directory: keep them inside this disposable root.
             .env("XDG_CACHE_HOME", root.join("cache"))
