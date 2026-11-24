@@ -7,19 +7,18 @@
 // that terminal's notifications, as its menu's Notifications… item does,
 // and `window.notify(pane)` adds an unread notification. The query string
 // picks the case: `mode=light`, `tabs=N`, `view=grid`, `folded=1`. The
-// Terminals header, the tabs, the tiles and the opening shortcuts
+// Grid entry, the tabs, the tiles and the opening shortcuts
 // (Alt+digit, Alt+Tab, Ctrl/Cmd+Shift+G and the Ctrl-B keys through the
 // real prefix map) switch the view as in main.tsx. The shown terminal's placeholder is a text area
 // recording the keys typed into it in `window.typed`. With `toasts=1` the
 // attention toasts (AttentionToasts.tsx) and the bell favicon run through
 // the same hook as main.tsx: `window.bell(pane)` rings a bell and
 // `window.setEvents({...})` changes the Settings event toggles. With
-// `files=1` the Files section lists two open files, one unsaved, and the
-// home folder's tree over an in-memory stand-in files client; its header
-// and rows show a placeholder for the browser or the file, and a file
-// opened from the tree joins the open files. The sections' expanded state
-// is kept in the real preferences store. Toasts and download progress
-// show in the real top right stack (ToastProvider, Downloads).
+// `files=1` the sidebar has its Files entry, which shows a placeholder for
+// the file browser, and `window.download(path)` starts a download from an
+// in-memory stand-in files client. `parked=N` parks the last N terminals
+// (in the sidebar only). Toasts and download progress show in the real
+// top right stack (ToastProvider, Downloads).
 import React, { useEffect, useState } from "react";
 import { createRoot } from "react-dom/client";
 import type { NumberedPane } from "@kelpcore/web/types.ts";
@@ -49,16 +48,9 @@ import {
   type NotificationEvents,
 } from "../src/toasts";
 import { activityIcon } from "../src/activity-icon";
-import { loadPreferences, savePreferences } from "../src/layout-store";
-import {
-  FileError,
-  type FileEntry,
-  type FileListing,
-  type FilesClient,
-} from "@kelpcore/web/files/api.ts";
+import { FileError, type FilesClient } from "@kelpcore/web/files/api.ts";
 import { ToastProvider, useToast } from "../src/Toast";
-import { Downloads } from "../src/files/downloads";
-import type { FileActionsProps } from "../src/files/actions";
+import { Downloads, startDownload } from "../src/files/downloads";
 import "../src/styles/base.css";
 import "../src/styles/shell.css";
 import "@kelpcore/web/terminal.css";
@@ -72,6 +64,7 @@ import "../src/styles/files.css";
 const query = new URLSearchParams(location.search);
 const toastsOn = query.get("toasts") === "1";
 const filesOn = query.get("files") === "1";
+const parkedCount = Number(query.get("parked")) || 0;
 const mode = query.get("mode") === "light" ? "light" : "dark";
 const root = document.documentElement;
 root.dataset.mode = mode;
@@ -120,75 +113,12 @@ const initial: Notification[] = [
 ];
 Object.assign(window, { acks: [] as number[], typed: [] as string[] });
 
-/** Files (files=1): a home folder in memory behind a stand-in files client,
- * as KelpCore's FilesClient answers. Downloads never finish (until
- * cancelled), so their progress toast stays; `window.toast(text)` shows a
- * confirmation. */
-const tree: Record<string, string[]> = {
-  "/home/alice": [
-    "repos/",
-    "scratch/",
-    ".config/",
-    "notes.md",
-    "app.py",
-    "README.md",
-    ".profile",
-  ],
-  "/home/alice/repos": ["kelpmux/", "kelpserver/", "todo.txt"],
-  "/home/alice/repos/kelpmux": ["src/", "Cargo.toml", "README.md"],
-  "/home/alice/repos/kelpmux/src": ["main.rs", "lib.rs"],
-  "/home/alice/repos/kelpserver": [],
-  "/home/alice/scratch": ["draft.txt"],
-  "/home/alice/.config": ["settings.toml"],
-};
-const fileEntry = (name: string): FileEntry => ({
-  name: name.replace(/\/$/, ""),
-  kind: name.endsWith("/") ? "dir" : "file",
-  size: name.endsWith("/") ? 0 : 1200,
-  modified: Date.now() / 1000 - 3600,
-  mode: 0o644,
-});
-const childPath = (dir: string, name: string) =>
-  `${dir}/${name.replace(/\/$/, "")}`;
-function moveEntry(from: string, to: string) {
-  const parent = from.slice(0, from.lastIndexOf("/"));
-  const name = tree[parent].find((n) => childPath(parent, n) === from);
-  if (!name) throw new FileError({ code: "not_found", message: "Not found" });
-  tree[parent] = tree[parent].filter((n) => n !== name);
-  const target = to.slice(0, to.lastIndexOf("/"));
-  const base = to.slice(to.lastIndexOf("/") + 1);
-  tree[target]?.push(name.endsWith("/") ? `${base}/` : base);
-  for (const key of Object.keys(tree))
-    if (key === from || key.startsWith(`${from}/`)) {
-      tree[to + key.slice(from.length)] = tree[key];
-      delete tree[key];
-    }
-}
+/** Files (files=1): a stand-in files client whose downloads never finish
+ * (until cancelled), so their progress toast stays; `window.toast(text)`
+ * shows a confirmation. */
 const fakeFiles = {
   limits: { max_read_bytes: 1 << 20 },
   canDownload: true,
-  async list(path: string): Promise<FileListing> {
-    const dir = path === "~" ? "/home/alice" : path;
-    await new Promise((resolve) => setTimeout(resolve, 10));
-    if (!tree[dir])
-      throw new FileError({ code: "not_found", message: "Not found" });
-    return {
-      path: dir,
-      entries: tree[dir].map(fileEntry),
-      truncated: false,
-      skipped: 0,
-    };
-  },
-  async rename(from: string, to: string) {
-    moveEntry(from, to);
-  },
-  async trash(paths: string[]) {
-    for (const path of paths) {
-      const parent = path.slice(0, path.lastIndexOf("/"));
-      tree[parent] = tree[parent].filter((n) => childPath(parent, n) !== path);
-    }
-    return { removed: paths.map((path) => ({ path })), failed: [] };
-  },
   download(_paths: string[], options: any) {
     options.onProgress?.({ received: 300_000, size: 1_200_000 });
     return new Promise((_, reject) =>
@@ -224,22 +154,6 @@ function Fixture() {
     query.get("view") === "grid" ? "grid" : "single",
   );
   const grid = view === "grid" && !phone;
-  // The sidebar's sections, kept in the real preferences store.
-  const [sections, setSections] = useState(
-    () => loadPreferences().sidebarSections,
-  );
-  // Files (files=1): two open files, the second with unsaved changes;
-  // the Files header shows the browser, a file opened from the tree the
-  // file (the tree marks the open files).
-  const [docs, setDocs] = useState(
-    filesOn
-      ? [
-          { path: "/home/alice/notes.md", name: "notes.md", dirty: false },
-          { path: "/home/alice/app.py", name: "app.py", dirty: true },
-        ]
-      : [],
-  );
-  const [shownDoc, setShownDoc] = useState("");
   const files = view === "files";
   const focused = panes.find((p) => p.id === current)!;
   const unread = (p: NumberedPane) => unreadFor(notifications, p).length;
@@ -355,52 +269,17 @@ function Fixture() {
     window.addEventListener("keydown", handler, true);
     return () => window.removeEventListener("keydown", handler, true);
   });
-  // The tree's actions, as main.tsx's fileActions.
+  // Files (files=1): a download through the real top right stack.
   const toast = useToast();
-  const openDoc = (path: string) => {
-    setDocs((list) =>
-      list.some((d) => d.path === path)
-        ? list
-        : [...list, { path, name: basename(path), dirty: false }],
-    );
-    setShownDoc(path);
-    setPhoneList(false);
-    setView("files");
-  };
   useEffect(() => {
     Object.assign(window, {
       toast: (text: string) => toast(text),
-      // The Files view's tab × (main.tsx's closeDoc, without asking).
-      closeDoc: (path: string) =>
-        setDocs((list) => list.filter((d) => d.path !== path)),
+      download: (path: string) =>
+        startDownload(fakeFiles, path, false, (message, options) =>
+          toast(message, { key: "files", ...options }),
+        ),
     });
   }, [toast]);
-  const fileActions: FileActionsProps = {
-    client: fakeFiles,
-    home: "/home/alice",
-    onOpenFile: openDoc,
-    onOpenBeside: openDoc,
-    insertTarget: { number: focused.number, title: focused.title || "" },
-    onInsertPath: (path) => (window as any).typed.push(path),
-    onCopyPath: (path) => toast(`Copied ${path}`, { key: "copy" }),
-    confirm: (action) => void action.buttons[0].action(),
-    toast: (message, options) => toast(message, { key: "files", ...options }),
-    onRenamed: (from, to) => {
-      setDocs((list) =>
-        list.map((d) =>
-          d.path === from ? { ...d, path: to, name: basename(to) } : d,
-        ),
-      );
-      setShownDoc((shown) => (shown === from ? to : shown));
-    },
-    onRemoved: (paths) =>
-      setDocs((list) => list.filter((d) => !paths.includes(d.path))),
-    upload: {
-      unavailable: "No uploads here",
-      limits: null,
-      transport: {} as any,
-    },
-  };
   const sidebar = (
     <Sidebar
       username="alice"
@@ -409,27 +288,16 @@ function Fixture() {
       touch={device.touch}
       phone={phone}
       mode={grid ? "grid" : files ? "files" : "single"}
-      sections={sections}
-      onSections={(next) => {
-        setSections(next);
-        savePreferences({ ...loadPreferences(), sidebarSections: next });
-      }}
-      files={
+      onFiles={
         filesOn
-          ? {
-              browsing: !shownDoc,
-              docs: docs.map((d) => ({ ...d, current: d.path === shownDoc })),
-              onBrowse: () => {
-                setShownDoc("");
-                setPhoneList(false);
-                setView("files");
-              },
-              tree: fileActions,
+          ? () => {
+              setPhoneList(false);
+              setView("files");
             }
           : undefined
       }
-      terminals={panes}
-      parked={[]}
+      terminals={panes.slice(0, panes.length - parkedCount)}
+      parked={panes.slice(panes.length - parkedCount)}
       notifications={notifications}
       current={grid || files ? undefined : current}
       vitals={{ cpu: 23, memory: 61, disks: [48, 92] }}
@@ -479,7 +347,7 @@ function Fixture() {
           ) : files ? (
             <div
               className="files-placeholder"
-              data-files-shown={shownDoc || "browser"}
+              data-files-shown="browser"
               style={placeholder}
             />
           ) : grid ? (

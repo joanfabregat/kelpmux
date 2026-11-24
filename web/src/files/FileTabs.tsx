@@ -1,6 +1,7 @@
-// The Files view's tab strip, under the top bar of the browser or of the
-// file shown: the file browser's tab first (never closed), then a tab per
-// file open in the main area, in opening order. A tab shows its file (the
+// The Files view's tab strip, its topmost bar, above the browser's
+// breadcrumbs or the shown file's header: the file browser's tab first
+// (never closed), then a tab per file open in the main area, in opening
+// order. A tab shows its file (the
 // first one the browser, at its folder); its × or a middle-click closes
 // it, asking first when it has unsaved changes. Same-name files carry the
 // folders that tell them apart (tabs.ts). The strip scrolls sideways and

@@ -1,5 +1,5 @@
-// The file browser and editor as main.tsx wires them (the Files section,
-// its home folder tree in the real Sidebar, the browser and the editor
+// The file browser and editor as main.tsx wires them (the Files entry in
+// the real Sidebar, the browser and the editor
 // with the Files view's tab strip, path drops on terminal rows, uploads
 // into folders), over
 // the real Session and WASM core
@@ -357,7 +357,7 @@ function App() {
         tabs={!browsing && d.id === doc?.id ? tabs : undefined}
       />
     ));
-  // As main.tsx's fileActions: shared by the browser and the sidebar's tree.
+  // As main.tsx's fileActions.
   const actions: FileActionsProps = {
     client,
     home,
@@ -419,20 +419,9 @@ function App() {
             onDialog={() => {}}
             onResizeStart={() => {}}
             onToggleFold={() => {}}
-            files={{
-              browsing,
-              docs: documents.docs.map((d) => ({
-                path: d.path,
-                name: baseName(d.path),
-                dirty: d.dirty,
-                current: !browsing && d.path === shown,
-              })),
-              onBrowse: (path) => {
-                if (path) setDir(path);
-                setBrowsing(true);
-                setTermPane(0);
-              },
-              tree: actions,
+            onFiles={() => {
+              setBrowsing(true);
+              setTermPane(0);
             }}
           />
         </div>

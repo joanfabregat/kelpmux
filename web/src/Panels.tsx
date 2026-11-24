@@ -491,24 +491,20 @@ export function HelpPanel() {
         grid and focus are separate from the TUI's.
       </p>
       <p className="setting-hint">
-        The sidebar has two sections: click <b>Terminals</b> to show the grid
-        and <b>Files</b> to browse files. The chevron beside each heading
-        collapses or expands its section; a collapsed heading keeps a count and
-        a dot when something in it needs attention or is unsaved.{" "}
-        <b>New terminal</b>, under the terminals, opens a new one (Ctrl-B
-        Enter).
+        The terminals come first in the sidebar. <b>New terminal</b>, right
+        under them, opens a new one (Ctrl-B Enter). At the bottom, above the
+        system vitals, <b>Grid</b> shows the live grid and <b>Files</b> the file
+        browser.
       </p>
       <h3>Files</h3>
       <p className="setting-hint">
-        The Files section lists your home folder like the terminals: click a
-        folder to expand it, a file to open it; open files are marked there.
-        Click the <b>Files</b> heading for the full file browser; a terminal's
-        folder button opens the folder it is in. New file and New folder sit
-        above the browser's list; each entry's menu (right-click or ⋯), in the
-        browser or the sidebar, opens it, opens it beside the terminal, inserts
-        or copies its path, downloads it, renames it, moves it to the trash or
-        deletes it permanently. Drag an entry onto a folder to move it, or onto
-        a terminal's row or view to type its quoted path; drop files from your
+        Click <b>Files</b> at the bottom of the sidebar for the file browser; a
+        terminal's folder button opens the folder it is in. New file and New
+        folder sit above the browser's list; each entry's menu (right-click or
+        ⋯) opens it, opens it beside the terminal, inserts or copies its path,
+        downloads it, renames it, moves it to the trash or deletes it
+        permanently. Drag an entry onto a folder to move it, or onto a
+        terminal's row or view to type its quoted path; drop files from your
         computer onto a folder to upload them there. Browsing stays inside your
         home folder (or the folder the server was started with): links that
         point outside it are shown dimmed and do not open.
@@ -521,7 +517,7 @@ export function HelpPanel() {
       </p>
       <h3>Editor</h3>
       <p className="setting-hint">
-        Files open in the main area as tabs under the Files view's bar: the
+        Files open in the main area as tabs along the Files view's top: the
         first tab is the file browser, then one per open file, with a dot while
         it has unsaved changes, which are kept while you look elsewhere. Click a
         tab to show it; its × or a middle-click closes it (asking first when it

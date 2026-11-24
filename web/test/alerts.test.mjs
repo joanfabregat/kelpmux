@@ -56,7 +56,6 @@ test("parked terminals and preferences are this browser's", () => {
   assert.deepEqual(loadPreferences(), {
     sidebarWidth: SIDEBAR_MAX,
     sidebarFolded: true,
-    sidebarSections: { terminals: true, files: false },
     sidePanelWidth: defaultPreferences.sidePanelWidth,
     sound: true,
     notificationEvents: {

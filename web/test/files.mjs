@@ -1,25 +1,24 @@
 // The file browser and editor (test/files.fixture.tsx) in Chromium, against
 // a real `kelpmux server` and `kelpmux web-bridge` in a temporary HOME,
 // with a pipe in place of SSH as in test/bridge.mjs. It lists the home
-// folder (hidden entries only on request), navigates, starts at the file
+// folder (hidden entries only on request), with the sidebar's plain Files
+// entry selected and no tree, and the Files view's tab strip as its
+// topmost bar with the breadcrumbs under it; navigates, starts at the file
 // root (the home folder) with no crumb above it, shows symbolic links
-// pointing outside the root without opening them (in the browser and the
-// tree, menus without Open or Download, the link deletable), creates a folder and
+// pointing outside the root without opening them (menus without Open or
+// Download, the link deletable), creates a folder and
 // a file, edits and saves the file (checked on disk), meets a conflict when
 // the file changed on disk and overwrites it, renames an entry, drags it
 // onto a terminal's row (its shell-quoted path appears on that terminal's
 // screen), moves it into a folder by dragging, moves a file to the trash
 // (~/.local/share/Trash/files) and deletes a folder permanently, and
-// uploads a desktop file dropped on a folder into that folder. The
-// sidebar's tree of the home folder follows the hidden setting, expands a
-// folder, opens a file in the editor, types the path of a row dragged onto
-// a terminal row, moves a row dropped on a folder row and uploads a desktop
-// file dropped on one; the browser and the tree list each other's changes.
+// uploads a desktop file dropped on a folder into that folder.
 // The Files view's tabs: the browser's first (never closable), then one
 // per open file in opening order, same-name files told apart by their
 // folder, switching, an unsaved dot, closing (asking first for unsaved
-// changes, middle-click too) with the neighbour shown next, and no Open
-// group in the sidebar; the same strip on a phone.
+// changes, middle-click too) with the neighbour shown next, a file's
+// header directly under the strip, and no Open group in the sidebar; the
+// same strip on a phone, above the editor's bar.
 // It downloads
 // a file from its menu (the browser's downloads), a folder as a .tar.gz
 // (through a stand-in save picker, decoded) and a file from the editor,
@@ -209,13 +208,31 @@ try {
   assert.deepEqual(names, ["docs", "notes.txt"]);
   await page.getByRole("button", { name: "Show hidden files" }).click();
   await row(page, ".profile-test").waitFor();
-  // The sidebar's tree follows the same setting.
-  await page.locator('.file-tree .file-row[data-path$="/.profile-test"]').waitFor();
   await page.getByRole("button", { name: "Show hidden files" }).click();
   await row(page, ".profile-test").waitFor({ state: "detached" });
-  await page
-    .locator('.file-tree .file-row[data-path$="/.profile-test"]')
-    .waitFor({ state: "detached" });
+  // The sidebar has a plain Files entry at the bottom, selected in the
+  // Files view, and no tree.
+  assert.equal(
+    await page.locator('.rail-views [data-view="files"]').getAttribute("aria-current"),
+    "page",
+  );
+  assert.equal(await page.locator(".file-tree, .file-row, [data-section]").count(), 0);
+  // The tab strip is the view's topmost bar, as tall as a terminal's
+  // header, with the breadcrumbs directly under it.
+  {
+    const view = await page.locator(".files-browser").boundingBox();
+    const strip = await page.locator(".files-browser > .file-tabs").boundingBox();
+    const head = await page.locator(".files-browser > .files-head").boundingBox();
+    assert.ok(Math.abs(strip.y - view.y) <= 1, "tabs at the top");
+    assert.equal(Math.round(strip.height), 34, "a terminal header's height");
+    assert.ok(Math.abs(head.y - (strip.y + strip.height)) <= 1, "breadcrumbs under the tabs");
+    assert.deepEqual(
+      await page
+        .locator(".files-browser > *")
+        .evaluateAll((els) => els.slice(0, 2).map((e) => e.className)),
+      ["file-tabs", "files-head"],
+    );
+  }
   console.log("PASS: lists the home folder, folders first, hidden on request");
 
   // Navigate into a folder and back through the breadcrumbs.
@@ -244,8 +261,7 @@ try {
   );
   // Symbolic links pointing outside it are shown, marked, and open
   // nothing; one pointing inside opens what it names. The link itself can
-  // still be deleted. (The folder is made in the browser, so the sidebar's
-  // tree lists it too.)
+  // still be deleted.
   await page.getByRole("button", { name: "New folder" }).click();
   await page.getByLabel("New folder name").fill("gate");
   await page.getByLabel("New folder name").press("Enter");
@@ -296,18 +312,6 @@ try {
   }
   assert.equal(await row(page, "docs-link").getAttribute("data-outside"), null);
   await row(page, "etc-link").waitFor();
-  // The sidebar's tree marks them too.
-  const gateTree = (name) =>
-    page.locator(`.file-tree .file-row[data-path="${join(home, "gate", name)}"]`);
-  await page
-    .locator(`.file-tree .file-row[data-path="${join(home, "gate")}"] .file-item`)
-    .click();
-  await gateTree("etc-link").waitFor();
-  assert.equal(await gateTree("etc-link").getAttribute("data-outside"), "true");
-  assert.equal(await gateTree("docs-link").getAttribute("data-outside"), null);
-  await page
-    .locator(`.file-tree .file-row[data-path="${join(home, "gate")}"] .file-item`)
-    .click();
   // Deleting the link removes the link, not what it points to.
   await action(page, "up-link", "Delete permanently…");
   await page
@@ -324,7 +328,7 @@ try {
     await page.locator(".files-crumb").allInnerTexts(),
     ["Home", "gate", "docs-link"],
   );
-  // The gate folder goes, through the browser so both views list again.
+  // The gate folder goes.
   await page.locator(".files-crumb", { hasText: "Home" }).click();
   await action(page, "gate", "Delete permanently…");
   await page
@@ -490,80 +494,6 @@ try {
   const { readdirSync } = await import("node:fs");
   assert.deepEqual(readdirSync(join(home, "docs")).sort(), ["readme.md", "upload.txt"]);
   console.log("PASS: a desktop file dropped on a folder uploads into it");
-
-  // The sidebar's tree of the home folder: a folder expands in place (the
-  // upload above is listed), a file opens in the editor and is selected,
-  // a row dragged onto a terminal types its path, onto a folder row moves
-  // it, and a desktop file dropped on a folder row uploads into it.
-  const treeRow = (path) =>
-    page.locator(`.file-tree .file-row[data-path="${join(home, path)}"]`);
-  await treeRow("docs").waitFor();
-  await treeRow("docs").locator(".file-item").click();
-  await treeRow("docs/upload.txt").waitFor();
-  await treeRow("docs/upload.txt").locator(".file-item").click();
-  await page
-    .locator('.files-editor:not([hidden])[data-path$="/docs/upload.txt"] .cm-content')
-    .waitFor();
-  assert.equal(
-    await treeRow("docs/upload.txt").locator(".file-item").getAttribute("aria-current"),
-    "page",
-  );
-  assert.equal(await treeRow("docs/upload.txt").getAttribute("data-open"), "open");
-  await shot(page, "desktop-tree");
-  console.log("PASS: the sidebar tree expands a folder and opens a file in the editor");
-  await treeRow("docs/upload.txt").dragTo(
-    page.locator(`.term-row[data-pane="${pane}"]`),
-  );
-  await page.waitForFunction(
-    ({ pane, path }) => window.screenText(pane).replace(/\n/g, "").includes(path),
-    { pane, path: join(home, "docs/upload.txt") },
-    { timeout: 10000 },
-  );
-  console.log("PASS: a tree row dragged onto a terminal row types its path");
-  await page.locator('[data-view="files"]').click();
-  await page.getByRole("button", { name: "New folder" }).click();
-  await page.getByLabel("New folder name").fill("archive");
-  await page.getByLabel("New folder name").press("Enter");
-  // The browser's change lists the home folder again in the tree too.
-  await treeRow("archive").waitFor();
-  await treeRow("docs/upload.txt").dragTo(treeRow("archive"));
-  await treeRow("docs/upload.txt").waitFor({ state: "detached" });
-  await onDisk(() => existsSync(join(home, "archive/upload.txt")), "moved");
-  // The open editor follows the move.
-  await page
-    .locator('.file-tab[data-tab$="/archive/upload.txt"]')
-    .waitFor();
-  console.log("PASS: a tree row dragged onto a tree folder moves it there");
-  await page.evaluate((path) => {
-    const target = document.querySelector(
-      `.file-tree .file-row[data-path="${path}"]`,
-    );
-    const data = new DataTransfer();
-    data.items.add(new File(["dropped on the tree\n"], "tree.txt", { type: "text/plain" }));
-    for (const type of ["dragenter", "dragover", "drop"])
-      target.dispatchEvent(
-        new DragEvent(type, { bubbles: true, cancelable: true, dataTransfer: data }),
-      );
-  }, join(home, "archive"));
-  await onDisk(
-    () => read(join(home, "archive/tree.txt")) === "dropped on the tree\n",
-    "uploaded from the tree",
-  );
-  await page.waitForFunction(() =>
-    window.toasts.some((t) => /Uploaded “tree.txt” to archive/.test(t.message)),
-  );
-  // The browser lists the folder it shows again.
-  await row(page, "archive").locator(".files-open").click();
-  await row(page, "tree.txt").waitFor();
-  await page.locator(".files-crumb", { hasText: "Home" }).click();
-  await row(page, "docs").waitFor();
-  const uploaded = page.locator('.file-tab[data-tab$="/archive/upload.txt"]');
-  await uploaded.hover();
-  await uploaded.getByRole("button", { name: "Close tab upload.txt" }).click();
-  await uploaded.waitFor({ state: "detached" });
-  // Back where the downloads below expect it.
-  renameSync(join(home, "archive/upload.txt"), join(home, "docs/upload.txt"));
-  console.log("PASS: a desktop file dropped on a tree folder uploads into it");
 
   // Downloads. The save picker is a stand-in that keeps the bytes in the
   // page (`window.saved`), with `window.hold` to stall its writes; without
@@ -800,6 +730,23 @@ try {
     0,
     "no Open group in the sidebar",
   );
+  // The strip is the topmost bar, as tall as a terminal's header; the
+  // file's header (name, folder, Save…) directly under it.
+  {
+    const editor = page.locator(`.files-editor:not([hidden])[data-path="${mainRs}"]`);
+    assert.deepEqual(
+      await editor
+        .locator("> *")
+        .evaluateAll((els) => els.slice(0, 2).map((e) => e.className)),
+      ["file-tabs", "files-head"],
+    );
+    const view = await editor.boundingBox();
+    const bar = await editor.locator("> .file-tabs").boundingBox();
+    const head = await editor.locator("> .files-head").boundingBox();
+    assert.ok(Math.abs(bar.y - view.y) <= 1, "tabs at the top");
+    assert.equal(Math.round(bar.height), 34);
+    assert.ok(Math.abs(head.y - (bar.y + bar.height)) <= 1, "file header under the tabs");
+  }
   // Switching: a tab shows its file; editing it marks the tab.
   await fileTab(docsReadme).getByRole("tab").click();
   await shownEditor(docsReadme).waitFor();
@@ -1050,8 +997,14 @@ try {
   await phone.page.locator(".files-editor .cm-content").waitFor();
   await phone.page.waitForTimeout(200);
   await shot(phone.page, "phone-editor");
-  // The same tab strip on a phone, under the editor's bar.
+  // The same tab strip on a phone, above the editor's bar.
   const phoneStrip = phone.page.locator(".files-view:not([hidden]) > .file-tabs");
+  assert.deepEqual(
+    await phone.page
+      .locator(".files-view:not([hidden]) > *")
+      .evaluateAll((els) => els.slice(0, 2).map((e) => e.className)),
+    ["file-tabs", "files-head"],
+  );
   await phoneStrip.getByRole("tab", { name: "Files" }).click();
   await phone.page.locator(".files-crumb", { hasText: "Home" }).click();
   await row(phone.page, "todo.md").getByRole("button", { name: /^todo.md,/ }).click();

@@ -251,7 +251,10 @@
  * terminal bar, like the attention toasts. */
 .toast-stack {
   position: fixed;
-  top: var(--attention-end, calc(env(safe-area-inset-top) + 42px));
+  top: var(
+    --attention-end,
+    calc(env(safe-area-inset-top) + 42px + var(--files-bar, 0px))
+  );
   right: calc(env(safe-area-inset-right) + var(--s4));
   z-index: 40;
   display: flex;
@@ -296,13 +299,29 @@
   overflow-wrap: anywhere;
 }
 
+/* The Files view has a second bar (breadcrumbs or the file header) under
+ * its tabs: toasts start below it so its buttons stay reachable. Editors in
+ * the side panel do not count. */
+:root:has(
+  .workspace-main > .files-browser,
+  .workspace-main > .files-editor:not([hidden])
+) {
+  --files-bar: 40px;
+}
+:root:has(.kelpmux-shell.phone):has(
+    .workspace-main > .files-browser,
+    .workspace-main > .files-editor:not([hidden])
+  ) {
+  --files-bar: 48px;
+}
+
 /* ───── Attention toasts (AttentionToasts.tsx) ─────
  * Top right, below the terminal header so its buttons stay reachable, and
  * under dialogs. Phones: full width minus the gutters, below the safe area
  * and the terminal bar, far from the key bar at the bottom. */
 .attention-toasts {
   position: fixed;
-  top: calc(env(safe-area-inset-top) + 42px);
+  top: calc(env(safe-area-inset-top) + 42px + var(--files-bar, 0px));
   right: calc(env(safe-area-inset-right) + var(--s4));
   z-index: 9;
   display: grid;
@@ -313,10 +332,10 @@
   pointer-events: none;
 }
 .touch .attention-toasts {
-  top: calc(env(safe-area-inset-top) + 48px);
+  top: calc(env(safe-area-inset-top) + 48px + var(--files-bar, 0px));
 }
 .phone .attention-toasts {
-  top: calc(env(safe-area-inset-top) + 52px);
+  top: calc(env(safe-area-inset-top) + 52px + var(--files-bar, 0px));
   right: calc(env(safe-area-inset-right) + var(--s4));
   left: calc(env(safe-area-inset-left) + var(--s4));
   width: auto;

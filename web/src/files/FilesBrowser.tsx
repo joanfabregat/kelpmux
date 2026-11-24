@@ -8,7 +8,7 @@
 // Entries drag onto a terminal row (typing their quoted path) or onto a
 // folder (moving them); files dragged from the desktop onto a folder, or
 // onto the list, upload into it. The menu, moves, uploads and the hidden
-// setting are shared with the sidebar's file tree (actions.tsx). Browsing
+// setting live in actions.tsx. Browsing
 // starts at the server's file root and never goes above it; a symbolic
 // link pointing outside it is shown but does not open (root.ts).
 import React, { useEffect, useRef, useState } from "react";
@@ -80,7 +80,7 @@ export type FilesBrowserProps = FileActionsProps & {
   onDir: (dir: string, normalised?: boolean) => void;
   /** The phone's back button to the terminal list. */
   onBack?: () => void;
-  /** The Files view's tab strip, under the header. */
+  /** The Files view's tab strip, above the header. */
   tabs?: React.ReactNode;
 };
 
@@ -147,7 +147,7 @@ export function FilesBrowser(props: FilesBrowserProps) {
       void latest.current.load(dir);
     lastClient.current = client;
   }, [dir, start, client]);
-  // A change here or in the sidebar's tree lists this folder again.
+  // A change made through the entry actions lists this folder again.
   useFilesChanged((paths) => {
     if (touches(paths, listing?.path || dir)) void load();
   });
@@ -222,6 +222,7 @@ export function FilesBrowser(props: FilesBrowserProps) {
       aria-label="Files"
       onClick={(event) => event.stopPropagation()}
     >
+      {props.tabs}
       <header className="files-head">
         {props.onBack && (
           <button
@@ -339,7 +340,6 @@ export function FilesBrowser(props: FilesBrowserProps) {
           />
         </div>
       </header>
-      {props.tabs}
       {uploading && (
         <div className="files-progress" role="status">
           <Icon name="loader-circle" size="sm" className="spin" />

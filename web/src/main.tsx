@@ -2539,7 +2539,7 @@ function App() {
     setDialog("");
     setQuery("");
   };
-  /** What the file browser and the sidebar's file tree do with entries. */
+  /** What the file browser does with entries. */
   const fileActions: FileActionsProps | null = filesClient && {
     client: filesClient,
     home,
@@ -2583,10 +2583,6 @@ function App() {
       diskMounts={knownMounts}
       onDisksHover={() => void loadDiskMounts()}
       onMode={chooseMode}
-      sections={preferences.sidebarSections}
-      onSections={(sidebarSections) =>
-        setPreferences((current) => ({ ...current, sidebarSections }))
-      }
       terminals={ordered}
       parked={parkedPanes}
       notifications={notifications}
@@ -2599,21 +2595,7 @@ function App() {
       rowClass={(p) =>
         `${drag === p.id && drag !== drop ? "landing" : ""} ${pathDropPane === p.id ? "drop-target" : ""}`
       }
-      files={
-        filesClient && !popupPane
-          ? {
-              browsing: !shownDocument,
-              docs: documents.docs.map((doc) => ({
-                path: doc.path,
-                name: baseName(doc.path),
-                dirty: doc.dirty,
-                current: doc.path === shownDocument?.path,
-              })),
-              onBrowse: (dir) => openFiles(dir),
-              tree: fileActions || undefined,
-            }
-          : undefined
-      }
+      onFiles={filesClient && !popupPane ? () => openFiles() : undefined}
       onOpen={(p) => {
         if (performance.now() < suppressClick.current) return;
         openPane(p);
