@@ -7,7 +7,12 @@
 // onto a terminal's row (its shell-quoted path appears on that terminal's
 // screen), moves it into a folder by dragging, moves a file to the trash
 // (~/.local/share/Trash/files) and deletes a folder permanently, and
-// uploads a desktop file dropped on a folder into that folder. It downloads
+// uploads a desktop file dropped on a folder into that folder. The
+// sidebar's tree of the home folder follows the hidden setting, expands a
+// folder, opens a file in the editor, types the path of a row dragged onto
+// a terminal row, moves a row dropped on a folder row and uploads a desktop
+// file dropped on one; the browser and the tree list each other's changes.
+// It downloads
 // a file from its menu (the browser's downloads), a folder as a .tar.gz
 // (through a stand-in save picker, decoded) and a file from the editor,
 // and cancels a stalled download; a bridge without downloads shows no
@@ -28,6 +33,7 @@ import {
   mkdirSync,
   mkdtempSync,
   readFileSync,
+  renameSync,
   rmSync,
   writeFileSync,
 } from "node:fs";
@@ -171,7 +177,9 @@ const read = (path) =>
   existsSync(path) ? readFileSync(path, "utf8") : undefined;
 async function action(page, name, item) {
   await row(page, name).hover();
-  await page.getByRole("button", { name: `Actions for ${name}` }).click();
+  await row(page, name)
+    .getByRole("button", { name: `Actions for ${name}` })
+    .click();
   await page.getByRole("menuitem", { name: item }).click();
 }
 
@@ -191,8 +199,13 @@ try {
   assert.deepEqual(names, ["docs", "notes.txt"]);
   await page.getByRole("button", { name: "Show hidden files" }).click();
   await row(page, ".profile-test").waitFor();
+  // The sidebar's tree follows the same setting.
+  await page.locator('.file-tree .file-row[data-path$="/.profile-test"]').waitFor();
   await page.getByRole("button", { name: "Show hidden files" }).click();
   await row(page, ".profile-test").waitFor({ state: "detached" });
+  await page
+    .locator('.file-tree .file-row[data-path$="/.profile-test"]')
+    .waitFor({ state: "detached" });
   console.log("PASS: lists the home folder, folders first, hidden on request");
 
   // Navigate into a folder and back through the breadcrumbs.
@@ -359,6 +372,80 @@ try {
   assert.deepEqual(readdirSync(join(home, "docs")).sort(), ["readme.md", "upload.txt"]);
   console.log("PASS: a desktop file dropped on a folder uploads into it");
 
+  // The sidebar's tree of the home folder: a folder expands in place (the
+  // upload above is listed), a file opens in the editor and is selected,
+  // a row dragged onto a terminal types its path, onto a folder row moves
+  // it, and a desktop file dropped on a folder row uploads into it.
+  const treeRow = (path) =>
+    page.locator(`.file-tree .file-row[data-path="${join(home, path)}"]`);
+  await treeRow("docs").waitFor();
+  await treeRow("docs").locator(".file-item").click();
+  await treeRow("docs/upload.txt").waitFor();
+  await treeRow("docs/upload.txt").locator(".file-item").click();
+  await page
+    .locator('.files-editor:not([hidden])[data-path$="/docs/upload.txt"] .cm-content')
+    .waitFor();
+  assert.equal(
+    await treeRow("docs/upload.txt").locator(".file-item").getAttribute("aria-current"),
+    "page",
+  );
+  assert.equal(await treeRow("docs/upload.txt").getAttribute("data-open"), "open");
+  await shot(page, "desktop-tree");
+  console.log("PASS: the sidebar tree expands a folder and opens a file in the editor");
+  await treeRow("docs/upload.txt").dragTo(
+    page.locator(`.term-row[data-pane="${pane}"]`),
+  );
+  await page.waitForFunction(
+    ({ pane, path }) => window.screenText(pane).replace(/\n/g, "").includes(path),
+    { pane, path: join(home, "docs/upload.txt") },
+    { timeout: 10000 },
+  );
+  console.log("PASS: a tree row dragged onto a terminal row types its path");
+  await page.locator('[data-view="files"]').click();
+  await page.getByRole("button", { name: "New folder" }).click();
+  await page.getByLabel("New folder name").fill("archive");
+  await page.getByLabel("New folder name").press("Enter");
+  // The browser's change lists the home folder again in the tree too.
+  await treeRow("archive").waitFor();
+  await treeRow("docs/upload.txt").dragTo(treeRow("archive"));
+  await treeRow("docs/upload.txt").waitFor({ state: "detached" });
+  await onDisk(() => existsSync(join(home, "archive/upload.txt")), "moved");
+  // The open editor follows the move.
+  await page
+    .locator('.doc-row[data-doc$="/archive/upload.txt"]')
+    .waitFor();
+  console.log("PASS: a tree row dragged onto a tree folder moves it there");
+  await page.evaluate((path) => {
+    const target = document.querySelector(
+      `.file-tree .file-row[data-path="${path}"]`,
+    );
+    const data = new DataTransfer();
+    data.items.add(new File(["dropped on the tree\n"], "tree.txt", { type: "text/plain" }));
+    for (const type of ["dragenter", "dragover", "drop"])
+      target.dispatchEvent(
+        new DragEvent(type, { bubbles: true, cancelable: true, dataTransfer: data }),
+      );
+  }, join(home, "archive"));
+  await onDisk(
+    () => read(join(home, "archive/tree.txt")) === "dropped on the tree\n",
+    "uploaded from the tree",
+  );
+  await page.waitForFunction(() =>
+    window.toasts.some((t) => /Uploaded “tree.txt” to archive/.test(t.message)),
+  );
+  // The browser lists the folder it shows again.
+  await row(page, "archive").locator(".files-open").click();
+  await row(page, "tree.txt").waitFor();
+  await page.locator(".files-crumb", { hasText: "Home" }).click();
+  await row(page, "docs").waitFor();
+  const uploaded = page.locator('.doc-row[data-doc$="/archive/upload.txt"]');
+  await uploaded.hover();
+  await uploaded.getByRole("button", { name: /^Close file/ }).click();
+  await uploaded.waitFor({ state: "detached" });
+  // Back where the downloads below expect it.
+  renameSync(join(home, "archive/upload.txt"), join(home, "docs/upload.txt"));
+  console.log("PASS: a desktop file dropped on a tree folder uploads into it");
+
   // Downloads. The save picker is a stand-in that keeps the bytes in the
   // page (`window.saved`), with `window.hold` to stall its writes; without
   // it the browser's downloads get a Blob.
@@ -479,6 +566,10 @@ try {
   await action(page, "big.bin", "Download");
   const progress = page.locator('.download-toast[data-download="big.bin"]');
   await progress.waitFor();
+  // In the top right toast stack.
+  const where = await progress.boundingBox();
+  assert.ok(1440 - (where.x + where.width) <= 24, "download toast at the right");
+  assert.ok(where.y < 120, "download toast at the top");
   await shot(page, "desktop-download-progress");
   await progress.getByRole("button", { name: "Cancel the download of big.bin" }).click();
   await progress.waitFor({ state: "detached" });
@@ -678,7 +769,9 @@ try {
   );
   await row(old.page, "docs").waitFor();
   await row(old.page, "report.txt").hover();
-  await old.page.getByRole("button", { name: "Actions for report.txt" }).click();
+  await row(old.page, "report.txt")
+    .getByRole("button", { name: "Actions for report.txt" })
+    .click();
   await old.page.getByRole("menuitem", { name: "Copy path" }).waitFor();
   assert.equal(await old.page.getByRole("menuitem", { name: /Download/ }).count(), 0);
   await old.page.keyboard.press("Escape");

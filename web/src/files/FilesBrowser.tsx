@@ -7,7 +7,8 @@
 // archive), rename it, move it to the trash or delete it permanently.
 // Entries drag onto a terminal row (typing their quoted path) or onto a
 // folder (moving them); files dragged from the desktop onto a folder, or
-// onto the list, upload into it.
+// onto the list, upload into it. The menu, moves, uploads and the hidden
+// setting are shared with the sidebar's file tree (actions.tsx).
 import React, { useEffect, useRef, useState } from "react";
 import {
   FileError,
@@ -20,40 +21,28 @@ import {
   baseName,
   breadcrumbs,
   joinPath,
-  moveProblem,
   nameProblem,
   parentPath,
   sortEntries,
 } from "@kelpcore/web/files/paths.ts";
-import {
-  cancelled,
-  formatBytes,
-  upload,
-  uploadProblem,
-  type UploadLimits,
-  type UploadTransport,
-} from "@kelpcore/web/uploads.ts";
+import { formatBytes } from "@kelpcore/web/uploads.ts";
 import { Icon } from "../status";
-import type { IconName } from "../icons";
-import { dragHasFiles, droppedFiles } from "../Upload";
-import { dragHasPaths, droppedPaths, startPathDrag } from "./insert";
-import { startDownload } from "./downloads";
-import type { ConfirmAction } from "../Confirm";
+import { startPathDrag } from "./insert";
+import {
+  FileMenu,
+  NameInput,
+  filesChanged,
+  kindIcon,
+  kindLabel,
+  renameError,
+  touches,
+  useFileActions,
+  useFilesChanged,
+  useShowHidden,
+  type FileActionsProps,
+} from "./actions";
 
-const hiddenKey = "kelpmux-files-hidden";
-/** Whether hidden entries show (this browser only). */
-export function loadHidden(): boolean {
-  try {
-    return localStorage.getItem(hiddenKey) === "true";
-  } catch {
-    return false;
-  }
-}
-function saveHidden(hidden: boolean) {
-  try {
-    localStorage.setItem(hiddenKey, String(hidden));
-  } catch {}
-}
+export { loadHidden } from "./actions";
 
 const dateFormat = new Intl.DateTimeFormat(undefined, {
   dateStyle: "medium",
@@ -68,55 +57,18 @@ export function formatModified(seconds: number): string {
     ? timeFormat.format(date)
     : dateFormat.format(date);
 }
-const kindIcon = (entry: FileEntry): IconName =>
-  entry.kind === "dir" ? "folder" : entry.kind === "symlink" ? "link" : "file";
-const kindLabel: Record<string, string> = {
-  dir: "Folder",
-  file: "File",
-  symlink: "Symbolic link",
-  other: "Special file",
-};
 
 type Editing =
   | { kind: "new-file" | "new-folder"; name: string; error: string }
   | { kind: "rename"; path: string; name: string; error: string };
 type Menu = { entry: FileEntry; path: string; x: number; y: number };
-type Uploading = {
-  folder: string;
-  names: string;
-  done: number;
-  total: number;
-  abort: AbortController;
-};
 
-export type FilesBrowserProps = {
-  client: FilesClient;
-  /** The server user's home folder, once known. */
-  home?: string;
+export type FilesBrowserProps = FileActionsProps & {
   /** The folder shown. */
   dir: string;
   /** Shows a folder; `normalised` when it is the folder just listed under
    * its real name (`~`, a symbolic link), which is not a move. */
   onDir: (dir: string, normalised?: boolean) => void;
-  onOpenFile: (path: string) => void;
-  /** Opens a file in the side panel beside the terminal last shown alone
-   * (no item without it: no terminal, or a popup window). */
-  onOpenBeside?: (path: string) => void;
-  /** The terminal "Insert path" types into, if any. */
-  insertTarget?: { number: number; title: string };
-  onInsertPath: (path: string) => void;
-  onCopyPath: (path: string) => void;
-  confirm: (action: ConfirmAction) => void;
-  toast: (message: string, options?: { tone?: "error" | "success" }) => void;
-  /** An entry moved or was renamed (open editors follow it). */
-  onRenamed: (from: string, to: string) => void;
-  /** Entries were trashed or deleted (their unchanged editors close). */
-  onRemoved: (paths: string[]) => void;
-  upload: {
-    unavailable: string | null;
-    limits: UploadLimits | null;
-    transport: UploadTransport;
-  };
   /** The phone's back button to the terminal list. */
   onBack?: () => void;
 };
@@ -126,14 +78,13 @@ export function FilesBrowser(props: FilesBrowserProps) {
   const [listing, setListing] = useState<FileListing | null>(null);
   const [error, setError] = useState<FileError | null>(null);
   const [loading, setLoading] = useState(false);
-  const [hidden, setHidden] = useState(loadHidden);
+  const [hidden, setHidden] = useShowHidden();
   const [editing, setEditing] = useState<Editing | null>(null);
   const [menu, setMenu] = useState<Menu | null>(null);
-  const [dropOn, setDropOn] = useState("");
-  const [uploading, setUploading] = useState<Uploading | null>(null);
-  const [busy, setBusy] = useState(false);
   const generation = useRef(0);
   const picker = useRef<HTMLInputElement>(null);
+  const actions = useFileActions(props, props.onDir);
+  const { busy, uploading, dropOn, folderDrop } = actions;
 
   async function load(path = dir) {
     const mine = ++generation.current;
@@ -169,41 +120,14 @@ export function FilesBrowser(props: FilesBrowserProps) {
       void latest.current.load(dir);
     lastClient.current = client;
   }, [dir, client]);
-
-  const fail = (failure: unknown) =>
-    props.toast(
-      failure instanceof Error ? failure.message : String(failure),
-      { tone: "error" },
-    );
-  /** Runs a change, then lists the folder again. */
-  async function change(run: () => Promise<unknown>) {
-    setBusy(true);
-    try {
-      await run();
-    } catch (failure) {
-      fail(failure);
-    } finally {
-      setBusy(false);
-      await load();
-    }
-  }
+  // A change here or in the sidebar's tree lists this folder again.
+  useFilesChanged((paths) => {
+    if (touches(paths, listing?.path || dir)) void load();
+  });
 
   async function open(entry: FileEntry, path: string) {
     setMenu(null);
-    if (entry.kind === "dir") return props.onDir(path);
-    if (entry.kind === "other")
-      return props.toast(`${entry.name} is not a regular file or folder.`);
-    if (entry.kind === "symlink") {
-      // A link opens as what it points to.
-      try {
-        const target = await client.list(path);
-        return props.onDir(target.path);
-      } catch (failure) {
-        if (!(failure instanceof FileError && failure.code === "not_a_directory"))
-          return fail(failure);
-      }
-    }
-    props.onOpenFile(path);
+    await actions.open(entry, path);
   }
 
   async function commit() {
@@ -215,183 +139,23 @@ export function FilesBrowser(props: FilesBrowserProps) {
     const target = joinPath(dir, name);
     if (edit.kind === "rename" && target === edit.path)
       return setEditing(null);
-    setBusy(true);
     try {
-      if (edit.kind === "rename") {
-        await client.rename(edit.path, target);
-        props.onRenamed(edit.path, target);
-      } else if (edit.kind === "new-folder") await client.mkdir(target);
-      else await client.write(target, "", { create: true });
+      if (edit.kind === "rename") await actions.rename(edit.path, target);
+      else {
+        actions.setBusy(true);
+        try {
+          if (edit.kind === "new-folder") await client.mkdir(target);
+          else await client.write(target, "", { create: true });
+        } finally {
+          actions.setBusy(false);
+        }
+        filesChanged([target]);
+      }
       setEditing(null);
-      await load();
       if (edit.kind === "new-file") props.onOpenFile(target);
     } catch (failure) {
-      const message =
-        failure instanceof FileError && failure.code === "exists"
-          ? `“${name}” already exists in this folder.`
-          : failure instanceof Error
-            ? failure.message
-            : String(failure);
-      setEditing({ ...edit, name, error: message });
-    } finally {
-      setBusy(false);
+      setEditing({ ...edit, name, error: renameError(failure, name) });
     }
-  }
-
-  function removalOutcome(
-    verb: string,
-    outcome: Awaited<ReturnType<FilesClient["trash"]>>,
-  ) {
-    props.onRemoved(outcome.removed.map((r) => r.path));
-    if (outcome.failed.length) {
-      const [first] = outcome.failed;
-      const advice =
-        verb === "Moved to the trash" && first.error.code === "cross_device"
-          ? " It is on another file system than the trash; delete it permanently instead."
-          : "";
-      props.toast(
-        `${baseName(first.path)}: ${first.error.message}.${advice}`,
-        { tone: "error" },
-      );
-    } else if (outcome.removed.length)
-      props.toast(
-        `${verb}: ${outcome.removed.map((r) => baseName(r.path)).join(", ")}`,
-      );
-  }
-  function trash(path: string) {
-    setMenu(null);
-    void change(async () =>
-      removalOutcome("Moved to the trash", await client.trash([path])),
-    );
-  }
-  function remove(entry: FileEntry, path: string) {
-    setMenu(null);
-    props.confirm({
-      title: "Delete permanently",
-      text:
-        entry.kind === "dir"
-          ? `Delete the folder “${entry.name}” and everything in it? This cannot be undone.`
-          : `Delete “${entry.name}”? This cannot be undone.`,
-      buttons: [
-        {
-          label: "Delete permanently",
-          color: "danger",
-          action: () =>
-            change(async () =>
-              removalOutcome("Deleted", await client.delete([path])),
-            ),
-        },
-      ],
-    });
-  }
-  /** Moves entries into `folder` (a drag inside the browser). */
-  function move(paths: string[], folder: string) {
-    const movable = paths.filter((path) => !moveProblem(path, folder));
-    if (!movable.length) return;
-    void change(async () => {
-      for (const path of movable) {
-        const to = joinPath(folder, baseName(path));
-        try {
-          await client.rename(path, to);
-          props.onRenamed(path, to);
-        } catch (failure) {
-          throw failure instanceof FileError && failure.code === "exists"
-            ? Error(`“${baseName(path)}” already exists in ${baseName(folder)}.`)
-            : failure;
-        }
-      }
-      props.toast(
-        movable.length === 1
-          ? `Moved “${baseName(movable[0])}” to ${baseName(folder)}`
-          : `Moved ${movable.length} entries to ${baseName(folder)}`,
-      );
-    });
-  }
-  /** Uploads desktop files into `folder`: KelpServer puts each upload in a
-   * private batch folder inside the destination; the files then move out
-   * of it into `folder` itself and the empty batch folder is removed. */
-  async function uploadInto(folder: string, files: File[], folders: string[]) {
-    const { unavailable, limits, transport } = props.upload;
-    if (folders.length && !files.length)
-      return props.toast("Folders cannot be uploaded; drop files instead.", {
-        tone: "error",
-      });
-    const problem =
-      unavailable ||
-      (limits ? uploadProblem(files, limits) : "No upload limits announced.");
-    if (problem || !limits) return props.toast(problem || "", { tone: "error" });
-    if (uploading) return props.toast("An upload is already running.");
-    const abort = new AbortController();
-    const total = files.reduce((sum, file) => sum + file.size, 0);
-    const names =
-      files.length === 1 ? `“${files[0].name}”` : `${files.length} files`;
-    setUploading({ folder, names, done: 0, total, abort });
-    let batch = "";
-    try {
-      const paths = await upload(transport, files, {
-        limits,
-        dest: folder,
-        signal: abort.signal,
-        onStarted: (dir) => (batch = dir),
-        onProgress: (progress) =>
-          setUploading((current) =>
-            current && { ...current, done: progress.done },
-          ),
-      });
-      const kept: string[] = [];
-      for (const path of paths) {
-        try {
-          await client.rename(path, joinPath(folder, baseName(path)));
-        } catch {
-          kept.push(path);
-        }
-      }
-      if (!kept.length && batch) await client.delete([batch]).catch(() => {});
-      if (kept.length)
-        props.toast(
-          `Uploaded ${names}; ${kept.length === 1 ? "one name was" : `${kept.length} names were`} already taken, so ${kept.length === 1 ? "it stays" : "they stay"} in ${batch}.`,
-          { tone: "error" },
-        );
-      else props.toast(`Uploaded ${names} to ${baseName(folder)}`);
-    } catch (failure) {
-      if (!cancelled(failure)) fail(failure);
-    } finally {
-      setUploading(null);
-      if (folder === dir) await load();
-    }
-  }
-
-  /** Drop target props for a folder (a row, a breadcrumb or the list). */
-  function folderDrop(folder: string) {
-    return {
-      "data-upload-folder": folder,
-      onDragOver: (event: React.DragEvent) => {
-        const paths = dragHasPaths(event),
-          files = dragHasFiles(event);
-        if (!paths && !files) return;
-        event.preventDefault();
-        event.stopPropagation();
-        event.dataTransfer.dropEffect = paths ? "move" : "copy";
-        if (dropOn !== folder) setDropOn(folder);
-      },
-      onDragLeave: (event: React.DragEvent) => {
-        if (!event.currentTarget.contains(event.relatedTarget as Node))
-          setDropOn((current) => (current === folder ? "" : current));
-      },
-      onDrop: (event: React.DragEvent) => {
-        setDropOn("");
-        if (dragHasPaths(event)) {
-          event.preventDefault();
-          event.stopPropagation();
-          move(droppedPaths(event.dataTransfer), folder);
-        } else if (dragHasFiles(event)) {
-          event.preventDefault();
-          event.stopPropagation();
-          const { files, folders } = droppedFiles(event.dataTransfer);
-          void uploadInto(folder, files, folders);
-        }
-      },
-    };
   }
 
   const entries = listing ? sortEntries(listing.entries, { hidden }) : [];
@@ -399,82 +163,27 @@ export function FilesBrowser(props: FilesBrowserProps) {
     ? listing.entries.length - sortEntries(listing.entries).length
     : 0;
   const crumbs = breadcrumbs(dir, home);
-  const menuItems = (m: Menu): [string, () => void, boolean?][] => [
-    ["Open", () => void open(m.entry, m.path)],
-    ...(props.onOpenBeside && m.entry.kind !== "dir" && m.entry.kind !== "other"
-      ? [
-          ["Open beside terminal", () => props.onOpenBeside!(m.path)] as [
-            string,
-            () => void,
-          ],
-        ]
-      : []),
-    [
-      props.insertTarget
-        ? `Insert path into terminal ${props.insertTarget.number}`
-        : "Insert path (no terminal)",
-      () => props.onInsertPath(m.path),
-      !props.insertTarget,
-    ],
-    ["Copy path", () => props.onCopyPath(m.path)],
-    // A folder downloads as a `.tar.gz` archive; a link as what it points
-    // to (a file only); special files not at all.
-    ...(client.canDownload && m.entry.kind !== "other"
-      ? [
-          [
-            m.entry.kind === "dir" ? "Download as .tar.gz" : "Download",
-            () =>
-              startDownload(client, m.path, m.entry.kind === "dir", props.toast),
-          ] as [string, () => void],
-        ]
-      : []),
-    [
-      "Rename…",
-      () =>
-        setEditing({ kind: "rename", path: m.path, name: m.entry.name, error: "" }),
-    ],
-    ["Move to trash", () => trash(m.path)],
-    ["Delete permanently…", () => remove(m.entry, m.path)],
-  ];
+  const menuItems = (m: Menu) =>
+    actions.menuItems(m.entry, m.path, () =>
+      setEditing({
+        kind: "rename",
+        path: m.path,
+        name: m.entry.name,
+        error: "",
+      }),
+    );
   const nameInput = (label: string) =>
     editing && (
-      <span className="files-name-edit">
-        <input
-          autoFocus
-          aria-label={label}
-          value={editing.name}
-          spellCheck={false}
-          autoCapitalize="off"
-          autoCorrect="off"
-          disabled={busy}
-          onChange={(event) =>
-            setEditing({ ...editing, name: event.target.value, error: "" })
-          }
-          onFocus={(event) => {
-            // Select the name without its extension, like file managers.
-            const dot = event.target.value.lastIndexOf(".");
-            event.target.setSelectionRange(
-              0,
-              dot > 0 && editing.kind !== "new-folder" ? dot : event.target.value.length,
-            );
-          }}
-          onKeyDown={(event) => {
-            event.stopPropagation();
-            if (event.key === "Enter") {
-              event.preventDefault();
-              void commit();
-            } else if (event.key === "Escape") {
-              event.preventDefault();
-              setEditing(null);
-            }
-          }}
-        />
-        {editing.error && (
-          <span className="files-name-error" role="alert">
-            {editing.error}
-          </span>
-        )}
-      </span>
+      <NameInput
+        label={label}
+        value={editing.name}
+        error={editing.error}
+        busy={busy}
+        folder={editing.kind === "new-folder"}
+        onChange={(name) => setEditing({ ...editing, name, error: "" })}
+        onCommit={() => void commit()}
+        onCancel={() => setEditing(null)}
+      />
     );
 
   return (
@@ -532,10 +241,7 @@ export function FilesBrowser(props: FilesBrowserProps) {
             title={hidden ? "Hide hidden files" : "Show hidden files"}
             aria-label="Show hidden files"
             aria-pressed={hidden}
-            onClick={() => {
-              saveHidden(!hidden);
-              setHidden(!hidden);
-            }}
+            onClick={() => setHidden(!hidden)}
           >
             <Icon name={hidden ? "eye" : "eye-off"} size="sm" />
           </button>
@@ -596,7 +302,7 @@ export function FilesBrowser(props: FilesBrowserProps) {
             data-files-picker
             onChange={(event) => {
               const files = Array.from(event.currentTarget.files || []);
-              if (files.length) void uploadInto(dir, files, []);
+              if (files.length) void actions.uploadInto(dir, files, []);
             }}
           />
         </div>
@@ -771,70 +477,5 @@ export function FilesBrowser(props: FilesBrowserProps) {
         />
       )}
     </section>
-  );
-}
-
-/** An entry's menu, like a terminal's (Panels.tsx PaneMenu). */
-function FileMenu({
-  label,
-  x,
-  y,
-  items,
-  onClose,
-}: {
-  label: string;
-  x: number;
-  y: number;
-  items: [string, () => void, boolean?][];
-  onClose: () => void;
-}) {
-  const ref = useRef<HTMLDivElement>(null);
-  const close = useRef(onClose);
-  close.current = onClose;
-  useEffect(() => {
-    ref.current?.querySelector<HTMLButtonElement>("button")?.focus();
-    const outside = (event: PointerEvent) => {
-      if (!ref.current?.contains(event.target as Node)) close.current();
-    };
-    const escape = (event: KeyboardEvent) => {
-      if (event.key === "Escape") {
-        event.stopPropagation();
-        close.current();
-      }
-    };
-    window.addEventListener("pointerdown", outside, true);
-    window.addEventListener("keydown", escape, true);
-    return () => {
-      window.removeEventListener("pointerdown", outside, true);
-      window.removeEventListener("keydown", escape, true);
-    };
-  }, []);
-  return (
-    <div
-      ref={ref}
-      className="popover menu pane-menu files-menu"
-      role="menu"
-      aria-label={label}
-      style={{
-        left: Math.max(8, Math.min(x, innerWidth - 248)),
-        top: Math.max(8, Math.min(y, innerHeight - 36 * items.length - 16)),
-      }}
-    >
-      {items.map(([text, action, disabled]) => (
-        <button
-          type="button"
-          role="menuitem"
-          key={text}
-          className="menu-item"
-          disabled={disabled}
-          onClick={() => {
-            onClose();
-            action();
-          }}
-        >
-          <span className="grow">{text}</span>
-        </button>
-      ))}
-    </div>
   );
 }

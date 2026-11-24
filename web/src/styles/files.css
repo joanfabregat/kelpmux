@@ -278,22 +278,102 @@ button.files-open:hover .files-name {
   flex: 1;
 }
 
-/* Sidebar: the Files entry and the open files under it. */
-.doc-row {
+/* Sidebar: the open files (under Open, like Parked) and the home folder's
+ * tree (FileTree.tsx), rows like the terminals' without their rules. */
+.doc-row,
+.file-row {
   position: relative;
 }
 .doc-row .term-item {
   min-height: 30px;
-  padding-left: var(--s4);
 }
-.doc-row .term-title {
+.doc-row .term-title,
+.file-row .term-title {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 .doc-row:hover .term-row-actions,
-.doc-row:focus-within .term-row-actions {
+.doc-row:focus-within .term-row-actions,
+.file-row:hover .term-row-actions,
+.file-row:focus-within .term-row-actions,
+.file-row.selected .term-row-actions {
   display: inline-flex;
+}
+.open-files {
+  margin-bottom: var(--s1);
+}
+.open-files .rail-fold .files-dirty {
+  width: 6px;
+  height: 6px;
+}
+.file-tree {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  border-radius: var(--r-md);
+}
+/* Each level indents by one twisty's width. */
+.file-item.term-item {
+  gap: 6px;
+  min-height: 28px;
+  padding-left: calc(var(--s1) + var(--depth, 0) * 14px);
+  font-size: var(--fs-sm);
+}
+.file-item.editing {
+  cursor: default;
+}
+.file-item .files-name-edit {
+  flex: 1;
+  min-width: 0;
+}
+.file-twisty {
+  display: inline-grid;
+  place-items: center;
+  flex: none;
+  width: 14px;
+  color: var(--text-3);
+}
+.file-row.selected {
+  background: var(--surface-3);
+}
+.file-row[data-open] .term-title {
+  color: var(--text);
+  font-weight: 600;
+}
+.file-open-mark {
+  flex: none;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--text-3);
+}
+.file-row.drop-target,
+.file-tree.drop-target {
+  outline: 2px dashed var(--accent);
+  outline-offset: -2px;
+  background: var(--accent-soft);
+}
+.file-tree-message {
+  margin: 0;
+  padding: var(--s1) var(--s2) var(--s1)
+    calc(var(--s1) + 20px + var(--depth, 0) * 14px);
+  color: var(--text-3);
+  font-size: var(--fs-xs);
+}
+.file-tree-message.error {
+  color: var(--st-failed);
+}
+.file-tree-progress {
+  margin-top: var(--s1);
+  padding: var(--s1) var(--s2);
+  border: 0;
+  border-radius: var(--r-md);
+  background: var(--surface-2);
+  font-size: var(--fs-xs);
+}
+.touch .file-item.term-item {
+  min-height: 44px;
 }
 .rail.folded .doc-row .term-item {
   padding-left: 0;
@@ -400,17 +480,7 @@ body.side-resizing .workspace {
 }
 
 /* ───── Download progress (files/downloads.tsx) ─────
- * Bottom left, clear of the confirmation toasts on the right; phones:
- * full width minus the gutters. */
-.download-region {
-  position: fixed;
-  left: calc(env(safe-area-inset-left) + var(--s4));
-  bottom: max(52px, env(safe-area-inset-bottom));
-  z-index: 40;
-  display: grid;
-  gap: var(--s2);
-  max-width: min(420px, calc(100vw - 32px));
-}
+ * In the top right toast stack (dialogs.css), above the confirmations. */
 .download-toast {
   display: flex;
   align-items: center;
@@ -422,15 +492,10 @@ body.side-resizing .workspace {
   color: var(--text);
   box-shadow: var(--shadow);
   font-size: var(--fs-sm);
+  pointer-events: auto;
 }
 .download-toast .grow {
   flex: 1;
   min-width: 0;
   overflow-wrap: anywhere;
-}
-@media (max-width: 640px) {
-  .download-region {
-    right: calc(env(safe-area-inset-right) + var(--s4));
-    max-width: none;
-  }
 }

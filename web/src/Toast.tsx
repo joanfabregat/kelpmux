@@ -14,7 +14,16 @@ const Context = createContext<(message: string, options?: Options) => void>(
   () => {},
 );
 export const useToast = () => useContext(Context);
-export function ToastProvider({ children }: { children: ReactNode }) {
+/** The confirmations shown by `useToast`, in the top right stack, newest
+ * first, below `aside` (the running downloads). The attention toasts sit
+ * above the stack (dialogs.css). */
+export function ToastProvider({
+  children,
+  aside,
+}: {
+  children: ReactNode;
+  aside?: ReactNode;
+}) {
   const [items, setItems] = useState<Toast[]>([]);
   const next = useRef(0);
   const show = useCallback((message: string, options: Options = {}) => {
@@ -32,15 +41,21 @@ export function ToastProvider({ children }: { children: ReactNode }) {
   return (
     <Context.Provider value={show}>
       {children}
-      <div
-        className="toast-region"
-        role="status"
-        aria-live="polite"
-        aria-label="Action confirmations"
-      >
-        {items.map((item) => (
-          <ToastItem key={item.id} item={item} dismiss={dismiss} />
-        ))}
+      <div className="toast-stack">
+        {aside}
+        <div
+          className="toast-region"
+          role="status"
+          aria-live="polite"
+          aria-label="Action confirmations"
+        >
+          {items
+            .slice()
+            .reverse()
+            .map((item) => (
+              <ToastItem key={item.id} item={item} dismiss={dismiss} />
+            ))}
+        </div>
       </div>
     </Context.Provider>
   );

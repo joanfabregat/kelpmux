@@ -156,6 +156,7 @@ import {
   typedPaths,
 } from "@kelpcore/web/files/paths.ts";
 import { FilesBrowser } from "./files/FilesBrowser";
+import type { FileActionsProps } from "./files/actions";
 import { FileEditor } from "./files/FileEditor";
 import { Downloads } from "./files/downloads";
 import { SidePanel } from "./files/SidePanel";
@@ -2491,6 +2492,37 @@ function App() {
     setDialog("");
     setQuery("");
   };
+  /** What the file browser and the sidebar's file tree do with entries. */
+  const fileActions: FileActionsProps | null = filesClient && {
+    client: filesClient,
+    home,
+    onOpenFile: (path) => openDoc(path),
+    onOpenBeside: insertPane ? (path) => openBeside(path) : undefined,
+    insertTarget: insertPane
+      ? { number: insertPane.number, title: paneLabel(insertPane) }
+      : undefined,
+    onInsertPath: (path) => insertPaths([path], insertPane),
+    onCopyPath: (path) =>
+      navigator.clipboard
+        ?.writeText(path)
+        .then(() => toast("Path copied", { key: "copy" }))
+        .catch(fail),
+    confirm: setConfirmAction,
+    toast: (message, options) => toast(message, { key: "files", ...options }),
+    onRenamed: (from, to) => {
+      documents.renamed(from, to);
+      // The file shown follows its rename or move.
+      setShownDoc((shown) =>
+        isInside(shown, from) ? to + shown.slice(from.length) : shown,
+      );
+    },
+    onRemoved: documents.removed,
+    upload: {
+      unavailable: uploadUnavailable,
+      limits: uploadLimits,
+      transport: uploadTransport,
+    },
+  };
   // Rows reorder by dragging with a mouse; on touch a drag scrolls the list,
   // and the row menu offers Move up / Move down instead.
   const sidebar = (
@@ -2530,9 +2562,10 @@ function App() {
                 dirty: doc.dirty,
                 current: doc.path === shownDocument?.path,
               })),
-              onBrowse: () => openFiles(),
+              onBrowse: (dir) => openFiles(dir),
               onOpenDoc: openDoc,
               onCloseDoc: closeDoc,
+              tree: fileActions || undefined,
             }
           : undefined
       }
@@ -2593,50 +2626,16 @@ function App() {
           <div className="workspace-main">
             {listShown ? (
               <div className="phone-list">{sidebar}</div>
-            ) : view === "files" && filesClient ? (
+            ) : view === "files" && fileActions ? (
               // An open file shows in its editor, mounted below.
               shownDocument ? null : (
                 <FilesBrowser
-                  client={filesClient}
-                  home={home}
+                  {...fileActions}
                   dir={filesDir}
                   onDir={(dir, normalised) => {
                     // `~` or a symbolic link read as its real folder.
                     if (normalised) navigation.automatic();
                     setFilesDir(dir);
-                  }}
-                  onOpenFile={(path) => openDoc(path)}
-                  onOpenBeside={
-                    insertPane ? (path) => openBeside(path) : undefined
-                  }
-                  insertTarget={
-                    insertPane
-                      ? { number: insertPane.number, title: paneLabel(insertPane) }
-                      : undefined
-                  }
-                  onInsertPath={(path) => insertPaths([path], insertPane)}
-                  onCopyPath={(path) =>
-                    navigator.clipboard
-                      ?.writeText(path)
-                      .then(() => toast("Path copied", { key: "copy" }))
-                      .catch(fail)
-                  }
-                  confirm={setConfirmAction}
-                  toast={(message, options) =>
-                    toast(message, { key: "files", ...options })
-                  }
-                  onRenamed={(from, to) => {
-                    documents.renamed(from, to);
-                    // The file shown follows its rename or move.
-                    setShownDoc((shown) =>
-                      isInside(shown, from) ? to + shown.slice(from.length) : shown,
-                    );
-                  }}
-                  onRemoved={documents.removed}
-                  upload={{
-                    unavailable: uploadUnavailable,
-                    limits: uploadLimits,
-                    transport: uploadTransport,
                   }}
                   onBack={phone ? () => setPhoneList(true) : undefined}
                 />
@@ -2996,8 +2995,7 @@ function App() {
   );
 }
 createRoot(document.getElementById("root")!).render(
-  <ToastProvider>
+  <ToastProvider aside={<Downloads />}>
     <App />
-    <Downloads />
   </ToastProvider>,
 );

@@ -91,7 +91,8 @@ export function startDownload(
     .finally(() => publish(running.filter((d) => d.id !== id)));
 }
 
-/** The progress toasts of running downloads, mounted once. */
+/** The progress toasts of running downloads, mounted once, in the top
+ * right toast stack (ToastProvider's `aside`). */
 export function Downloads() {
   const downloads = useRunningDownloads();
   if (!downloads.length) return null;

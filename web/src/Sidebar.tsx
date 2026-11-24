@@ -17,6 +17,8 @@ import {
 } from "./state/model";
 import { Vitals } from "./Vitals";
 import { UnreadMark, type SessionMode } from "./Shell";
+import { FileTree } from "./files/FileTree";
+import type { FileActionsProps } from "./files/actions";
 
 /** What a state shortcut in the sidebar summary opens. */
 const openStateLabel: Partial<Record<DisplayState, string>> = {
@@ -72,23 +74,30 @@ export type SidebarProps = {
  * terminal and the parked ones) and the files open in the editor. */
 export type SidebarSections = { terminals: boolean; files: boolean };
 
-/** The Files entry: the browser, and each open file under it like a tab. */
+/** The Files section: the browser, the open files and the home folder's
+ * tree. */
 export type SidebarFiles = {
   /** The browser (not an open file) is shown. */
   browsing: boolean;
   docs: { path: string; name: string; dirty: boolean; current: boolean }[];
-  onBrowse: () => void;
+  /** Shows the file browser, at `dir` when given. */
+  onBrowse: (dir?: string) => void;
   onOpenDoc: (path: string) => void;
   onCloseDoc: (path: string) => void;
+  /** The home folder's tree and its entries' actions; without it the
+   * section lists the open files only. */
+  tree?: FileActionsProps;
 };
 
 /** The left sidebar, like the TUI's, and the only navigation: the state
  * counts, then two collapsible sections. **Terminals** holds every
  * terminal in this browser's order with its live state, a rule between
- * entries, the new-terminal row right under them (centred on a rule, like
- * the TUI's) and the parked terminals; its header opens the live grid (not
- * on phones). **Files**, when the connection offers files, holds the files
- * open in the editor; its header opens the file browser. Each header's
+ * terminals, the New terminal row right under them (a row like theirs,
+ * muted) and the parked terminals; its header opens the live grid (not on
+ * phones). **Files**, when the connection offers files, holds the files
+ * open in the editor (the Open group, like Parked), then the home folder
+ * as a tree whose rows look and behave like the terminals' (FileTree);
+ * its header opens the file browser. Each header's
  * chevron expands or collapses its section, and a collapsed header keeps
  * a count and a dot when something in it needs attention (or is unsaved),
  * so collapsing never hides an alert. The folded rail ignores collapsing.
@@ -115,6 +124,7 @@ export function Sidebar(props: SidebarProps) {
     files,
   } = props;
   const [parkedOpen, setParkedOpen] = useState(true);
+  const [openFilesShown, setOpenFilesShown] = useState(true);
   const [ownSections, setOwnSections] = useState<SidebarSections>({
     terminals: true,
     files: true,
@@ -352,6 +362,42 @@ export function Sidebar(props: SidebarProps) {
       </div>
     );
   };
+  /** An open file's row: shows it in the main area; its close button
+   * closes it (asking first when it has unsaved changes). */
+  const docRow = (doc: SidebarFiles["docs"][number]) => {
+    const on = mode === "files" && doc.current;
+    return (
+      <div key={doc.path} className="nav-cell doc-row" data-doc={doc.path}>
+        <button
+          type="button"
+          className={`nav-item term-item ${on ? "current" : ""}`}
+          aria-current={on ? "page" : undefined}
+          aria-label={`Open file ${doc.name}${doc.dirty ? " (unsaved changes)" : ""}`}
+          title={doc.path}
+          onClick={() => files?.onOpenDoc(doc.path)}
+        >
+          <span className="term-number" aria-hidden="true">
+            <Icon name="file" size="sm" />
+          </span>
+          <span className="grow term-names">
+            <span className="term-title">{doc.name}</span>
+          </span>
+          {doc.dirty && <span className="files-dirty" aria-hidden="true" />}
+        </button>
+        <span className="term-row-actions">
+          <button
+            type="button"
+            className="icon-btn"
+            aria-label={`Close file ${doc.name}`}
+            title="Close"
+            onClick={() => files?.onCloseDoc(doc.path)}
+          >
+            <Icon name="x" size="sm" />
+          </button>
+        </span>
+      </div>
+    );
+  };
   /** A tool button: its icon and short label, the full name and shortcut
    * in its tooltip and accessible name. */
   const entry = (
@@ -443,20 +489,20 @@ export function Sidebar(props: SidebarProps) {
                 )}
               </div>
               {/* Like the TUI's "+ New tab" row, right under the tabs: a
-                  rule across the row with the label centred on it. */}
+                  row like theirs, its plus in the number column and its
+                  label muted until hovered. */}
               <Tooltip content="New terminal (Ctrl-B Enter)">
                 <button
                   type="button"
-                  className="nav-item rail-new"
+                  className="nav-item term-item rail-new"
                   aria-label="New terminal"
+                  aria-keyshortcuts="Control+B Enter"
                   onClick={props.onNew}
                 >
-                  <span className="rail-new-rule" aria-hidden="true" />
-                  <span className="rail-new-label">
+                  <span className="term-number" aria-hidden="true">
                     <Icon name="plus" size="sm" />
-                    <span className="rail-new-text">New terminal</span>
                   </span>
-                  <span className="rail-new-rule" aria-hidden="true" />
+                  <span className="grow rail-new-text">New terminal</span>
                 </button>
               </Tooltip>
               {parked.length > 0 && (
@@ -485,66 +531,82 @@ export function Sidebar(props: SidebarProps) {
             </div>
           )}
         </section>
-        {/* Files: the header opens the file browser; the files open from
-            it follow, each like a tab: shown in the main area, with a dot
-            while it has unsaved changes. */}
+        {/* Files: the header opens the file browser. The files open in
+            the editor follow under Open (like Parked), each shown in the
+            main area by its row, with a dot while it has unsaved changes;
+            then the home folder's tree. The folded rail shows the open
+            files only. */}
         {files && (
           <section className="rail-section" aria-label="Files section">
             {sectionHeader({
               key: "files",
               label: "Files",
               icon: "folder",
-              tooltip: "Files on the server",
+              tooltip: "File browser",
               view: "files",
               current: mode === "files" && files.browsing,
-              open: filesOpen || !files.docs.length,
+              open: filesOpen || (!files.docs.length && !files.tree),
               count: files.docs.length,
               alert: dirtyDocs ? `${dirtyDocs} with unsaved changes` : "",
-              toggle: files.docs.length > 0,
-              onOpen: files.onBrowse,
+              toggle: files.docs.length > 0 || !!files.tree,
+              onOpen: () => files.onBrowse(),
             })}
-            {filesOpen && files.docs.length > 0 && (
+            {filesOpen && (files.docs.length > 0 || files.tree) && (
               <div id="rail-section-files" className="rail-section-body">
-                {files.docs.map((doc) => {
-                  const on = mode === "files" && doc.current;
-                  return (
-                    <div
-                      key={doc.path}
-                      className="nav-cell doc-row"
-                      data-doc={doc.path}
-                    >
+                {files.docs.length > 0 && (
+                  <div className="open-files">
+                    {!folded && files.tree && (
                       <button
                         type="button"
-                        className={`nav-item term-item ${on ? "current" : ""}`}
-                        aria-current={on ? "page" : undefined}
-                        aria-label={`Open file ${doc.name}${doc.dirty ? " (unsaved changes)" : ""}`}
-                        title={doc.path}
-                        onClick={() => files.onOpenDoc(doc.path)}
+                        className="rail-label rail-fold"
+                        aria-expanded={openFilesShown}
+                        onClick={() => setOpenFilesShown(!openFilesShown)}
                       >
-                        <span className="term-number" aria-hidden="true">
-                          <Icon name="file" size="sm" />
-                        </span>
-                        <span className="grow term-names">
-                          <span className="term-title">{doc.name}</span>
-                        </span>
-                        {doc.dirty && (
-                          <span className="files-dirty" aria-hidden="true" />
+                        <Icon
+                          name={
+                            openFilesShown ? "chevron-down" : "chevron-right"
+                          }
+                          size="sm"
+                        />
+                        <span className="grow">Open</span>
+                        {dirtyDocs > 0 && (
+                          <span
+                            className="files-dirty"
+                            role="img"
+                            aria-label={`${dirtyDocs} with unsaved changes`}
+                          />
                         )}
+                        <span className="count">{files.docs.length}</span>
                       </button>
-                      <span className="term-row-actions">
-                        <button
-                          type="button"
-                          className="icon-btn"
-                          aria-label={`Close file ${doc.name}`}
-                          title="Close"
-                          onClick={() => files.onCloseDoc(doc.path)}
-                        >
-                          <Icon name="x" size="sm" />
-                        </button>
-                      </span>
-                    </div>
-                  );
-                })}
+                    )}
+                    {(openFilesShown || folded || !files.tree) && (
+                      <div
+                        className="term-list"
+                        role="list"
+                        aria-label="Open files"
+                      >
+                        {files.docs.map(docRow)}
+                      </div>
+                    )}
+                  </div>
+                )}
+                {files.tree && !folded && (
+                  <FileTree
+                    actions={files.tree}
+                    open={
+                      new Map(
+                        files.docs.map((d) => [d.path, { dirty: d.dirty }]),
+                      )
+                    }
+                    current={
+                      mode === "files"
+                        ? files.docs.find((d) => d.current)?.path
+                        : undefined
+                    }
+                    touch={props.touch}
+                    onBrowse={(dir) => files.onBrowse(dir)}
+                  />
+                )}
               </div>
             )}
           </section>
