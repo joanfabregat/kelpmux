@@ -17,6 +17,7 @@ import {
 } from "@kelpcore/web/files/model.ts";
 import { isInside } from "@kelpcore/web/files/paths.ts";
 import { fileContentLimit } from "@kelpcore/web/request-limits.ts";
+import { friendlyError } from "./root.ts";
 
 /** An open file: its state and a stable identity across renames. */
 export type OpenDoc = Doc & { id: number };
@@ -49,7 +50,7 @@ export function useDocuments(client: FilesClient | null) {
         const content = await client.read(path);
         update(path, (doc) => loaded(doc, content, saveLimit));
       } catch (error) {
-        update(path, (doc) => loadFailed(doc, error));
+        update(path, (doc) => loadFailed(doc, friendlyError(error)));
       }
     },
     [client, saveLimit],
@@ -87,7 +88,7 @@ export function useDocuments(client: FilesClient | null) {
           saved(d, content, result, editors.current.get(path)?.content() ?? content),
         );
       } catch (error) {
-        update(path, (d) => saveFailed(d, error));
+        update(path, (d) => saveFailed(d, friendlyError(error)));
       }
     },
     [client, saveLimit],

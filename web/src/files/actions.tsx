@@ -32,6 +32,13 @@ import type { IconName } from "../icons";
 import { dragHasFiles, droppedFiles } from "../Upload";
 import { dragHasPaths, droppedPaths } from "./insert";
 import { startDownload } from "./downloads";
+import {
+  entryAbilities,
+  errorMessage,
+  leadsOutside,
+  outsideRootMessage,
+  withinRoot,
+} from "./root";
 import type { ConfirmAction } from "../Confirm";
 
 /** What both views need from the application: the connection's files
@@ -138,9 +145,22 @@ export type MenuItem = [string, () => void, boolean?];
 export function renameError(failure: unknown, name: string): string {
   return failure instanceof FileError && failure.code === "exists"
     ? `“${name}” already exists in this folder.`
-    : failure instanceof Error
-      ? failure.message
-      : String(failure);
+    : errorMessage(failure);
+}
+
+/** The title of an entry's row: its name or path, and where a link
+ * points (marked when that is outside the root). */
+export function entryTitle(
+  entry: FileEntry,
+  label: string,
+  path: string,
+  root: string | undefined,
+): string {
+  if (entry.kind !== "symlink" || !entry.target) return label;
+  const outside = leadsOutside(entry, path, root)
+    ? ` (${outsideRootMessage.toLowerCase()})`
+    : "";
+  return `${label} → ${entry.target}${outside}`;
 }
 
 /** The actions on entries, for one view. `onFolder` opens a folder (the
@@ -150,14 +170,15 @@ export function useFileActions(
   onFolder: (path: string) => void,
 ) {
   const { client } = props;
+  /** The file root (none from older servers): nothing outside it is
+   * opened, moved to or uploaded to. */
+  const root = client.limits.root;
   const [busy, setBusy] = useState(false);
   const [uploading, setUploading] = useState<Uploading | null>(null);
   const [dropOn, setDropOn] = useState("");
 
   const fail = (failure: unknown) =>
-    props.toast(failure instanceof Error ? failure.message : String(failure), {
-      tone: "error",
-    });
+    props.toast(errorMessage(failure), { tone: "error" });
   /** Runs a change, then has every view list what it touched again. */
   async function change(run: () => Promise<unknown>, touched: string[]) {
     setBusy(true);
@@ -175,6 +196,10 @@ export function useFileActions(
     if (entry.kind === "dir") return onFolder(path);
     if (entry.kind === "other")
       return props.toast(`${entry.name} is not a regular file or folder.`);
+    if (leadsOutside(entry, path, root))
+      return props.toast(`“${entry.name}”: ${outsideRootMessage}`, {
+        tone: "error",
+      });
     if (entry.kind === "symlink") {
       // A link opens as what it points to.
       try {
@@ -213,9 +238,12 @@ export function useFileActions(
         verb === "Moved to the trash" && first.error.code === "cross_device"
           ? " It is on another file system than the trash; delete it permanently instead."
           : "";
-      props.toast(`${baseName(first.path)}: ${first.error.message}.${advice}`, {
-        tone: "error",
-      });
+      props.toast(
+        `${baseName(first.path)}: ${errorMessage(first.error)}.${advice}`,
+        {
+          tone: "error",
+        },
+      );
     } else if (outcome.removed.length)
       props.toast(
         `${verb}: ${outcome.removed.map((r) => baseName(r.path)).join(", ")}`,
@@ -251,7 +279,12 @@ export function useFileActions(
   }
   /** Moves entries into `folder` (a drag onto a folder). */
   function move(paths: string[], folder: string) {
-    const movable = paths.filter((path) => !moveProblem(path, folder));
+    // Both ends inside the root, never the root itself.
+    if (!withinRoot(folder, root)) return fail(outsideRootMessage);
+    const movable = paths.filter(
+      (path) =>
+        !moveProblem(path, folder) && withinRoot(path, root) && path !== root,
+    );
     if (!movable.length) return;
     const targets = movable.map((path) => joinPath(folder, baseName(path)));
     void change(async () => {
@@ -289,6 +322,7 @@ export function useFileActions(
       (limits ? uploadProblem(files, limits) : "No upload limits announced.");
     if (problem || !limits)
       return props.toast(problem || "", { tone: "error" });
+    if (!withinRoot(folder, root)) return fail(outsideRootMessage);
     if (uploading) return props.toast("An upload is already running.");
     const abort = new AbortController();
     const total = files.reduce((sum, file) => sum + file.size, 0);
@@ -333,6 +367,8 @@ export function useFileActions(
   /** Drop target props for a folder: entries dragged from either view move
    * into it, desktop files upload into it. */
   function folderDrop(folder: string) {
+    // Nothing moves or uploads to a folder outside the root.
+    if (!withinRoot(folder, root)) return {};
     return {
       "data-upload-folder": folder,
       onDragOver: (event: React.DragEvent) => {
@@ -364,41 +400,59 @@ export function useFileActions(
     };
   }
 
-  /** An entry's menu; `onRename` starts editing its name in place. */
+  /** An entry's menu; `onRename` starts editing its name in place. The
+   * root itself has no download or change; a link pointing outside the
+   * root nothing that goes through it (entryAbilities). */
   const menuItems = (
     entry: FileEntry,
     path: string,
     onRename: () => void,
-  ): MenuItem[] => [
-    ["Open", () => void open(entry, path)],
-    ...(props.onOpenBeside && entry.kind !== "dir" && entry.kind !== "other"
-      ? [["Open beside terminal", () => props.onOpenBeside!(path)] as MenuItem]
-      : []),
-    [
-      props.insertTarget
-        ? `Insert path into terminal ${props.insertTarget.number}`
-        : "Insert path (no terminal)",
-      () => props.onInsertPath(path),
-      !props.insertTarget,
-    ],
-    ["Copy path", () => props.onCopyPath(path)],
-    // A folder downloads as a `.tar.gz` archive; a link as what it points
-    // to (a file only); special files not at all.
-    ...(client.canDownload && entry.kind !== "other"
-      ? [
-          [
-            entry.kind === "dir" ? "Download as .tar.gz" : "Download",
-            () =>
-              startDownload(client, path, entry.kind === "dir", props.toast),
-          ] as MenuItem,
-        ]
-      : []),
-    ["Rename…", onRename],
-    ["Move to trash", () => trash(path)],
-    ["Delete permanently…", () => remove(entry, path)],
-  ];
+  ): MenuItem[] => {
+    const can = entryAbilities(entry, path, root);
+    return [
+      ...(can.open ? [["Open", () => void open(entry, path)] as MenuItem] : []),
+      ...(can.open &&
+      props.onOpenBeside &&
+      entry.kind !== "dir" &&
+      entry.kind !== "other"
+        ? [
+            [
+              "Open beside terminal",
+              () => props.onOpenBeside!(path),
+            ] as MenuItem,
+          ]
+        : []),
+      [
+        props.insertTarget
+          ? `Insert path into terminal ${props.insertTarget.number}`
+          : "Insert path (no terminal)",
+        () => props.onInsertPath(path),
+        !props.insertTarget,
+      ],
+      ["Copy path", () => props.onCopyPath(path)],
+      // A folder downloads as a `.tar.gz` archive; a link as what it points
+      // to (a file only); special files not at all.
+      ...(client.canDownload && can.download
+        ? [
+            [
+              entry.kind === "dir" ? "Download as .tar.gz" : "Download",
+              () =>
+                startDownload(client, path, entry.kind === "dir", props.toast),
+            ] as MenuItem,
+          ]
+        : []),
+      ...(can.change
+        ? ([
+            ["Rename…", onRename],
+            ["Move to trash", () => trash(path)],
+            ["Delete permanently…", () => remove(entry, path)],
+          ] as MenuItem[])
+        : []),
+    ];
+  };
 
   return {
+    root,
     busy,
     setBusy,
     uploading,

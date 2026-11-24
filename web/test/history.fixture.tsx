@@ -4,7 +4,8 @@
 // panels), useHistorySync mirroring it into the URL, and an apply function
 // with main.tsx's fallbacks. Terminals have pane ids 11, 12 and 13 and show
 // as 1, 2 and 3. The state becomes ready after a delay, like a sign-in; the
-// `phone` query parameter shows the phone's list instead of the grid.
+// `phone` query parameter shows the phone's list instead of the grid. The
+// file root is /home/me: a folder or file outside it shows the root.
 import React, { useEffect, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import {
@@ -13,8 +14,11 @@ import {
   useHistorySync,
   type AppLocation,
 } from "../src/navigation";
+import { outsideRootMessage, withinRoot } from "../src/files/root";
 
 const panes = [11, 12, 13];
+/** The server's file root (Welcome `file_limits.root`). */
+const root = "/home/me";
 const files = new Set(["/home/me/notes.md", "/home/me/src/main.rs"]);
 const phone = new URLSearchParams(location.search).has("phone");
 const parentPath = (path: string) =>
@@ -75,6 +79,14 @@ function App() {
       }
       setPhoneList(false);
       setView("files");
+      // Outside the file root (/home/me): the root instead.
+      if (!withinRoot(target.file || target.dir || "~", root, "/home/me")) {
+        setToast(outsideRootMessage);
+        navigation.automatic();
+        setShownDoc("");
+        setFilesDir(root);
+        return;
+      }
       if (!target.file) {
         setShownDoc("");
         if (target.dir) setFilesDir(target.dir);

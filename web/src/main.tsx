@@ -162,6 +162,7 @@ import { Downloads } from "./files/downloads";
 import { SidePanel } from "./files/SidePanel";
 import { usePathLinks, type PathTarget } from "./files/PathLinks";
 import { useDocuments } from "./files/documents";
+import { outsideRootMessage, withinRoot } from "./files/root";
 import { dragHasPaths, droppedPaths, typeIntoPane } from "./files/insert";
 import { ConfirmDialog, type ConfirmAction } from "./Confirm";
 import "./styles/files.css";
@@ -477,6 +478,9 @@ function App() {
     [side, setSide] = useState<{ id: number; jump?: FileJump } | null>(null);
   const jumps = useRef(0);
   const filesOffered = online && serverFiles && operations.has("files");
+  /** The folder file operations are confined to (Welcome
+   * `file_limits.root`; none from servers before it). */
+  const filesRoot = filesClient?.limits.root;
   // An older bridge (API minor 2) relays files but not downloads.
   const relaysDownloads = operations.has("downloads");
   useEffect(() => {
@@ -766,6 +770,12 @@ function App() {
     const placeSide = (path: string, line: number) => {
       if (sideDoc?.path === path && !line) return;
       if (sideDoc?.dirty && sideDoc.path !== path) return;
+      // A file outside the file root is not opened.
+      if (path && !withinRoot(path, filesRoot, home)) {
+        toast(outsideRootMessage, { key: "navigation" });
+        navigation.automatic();
+        path = "";
+      }
       if (!path || phone || !filesClient) {
         if (sideDoc) setSide(null);
         return;
@@ -817,6 +827,14 @@ function App() {
         setPhoneList(false);
         setView("files");
         const path = target.file;
+        // A folder or file outside the file root: the root instead.
+        if (filesRoot && !withinRoot(path || target.dir || "~", filesRoot, home)) {
+          toast(outsideRootMessage, { key: "navigation" });
+          navigation.automatic();
+          setShownDoc("");
+          setFilesDir(filesRoot);
+          return;
+        }
         if (!path) {
           setShownDoc("");
           if (target.dir) setFilesDir(target.dir);
@@ -2183,6 +2201,11 @@ function App() {
   /** Shows the file browser, at `dir` when given. */
   function openFiles(dir?: string) {
     if (!filesClient || popupPane) return;
+    // A folder outside the file root (a terminal's): the root instead.
+    if (dir && filesRoot && !withinRoot(dir, filesRoot, home)) {
+      toast(outsideRootMessage, { key: "navigation" });
+      dir = filesRoot;
+    }
     if (dir) setFilesDir(dir);
     setShownDoc("");
     setMenu(null);
@@ -2804,6 +2827,7 @@ function App() {
           <UploadDialog
             drop={uploadDrop}
             unavailable={uploadUnavailable}
+            root={filesRoot}
             limits={uploadLimits}
             transport={uploadTransport}
             defaultDestination={uploadDestination}
@@ -2874,6 +2898,7 @@ function App() {
                     setUploadDestination(path);
                   }}
                   uploadUnavailable={uploadUnavailable}
+                  uploadRoot={filesRoot}
                   touch={touch}
                 />
               )}

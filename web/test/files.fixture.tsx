@@ -11,7 +11,8 @@
 // `window.cellPoint(x, y)` is the client point at the middle of a cell of
 // that terminal.
 // `window.screenText(pane)` reads a terminal's screen, `window.toasts` the
-// toasts shown and `window.openTerminal(pane, title)` adds a terminal row.
+// toasts shown, `window.stats` the paths of the `file_stat` requests sent
+// and `window.openTerminal(pane, title)` adds a terminal row.
 import React, { useEffect, useState } from "react";
 import { createRoot } from "react-dom/client";
 import { Session } from "@kelpcore/web/connection.ts";
@@ -72,9 +73,11 @@ for (const [key, value] of Object.entries({
 const w = window as any;
 w.bridgeErrors = [];
 w.toasts = [];
+w.stats = [];
 class PipeSession extends Session {
   send(message: any) {
     if (this.stopped) return;
+    if (message?.Stream?.type === "file_stat") w.stats.push(message.Stream.path);
     // JSON screens keep `screenText` simple.
     if (message?.Stream?.type === "binary_screens") return;
     const payload = new TextEncoder().encode(JSON.stringify(message));
