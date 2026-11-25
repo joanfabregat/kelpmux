@@ -66,6 +66,9 @@ import {
   type SessionMode,
 } from "./Shell";
 import { Sidebar } from "./Sidebar";
+import { ReposView } from "./Repos";
+import { checkoutsByPath } from "./git";
+import { useProjectGit } from "./git-status";
 import {
   SCRATCH,
   groupOrder,
@@ -567,15 +570,23 @@ function App() {
   const device = useDevice();
   const phone = device.mode === "phone" && !popupPane,
     touch = device.touch;
-  // The file browser shows only on a connection that offers files.
+  /** A project's Repos view (bridge `git`, API minor 6, with projects). */
+  const offersGit =
+    online && operations.has("git") && operations.has("projects");
+  // The file browser shows only on a connection that offers files, a
+  // Repos view only with `git` and a project (phones included).
   const view: SessionMode =
     savedView === "files"
       ? filesClient
         ? "files"
         : "single"
-      : phone
-        ? "single"
-        : savedView;
+      : savedView === "repos"
+        ? offersGit && scope
+          ? "repos"
+          : "single"
+        : phone
+          ? "single"
+          : savedView;
   /** The phone shows its terminal list (its home screen). */
   /** Uploads: the server's capability and limits (from its Welcome), the
    * drop being reviewed or uploaded, the terminal under dragged files and
@@ -782,6 +793,19 @@ function App() {
     : [];
   const projectById = (id: string) =>
     projectList.find((project) => project.id === id);
+  // The projects' Git facts: the Repos view's project every ten seconds
+  // while it shows, every project once a minute for the sidebar's marks
+  // and the file browser's checkout lines (git-status.ts).
+  const git = useProjectGit({
+    enabled: offersGit,
+    projects: projectList.map((project) => project.id),
+    shown: view === "repos" ? scope : "",
+    query: (method, params) =>
+      store.session
+        ? store.session.rpc(method, params)
+        : Promise.reject(Error("Not connected")),
+  });
+  const checkouts = checkoutsByPath(git.byProject);
   /** The project a terminal belongs to; a dragged row already shows in
    * the group under it. */
   const projectOfPane = (pane: number) =>
@@ -834,7 +858,10 @@ function App() {
   const here = popupPane
     ? null
     : locationOf({
-        phoneHome: phone && (phoneList || (!shownTerminal && view !== "files")),
+        phoneHome:
+          phone &&
+          (phoneList ||
+            (!shownTerminal && view !== "files" && view !== "repos")),
         view,
         terminal: shownTerminal?.id || 0,
         filesDir,
@@ -908,6 +935,30 @@ function App() {
         // A phone has no grid: its list is the overview.
         if (phone) setPhoneList(true);
         else setView("grid");
+        return;
+      case "repos":
+        // A project's Repos view; without `git` or a project (unknown,
+        // or none named), the grid (a phone's list) instead.
+        if (!offersGit || !project) {
+          if (offersGit) {
+            // An unknown project has had its toast above.
+            if (!target.project)
+              toast("Choose a project to see its repositories", {
+                key: "navigation",
+              });
+          } else
+            toast("Repositories are not available on this connection", {
+              key: "navigation",
+            });
+          navigation.automatic();
+          setScope("");
+          if (phone) setPhoneList(true);
+          else setView("grid");
+          return;
+        }
+        setPhoneList(false);
+        setFindPane(0);
+        setView("repos");
         return;
       case "terminal": {
         const id = target.terminal;
@@ -1018,7 +1069,7 @@ function App() {
   const streamed = Math.max(1, subscriptionLimit - POPUP_SUBSCRIPTIONS);
   const visible = popupPane
       ? all.filter((p) => p.id === popupPane)
-      : (phone && phoneList) || view === "files"
+      : (phone && phoneList) || view === "files" || view === "repos"
         ? []
         : view === "single"
           ? live.filter((p) => p.id === active)
@@ -1161,8 +1212,8 @@ function App() {
   }
   function chooseMode(next: SessionMode) {
     if (popupPane) return;
-    // The file browser is not restored on reload.
-    if (next !== "files") saveView(next);
+    // The file browser and the Repos view are not restored on reload.
+    if (next !== "files" && next !== "repos") saveView(next);
     setView(next);
   }
   function switchView() {
@@ -1961,14 +2012,15 @@ function App() {
       ],
     });
   }
-  /** A new terminal: in `project` (its folder), else in Scratch (the
-   * Scratch folder). */
-  async function newTab(project?: Project) {
+  /** A new terminal: in `project` (its folder, or `cwd` inside it), else
+   * in Scratch (the Scratch folder, or `cwd`). */
+  async function newTab(project?: Project, cwd?: string) {
     const result = await rpc("new", {
       request: crypto.randomUUID(),
       ...(project && !project.scratch && offersProjects
         ? { project: project.id }
         : {}),
+      ...(cwd ? { cwd } : {}),
     });
     if (result?.pane && project && !project.scratch)
       setProjectLinks((links) => ({ ...links, [result.pane]: project.id }));
@@ -2065,6 +2117,8 @@ function App() {
     ];
     if (filesClient && !popupPane)
       items.push(["Files", () => openFiles(project.path, project.id), project.missing]);
+    if (offersGit && !popupPane)
+      items.push(["Repos", () => openRepos(project.id), project.missing]);
     if (!phone)
       items.push([
         "Terminals",
@@ -2404,7 +2458,8 @@ function App() {
   const railWidth = folded ? 56 : preferences.sidebarWidth;
   /** The phone shows its terminal list instead of a terminal. */
   const listShown =
-    phone && (phoneList || (!focused && view !== "files"));
+    phone &&
+    (phoneList || (!focused && view !== "files" && view !== "repos"));
   /** The sidebar's edge: a click folds or unfolds it, a drag resizes it
    * (folding below a minimum), like KelpHub's. Saved in this browser. */
   function resizeStart(e: React.PointerEvent) {
@@ -2552,6 +2607,15 @@ function App() {
   const insertPane = live.find((p) => p.id === active);
   /** The open file shown in the main area; none shows the browser. */
   const shownDocument = documents.docs.find((doc) => doc.path === shownDoc);
+  /** Shows a project's Repos view (its Git checkouts, read-only). */
+  function openRepos(project: string) {
+    if (!offersGit || popupPane) return;
+    setScope(project);
+    setMenu(null);
+    setFindPane(0);
+    setPhoneList(false);
+    chooseMode("repos");
+  }
   /** Shows the file browser, at `dir` when given; `project` shows that
    * project's files (from its folder), else every file. */
   function openFiles(dir?: string, project = "") {
@@ -2985,6 +3049,7 @@ function App() {
       dropProject={drag !== null ? dropProject : ""}
       onNewIn={(project) => void newTab(project)}
       onProjectMenu={(project, x, y) => setProjectMenu({ project, x, y })}
+      gitOf={offersGit ? (project) => git.byProject[project.id] : undefined}
       onNewProject={
         offersProjects
           ? () => setProjectDialog({ mode: "create" })
@@ -3009,7 +3074,9 @@ function App() {
             file: shownDocument?.path,
             home,
           }
-        : view === "grid" && !popupPane
+        : view === "repos" && scopeProject
+          ? { view: "repos", project: scopeProject.name }
+          : view === "grid" && !popupPane
           ? { view: "grid" }
           : { view: "terminal", title: focused?.title },
   );
@@ -3075,8 +3142,28 @@ function App() {
                     openFiles(project.path, project.id)
                   }
                   onAllFiles={() => openFiles(filesDir)}
+                  checkoutAt={
+                    offersGit ? (path) => checkouts.get(path) : undefined
+                  }
                 />
               )
+            ) : view === "repos" && scopeProject ? (
+              <ReposView
+                key={scopeProject.id}
+                project={scopeProject}
+                git={git.byProject[scopeProject.id]}
+                loading={!!git.loading[scopeProject.id]}
+                error={git.errors[scopeProject.id]}
+                onRefresh={() => git.refresh(scopeProject.id)}
+                onOpenFile={filesClient ? (path) => openDoc(path) : undefined}
+                onShowInFiles={
+                  filesClient
+                    ? (path) => openFiles(path, scopeProject.id)
+                    : undefined
+                }
+                onNewTerminal={(path) => void newTab(scopeProject, path)}
+                onBack={phone ? () => setPhoneList(true) : undefined}
+              />
             ) : focused ? (
               <div className="pane-grid tab-pane-layout">
                 <section

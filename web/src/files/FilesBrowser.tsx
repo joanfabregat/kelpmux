@@ -76,6 +76,8 @@ import {
   projectFolder,
   type Project,
 } from "../projects";
+import type { GitRepo } from "../git";
+import { CheckoutLine } from "../Repos";
 
 export { loadHidden } from "./actions";
 
@@ -131,6 +133,9 @@ export type FilesBrowserProps = FileActionsProps & {
   onOpenProject?: (project: Project) => void;
   /** Leaves a project's files for every file. */
   onAllFiles?: () => void;
+  /** The Git checkout whose root is this folder, when its facts are known
+   * (bridge `git`): its row shows the branch and changes. */
+  checkoutAt?: (path: string) => GitRepo | undefined;
 };
 
 export function FilesBrowser(props: FilesBrowserProps) {
@@ -756,6 +761,8 @@ export function FilesBrowser(props: FilesBrowserProps) {
             const rowProject =
               folderRow && projects ? projectFolder(path, projects) : undefined;
             const rowColor = projectColor(rowProject);
+            // A Git checkout shows its branch and changes instead of its date.
+            const checkout = folderRow ? props.checkoutAt?.(path) : undefined;
             return (
               <div
                 key={entry.name}
@@ -805,9 +812,16 @@ export function FilesBrowser(props: FilesBrowserProps) {
                   >
                     <span className="files-name">{entry.name}</span>
                     <small className="files-meta">
-                      {rowProject
-                        ? `Project ${rowProject.name} · ${entryMeta(entry)}`
-                        : entryMeta(entry)}
+                      {checkout ? (
+                        <>
+                          {rowProject ? `Project ${rowProject.name} · ` : ""}
+                          <CheckoutLine repo={checkout} />
+                        </>
+                      ) : rowProject ? (
+                        `Project ${rowProject.name} · ${entryMeta(entry)}`
+                      ) : (
+                        entryMeta(entry)
+                      )}
                     </small>
                   </button>
                 )}

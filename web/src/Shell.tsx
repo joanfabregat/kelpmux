@@ -6,7 +6,7 @@ import { Icon } from "./status";
 
 /** One terminal at a time, all of them live in a grid, or the file
  * browser (and the files open from it). */
-export type SessionMode = "single" | "grid" | "files";
+export type SessionMode = "single" | "grid" | "files" | "repos";
 
 /** Number, state, provider and title of a pane, shared by the grid tiles
  * and the focused terminal's header. */
