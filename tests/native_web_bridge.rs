@@ -111,6 +111,8 @@ impl Bridge {
             .env("SHELL", "/bin/sh")
             // This test's own user configuration.
             .env("XDG_CONFIG_HOME", cwd.join("xdg-config"))
+            // New terminals start in its Scratch folder, `~/scratch`.
+            .env("HOME", cwd)
             .arg("web-bridge")
             .arg("--socket")
             .arg(socket)
@@ -238,12 +240,8 @@ fn terminal_operations_create_drive_search_and_close_panes() {
     let state = bridge.web(1, "state", json!({}));
     assert_eq!(state["result"]["api_version"], 3);
     assert_eq!(state["result"]["workspace"], "state");
-    // Project, file and Git management do not exist here.
-    for (id, method) in [
-        (2, "files_list"),
-        (3, "project_create"),
-        (4, "upload_begin"),
-    ] {
+    // File and Git management are not bridge operations.
+    for (id, method) in [(2, "files_list"), (3, "git_status"), (4, "upload_begin")] {
         let reply = bridge.web(id, method, json!({}));
         assert_eq!(reply["error"], "unsupported web operation");
     }
@@ -758,6 +756,181 @@ fn tab_colour_is_browser_state_not_a_bridge_operation() {
     assert_eq!(refused["error"], "unsupported web operation");
 }
 
+/// Projects (bridge API minor 5): created in config.toml with their folder,
+/// terminals created in them and moved between them, links shared by every
+/// bridge through the workspace's `terminal-projects.json`, closed entries
+/// keeping their project and restored terminals inheriting it.
+#[test]
+fn projects_link_terminals_for_every_bridge_and_survive_closing() {
+    use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
+    let server = Server::start_with(|root| {
+        let state = root.join("state");
+        fs::DirBuilder::new().mode(0o700).create(&state).unwrap();
+        let history = json!({"entries": [{"key": "old:7", "workspace": "state", "pane": 7,
+            "cwd": root.to_str().unwrap(), "name": "program", "kind": null,
+            "session_id": null, "argv": [], "closed_at": now - 5, "reason": "Closed"}]});
+        let mut file = fs::OpenOptions::new()
+            .create_new(true)
+            .write(true)
+            .mode(0o600)
+            .open(state.join("tab-history.json"))
+            .unwrap();
+        file.write_all(history.to_string().as_bytes()).unwrap();
+    });
+    let mut bridge = Bridge::start(&server);
+    welcome(&mut bridge);
+    let state = bridge.web(1, "state", json!({}));
+    assert!(
+        state["result"]["operations"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|op| op == "projects")
+    );
+    // A plain new terminal starts in the Scratch folder, created for it.
+    let plain = bridge.web(2, "new", json!({"request": "p-1"}));
+    assert!(plain["result"]["pane"].as_u64().is_some(), "{plain}");
+    assert!(server.root.join("scratch").is_dir());
+    // A project with the default folder <projects.base>/<name>, created.
+    let created = bridge.web(
+        3,
+        "project_create",
+        json!({"name": "Kelp Mux", "color": "teal"}),
+    );
+    assert_eq!(created["result"]["saved"], true, "{created}");
+    assert_eq!(created["result"]["project"], "kelp-mux");
+    assert!(server.root.join("projects/Kelp Mux").is_dir());
+    let projects = &created["result"]["config"]["projects"];
+    assert_eq!(projects[0]["folder"], "~/projects/Kelp Mux", "{created}");
+    assert_eq!(projects[0]["missing"], false);
+    // An overlapping folder is refused with the new project's field.
+    let inside = bridge.web(
+        4,
+        "project_create",
+        json!({"name": "Inner", "folder": "~/projects/Kelp Mux/inner"}),
+    );
+    assert_eq!(inside["result"]["saved"], false, "{inside}");
+    assert_eq!(inside["result"]["errors"][0]["key"], "project[1].folder");
+    // A terminal created in the project starts in its folder and belongs to it.
+    let made = bridge.web(5, "new", json!({"request": "p-2", "project": "kelp-mux"}));
+    let pane = made["result"]["pane"]
+        .as_u64()
+        .unwrap_or_else(|| panic!("{made}"));
+    let canonical = server
+        .root
+        .join("projects/Kelp Mux")
+        .canonicalize()
+        .unwrap();
+    bridge.send(json!({"Stream": {"type": "subscribe", "panes": [pane]}}));
+    bridge.expect("the project terminal in its folder", |v| {
+        v["Stream"]["type"] == "update"
+            && v["Stream"]["panes"].as_array().is_some_and(|panes| {
+                panes
+                    .iter()
+                    .any(|p| p["id"] == pane && p["cwd"] == canonical.to_str().unwrap())
+            })
+    });
+    let listed = bridge.web(6, "projects", json!({}));
+    assert_eq!(
+        listed["result"]["panes"],
+        json!({ pane.to_string(): "kelp-mux" })
+    );
+    // Moved to Scratch, then back; an unknown project is refused.
+    let moved = bridge.web(7, "project_move", json!({"pane": pane, "project": null}));
+    assert_eq!(moved["result"]["panes"], json!({}), "{moved}");
+    let unknown = bridge.web(8, "project_move", json!({"pane": pane, "project": "nope"}));
+    assert!(
+        unknown["error"]
+            .as_str()
+            .unwrap()
+            .contains("no longer exists")
+    );
+    let closed_pane = bridge.web(
+        9,
+        "project_move",
+        json!({"pane": 999, "project": "kelp-mux"}),
+    );
+    assert!(closed_pane["error"].as_str().unwrap().contains("closed"));
+    bridge.web(
+        10,
+        "project_move",
+        json!({"pane": pane, "project": "kelp-mux"}),
+    );
+    // Another browser's bridge sees the same links.
+    let mut other = Bridge::start(&server);
+    welcome(&mut other);
+    let seen = other.web(1, "projects", json!({}));
+    assert_eq!(
+        seen["result"]["panes"],
+        json!({ pane.to_string(): "kelp-mux" })
+    );
+    // A closed terminal keeps its project, and reopening it inherits it.
+    let links = server.root.join("state/terminal-projects.json");
+    let mut stored: Value = serde_json::from_slice(&fs::read(&links).unwrap()).unwrap();
+    stored["links"]["old:7"] = json!({"project": "kelp-mux", "at": now});
+    fs::write(&links, stored.to_string()).unwrap();
+    let closed = other.web(2, "closed", json!({}));
+    let entry = closed["result"]["entries"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|e| e["key"] == "old:7")
+        .unwrap_or_else(|| panic!("{closed}"))
+        .clone();
+    assert_eq!(entry["project"], "kelp-mux");
+    let restored = other.web(
+        3,
+        "restore",
+        json!({"key": "old:7", "choice": "folder", "request": "p-restore", "confirmed": true}),
+    );
+    let reopened = restored["result"]["pane"]
+        .as_u64()
+        .unwrap_or_else(|| panic!("{restored}"));
+    let after = other.web(4, "projects", json!({}));
+    assert_eq!(
+        after["result"]["panes"][reopened.to_string()],
+        "kelp-mux",
+        "{after}"
+    );
+    // Renamed (id and folder stay), then deleted: the folder stays and its
+    // terminals are Scratch's again (their link names no project).
+    let renamed = bridge.web(
+        11,
+        "project_update",
+        json!({"id": "kelp-mux", "name": "Kelp", "color": null}),
+    );
+    assert_eq!(
+        renamed["result"]["config"]["projects"][0]["name"], "Kelp",
+        "{renamed}"
+    );
+    assert_eq!(
+        renamed["result"]["config"]["projects"][0]["color"],
+        Value::Null
+    );
+    let unconfirmed = bridge.web(12, "project_delete", json!({"id": "kelp-mux"}));
+    assert!(
+        unconfirmed["error"]
+            .as_str()
+            .unwrap()
+            .contains("confirmation")
+    );
+    let deleted = bridge.web(
+        13,
+        "project_delete",
+        json!({"id": "kelp-mux", "confirmed": true}),
+    );
+    assert_eq!(deleted["result"]["saved"], true, "{deleted}");
+    assert_eq!(deleted["result"]["config"]["projects"], json!([]));
+    assert!(server.root.join("projects/Kelp Mux").is_dir());
+    // Its id is not given to a new project of the same name.
+    let again = bridge.web(14, "project_create", json!({"name": "Kelp Mux"}));
+    assert_eq!(again["result"]["project"], "kelp-mux-2", "{again}");
+}
+
 #[test]
 fn the_user_configuration_is_saved_validated_and_pushed_live() {
     let server = Server::start();
@@ -844,7 +1017,7 @@ fn repos_and_commands_report_read_only_facts_for_the_terminals_table() {
     welcome(&mut bridge);
     let state = bridge.web(1, "state", json!({}));
     assert_eq!(state["result"]["api_version"], 3);
-    assert_eq!(state["result"]["api_minor"], 4);
+    assert_eq!(state["result"]["api_minor"], 5);
     let operations = state["result"]["operations"].as_array().unwrap();
     assert!(operations.iter().any(|op| op == "repos"));
     assert!(operations.iter().any(|op| op == "commands"));
@@ -1217,7 +1390,7 @@ fn file_requests_and_replies_are_relayed_unchanged() {
     }
     assert_eq!(limits["max_read_bytes"], 8 * 1024 * 1024);
     let state = bridge.web(1, "state", json!({}));
-    assert_eq!(state["result"]["api_minor"], 4);
+    assert_eq!(state["result"]["api_minor"], 5);
     assert!(
         state["result"]["operations"]
             .as_array()

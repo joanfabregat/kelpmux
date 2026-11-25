@@ -1,6 +1,6 @@
 # KelpMux configuration
 
-KelpMux keeps a user's settings in one TOML file, `~/.config/kelpmux/config.toml` (`$XDG_CONFIG_HOME/kelpmux/config.toml` when `XDG_CONFIG_HOME` is set). It is the single place for user configuration; later releases will also keep the list of projects there. Run `kelpmux config path` to print its path: it creates the file first if there is none, with every key commented out at its default and documented.
+KelpMux keeps a user's settings in one TOML file, `~/.config/kelpmux/config.toml` (`$XDG_CONFIG_HOME/kelpmux/config.toml` when `XDG_CONFIG_HOME` is set). It is the single place for user configuration, the list of projects included (`[[project]]`). Run `kelpmux config path` to print its path: it creates the file first if there is none, with every key commented out at its default and documented.
 
 Every key is optional. Folder paths are absolute or start with `~/` (your home folder; `~` alone is the home folder itself); other `~` forms, relative paths and `..` are refused. Unknown keys are errors, with a "did you mean" suggestion when one is close, so a typo never goes unnoticed.
 
@@ -22,6 +22,24 @@ Some keys only take effect when the workspace server starts. `files.root` and `f
 1. Run `kelpmux config path` and edit that file. Keep its comments; uncomment a key to change it. The reference below lists every key.
 2. Run `kelpmux config check`. It prints each problem as `path:line:col: message` and exits with status 1 when the file is invalid, 0 when it is valid. Fix every problem it reports.
 3. Changes apply live in every open web client; nothing needs restarting, except that a changed `files.root` or `files.extra_roots` applies on the next workspace start (`kelpmux stop`, then `kelpmux start`, which ends the workspace's shells: ask the user first).
+
+### Projects (for agents)
+
+A project is a `[[project]]` table with an `id`, a `name`, a `folder` and an optional `color` (reference below). To add one, append a table at the end of the file:
+
+```toml
+[[project]]
+id = "kelp"          # lowercase letters, digits and -, unique, never "scratch"
+name = "Kelp"        # shown in the web client; unique regardless of case
+folder = "~/projects/Kelp"
+color = "teal"       # optional
+```
+
+- Choose an `id` no other project uses and keep it when renaming: terminals are linked to their project by it (in the workspace's `terminal-projects.json`), so changing it moves them to Scratch. Do not reuse the id of a deleted project.
+- The folder must lie inside `files.root` or `files.extra_roots`, and may not be inside or contain another project's folder or `scratch.folder`. Create it if it does not exist (a project whose folder is missing shows as missing).
+- To delete a project, remove its table. Its folder and files stay; its terminals move to Scratch.
+- Scratch is built in: it is not a `[[project]]`, and its folder is `scratch.folder`.
+- Run `kelpmux config check` afterwards; open web clients show the change within a few seconds.
 
 `kelpmux config schema` prints a JSON Schema of the file for editors and tools; `kelpmux config check` also enforces the rules a schema cannot express (folders that must exist, folders that must lie inside the roots).
 
@@ -88,7 +106,7 @@ The default folder for new projects: a project named `name` goes in `<base>/<nam
 | --- | --- |
 | Type | folder path (string) |
 | Default | `"~/projects"` |
-| Applies | Immediately. Stored for project support in a later release; nothing uses it yet. |
+| Applies | Immediately: the web client offers `<base>/<name>` for the next project it creates (and creates that folder). |
 
 ## `[scratch]`
 
@@ -96,12 +114,68 @@ Terminals outside any project.
 
 ### `scratch.folder`
 
-The folder terminals outside any project start in. It must lie inside `files.root` or one of `files.extra_roots`, and need not exist yet.
+The folder of the built-in Scratch project: terminals created outside any project start in it and belong to Scratch. It must lie inside `files.root` or one of `files.extra_roots`, and need not exist yet.
 
 | | |
 | --- | --- |
 | Type | folder path (string) |
 | Default | `"~/scratch"` |
-| Applies | Immediately. Stored for a later release; nothing uses it yet. |
+| Applies | Immediately: the next terminal created outside a project starts there (the web client creates the folder when it is missing). |
+
+## `[[project]]`
+
+Projects: one `[[project]]` table each, with a name and a folder. Every terminal belongs to one project; terminals created outside any project belong to the built-in Scratch project (`scratch.folder`), which is not listed here. The web client adds, renames and deletes projects here too.
+
+```toml
+[[project]]
+id = "kelp"
+name = "Kelp"
+folder = "~/projects/Kelp"
+color = "teal"
+```
+
+### `project.id`
+
+A stable identifier: lowercase letters, digits and `-`, at most 64, starting with a letter or digit; unique, and not `scratch`. Terminals are linked to their project by it, so keep it when renaming. The web client makes one from the name.
+
+| | |
+| --- | --- |
+| Type | string |
+| Required | yes |
+| Example | `id = "kelp"` |
+| Applies | Immediately. |
+
+### `project.name`
+
+The name shown: at most 64 characters, without `/` or control characters, unique regardless of case, and not `Scratch`.
+
+| | |
+| --- | --- |
+| Type | string |
+| Required | yes |
+| Example | `name = "Kelp"` |
+| Applies | Immediately. |
+
+### `project.folder`
+
+The project's folder. It must lie inside `files.root` or one of `files.extra_roots`, and may not be inside, or contain, another project's folder or `scratch.folder`. It need not exist: a project whose folder is missing shows as missing. Deleting a project never deletes its folder.
+
+| | |
+| --- | --- |
+| Type | folder path (string) |
+| Required | yes |
+| Example | `folder = "~/projects/Kelp"` |
+| Applies | Immediately. |
+
+### `project.color`
+
+Optional: the colour that marks the project in the sidebar and the file browser, one of red, orange, yellow, green, teal, blue, purple, pink, gray, or `#rrggbb`.
+
+| | |
+| --- | --- |
+| Type | string |
+| Required | no |
+| Example | `color = "teal"` |
+| Applies | Immediately. |
 
 <!-- END kelpmux config docs -->

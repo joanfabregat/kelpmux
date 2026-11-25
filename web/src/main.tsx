@@ -67,6 +67,23 @@ import {
 } from "./Shell";
 import { Sidebar } from "./Sidebar";
 import {
+  SCRATCH,
+  groupOrder,
+  projectColor,
+  projectOf,
+  readLinks,
+  scratchProject,
+  sidebarProjects,
+  type Project,
+} from "./projects";
+import {
+  MoveToProjectDialog,
+  ProjectDialog,
+  type ProjectDraft,
+  type ProjectSaveResult,
+} from "./ProjectDialog";
+import { FileMenu } from "./files/actions";
+import {
   HelpPanel,
   MovePanel,
   TerminalNotificationsPanel,
@@ -467,6 +484,25 @@ function App() {
     [operations, setOperations] = useState(() => new Set<string>()),
     // The user configuration (config.toml) through the bridge's `config`.
     [userConfig, setUserConfig] = useState<UserConfigState | null>(null),
+    // Projects (bridge API minor 5): which project each live terminal
+    // belongs to (pane → id; the rest are Scratch's), the project the grid,
+    // the file browser and Recently closed show ("" for all), the project
+    // dialog, the terminal being moved, a project's menu and the project
+    // under a dragged row.
+    [projectLinks, setProjectLinks] = useState<Record<number, string>>({}),
+    [scope, setScope] = useState(""),
+    [projectDialog, setProjectDialog] = useState<{
+      mode: "create" | "rename";
+      project?: Project;
+      initial?: Partial<ProjectDraft>;
+    } | null>(null),
+    [moveTarget, setMoveTarget] = useState<NumberedPane | null>(null),
+    [projectMenu, setProjectMenu] = useState<{
+      project: Project;
+      x: number;
+      y: number;
+    } | null>(null),
+    [dropProject, setDropProject] = useState(""),
     // The terminal whose notifications the Notifications panel shows.
     [notifyPane, setNotifyPane] = useState(0),
     [findQuery, setFindQuery] = useState(""),
@@ -625,7 +661,10 @@ function App() {
     keyModal ||
     !!findPane ||
     !!menu ||
-    !!uploadDrop;
+    !!uploadDrop ||
+    !!projectDialog ||
+    !!moveTarget ||
+    !!projectMenu;
   useEffect(() => {
     if (overlayWasOpen.current && !overlayOpen)
       requestAnimationFrame(() =>
@@ -729,7 +768,43 @@ function App() {
   // This browser's layout: order, parking and focus, per
   // workspace and epoch. `all` is every pane in this browser's order; `live` the tabs and
   // grid (parked excluded).
-  const all = numberPanes(orderPanes(panes, order));
+  // Projects: the user's (config.toml) and Scratch, in the sidebar's order
+  // (by name, Scratch last). Terminals follow that order, so their numbers,
+  // the grid and Alt+digit read top to bottom like the sidebar.
+  const offersProjects = online && operations.has("projects");
+  const userProjects = offersProjects ? userConfig?.projects || [] : [];
+  const scratch = scratchProject(
+    userConfig?.values.scratch.folder || "~/scratch",
+    userConfig?.resolved.scratch.folder || "",
+  );
+  const projectList = offersProjects
+    ? sidebarProjects(userProjects, scratch)
+    : [];
+  const projectById = (id: string) =>
+    projectList.find((project) => project.id === id);
+  /** The project a terminal belongs to; a dragged row already shows in
+   * the group under it. */
+  const projectOfPane = (pane: number) =>
+    drag === pane && dropProject
+      ? dropProject
+      : projectOf(pane, projectLinks, userProjects);
+  const grouping = (list: NumberedPane[]) =>
+    projectList.length > 1
+      ? groupOrder(
+          list,
+          projectList.map((project) => project.id),
+          projectOfPane,
+        )
+      : list;
+  const all = numberPanes(
+    projectList.length > 1
+      ? groupOrder(
+          orderPanes(panes, order),
+          projectList.map((project) => project.id),
+          (pane) => projectOf(pane, projectLinks, userProjects),
+        )
+      : orderPanes(panes, order),
+  );
   // Read by pasteUploaded after an upload finishes; declared here, above
   // the early returns, so the hook order never changes between renders.
   const panesNow = useRef(all);
@@ -737,6 +812,10 @@ function App() {
   const parkedSet = new Set(parked);
   const live = all.filter((p) => !parkedSet.has(p.id));
   const parkedPanes = all.filter((p) => parkedSet.has(p.id));
+  /** The grid of one project (`scope`), or of every terminal. */
+  const inScope = (p: NumberedPane) =>
+    !scope || projectOf(p.id, projectLinks, userProjects) === scope;
+  const gridPanes = live.filter(inScope);
   // Navigation history (navigation.ts): the place shown, mirrored into the
   // URL; Back, Forward and a loaded URL apply theirs. Popup windows keep
   // none. Declared before the effects that call `navigation.automatic()`.
@@ -765,6 +844,7 @@ function App() {
         sideLine: side?.jump?.line,
         dialog,
         notifyPane,
+        project: scope,
       });
   const navigation = useHistorySync({
     here,
@@ -772,7 +852,9 @@ function App() {
       online &&
       panesLoaded &&
       // Files are known: not offered, or their client is ready.
-      (!(filesOffered && fileLimits) || !!filesClient),
+      (!(filesOffered && fileLimits) || !!filesClient) &&
+      // Projects are known before a URL naming one applies.
+      (!offersProjects || !!userConfig),
     context: phone ? "phone" : "wide",
     apply: applyLocation,
   });
@@ -785,6 +867,14 @@ function App() {
     setDialog(opened);
     if (!opened) setQuery("");
     if (target.of) setNotifyPane(target.of);
+    // A project that no longer exists shows every project instead.
+    let project = target.project;
+    if (project && offersProjects && !projectById(project)) {
+      toast("This project no longer exists", { key: "navigation" });
+      navigation.automatic();
+      project = "";
+    }
+    setScope(project);
     const jump = (line: number): FileJump =>
       line ? { line, seq: ++jumps.current } : undefined;
     /** The side panel's file; one with unsaved changes stays (its buffer
@@ -932,7 +1022,7 @@ function App() {
         ? []
         : view === "single"
           ? live.filter((p) => p.id === active)
-          : live.slice(0, streamed),
+          : gridPanes.slice(0, streamed),
     visibleKey = visible.map((p) => p.id).join(",");
   // A ringing bell marks the favicon until it is read (Bell event on).
   const browserActivity = activityIcon(
@@ -1008,6 +1098,19 @@ function App() {
       clearInterval(timer);
     };
   }, [offersConfig]);
+  // Which project each terminal belongs to, shared by every browser: asked
+  // again every few seconds like the configuration, and after every
+  // change this window makes.
+  async function loadLinks() {
+    const result = await quietRpc("projects");
+    if (result) setProjectLinks(readLinks(result));
+  }
+  useEffect(() => {
+    if (!offersProjects) return;
+    void loadLinks();
+    const timer = setInterval(loadLinks, CONFIG_REFRESH_MS);
+    return () => clearInterval(timer);
+  }, [offersProjects, epoch]);
   const mountsLoading = useRef(false);
   /** Loads the disks' mount points for the sidebar's disk tooltips. */
   async function loadDiskMounts() {
@@ -1858,10 +1961,142 @@ function App() {
       ],
     });
   }
-  async function newTab() {
-    const result = await rpc("new", { request: crypto.randomUUID() });
+  /** A new terminal: in `project` (its folder), else in Scratch (the
+   * Scratch folder). */
+  async function newTab(project?: Project) {
+    const result = await rpc("new", {
+      request: crypto.randomUUID(),
+      ...(project && !project.scratch && offersProjects
+        ? { project: project.id }
+        : {}),
+    });
+    if (result?.pane && project && !project.scratch)
+      setProjectLinks((links) => ({ ...links, [result.pane]: project.id }));
     // In the grid the new terminal joins the tiles; otherwise it opens.
     if (result?.pane && !(view === "grid" && !popupPane)) activate(result.pane);
+  }
+  /** Moves a terminal to another project: only its membership changes. */
+  async function moveToProject(pane: number, project: Project) {
+    const before = projectOf(pane, projectLinks, userProjects);
+    if (before === project.id) return;
+    const result = await rpc("project_move", {
+      pane,
+      project: project.scratch ? null : project.id,
+    });
+    if (!result) return;
+    setProjectLinks(readLinks(result));
+    toast(`Moved to ${project.name}`, { key: "project" });
+  }
+  /** The bridge's problems with a project change, by the dialog's field. */
+  function projectProblems(errors: any[]): Record<string, string[]> {
+    const problems: Record<string, string[]> = {};
+    for (const error of errors || []) {
+      const field =
+        /^project\[\d+\]\.(name|folder|color|id)$/.exec(String(error?.key))?.[1] ||
+        "";
+      const key = field === "id" ? "name" : field;
+      (problems[key] ||= []).push(String(error?.message || error));
+    }
+    return problems;
+  }
+  async function saveProject(
+    mode: "create" | "rename",
+    draft: ProjectDraft,
+    project?: Project,
+  ): Promise<ProjectSaveResult | null> {
+    const result =
+      mode === "create"
+        ? await rpc("project_create", {
+            name: draft.name,
+            folder: draft.folder || null,
+            color: draft.color,
+          })
+        : await rpc("project_update", {
+            id: project!.id,
+            name: draft.name,
+            color: draft.color,
+          });
+    if (!result) return null;
+    const config = readUserConfig(result.config);
+    if (config) setUserConfig(config);
+    if (!result.saved)
+      return { saved: false, problems: projectProblems(result.errors) };
+    setProjectDialog(null);
+    if (result.warning) toast(result.warning, { key: "project", tone: "error" });
+    else
+      toast(
+        mode === "create"
+          ? `Created project “${draft.name}”`
+          : `Saved “${draft.name}”`,
+        { key: "project" },
+      );
+    return { saved: true, problems: {} };
+  }
+  function deleteProject(project: Project) {
+    setConfirmAction({
+      title: "Delete project",
+      text: `Delete the project “${project.name}”? Its folder ${project.path} and its files stay; its terminals move to Scratch.`,
+      buttons: [
+        {
+          label: "Delete project",
+          color: "danger",
+          action: async () => {
+            const result = await rpc("project_delete", {
+              id: project.id,
+              confirmed: true,
+            });
+            const config = readUserConfig(result?.config);
+            if (config) setUserConfig(config);
+            if (result?.saved) {
+              if (scope === project.id) setScope("");
+              toast(`Deleted project “${project.name}”`, { key: "project" });
+            } else if (result)
+              fail(Error(result.errors?.[0]?.message || "Not deleted"));
+          },
+        },
+      ],
+    });
+  }
+  /** A project's menu: its files, its terminals, its closed terminals,
+   * and for the user's projects Rename and Delete. */
+  function projectMenuItems(project: Project): [string, () => void, boolean?][] {
+    const items: [string, () => void, boolean?][] = [
+      ["New terminal", () => void newTab(project), project.missing],
+    ];
+    if (filesClient && !popupPane)
+      items.push(["Files", () => openFiles(project.path, project.id), project.missing]);
+    if (!phone)
+      items.push([
+        "Terminals",
+        () => {
+          setScope(project.id);
+          setPhoneList(false);
+          chooseMode("grid");
+        },
+      ]);
+    items.push([
+      "Recently closed",
+      () => {
+        setScope(project.id);
+        setDialog("recovery");
+      },
+    ]);
+    if (!project.scratch)
+      items.push(
+        ["Rename…", () => setProjectDialog({ mode: "rename", project })],
+        ["Delete…", () => deleteProject(project)],
+      );
+    return items;
+  }
+  /** A folder as written in config.toml resolved here, for the dialog's
+   * checks: `~/…` against the home folder. */
+  function resolveFolder(folder: string): string | null {
+    if (folder.startsWith("/")) return folder.replace(/\/+$/, "") || "/";
+    const homeDir = home;
+    if (!homeDir) return null;
+    if (folder === "~") return homeDir;
+    if (folder.startsWith("~/")) return `${homeDir}/${folder.slice(2)}`.replace(/\/+$/, "");
+    return null;
   }
   function move(source: number, before: number | null) {
     setOrder(
@@ -1890,6 +2125,8 @@ function App() {
           startX: e.clientX,
           startY: e.clientY,
           moving: false,
+          /** The project group under the pointer ("" until one is). */
+          project: "",
         };
         const cleanup = () => {
           window.removeEventListener("pointermove", pointerMove);
@@ -1902,6 +2139,7 @@ function App() {
           cleanup();
           setDrag(null);
           setDrop(null);
+          setDropProject("");
         };
         const pointerMove = (event: PointerEvent) => {
           if (
@@ -1918,9 +2156,19 @@ function App() {
             setDrag(state.source);
             setDrop(state.source);
           }
-          const target = document
-            .elementFromPoint(event.clientX, event.clientY)
-            ?.closest<HTMLElement>("[data-drop-pane]");
+          const under = document.elementFromPoint(event.clientX, event.clientY);
+          // Over another project's group (its header or one of its rows),
+          // the terminal moves to that project when dropped.
+          if (offersProjects && projectList.length > 1) {
+            const group = under
+              ?.closest<HTMLElement>("[data-project-group]")
+              ?.dataset.projectGroup;
+            if (group && group !== state.project) {
+              state.project = group;
+              setDropProject(group);
+            }
+          }
+          const target = under?.closest<HTMLElement>("[data-drop-pane]");
           const targetId = Number(target?.dataset.dropPane);
           if (target && targetId && targetId !== state.source) {
             const rect = target.getBoundingClientRect();
@@ -1946,7 +2194,20 @@ function App() {
           if (state.moving) {
             suppressClick.current = performance.now() + 300;
             move(state.source, state.before);
+            const target = state.project && projectById(state.project);
+            if (target) {
+              // Shown in its new group until the bridge confirms.
+              const id = state.source;
+              setProjectLinks((links) => {
+                const next = { ...links };
+                if (target.scratch) delete next[id];
+                else next[id] = target.id;
+                return next;
+              });
+              void moveToProject(id, target);
+            }
           }
+          setDropProject("");
         };
         dragCleanup.current = cancel;
         window.addEventListener("pointermove", pointerMove, { passive: false });
@@ -1957,17 +2218,46 @@ function App() {
     };
   }
   const ordered =
-    drag !== null && drag !== drop
-      ? orderPanes(
-          live,
-          moveBefore(
-            live.map((p) => p.id),
-            drag,
-            drop,
+    drag !== null && (drag !== drop || dropProject)
+      ? grouping(
+          orderPanes(
+            live,
+            moveBefore(
+              live.map((p) => p.id),
+              drag,
+              drop,
+            ),
           ),
         )
       : live;
   const streamedIds = new Set(visible.map((p) => p.id));
+  /** The project the grid, the files or Recently closed show, if any. */
+  const scopeProject = scope ? projectById(scope) : undefined;
+  /** A project view's bar: its colour and name, what it shows, and the way
+   * back to every project. */
+  const scopeBar = (
+    project: Project,
+    what: string,
+    back: string,
+    onBack: () => void,
+  ) => {
+    const color = projectColor(project);
+    return (
+      <div
+        className="project-scope"
+        data-scope={project.id}
+        style={color ? ({ "--project": color } as React.CSSProperties) : undefined}
+      >
+        <span className={`project-dot ${color ? "" : "plain"}`} aria-hidden="true" />
+        <span className="grow">
+          <b>{project.name}</b> · {what}
+        </span>
+        <button type="button" className="ghost small" onClick={onBack}>
+          {back}
+        </button>
+      </div>
+    );
+  };
   const keySettings = (mode: "register" | "settings") => (
     <KeySettings
       mode={mode}
@@ -2262,9 +2552,11 @@ function App() {
   const insertPane = live.find((p) => p.id === active);
   /** The open file shown in the main area; none shows the browser. */
   const shownDocument = documents.docs.find((doc) => doc.path === shownDoc);
-  /** Shows the file browser, at `dir` when given. */
-  function openFiles(dir?: string) {
+  /** Shows the file browser, at `dir` when given; `project` shows that
+   * project's files (from its folder), else every file. */
+  function openFiles(dir?: string, project = "") {
     if (!filesClient || popupPane) return;
+    setScope(project);
     // A folder outside the file root (a terminal's): the root instead.
     if (dir && filesRoot && !withinRoot(dir, filesRoot, home)) {
       toast(outsideRootMessage, { key: "navigation" });
@@ -2289,7 +2581,7 @@ function App() {
     <FileTabs
       docs={tabDocs}
       current={shownDocument?.path || ""}
-      onBrowse={() => openFiles()}
+      onBrowse={() => openFiles(undefined, scope)}
       onShow={(path) => openDoc(path)}
       onClose={closeDoc}
     />
@@ -2434,6 +2726,9 @@ function App() {
         isParked || index < 0 || index >= live.length - 1,
       ],
       isParked ? ["Unpark", () => unpark(p)] : ["Park", () => park(p)],
+      ...(projectList.length > 1
+        ? [["Move to project…", () => setMoveTarget(p)] as [string, () => void]]
+        : []),
       [
         unread ? `Notifications (${unread} unread)…` : "Notifications…",
         () => openNotifications(p),
@@ -2591,7 +2886,9 @@ function App() {
       ? `Notifications · ${paneLabel(notified)}`
       : "Notifications",
     terminals: "Terminals",
-    recovery: "Recently closed",
+    recovery: scopeProject
+      ? `Recently closed · ${scopeProject.name}`
+      : "Recently closed",
     search: "Search terminal history",
     parked: "Parked terminals",
     move: "Move terminal",
@@ -2626,6 +2923,17 @@ function App() {
       );
     },
     onRemoved: documents.removed,
+    ...(offersProjects
+      ? {
+          onCreateProject: (path: string) =>
+            setProjectDialog({
+              mode: "create",
+              initial: { name: baseName(path), folder: path },
+            }),
+          isProjectFolder: (path: string) =>
+            projectList.some((project) => project.path === path),
+        }
+      : {}),
     upload: {
       unavailable: uploadUnavailable,
       limits: uploadLimits,
@@ -2645,7 +2953,11 @@ function App() {
       mode={view}
       diskMounts={knownMounts}
       onDisksHover={() => void loadDiskMounts()}
-      onMode={chooseMode}
+      onMode={(mode) => {
+        // The sidebar's Grid shows every terminal.
+        setScope("");
+        chooseMode(mode);
+      }}
       terminals={ordered}
       parked={parkedPanes}
       notifications={notifications}
@@ -2667,7 +2979,17 @@ function App() {
       onPark={park}
       onUnpark={unpark}
       onMenu={(pane, x, y) => setMenu({ pane, x, y })}
-      onNew={newTab}
+      onNew={() => void newTab()}
+      projects={offersProjects ? projectList : undefined}
+      projectOf={offersProjects ? projectOfPane : undefined}
+      dropProject={drag !== null ? dropProject : ""}
+      onNewIn={(project) => void newTab(project)}
+      onProjectMenu={(project, x, y) => setProjectMenu({ project, x, y })}
+      onNewProject={
+        offersProjects
+          ? () => setProjectDialog({ mode: "create" })
+          : undefined
+      }
       onState={openState}
       onDialog={(name) =>
         name === "terminals" ? openTerminals("all") : setDialog(name)
@@ -2747,6 +3069,12 @@ function App() {
                   phone={phone}
                   onBack={phone ? () => setPhoneList(true) : undefined}
                   tabs={fileTabs}
+                  projects={offersProjects ? projectList : undefined}
+                  scope={scopeProject}
+                  onOpenProject={(project) =>
+                    openFiles(project.path, project.id)
+                  }
+                  onAllFiles={() => openFiles(filesDir)}
                 />
               )
             ) : focused ? (
@@ -2782,6 +3110,50 @@ function App() {
                   />
                 </section>
               </div>
+            ) : view === "grid" && scopeProject ? (
+              // One project's terminals: its bar, then its grid.
+              <>
+                {scopeBar(scopeProject, "Terminals", "All terminals", () =>
+                  setScope(""),
+                )}
+                {ordered.some(inScope) ? (
+                  <LiveGrid
+                    panes={ordered.filter(inScope)}
+                    notifications={notifications}
+                    body={(p) =>
+                      streamedIds.has(p.id) ? (
+                        <TerminalTile pane={p} store={store} />
+                      ) : (
+                        <div className="tile-unstreamed" aria-hidden="true" />
+                      )
+                    }
+                    onOpen={(p) => {
+                      if (performance.now() < suppressClick.current) return;
+                      openPane(p);
+                    }}
+                    onMenu={(pane, x, y) => setMenu({ pane, x, y })}
+                    onNew={() => void newTab(scopeProject)}
+                    onDragStart={(p, event) => {
+                      if (!touch) dragProps(p).onPointerDown(event);
+                    }}
+                    tileClass={(p) =>
+                      drag === p.id && drag !== drop ? "landing" : ""
+                    }
+                  />
+                ) : (
+                  <div className="empty-state">
+                    <Icon name="terminal" size="lg" />
+                    <h3>No terminals in {scopeProject.name}</h3>
+                    <button
+                      disabled={scopeProject.missing}
+                      onClick={() => void newTab(scopeProject)}
+                    >
+                      <Icon name="plus" size="sm" />
+                      New terminal
+                    </button>
+                  </div>
+                )}
+              </>
             ) : view === "grid" && live.length ? (
               // Read-only: no focus and no input (keys, mouse, paste or
               // dropped files) reach a tile's terminal.
@@ -2800,7 +3172,7 @@ function App() {
                   openPane(p);
                 }}
                 onMenu={(pane, x, y) => setMenu({ pane, x, y })}
-                onNew={newTab}
+                onNew={() => void newTab()}
                 onDragStart={(p, event) => {
                   if (!touch) dragProps(p).onPointerDown(event);
                 }}
@@ -2819,7 +3191,7 @@ function App() {
                     sidebar.
                   </p>
                 )}
-                <button onClick={newTab}>
+                <button onClick={() => void newTab()}>
                   <Icon name="plus" size="sm" />
                   New terminal
                 </button>
@@ -3025,6 +3397,9 @@ function App() {
               )}
               {dialog === "recovery" && (
                 <RecoveryPanel
+                  scope={scopeProject}
+                  projects={userProjects}
+                  onAllProjects={() => setScope("")}
                   rpc={rpc}
                   onCopy={(text) =>
                     navigator.clipboard
@@ -3033,6 +3408,8 @@ function App() {
                       .catch(fail)
                   }
                   onRestored={(id, existing) => {
+                    // The reopened terminal keeps its project (the bridge).
+                    void loadLinks();
                     closeDialog();
                     toast(
                       existing
@@ -3084,6 +3461,42 @@ function App() {
               {dialog === "help" && <HelpPanel />}
             </section>
           </div>
+        )}
+        {projectMenu && (
+          <FileMenu
+            label={`Project ${projectMenu.project.name}`}
+            x={projectMenu.x}
+            y={projectMenu.y}
+            items={projectMenuItems(projectMenu.project)}
+            onClose={() => setProjectMenu(null)}
+          />
+        )}
+        {projectDialog && (
+          <ProjectDialog
+            mode={projectDialog.mode}
+            project={projectDialog.project}
+            initial={projectDialog.initial}
+            base={userConfig?.values.projects.base || "~/projects"}
+            projects={projectList}
+            resolve={resolveFolder}
+            onSave={(draft) =>
+              saveProject(projectDialog.mode, draft, projectDialog.project)
+            }
+            onCancel={() => setProjectDialog(null)}
+          />
+        )}
+        {moveTarget && (
+          <MoveToProjectDialog
+            title={paneLabel(moveTarget)}
+            projects={projectList}
+            current={projectOf(moveTarget.id, projectLinks, userProjects)}
+            onMove={(project) => {
+              const pane = moveTarget.id;
+              setMoveTarget(null);
+              void moveToProject(pane, project);
+            }}
+            onCancel={() => setMoveTarget(null)}
+          />
         )}
         {confirmAction && (
           <ConfirmDialog

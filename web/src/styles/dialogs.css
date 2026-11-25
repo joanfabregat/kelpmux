@@ -1269,3 +1269,109 @@ button.attention-open:hover {
 .config-form .setting-hint {
   margin-bottom: var(--s4);
 }
+
+/* ───────── Project dialogs ───────── */
+.project-dialog {
+  gap: var(--s2);
+}
+.project-dialog .confirm-buttons {
+  margin-top: var(--s3);
+}
+.project-field {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s1);
+  color: var(--text-2);
+  font-size: var(--fs-sm);
+}
+.project-field input {
+  width: 100%;
+}
+.project-field input[aria-invalid="true"] {
+  border-color: var(--st-failed);
+}
+.project-dialog .config-field-problems {
+  margin: 0;
+}
+.project-hint {
+  margin: 0;
+  color: var(--text-3);
+  font-size: var(--fs-sm);
+  overflow-wrap: anywhere;
+}
+.project-colors {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--s2);
+  margin: var(--s2) 0 0;
+  padding: 0;
+  border: 0;
+}
+.project-colors legend {
+  margin-bottom: var(--s1);
+  padding: 0;
+  color: var(--text-2);
+  font-size: var(--fs-sm);
+}
+.project-swatch {
+  width: 22px;
+  height: 22px;
+  min-height: 0;
+  padding: 0;
+  border: 2px solid transparent;
+  border-radius: 50%;
+  cursor: pointer;
+}
+.project-swatch.none {
+  background: transparent;
+  box-shadow: inset 0 0 0 1.5px var(--text-3);
+}
+.project-swatch.selected {
+  outline: 2px solid var(--text);
+  outline-offset: 2px;
+}
+.project-choices {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  max-height: 50vh;
+  margin-top: var(--s2);
+  overflow-y: auto;
+}
+.project-choice {
+  --project: var(--text-3);
+  display: flex;
+  align-items: center;
+  gap: var(--s2);
+}
+.project-choice[aria-current="true"] {
+  background: var(--surface-2);
+}
+/* A project scope over a view: its colour dot, its name and a way back to
+ * every project. */
+.project-scope {
+  --project: var(--text-3);
+  display: flex;
+  align-items: center;
+  gap: var(--s2);
+  min-height: 32px;
+  padding: 0 var(--s3);
+  border-bottom: 1px solid var(--line);
+  color: var(--text-2);
+  font-size: var(--fs-sm);
+}
+.project-scope b {
+  color: var(--text);
+  font-weight: 600;
+}
+.project-scope .project-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--project);
+}
+.project-scope .project-dot.plain {
+  background: transparent;
+  box-shadow: inset 0 0 0 1.5px var(--text-3);
+}

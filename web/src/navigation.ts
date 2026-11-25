@@ -9,11 +9,15 @@
 //   ?view=files&file=<path>[&line=<n>]             an open file
 //   ?view=home                                     a phone's terminal list
 //   …&dialog=<panel>[&of=<pane id>]                a panel over that place
+//   …&project=<project id>                          the grid, the file
+//                                                  browser or Recently closed
+//                                                  of one project (`scratch`
+//                                                  for Scratch)
 //
 // Terminals are named by their server pane id, which stays the same while
 // they are reordered, parked or renumbered; never by their position. `line`
 // belongs to the file shown (in the main area or beside the terminal).
-// Parameters this module does not own (KelpHub's project, workspace and
+// Parameters this module does not own (KelpHub's workspace and
 // scratch, …) are kept as they are, and "pane" is reserved for windows
 // opened with Open in a window, which do not keep a history.
 //
@@ -49,6 +53,9 @@ export type AppLocation = {
   line: number;
   /** A modal panel over the place, by its URL name (dialogs below). */
   dialog: string;
+  /** The project the grid, the file browser or Recently closed shows
+   * (its id; "" for all). */
+  project: string;
   /** The terminal whose notifications the panel shows. */
   of: number;
 };
@@ -62,6 +69,7 @@ export const emptyLocation: AppLocation = {
   line: 0,
   dialog: "",
   of: 0,
+  project: "",
 };
 
 /** Panels with an entry: URL name → the application's dialog name. */
@@ -95,6 +103,7 @@ const owned = [
   "line",
   "dialog",
   "of",
+  "project",
 ];
 const views: View[] = ["terminal", "grid", "files", "home"];
 
@@ -135,7 +144,23 @@ export function parseLocation(search: string): Partial<AppLocation> {
     result.dialog = dialog;
     if (dialog === "notifications") result.of = id(params.get("of"));
   }
+  const project = params.get("project") || "";
+  if (
+    /^[a-z0-9-]{1,64}$/.test(project) &&
+    (scoped(result.view) || result.dialog === "closed")
+  )
+    result.project = project;
   return result;
+}
+
+/** Views a project scopes: the grid and the file browser. */
+function scoped(view: View | undefined) {
+  return view === "grid" || view === "files";
+}
+/** Whether a location keeps its project: a scoped view, or Recently
+ * closed over any place. */
+function keepsProject(location: Pick<AppLocation, "view" | "dialog">) {
+  return scoped(location.view) || location.dialog === "closed";
 }
 
 /** Whether a URL names a location (otherwise the application keeps its
@@ -157,6 +182,9 @@ export function resolveLocation(
     ...place,
     dialog: wanted.dialog || "",
     of: wanted.dialog === "notifications" ? wanted.of || 0 : 0,
+    project: keepsProject({ view: place.view, dialog: wanted.dialog || "" })
+      ? wanted.project || (wanted.view ? "" : place.project)
+      : "",
   };
 }
 
@@ -189,6 +217,8 @@ export function locationSearch(location: AppLocation, currentSearch = "") {
     if (location.dialog === "notifications" && location.of)
       add("of", location.of);
   }
+  if (location.project && keepsProject(location))
+    add("project", location.project);
   return `?${parts.join("&")}`;
 }
 
@@ -210,14 +240,23 @@ export type LocationState = {
   /** The application's dialog ("" for none). */
   dialog: string;
   notifyPane: number;
+  /** The project the grid, the file browser or Recently closed shows. */
+  project?: string;
 };
 
 /** The location the application state shows. */
 export function locationOf(state: LocationState): AppLocation {
+  const location = placeOf(state);
+  return keepsProject(location)
+    ? { ...location, project: state.project || "" }
+    : location;
+}
+function placeOf(state: LocationState): AppLocation {
   const dialog = dialogParam(state.dialog);
   const overlay = {
     dialog,
     of: dialog === "notifications" ? state.notifyPane : 0,
+    project: "",
   };
   if (state.phoneHome) return { ...emptyLocation, view: "home", ...overlay };
   if (state.view === "files")
@@ -251,11 +290,16 @@ export function sameBase(a: AppLocation, b: AppLocation) {
     a.terminal === b.terminal &&
     a.dir === b.dir &&
     a.file === b.file &&
-    a.side === b.side
+    a.side === b.side &&
+    (!scoped(a.view) || a.project === b.project)
   );
 }
 function sameOverlay(a: AppLocation, b: AppLocation) {
-  return a.dialog === b.dialog && a.of === b.of;
+  return (
+    a.dialog === b.dialog &&
+    a.of === b.of &&
+    (a.dialog !== "closed" || a.project === b.project)
+  );
 }
 
 export type HistoryDecision = {

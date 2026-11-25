@@ -16,6 +16,7 @@
 //! administration.
 use super::{
     connection,
+    projects::Links,
     protocol::*,
     session::{Session, request_id},
     status,
@@ -55,7 +56,11 @@ pub const API_VERSION: u64 = 3;
 /// added `config`: the `config` and `config_set` operations on the user
 /// configuration (`user_config`), and the `Config` notice the bridge sends
 /// when the file changes.
-pub const API_MINOR: u64 = 4;
+/// Minor 5 added `projects`: the `projects`, `project_move`,
+/// `project_create`, `project_update` and `project_delete` operations, a
+/// `project` for `new`, the `project` of each `closed` entry, and the
+/// `projects` of the `config` result.
+pub const API_MINOR: u64 = 5;
 /// Largest accepted `Web` request, in bytes of JSON.
 const REQUEST_LIMIT: usize = 65536;
 /// Largest request identifier a browser can represent exactly.
@@ -230,8 +235,136 @@ impl Api {
             "closed" => self.closed(),
             "restore" => self.restore(p),
             "config" | "config_set" => config_request(self.config.as_deref(), method, p),
+            "projects" => self.project_panes(),
+            "project_move" => self.project_move(p),
+            "project_create" | "project_update" | "project_delete" => {
+                self.project_change(method, p)
+            }
             _ => Err("unsupported web operation".into()),
         }
+    }
+    fn links(&self) -> Links {
+        Links::at(&self.state)
+    }
+    fn user_config(&self) -> Result<user_config::Config> {
+        self.config
+            .as_deref()
+            .and_then(user_config::Live::config)
+            .ok_or_else(|| "the user configuration is unavailable: HOME is not set".into())
+    }
+    /// This run's terminals that belong to a project: `{"panes": {"3":
+    /// "kelp"}}`; every other terminal belongs to Scratch.
+    fn project_panes(&self) -> Result<Value> {
+        let epoch = self.runtime()?.0;
+        let panes: serde_json::Map<String, Value> = self
+            .links()
+            .panes(&epoch)
+            .into_iter()
+            .map(|(pane, project)| (pane.to_string(), json!(project)))
+            .collect();
+        Ok(json!({ "panes": panes }))
+    }
+    /// Moves a live terminal to a project (`project`: an id, or null or
+    /// `scratch` for Scratch). Only the link changes, never the shell.
+    fn project_move(&self, p: &Value) -> Result<Value> {
+        let id = pane(p)?;
+        let project = match &p["project"] {
+            Value::Null => None,
+            Value::String(project) if project == user_config::SCRATCH => None,
+            Value::String(project) => Some(project.clone()),
+            _ => return Err("project must be a project id or null".into()),
+        };
+        if let Some(project) = &project
+            && self.user_config()?.project(project).is_none()
+        {
+            return Err("this project no longer exists".into());
+        }
+        let mut session = self.session("pane-lifecycle")?;
+        if !session.update()?.panes.iter().any(|pane| pane.id == id) {
+            return Err("this terminal is closed".into());
+        }
+        let epoch = self.runtime()?.0;
+        self.links()
+            .set(&Links::key(&epoch, id), project.as_deref())?;
+        self.project_panes()
+    }
+    /// Creates, renames or deletes a project in the user configuration.
+    /// Creating takes a name, an optional folder (default `<projects.base>/
+    /// <name>`, created when missing) and colour; the id is made from the
+    /// name, never reusing one that terminals are still linked to.
+    fn project_change(&self, method: &str, p: &Value) -> Result<Value> {
+        let live = self
+            .config
+            .as_deref()
+            .ok_or("the user configuration is unavailable: HOME is not set")?;
+        let config = self.user_config()?;
+        let text = |key: &str| -> Result<Option<String>> {
+            match &p[key] {
+                Value::Null => Ok(None),
+                Value::String(text) if text.len() <= 4096 => Ok(Some(text.clone())),
+                _ => Err(format!("{key} must be a string").into()),
+            }
+        };
+        let id = || -> Result<String> { text("id")?.ok_or_else(|| "project id required".into()) };
+        let color =
+            || -> Result<Option<String>> { Ok(text("color")?.filter(|color| !color.is_empty())) };
+        let change = match method {
+            "project_create" => {
+                let name = text("name")?.ok_or("project name required")?;
+                let folder = match text("folder")?.filter(|folder| !folder.trim().is_empty()) {
+                    Some(folder) => folder,
+                    None => format!(
+                        "{}/{name}",
+                        config.projects_base.written.trim_end_matches('/')
+                    ),
+                };
+                let mut taken: Vec<String> = config
+                    .projects
+                    .iter()
+                    .map(|project| project.id.clone())
+                    .collect();
+                taken.extend(self.links().projects());
+                user_config::ProjectChange::Create {
+                    id: user_config::new_project_id(&name, &taken),
+                    name,
+                    folder,
+                    color: color()?,
+                }
+            }
+            "project_update" => user_config::ProjectChange::Update {
+                id: id()?,
+                name: text("name")?,
+                color: if p.get("color").is_some() {
+                    Some(color()?)
+                } else {
+                    None
+                },
+            },
+            _ => {
+                if p["confirmed"] != true {
+                    return Err("deleting a project requires explicit confirmation".into());
+                }
+                user_config::ProjectChange::Delete { id: id()? }
+            }
+        };
+        let mut result = live.change_projects(&change)?;
+        if let user_config::ProjectChange::Create { id, .. } = &change
+            && result["saved"] == true
+        {
+            result["project"] = json!(id);
+            // The folder is created with the project; a failure leaves the
+            // project, shown as missing.
+            if let Some(project) = live.config().as_ref().and_then(|c| c.project(id))
+                && let Err(error) = std::fs::create_dir_all(&project.folder.path)
+            {
+                result["warning"] = json!(format!(
+                    "the project was saved, but its folder {} could not be created: {error}",
+                    project.folder.path.display()
+                ));
+            }
+            result["config"] = live.json();
+        }
+        Ok(result)
     }
     /// Each live pane's foreground program, by pane id, for the Terminals
     /// table. Process identities come from the server, never the browser;
@@ -275,11 +408,13 @@ impl Api {
                 std::cmp::Reverse(r.record.closed_at),
             )
         });
+        let links = self.links().all();
         let entries = records
             .iter()
             .map(|record| {
                 let mut value = serde_json::to_value(&record.record)?;
                 value["choices"] = json!(choices(record));
+                value["project"] = json!(links.get(&record.record.key));
                 Ok(value)
             })
             .collect::<Result<Vec<_>>>()?;
@@ -317,18 +452,61 @@ impl Api {
         else {
             return Err("terminal server did not identify the restored pane".into());
         };
+        // The reopened terminal stays in the closed one's project.
+        if !existing && let Ok((epoch, _)) = self.runtime() {
+            let _ = self.links().inherit(key, &Links::key(&epoch, pane));
+        }
         Ok(json!({ "pane": pane, "existing": existing }))
     }
     /// Starts a shell in a new pane through the stream's `spawn` request.
-    /// The browser supplies no command line; only an optional absolute
-    /// working directory. A retry with the same request returns the same pane.
+    /// The browser supplies no command line; only an optional `project`
+    /// (the terminal belongs to it and starts in its folder) and an
+    /// optional absolute working directory. Without either it starts in the
+    /// Scratch folder (`scratch.folder`, created when missing). A retry with
+    /// the same request returns the same pane.
     fn spawn(&self, p: &Value) -> Result<Value> {
         let request = p["request"]
             .as_str()
             .ok_or("new pane request identity required")?;
-        let cwd = match p.get("cwd") {
-            None | Some(Value::Null) => home()?,
-            Some(Value::String(path)) => PathBuf::from(path),
+        let project = match &p["project"] {
+            Value::Null => None,
+            Value::String(id) if id == user_config::SCRATCH => None,
+            Value::String(id) => Some(
+                self.user_config()?
+                    .project(id)
+                    .cloned()
+                    .ok_or("this project no longer exists")?,
+            ),
+            _ => return Err("project must be a project id".into()),
+        };
+        let cwd = match (p.get("cwd"), &project) {
+            (None | Some(Value::Null), Some(project)) => {
+                if !project.folder.path.is_dir() {
+                    return Err(format!(
+                        "the folder of “{}” ({}) is missing",
+                        project.name,
+                        project.folder.path.display()
+                    )
+                    .into());
+                }
+                project.folder.path.clone()
+            }
+            (None | Some(Value::Null), None) => match self.user_config() {
+                Ok(config) => {
+                    let scratch = config.scratch_folder.path;
+                    if !scratch.is_dir() {
+                        std::fs::create_dir_all(&scratch).map_err(|error| {
+                            format!(
+                                "the Scratch folder {} could not be created: {error}",
+                                scratch.display()
+                            )
+                        })?;
+                    }
+                    scratch
+                }
+                Err(_) => home()?,
+            },
+            (Some(Value::String(path)), _) => PathBuf::from(path),
             _ => return Err("cwd must be an absolute directory".into()),
         };
         if !cwd.is_absolute() || !cwd.is_dir() {
@@ -343,6 +521,11 @@ impl Api {
         else {
             return Err("terminal server did not identify the created pane".into());
         };
+        if let Some(project) = &project {
+            let epoch = self.runtime()?.0;
+            self.links()
+                .set(&Links::key(&epoch, pane), Some(&project.id))?;
+        }
         Ok(json!({ "pane": pane }))
     }
     fn workspace_name(&self) -> String {
@@ -373,6 +556,7 @@ const OPERATIONS: &[&str] = &[
     "files",
     "downloads",
     "config",
+    "projects",
 ];
 
 /// The user configuration operations, while the workspace runs or not:

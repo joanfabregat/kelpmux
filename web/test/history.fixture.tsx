@@ -5,7 +5,10 @@
 // with main.tsx's fallbacks. Terminals have pane ids 11, 12 and 13 and show
 // as 1, 2 and 3. The state becomes ready after a delay, like a sign-in; the
 // `phone` query parameter shows the phone's list instead of the grid. The
-// file root is /home/me: a folder or file outside it shows the root.
+// file root is /home/me: a folder or file outside it shows the root. The
+// project "alpha" (folder /home/me/alpha) scopes the grid, the file
+// browser and Recently closed (`?project=`); another id falls back to
+// every project.
 import React, { useEffect, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import {
@@ -38,6 +41,7 @@ function App() {
   const [side, setSide] = useState("");
   const [dialog, setDialog] = useState("");
   const [toast, setToast] = useState("");
+  const [project, setProject] = useState("");
   useEffect(() => {
     const timer = setTimeout(() => setReady(true), 150);
     return () => clearTimeout(timer);
@@ -53,6 +57,7 @@ function App() {
     side: !phone && shown === "single" ? side : "",
     dialog,
     notifyPane: 0,
+    project,
   });
   const navigation = useHistorySync({
     here: ready ? here : null,
@@ -60,6 +65,12 @@ function App() {
     context: phone ? "phone" : "wide",
     apply(target: AppLocation) {
       setDialog(dialogFromParam(target.dialog));
+      // As main.tsx: an unknown project shows every project.
+      if (target.project && target.project !== "alpha") {
+        setToast(`Project ${target.project} does not exist`);
+        navigation.automatic();
+      }
+      setProject(target.project === "alpha" ? "alpha" : "");
       if (target.view === "home") return void (phone && setPhoneList(true));
       if (target.view === "grid") {
         if (phone) setPhoneList(true);
@@ -115,7 +126,8 @@ function App() {
     setActive(id);
     setPhoneList(false);
   };
-  const openFiles = (dir?: string) => {
+  const openFiles = (dir?: string, scope = "") => {
+    setProject(scope);
     if (dir) setFilesDir(dir);
     setShownDoc("");
     setPhoneList(false);
@@ -155,13 +167,14 @@ function App() {
   }, [shown, shownDoc, filesDir]);
   (window as any).fixtureReady = ready;
   const place =
+    (
     here.view === "terminal"
       ? `terminal ${here.terminal}${here.side ? ` + ${here.side}` : ""}`
       : here.view === "files"
         ? here.file
           ? `file ${here.file}${here.line ? `:${here.line}` : ""}`
           : `folder ${here.dir}`
-        : here.view;
+        : here.view) + (here.project ? ` @${here.project}` : "");
   if (!ready) return <p id="signing-in">Signing in…</p>;
   return (
     <div>
@@ -171,7 +184,39 @@ function App() {
             Terminal {index + 1}
           </button>
         ))}
-        <button id="grid" onClick={() => setView("grid")}>
+        <button
+          id="alpha-grid"
+          onClick={() => {
+            setProject("alpha");
+            setView("grid");
+          }}
+        >
+          Alpha's terminals
+        </button>
+        <button
+          id="alpha-files"
+          onClick={() => {
+            openFiles("/home/me/alpha", "alpha");
+          }}
+        >
+          Alpha's files
+        </button>
+        <button
+          id="alpha-closed"
+          onClick={() => {
+            setProject("alpha");
+            setDialog("recovery");
+          }}
+        >
+          Alpha's closed terminals
+        </button>
+        <button
+          id="grid"
+          onClick={() => {
+            setProject("");
+            setView("grid");
+          }}
+        >
           Grid
         </button>
         <button id="home" onClick={() => setPhoneList(true)}>
