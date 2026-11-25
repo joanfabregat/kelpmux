@@ -109,6 +109,8 @@ impl Bridge {
             .current_dir(cwd)
             .env("KELPSERVER_BINARY", env!("CARGO_BIN_EXE_kelpmux"))
             .env("SHELL", "/bin/sh")
+            // This test's own user configuration.
+            .env("XDG_CONFIG_HOME", cwd.join("xdg-config"))
             .arg("web-bridge")
             .arg("--socket")
             .arg(socket)
@@ -661,10 +663,26 @@ fn a_stopped_workspace_starts_on_an_explicit_request_then_connects() {
     assert_eq!(notice["Workspace"]["workspace"], "state");
     let state = bridge.web(1, "state", json!({}));
     assert_eq!(state["result"]["running"], false);
-    assert_eq!(state["result"]["operations"], json!(["state", "start"]));
-    let other = bridge.web(2, "new", json!({}));
+    assert_eq!(
+        state["result"]["operations"],
+        json!(["state", "start", "config"])
+    );
+    // The user configuration's file root reaches the server it starts.
+    let config = workspace.root.join("xdg-config/kelpmux/config.toml");
+    fs::create_dir_all(config.parent().unwrap()).unwrap();
+    fs::write(
+        &config,
+        format!(
+            "[files]\nroot = \"{}\"\nextra_roots = [\"/\"]\n[projects]\nbase = \"/p\"\n[scratch]\nfolder = \"/s\"\n",
+            workspace.root.display()
+        ),
+    )
+    .unwrap();
+    let read = bridge.web(2, "config", json!({}));
+    assert_eq!(read["result"]["current"], true, "{read}");
+    let other = bridge.web(3, "new", json!({}));
     assert!(other["error"].as_str().unwrap().contains("not running"));
-    let unconfirmed = bridge.web(3, "start", json!({}));
+    let unconfirmed = bridge.web(4, "start", json!({}));
     assert!(
         unconfirmed["error"]
             .as_str()
@@ -672,8 +690,13 @@ fn a_stopped_workspace_starts_on_an_explicit_request_then_connects() {
             .contains("confirmation")
     );
     assert!(!workspace.socket().exists(), "nothing starts unconfirmed");
-    let started = bridge.web(4, "start", json!({"confirmed": true}));
+    let started = bridge.web(5, "start", json!({"confirmed": true}));
     assert_eq!(started["result"]["started"], true, "{started}");
+    let recorded: Value =
+        serde_json::from_slice(&fs::read(workspace.root.join("state/workspace.json")).unwrap())
+            .unwrap();
+    assert_eq!(recorded["files_root"], json!(workspace.root), "{recorded}");
+    assert_eq!(recorded["files_extra_roots"], json!(["/"]), "{recorded}");
     // The bridge then connects as usual: the stream welcome follows.
     let welcome = bridge.expect("welcome", |v| v["Stream"]["type"] == "welcome");
     assert_eq!(welcome["Stream"]["version"], 1);
@@ -688,9 +711,9 @@ fn a_stopped_workspace_starts_on_an_explicit_request_then_connects() {
                 .is_some_and(|p| !p.is_empty())
     });
     assert_eq!(update["Stream"]["panes"].as_array().unwrap().len(), 1);
-    let state = bridge.web(5, "state", json!({}));
+    let state = bridge.web(6, "state", json!({}));
     assert_eq!(state["result"]["api_version"], 3);
-    let again = bridge.web(6, "start", json!({"confirmed": true}));
+    let again = bridge.web(7, "start", json!({"confirmed": true}));
     assert_eq!(again["error"], "the workspace server is already running");
 }
 
@@ -736,6 +759,76 @@ fn tab_colour_is_browser_state_not_a_bridge_operation() {
 }
 
 #[test]
+fn the_user_configuration_is_saved_validated_and_pushed_live() {
+    let server = Server::start();
+    let mut bridge = Bridge::start(&server);
+    welcome(&mut bridge);
+    let state = bridge.web(1, "state", json!({}));
+    assert!(
+        state["result"]["operations"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|op| op == "config")
+    );
+    let path = server.root.join("xdg-config/kelpmux/config.toml");
+    let initial = bridge.web(2, "config", json!({}))["result"].clone();
+    assert_eq!(initial["exists"], false, "{initial}");
+    assert_eq!(initial["path"], json!(path));
+    assert_eq!(initial["values"]["files"]["root"], "~");
+    // A save creates the documented file and keeps its comments.
+    let saved = bridge.web(
+        3,
+        "config_set",
+        json!({"changes": {"files.extra_roots": ["/"], "scratch.folder": "~/s"}}),
+    );
+    assert_eq!(saved["result"]["saved"], true, "{saved}");
+    assert_eq!(
+        saved["result"]["config"]["values"]["scratch"]["folder"],
+        "~/s"
+    );
+    let text = fs::read_to_string(&path).unwrap();
+    assert!(text.contains("# KelpMux user configuration."), "{text}");
+    assert!(text.contains("\nfolder = \"~/s\"\n"), "{text}");
+    // An invalid change is refused with its problems, and nothing changes.
+    let refused = bridge.web(
+        4,
+        "config_set",
+        json!({"changes": {"projects.base": "relative/path"}}),
+    );
+    assert_eq!(refused["result"]["saved"], false, "{refused}");
+    assert_eq!(refused["result"]["errors"][0]["key"], "projects.base");
+    assert_eq!(fs::read_to_string(&path).unwrap(), text);
+    let unknown = bridge.web(5, "config_set", json!({"changes": {"files.nope": "x"}}));
+    assert!(unknown["error"].as_str().unwrap().contains("files.nope"));
+    // A hand edit with a typo reaches the browser as a `Config` notice
+    // with its position; the last valid configuration stays in effect.
+    fs::write(
+        &path,
+        text.replace("\nfolder = \"~/s\"\n", "\nfolder = \"~/s\"\nfloder = 1\n"),
+    )
+    .unwrap();
+    let notice = bridge.expect("a Config notice", |v| {
+        v["Config"]["errors"]
+            .as_array()
+            .is_some_and(|errors| !errors.is_empty())
+    });
+    assert_eq!(notice["Config"]["current"], false);
+    assert_eq!(notice["Config"]["values"]["scratch"]["folder"], "~/s");
+    let message = notice["Config"]["errors"][0]["message"].as_str().unwrap();
+    assert!(
+        message.contains("did you mean `scratch.folder`"),
+        "{notice}"
+    );
+    // Fixed: the notice says so.
+    fs::write(&path, "[scratch]\nfolder = \"~/t\"\n").unwrap();
+    let fixed = bridge.expect("the fixed configuration", |v| {
+        v["Config"]["values"]["scratch"]["folder"] == "~/t"
+    });
+    assert_eq!(fixed["Config"]["errors"], json!([]));
+}
+
+#[test]
 fn repos_and_commands_report_read_only_facts_for_the_terminals_table() {
     let server = Server::start_with(|root| {
         fs::create_dir_all(root.join("checkout/.git")).unwrap();
@@ -751,7 +844,7 @@ fn repos_and_commands_report_read_only_facts_for_the_terminals_table() {
     welcome(&mut bridge);
     let state = bridge.web(1, "state", json!({}));
     assert_eq!(state["result"]["api_version"], 3);
-    assert_eq!(state["result"]["api_minor"], 3);
+    assert_eq!(state["result"]["api_minor"], 4);
     let operations = state["result"]["operations"].as_array().unwrap();
     assert!(operations.iter().any(|op| op == "repos"));
     assert!(operations.iter().any(|op| op == "commands"));
@@ -1124,7 +1217,7 @@ fn file_requests_and_replies_are_relayed_unchanged() {
     }
     assert_eq!(limits["max_read_bytes"], 8 * 1024 * 1024);
     let state = bridge.web(1, "state", json!({}));
-    assert_eq!(state["result"]["api_minor"], 3);
+    assert_eq!(state["result"]["api_minor"], 4);
     assert!(
         state["result"]["operations"]
             .as_array()

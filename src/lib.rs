@@ -103,6 +103,7 @@ pub mod native {
     pub mod tui;
     pub mod ui;
     pub mod upgrade;
+    pub mod user_config;
     pub mod vitals;
     pub mod web_assets;
     pub mod web_bridge;

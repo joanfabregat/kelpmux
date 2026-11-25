@@ -18,6 +18,7 @@ pub const HELP: &str = "Owned native terminal workspaces (Linux):
   kelpmux bridge [--workspace NAME] [--socket PATH]
   kelpmux web-bridge [--workspace NAME] [--socket PATH] [--state-dir PATH]
   kelpmux web-relay --config PATH   (browser client; see docs/web.md)
+  kelpmux config path|check [FILE]|schema|docs   (~/.config/kelpmux/config.toml; see docs/config.md)
   kelpmux stream-inspect [--workspace NAME] [PANE_ID ...]
   kelpmux server [--socket PATH] [--state-dir PATH] [--shell PATH] [--cwd PATH] [--size CxR] [--config PATH] [--upload-dir PATH] [--upload-retention-days DAYS]
   kelpmux attach [--workspace NAME] [--socket PATH] [--takeover] [--current-client]
@@ -315,6 +316,16 @@ fn start_server(options: &Options) -> Result<()> {
             &options.uploads,
         )?;
     }
+    // The user configuration's file roots (`files.root`,
+    // `files.extra_roots`), recorded for the server this start launches:
+    // KelpServer reads them from `workspace.json` when it starts, so a
+    // running workspace keeps its roots until it restarts. Without a user
+    // configuration file, or with an invalid one, `workspace.json` keeps
+    // whatever it had.
+    if launching && let Some((root, extra)) = super::user_config::workspace_roots() {
+        super::lifecycle::private_state(&options.state)?;
+        super::config::persist_file_roots(&options.state, &root, &extra)?;
+    }
     // The server starts without panes: the TUI or web client that connects
     // creates the workspace's tabs.
     super::lifecycle::start(super::lifecycle::StartRequest {
@@ -392,6 +403,9 @@ pub fn run(args: &[String]) -> Result<()> {
             return Err("usage: kelpmux web-relay --config PATH".into());
         }
         return web_relay(Path::new(&args[2]), super::web_assets::ASSETS);
+    }
+    if args.first().is_some_and(|arg| arg == "config") {
+        return super::user_config::cli(&args[1..]);
     }
     if args.first().is_some_and(|arg| arg == "web-bridge") {
         let (socket, state) = super::web_bridge::paths(&args[1..])?;

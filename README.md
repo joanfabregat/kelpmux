@@ -44,6 +44,8 @@ The local checkout is `~/repos/kelp/mux`. Source operations do not replace runni
 
 KelpMux also has an optional browser client for the same workspaces: terminals in tabs or a live grid, search, selection and copy, files and images dropped onto a terminal uploaded to the host with their paths pasted into it, a file browser and text editor for the server user's files, themes and fonts, signed in with a hardware security key through browser-side OpenSSH. `kelpmux web-relay --config PATH` serves it and relays SSH bytes; OpenSSH runs `kelpmux web-bridge --workspace NAME` for the signed-in user. The TUI and browsers can be used alone or together on the same panes, each with its own layout. Building it, relay configuration, YubiKey registration and the security boundaries are in [docs/web.md](docs/web.md); [ADR 0003](docs/adr/0003-web-client-in-kelpmux.md) records the scope. A build without the web assets still builds and runs the TUI.
 
+User settings live in `~/.config/kelpmux/config.toml`, edited by hand, by agents or in the web client's Settings, and applied live; `kelpmux config check` validates it. Every key, and how agents should change it, is documented in [docs/config.md](docs/config.md).
+
 ## Security and contributions
 
 Use [SECURITY.md](SECURITY.md) for private vulnerability reporting. Follow [CONTRIBUTING.md](CONTRIBUTING.md) and [repository security policy](docs/repository-security.md). Licensed under [Apache-2.0](LICENSE); see NOTICE for attribution.

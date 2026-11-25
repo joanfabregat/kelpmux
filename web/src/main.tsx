@@ -48,6 +48,12 @@ import { KeySettings } from "./KeySettings";
 import { LoginScreen, PopupConnecting, StoppedWorkspace } from "./Login";
 import { ConfigPanel } from "./ConfigPanel";
 import {
+  readSaveResult,
+  readUserConfig,
+  type ConfigChanges,
+  type UserConfigState,
+} from "./user-config";
+import {
   IdleWarning,
   useActivityReports,
   type IdleNotice,
@@ -183,6 +189,8 @@ const DEFAULT_SUBSCRIPTIONS = 10;
 const POPUP_SUBSCRIPTIONS = 2;
 /** The `Web` request API this client speaks (see `kelpmux web-bridge`). */
 const API_VERSION = 3;
+/** How often a window asks the bridge for the user configuration. */
+const CONFIG_REFRESH_MS = 5000;
 
 const store: Store = {
   screens: new Map(),
@@ -457,6 +465,8 @@ function App() {
     [preferences, setPreferences] = useState(loadPreferences),
     [terminalFilter, setTerminalFilter] = useState<TerminalFilter>("all"),
     [operations, setOperations] = useState(() => new Set<string>()),
+    // The user configuration (config.toml) through the bridge's `config`.
+    [userConfig, setUserConfig] = useState<UserConfigState | null>(null),
     // The terminal whose notifications the Notifications panel shows.
     [notifyPane, setNotifyPane] = useState(0),
     [findQuery, setFindQuery] = useState(""),
@@ -667,6 +677,13 @@ function App() {
     } catch {
       return null;
     }
+  }
+  /** Saves Settings → Files & folders through the bridge, which validates
+   * and writes config.toml. */
+  async function saveUserConfig(changes: ConfigChanges) {
+    const result = readSaveResult(await rpc("config_set", { changes }));
+    if (result?.config) setUserConfig(result.config);
+    return result;
   }
   useEffect(() => {
     let canceled = false;
@@ -970,6 +987,27 @@ function App() {
     const mounts = (stats.disks || []).map((d: any) => String(d.mount));
     if (mounts.length) setDiskMounts(mounts);
   }, [stats]);
+  // The user configuration, from a bridge of API minor 4. The bridge sends
+  // a `Config` notice when the file changes, but a shared connection's
+  // worker forwards only the stream's events to its windows, so every
+  // window also asks again every few seconds (the bridge answers from its
+  // watched copy without reading the file).
+  const offersConfig = online && operations.has("config");
+  useEffect(() => {
+    if (!offersConfig) return;
+    let alive = true;
+    const load = () =>
+      quietRpc("config").then((result) => {
+        const config = readUserConfig(result);
+        if (alive && config) setUserConfig(config);
+      });
+    load();
+    const timer = setInterval(load, CONFIG_REFRESH_MS);
+    return () => {
+      alive = false;
+      clearInterval(timer);
+    };
+  }, [offersConfig]);
   const mountsLoading = useRef(false);
   /** Loads the disks' mount points for the sidebar's disk tooltips. */
   async function loadDiskMounts() {
@@ -1526,6 +1564,12 @@ function App() {
       authProgress.current.welcomed = true;
       setStopped(event.Workspace.running ? "" : event.Workspace.workspace);
       setConnecting(false);
+      return;
+    }
+    if (event.Config) {
+      // The bridge saw config.toml change (API minor 4).
+      const config = readUserConfig(event.Config);
+      if (config) setUserConfig(config);
       return;
     }
     const e = event.Stream;
@@ -2593,6 +2637,7 @@ function App() {
   const sidebar = (
     <Sidebar
       username={connection?.username || ""}
+      configProblem={!!userConfig?.errors.length}
       dev={!!connection?.dev}
       folded={folded}
       touch={touch}
@@ -2939,6 +2984,8 @@ function App() {
                   }}
                   uploadUnavailable={uploadUnavailable}
                   uploadRoot={filesRoot}
+                  userConfig={userConfig}
+                  saveUserConfig={saveUserConfig}
                   touch={touch}
                 />
               )}

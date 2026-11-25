@@ -1190,3 +1190,82 @@ button.attention-open:hover {
     flex-basis: 100%;
   }
 }
+
+/* ───── Settings: Files & folders (config.toml) ───── */
+.settings-panel .config-problems {
+  margin-bottom: var(--s4);
+  font-size: var(--fs-sm);
+}
+.settings-panel .config-problems p {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px;
+  margin: 0;
+}
+.settings-panel .config-problems ul {
+  margin: var(--s2) 0;
+  padding-left: var(--s4);
+}
+.settings-panel .config-problems li,
+.settings-panel .config-problems code {
+  overflow-wrap: anywhere;
+}
+.settings-panel .config-problems .config-path {
+  color: var(--text-2);
+}
+.config-alert {
+  margin-left: auto;
+  color: var(--st-failed);
+}
+.config-form .upload-folder input {
+  font-family: var(--font-mono);
+  font-size: var(--fs-sm);
+}
+.config-list ul {
+  display: grid;
+  gap: var(--s2);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.config-list li {
+  display: flex;
+  align-items: center;
+  gap: var(--s2);
+}
+.config-list li input {
+  flex: 1;
+}
+.config-list li button.subtle {
+  flex: none;
+  min-height: 30px;
+}
+.config-field-problems {
+  margin: calc(-1 * var(--s2)) 0 var(--s3);
+  padding: 0;
+  color: color-mix(in srgb, var(--st-failed) 70%, var(--text));
+  font-size: var(--fs-sm);
+  list-style: none;
+}
+.config-form input[aria-invalid="true"] {
+  border-color: color-mix(in srgb, var(--st-failed) 60%, transparent);
+}
+.config-form code {
+  overflow-wrap: anywhere;
+}
+.config-form .confirm-buttons {
+  align-items: center;
+  margin-top: var(--s4);
+}
+.config-saved {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  margin-right: auto;
+  color: var(--text-2);
+  font-size: var(--fs-sm);
+}
+.config-form .setting-hint {
+  margin-bottom: var(--s4);
+}

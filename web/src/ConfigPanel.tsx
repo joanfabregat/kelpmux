@@ -11,6 +11,12 @@ import { shortcuts } from "./shortcuts";
 import type { Preferences } from "./layout-store";
 import type { HardwareKeyboard } from "@kelpcore/web/touch-keys.ts";
 import { UploadSettings } from "./Upload";
+import { ConfigProblems, FilesAndFolders } from "./UserConfig";
+import {
+  type ConfigChanges,
+  type SaveResult,
+  type UserConfigState,
+} from "./user-config";
 import { idleMinutes, minutesText } from "./idle";
 import {
   NOTIFICATION_EVENTS,
@@ -41,11 +47,15 @@ export type ConfigPanelProps = {
   uploadUnavailable: string | null;
   /** The file root a destination must lie in, if the server has one. */
   uploadRoot?: string;
+  /** The user configuration (config.toml), when the bridge offers it. */
+  userConfig: UserConfigState | null;
+  saveUserConfig: (changes: ConfigChanges) => Promise<SaveResult | null>;
   /** A touch device: the hardware keyboard setting applies. */
   touch: boolean;
 };
 
-/** Settings dialog body. Everything here is saved in this browser only;
+/** Settings dialog body. Everything here is saved in this browser only,
+ * except Files & folders (the user configuration file on the server);
  * the terminal server and other clients (the TUI included) are unaffected. */
 export function ConfigPanel({
   store,
@@ -63,11 +73,18 @@ export function ConfigPanel({
   setUploadDestination,
   uploadUnavailable,
   uploadRoot,
+  userConfig,
+  saveUserConfig,
   touch,
 }: ConfigPanelProps) {
   const idle = idleMinutes(connection);
   return (
-    <Settings active={settingsSection} onChange={setSettingsSection}>
+    <Settings
+      active={settingsSection}
+      onChange={setSettingsSection}
+      alerts={userConfig?.errors.length ? ["files"] : []}
+    >
+      {userConfig && <ConfigProblems config={userConfig} />}
       <section hidden={settingsSection !== "appearance"}>
         <h3>Mode</h3>
         <div className="seg setting-seg" role="group" aria-label="Mode">
@@ -263,6 +280,13 @@ export function ConfigPanel({
           onChange={setUploadDestination}
           unavailable={uploadUnavailable}
           root={uploadRoot}
+        />
+      </section>
+      <section hidden={settingsSection !== "files"}>
+        <FilesAndFolders
+          config={userConfig}
+          save={saveUserConfig}
+          serverRoot={uploadRoot}
         />
       </section>
       <section hidden={settingsSection !== "keys"}>{keyContent}</section>

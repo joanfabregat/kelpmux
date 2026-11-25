@@ -126,6 +126,7 @@ fn run() -> Result<()> {
                 | "bridge"
                 | "web-bridge"
                 | "web-relay"
+                | "config"
                 | "stream-inspect"
         )
     }) {

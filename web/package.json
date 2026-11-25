@@ -12,7 +12,7 @@
   },
   "dependencies": {
     "@codemirror/view": "6.43.15",
-    "@kelpcore/web": "github:joanfabregat/kelpcore#3a7d99c8ef9a0e0f5211ba173562efcccd262b44",
+    "@kelpcore/web": "github:joanfabregat/kelpcore#57736a721aba7ac35d4348aa2ac8e776f5a884ee",
     "@sentry/browser": "11.11.0",
     "react": "19.3.1",
     "react-dom": "19.3.1"

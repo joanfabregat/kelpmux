@@ -63,6 +63,8 @@ export type SidebarProps = {
    * (KelpServer `files` through the bridge), else there is no Files
    * entry. */
   onFiles?: () => void;
+  /** The user configuration file has errors: Settings shows them. */
+  configProblem?: boolean;
 };
 
 /** The left sidebar, like the TUI's, and the only navigation: the state
@@ -377,12 +379,22 @@ export function Sidebar(props: SidebarProps) {
       </div>
       <div className="rail-foot">
         {/* The account and its settings, at the very bottom. */}
-        <Tooltip content="Settings (Ctrl-B ,)">
+        <Tooltip
+          content={
+            props.configProblem
+              ? "Settings (Ctrl-B ,): config.toml has errors"
+              : "Settings (Ctrl-B ,)"
+          }
+        >
           <button
             type="button"
             className="nav-item tool-item account"
             onClick={() => props.onDialog("config")}
-            aria-label="Settings"
+            aria-label={
+              props.configProblem
+                ? "Settings: the configuration file has errors"
+                : "Settings"
+            }
             data-tool="config"
           >
             <span className="avatar" aria-hidden="true">
@@ -391,7 +403,11 @@ export function Sidebar(props: SidebarProps) {
             <span className="grow account-name">
               <b>{username || "…"}</b>
             </span>
-            <Icon name="settings" size="sm" className="faint" />
+            {props.configProblem ? (
+              <Icon name="circle-alert" size="sm" className="config-alert" />
+            ) : (
+              <Icon name="settings" size="sm" className="faint" />
+            )}
           </button>
         </Tooltip>
       </div>
