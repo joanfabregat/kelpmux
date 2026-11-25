@@ -69,7 +69,8 @@ pub const API_VERSION: u64 = 3;
 /// conversations they hosted, titled from their first prompt, and
 /// conversations started outside KelpMux in a project's folder;
 /// `web_history`), answered by the bridge's History thread, and the
-/// `resume` parameter of `new`.
+/// `resume` parameter of `new` (a conversation by id, or the agent's own
+/// picker).
 pub const API_MINOR: u64 = 7;
 /// Largest accepted `Web` request, in bytes of JSON.
 const REQUEST_LIMIT: usize = 65536;
@@ -561,7 +562,8 @@ impl Api {
     /// the same request returns the same pane. With `resume` (`{kind, id}`)
     /// the pane runs that agent conversation's resume command
     /// ([`resume_argv`]), or the terminal already running it is returned
-    /// with `existing`.
+    /// with `existing`; with `{kind, picker: true}` it opens the agent's
+    /// own conversation picker.
     fn spawn(&self, p: &Value) -> Result<Value> {
         let request = p["request"]
             .as_str()
@@ -615,7 +617,7 @@ impl Api {
             value => Some(resume_argv(value)?),
         };
         let mut session = self.session("pane-lifecycle")?;
-        if let Some((kind, id, _)) = &resume {
+        if let Some((kind, Some(id), _)) = &resume {
             // A conversation that is already open is shown, not started twice.
             let update = session.update()?;
             if let Some(pane) = update.panes.iter().find(|pane| {
@@ -723,23 +725,30 @@ fn choices(record: &ClosedSession) -> Vec<&'static str> {
 }
 
 /// The command line that resumes an agent conversation, from `new`'s
-/// `resume` (`{"kind": "claude" | "codex", "id": …}`): the same commands
-/// the server's `restore` runs (`claude --resume ID`, `codex resume ID`),
-/// built here from a fixed table and a validated conversation id, never
-/// from a command line the browser sends.
-fn resume_argv(value: &Value) -> Result<(&'static str, String, Vec<String>)> {
-    let id = value["id"]
-        .as_str()
-        .filter(|id| crate::session_id(id))
-        .ok_or("resume needs a valid conversation id")?;
+/// `resume`: `{"kind": "claude" | "codex", "id": …}` runs the same
+/// commands the server's `restore` runs (`claude --resume ID`,
+/// `codex resume ID`); `{"kind": …, "picker": true}` without an id opens
+/// the agent's own conversation picker (`claude --resume`,
+/// `codex resume`), for a closed terminal whose conversation was never
+/// identified. Built here from a fixed table and a validated conversation
+/// id, never from a command line the browser sends; an id that is present
+/// but invalid is refused, never turned into the picker.
+fn resume_argv(value: &Value) -> Result<(&'static str, Option<String>, Vec<String>)> {
     let (kind, program, verb) = match value["kind"].as_str() {
         Some("claude") => ("claude", "claude", "--resume"),
         Some("codex") => ("codex", "codex", "resume"),
         _ => return Err("resume kind must be claude or codex".into()),
     };
+    if value["id"].is_null() && value["picker"] == true {
+        return Ok((kind, None, vec![program.into(), verb.into()]));
+    }
+    let id = value["id"]
+        .as_str()
+        .filter(|id| crate::session_id(id))
+        .ok_or("resume needs a valid conversation id")?;
     Ok((
         kind,
-        id.to_owned(),
+        Some(id.to_owned()),
         vec![program.into(), verb.into(), id.into()],
     ))
 }
@@ -1230,15 +1239,28 @@ mod tests {
     #[test]
     fn resume_commands_come_from_a_fixed_table() {
         let (kind, id, argv) = resume_argv(&json!({"kind": "claude", "id": "a-1"})).unwrap();
-        assert_eq!((kind, id.as_str()), ("claude", "a-1"));
+        assert_eq!((kind, id.as_deref()), ("claude", Some("a-1")));
         assert_eq!(argv, ["claude", "--resume", "a-1"]);
-        let (_, _, argv) = resume_argv(&json!({"kind": "codex", "id": "b_2"})).unwrap();
-        assert_eq!(argv, ["codex", "resume", "b_2"]);
+        // Codex takes the rollout's session id (a UUID).
+        let uuid = "01a21031-eea6-73f1-816a-e23ce5e1b0d2";
+        let (_, _, argv) = resume_argv(&json!({"kind": "codex", "id": uuid})).unwrap();
+        assert_eq!(argv, ["codex", "resume", uuid]);
+        // The picker only when asked for, without an id.
+        let (kind, id, argv) = resume_argv(&json!({"kind": "codex", "picker": true})).unwrap();
+        assert_eq!((kind, id), ("codex", None));
+        assert_eq!(argv, ["codex", "resume"]);
+        let (_, _, argv) =
+            resume_argv(&json!({"kind": "claude", "id": null, "picker": true})).unwrap();
+        assert_eq!(argv, ["claude", "--resume"]);
         for bad in [
             json!({"kind": "claude", "id": "x; rm -rf ~"}),
             json!({"kind": "claude", "id": ""}),
+            json!({"kind": "claude", "id": "", "picker": true}),
+            json!({"kind": "claude", "id": "x y", "picker": true}),
             json!({"kind": "bash", "id": "a"}),
+            json!({"kind": "bash", "picker": true}),
             json!({"kind": "codex"}),
+            json!({"kind": "codex", "picker": "yes"}),
             json!("claude --resume a"),
         ] {
             assert!(resume_argv(&bad).is_err(), "{bad}");

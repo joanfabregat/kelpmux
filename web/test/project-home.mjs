@@ -8,9 +8,11 @@
 //    parked ones marked), Repos (one line per checkout: branch, changes,
 //    +/−, ahead/behind or Clean; asked fresh) and History (the newest 8
 //    of the project's entries, a closed terminal collapsed to its newest
-//    conversation and their count).
+//    conversation and their count, a matched conversation marked, an
+//    unidentified Codex terminal offering only its labelled picker).
 // 3. Resume sends the right `new` (the conversation's kind, id, folder
-//    and project), Rerun the right `restore`, and the reopened terminal
+//    and project), the picker `new` with `resume: {kind, picker: true}`,
+//    Rerun the right `restore`, and the reopened terminal
 //    shows; a terminal line opens that terminal; the folder copies.
 // 4. See all opens the project's grid, Repos view and History (a panel
 //    over the page, which Back closes); a repository line opens the Repos
@@ -92,7 +94,7 @@ const closed = (key, ago, project, fields = {}) => ({
   ...fields,
 });
 
-/** The fake bridge: Alpha (three checkouts, four terminals, eleven
+/** The fake bridge: Alpha (three checkouts, four terminals, thirteen
  * History entries), Beta, Gamma (empty) and Scratch; every call recorded. */
 function fakeBridge() {
   const state = { calls: [] };
@@ -170,6 +172,24 @@ function fakeBridge() {
         ],
       }),
       closed("dev-server", 7200, "alpha"),
+      // Codex whose conversation is unknown: its picker, labelled.
+      closed("codex-unknown", 8000, "alpha", {
+        kind: "codex",
+        name: "codex",
+        choices: ["resume"],
+      }),
+      // Its only possible conversation, matched by folder and time.
+      closed("codex-matched", 9000, "alpha", {
+        kind: "codex",
+        name: "codex run",
+        choices: ["resume"],
+        conversations: [
+          conversation("x-matched", "Matched by its folder", 9100, {
+            kind: "codex",
+            matched: true,
+          }),
+        ],
+      }),
       closed("beta-vim", 100, "beta", { cwd: "/home/me/work/beta" }),
       ...Array.from({ length: 8 }, (_, i) =>
         closed(`old-${i + 1}`, 86400 * (i + 2), "alpha"),
@@ -365,8 +385,8 @@ for (const [name, engine] of [
     assert.match(await api.innerText(), /api\s+feat\/git-view\s+2 changed\s+\+42\s*−7\s+↑2 ↓1/);
     assert.match(await page.locator('.home-repo[data-repo="docs"]').innerText(), /docs\s+main\s+Clean/);
     assert.match(await page.locator('.home-repo[data-repo="web"]').innerText(), /detached at c0ffee1\s+Clean/);
-    // History: the newest 8 of Alpha's 11 entries (not Beta's or Scratch's).
-    assert.equal(await section(page, "history").locator(".home-count").innerText(), "11");
+    // History: the newest 8 of Alpha's 13 entries (not Beta's or Scratch's).
+    assert.equal(await section(page, "history").locator(".home-count").innerText(), "13");
     assert.equal(await lines(page, "history").count(), 8);
     const first = lines(page, "history").first();
     assert.equal(await first.getAttribute("data-entry"), "claude-login");
@@ -418,6 +438,34 @@ for (const [name, engine] of [
     const restore = calls(server, "restore").pop();
     assert.equal(restore.key, "dev-server");
     assert.equal(restore.choice, "restart");
+    await page.goBack();
+    await loaded(page, "alpha");
+    // A matched conversation: one line, marked, resumed by its id.
+    const matched = page.locator('.home-history[data-entry="codex-matched"]');
+    assert.equal(await matched.getAttribute("data-conversation"), "x-matched");
+    assert.equal(
+      await matched.locator(".history-matched").innerText(),
+      "matched by folder and time",
+    );
+    assert.match(await matched.locator(".history-matched").getAttribute("title"), /did not record/);
+    // Codex without a known conversation: no Resume, only its picker.
+    const unknown = page.locator('.home-history[data-entry="codex-unknown"]');
+    assert.equal(await unknown.getAttribute("data-conversation"), null);
+    assert.deepEqual(
+      (await unknown.locator("button").allTextContents()).map((t) => t.trim()),
+      ["Open Codex's picker here"],
+    );
+    await unknown.getByRole("button", { name: /^Open Codex's picker here/ }).click();
+    await at(page, "?view=terminal&terminal=99");
+    assert.deepEqual(
+      { ...calls(server, "new").pop(), request: "" },
+      {
+        request: "",
+        project: "alpha",
+        cwd: "/home/me/work/alpha",
+        resume: { kind: "codex", picker: true },
+      },
+    );
     await page.goBack();
     await loaded(page, "alpha");
     // A terminal line opens it.
@@ -594,7 +642,7 @@ for (const [name, engine] of [
     assert.deepEqual(mobile.errors, []);
     await mobile.context.close();
     console.log(
-      `PASS: ${name} project home: sidebar name opens it (chevron folds), title names it, header copies the folder, sections in order (agents first with states, folders and activity; repos with branch, changes, lines and ahead/behind or Clean, asked fresh; the newest 8 History entries with conversations collapsed), Resume and Rerun send the right requests, terminal lines open, See all to grid, Repos and History (scoped, Back closes it), a repo line opens Repos expanded, Overview from the menu, Back and Forward and reload, Scratch by URL, fallbacks, empty project, phone width`,
+      `PASS: ${name} project home: sidebar name opens it (chevron folds), title names it, header copies the folder, sections in order (agents first with states, folders and activity; repos with branch, changes, lines and ahead/behind or Clean, asked fresh; the newest 8 History entries with conversations collapsed, matched marked, an unknown Codex conversation only its labelled picker), Resume and Rerun send the right requests, terminal lines open, See all to grid, Repos and History (scoped, Back closes it), a repo line opens Repos expanded, Overview from the menu, Back and Forward and reload, Scratch by URL, fallbacks, empty project, phone width`,
     );
   } finally {
     await browser.close();

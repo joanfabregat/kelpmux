@@ -11,7 +11,9 @@
 //    that checkout expanded.
 // 3. History: its newest entries (bridge `conversations`, or `closed`
 //    before API minor 7), a closed terminal collapsed to its newest
-//    conversation and their count, each with Resume (conversations.ts,
+//    conversation and their count, each with Resume (only with a known
+//    conversation; an unidentified agent terminal offers its agent's
+//    picker, labelled; a matched conversation is marked) (conversations.ts,
 //    as the History panel).
 // Nothing here adds a bridge operation.
 import React, { useEffect, useRef, useState } from "react";
@@ -35,7 +37,12 @@ import { projectColor, type Project } from "./projects";
 import { displayDir } from "./title-location";
 import {
   choiceHint,
-  choiceLabel,
+  choiceText,
+  matchedHint,
+  pickerHint,
+  pickerLabel,
+  pickerRequest,
+  unidentified,
   conversationTitle,
   exactSpan,
   historyRows,
@@ -359,6 +366,14 @@ export function ProjectHome({
             </span>
             <span className="home-line-sub">
               {toolName(newest.kind)} · {entry.name}
+              {newest.matched && (
+                <>
+                  {" · "}
+                  <span className="history-matched" title={matchedHint}>
+                    matched by folder and time
+                  </span>
+                </>
+              )}
               {nested.length > 1 && (
                 <span className="home-conversations" data-conversations={nested.length}>
                   {" "}
@@ -377,6 +392,9 @@ export function ProjectHome({
         </li>
       );
     }
+    // An agent terminal whose conversation is unknown: its agent's picker
+    // (with `conversations`), never a guessed Resume.
+    const picker = conversations && unidentified(entry);
     const choice = entry.choices[0];
     return (
       <li key={entry.key} className="home-line home-history" data-entry={entry.key}>
@@ -392,18 +410,32 @@ export function ProjectHome({
           </span>
         </span>
         <span className="home-when">{age(entry.closed_at || 0)}</span>
-        {choice && (
+        {picker ? (
           <button
             type="button"
             className="small success"
-            title={choiceHint(entry, choice)}
-            aria-label={`${choiceLabel[choice]} ${entry.name}`}
+            title={pickerHint(entry)}
+            aria-label={`${pickerLabel(entry.kind)}: ${entry.name}`}
             disabled={!!busy}
-            onClick={() => void run(entry.key, "restore", restoreRequest(entry, choice))}
+            onClick={() => void run(entry.key, "new", pickerRequest(entry, row.project))}
           >
             <Icon name="rotate-ccw" size="sm" />
-            {choiceLabel[choice]}
+            {pickerLabel(entry.kind)}
           </button>
+        ) : (
+          choice && (
+            <button
+              type="button"
+              className="small success"
+              title={choiceHint(entry, choice)}
+              aria-label={`${choiceText(entry, choice)} ${entry.name}`}
+              disabled={!!busy}
+              onClick={() => void run(entry.key, "restore", restoreRequest(entry, choice))}
+            >
+              <Icon name="rotate-ccw" size="sm" />
+              {choiceText(entry, choice)}
+            </button>
+          )
         )}
       </li>
     );

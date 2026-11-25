@@ -1024,6 +1024,11 @@ fn history_lists_conversations_and_new_resumes_them() {
              "cwd": work.to_str().unwrap(), "name": "make",
              "kind": null, "session_id": null, "argv": ["make"],
              "closed_at": now - 9, "reason": "Closed"},
+            // Codex, whose conversation the server never identified.
+            {"key": "old:9", "workspace": "state", "pane": 9,
+             "cwd": root.join("scratch").to_str().unwrap(), "name": "codex",
+             "kind": "codex", "session_id": null, "argv": [],
+             "closed_at": now - 5, "reason": "Closed"},
         ]});
         let mut file = fs::OpenOptions::new()
             .create_new(true)
@@ -1095,6 +1100,10 @@ fn history_lists_conversations_and_new_resumes_them() {
     let make = entries.iter().find(|e| e["key"] == "old:8").unwrap();
     assert_eq!(make["conversations"], json!([]));
     assert_eq!(make["choices"], json!(["restart", "folder"]));
+    // The only Codex transcript of its folder, ended by its close.
+    let codex = entries.iter().find(|e| e["key"] == "old:9").unwrap();
+    assert_eq!(codex["conversations"][0]["id"], "cx-9", "{listing}");
+    assert_eq!(codex["conversations"][0]["matched"], true);
     let mut external: Vec<(String, String, String)> = result["external"]
         .as_array()
         .unwrap()
@@ -1110,10 +1119,7 @@ fn history_lists_conversations_and_new_resumes_them() {
     external.sort();
     assert_eq!(
         external,
-        [
-            ("cx-9".into(), "scratch".into(), "A scratch idea".into()),
-            ("ext-1".into(), "work".into(), "Started outside".into()),
-        ],
+        [("ext-1".into(), "work".into(), "Started outside".into())],
         "{listing}"
     );
     assert!(!listing.to_string().contains("never sent"));
@@ -1156,6 +1162,28 @@ fn history_lists_conversations_and_new_resumes_them() {
         }
         assert!(Instant::now() < deadline, "{history}");
         id += 1;
+        thread::sleep(Duration::from_millis(100));
+    }
+    // A terminal whose conversation is unknown opens the agent's picker.
+    id += 1;
+    let picker = bridge.web(
+        id,
+        "new",
+        json!({"request": "r-3", "cwd": server.root.join("scratch"),
+               "resume": {"kind": "codex", "picker": true}}),
+    );
+    let pane = picker["result"]["pane"]
+        .as_u64()
+        .unwrap_or_else(|| panic!("{picker}"));
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        id += 1;
+        let history = bridge.web(id, "history", json!({"pane": pane}));
+        let text = history["result"]["History"]["lines"].to_string();
+        if text.contains("codex") {
+            break;
+        }
+        assert!(Instant::now() < deadline, "{history}");
         thread::sleep(Duration::from_millis(100));
     }
 }
