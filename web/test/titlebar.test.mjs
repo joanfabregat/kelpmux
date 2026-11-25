@@ -25,6 +25,7 @@ test("the location names the place shown", () => {
   );
   assert.equal(titleLocation({ view: "terminals" }), "Terminals");
   assert.equal(titleLocation({ view: "grid" }), "Grid");
+  assert.equal(titleLocation({ view: "project", project: "Kelp" }), "Kelp");
   assert.equal(titleLocation({ view: "terminal", title: "claude" }), "claude");
   assert.equal(titleLocation({ view: "terminal", title: "" }), "shell");
   assert.equal(titleLocation({ view: "terminal" }), "");

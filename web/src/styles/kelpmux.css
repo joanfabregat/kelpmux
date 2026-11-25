@@ -536,14 +536,33 @@ button.terminal-card-head {
   padding-right: var(--s1);
   color: var(--text-2);
 }
+/* The chevron folds the group; the name opens the project's home page. */
 .project-fold {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  min-height: 28px;
+  padding: 0;
+  margin-left: 2px;
+  border: 0;
+  border-radius: var(--r-sm);
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+}
+.project-fold:hover .project-chevron {
+  color: var(--text);
+}
+.project-open {
   display: flex;
   flex: 1;
   align-items: center;
   gap: var(--s2);
   min-width: 0;
   min-height: 28px;
-  padding: 0 var(--s2) 0 var(--s2);
+  padding: 0 var(--s2) 0 var(--s1);
   border: 0;
   border-radius: var(--r-sm);
   background: transparent;
@@ -555,7 +574,11 @@ button.terminal-card-head {
   text-align: left;
   justify-content: flex-start;
 }
-.project-fold:hover {
+.project-open:hover {
+  color: var(--text);
+}
+.project-open.current {
+  background: var(--surface-2);
   color: var(--text);
 }
 .project-chevron {
@@ -580,7 +603,7 @@ button.terminal-card-head {
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-.project-fold .count {
+.project-open .count {
   color: var(--text-3);
   font-size: var(--fs-xs);
   font-weight: 400;
@@ -626,15 +649,18 @@ button.terminal-card-head {
 .rail-new-project:hover {
   color: var(--text-2);
 }
-.rail.folded .project-fold .grow,
-.rail.folded .project-fold .count,
-.rail.folded .project-fold .state-counts,
+.rail.folded .project-open .grow,
+.rail.folded .project-open .count,
+.rail.folded .project-open .state-counts,
 .rail.folded .project-chevron,
 .rail.folded .project-actions,
 .rail.folded .project-missing {
   display: none;
 }
 .rail.folded .project-fold {
+  display: none;
+}
+.rail.folded .project-open {
   justify-content: center;
   padding: 0;
 }

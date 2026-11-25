@@ -169,3 +169,9 @@ export function shortDuration(seconds: number) {
   if (s < 86400) return `${Math.floor(s / 3600)}h`;
   return `${Math.floor(s / 86400)}d`;
 }
+
+/** Agents first, then plain terminals, each group keeping its order (a
+ * project's home page). */
+export function agentsFirst<T extends { kind?: string | null }>(panes: T[]) {
+  return [...panes.filter(isAgent), ...panes.filter((p) => !isAgent(p))];
+}

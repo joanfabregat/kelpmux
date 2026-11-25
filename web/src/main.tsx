@@ -67,6 +67,7 @@ import {
 } from "./Shell";
 import { Sidebar } from "./Sidebar";
 import { ReposView } from "./Repos";
+import { ProjectHome } from "./ProjectHome";
 import { checkoutsByPath } from "./git";
 import { useProjectGit } from "./git-status";
 import {
@@ -494,6 +495,9 @@ function App() {
     // under a dragged row.
     [projectLinks, setProjectLinks] = useState<Record<number, string>>({}),
     [scope, setScope] = useState(""),
+    /** The checkout the Repos view shows expanded when it opens (from a
+     * project's home page). */
+    [reposExpanded, setReposExpanded] = useState(""),
     [projectDialog, setProjectDialog] = useState<{
       mode: "create" | "rename";
       project?: Project;
@@ -584,6 +588,10 @@ function App() {
         ? offersGit && scope
           ? "repos"
           : "single"
+        : savedView === "project"
+          ? online && operations.has("projects") && scope
+            ? "project"
+            : "single"
         : phone
           ? "single"
           : savedView;
@@ -799,7 +807,7 @@ function App() {
   const git = useProjectGit({
     enabled: offersGit,
     projects: projectList.map((project) => project.id),
-    shown: view === "repos" ? scope : "",
+    shown: view === "repos" || view === "project" ? scope : "",
     query: (method, params) =>
       store.session
         ? store.session.rpc(method, params)
@@ -861,7 +869,10 @@ function App() {
         phoneHome:
           phone &&
           (phoneList ||
-            (!shownTerminal && view !== "files" && view !== "repos")),
+            (!shownTerminal &&
+              view !== "files" &&
+              view !== "repos" &&
+              view !== "project")),
         view,
         terminal: shownTerminal?.id || 0,
         filesDir,
@@ -958,7 +969,30 @@ function App() {
         }
         setPhoneList(false);
         setFindPane(0);
+        setReposExpanded("");
         setView("repos");
+        return;
+      case "project":
+        // A project's home page; without projects or a project (unknown,
+        // or none named), the grid (a phone's list) instead.
+        if (!offersProjects || !project) {
+          if (!offersProjects)
+            toast("Projects are not available on this connection", {
+              key: "navigation",
+            });
+          else if (!target.project)
+            toast("Choose a project to see its overview", {
+              key: "navigation",
+            });
+          navigation.automatic();
+          setScope("");
+          if (phone) setPhoneList(true);
+          else setView("grid");
+          return;
+        }
+        setPhoneList(false);
+        setFindPane(0);
+        setView("project");
         return;
       case "terminal": {
         const id = target.terminal;
@@ -1069,7 +1103,10 @@ function App() {
   const streamed = Math.max(1, subscriptionLimit - POPUP_SUBSCRIPTIONS);
   const visible = popupPane
       ? all.filter((p) => p.id === popupPane)
-      : (phone && phoneList) || view === "files" || view === "repos"
+      : (phone && phoneList) ||
+          view === "files" ||
+          view === "repos" ||
+          view === "project"
         ? []
         : view === "single"
           ? live.filter((p) => p.id === active)
@@ -1212,8 +1249,10 @@ function App() {
   }
   function chooseMode(next: SessionMode) {
     if (popupPane) return;
-    // The file browser and the Repos view are not restored on reload.
-    if (next !== "files" && next !== "repos") saveView(next);
+    // The file browser, the Repos view and a project's home page are not
+    // restored on reload.
+    if (next !== "files" && next !== "repos" && next !== "project")
+      saveView(next);
     setView(next);
   }
   function switchView() {
@@ -2109,12 +2148,15 @@ function App() {
       ],
     });
   }
-  /** A project's menu: its files, its terminals, its closed terminals,
-   * and for the user's projects Rename and Delete. */
+  /** A project's menu: its home page (Overview), a new terminal, its
+   * files, Repos, terminals and History, and for the user's projects
+   * Rename and Delete. */
   function projectMenuItems(project: Project): [string, () => void, boolean?][] {
-    const items: [string, () => void, boolean?][] = [
-      ["New terminal", () => void newTab(project), project.missing],
-    ];
+    const items: [string, () => void, boolean?][] = [];
+    // Its home page, unless it is the page shown.
+    if (!popupPane && !(view === "project" && scope === project.id))
+      items.push(["Overview", () => openProjectHome(project.id)]);
+    items.push(["New terminal", () => void newTab(project), project.missing]);
     if (filesClient && !popupPane)
       items.push(["Files", () => openFiles(project.path, project.id), project.missing]);
     if (offersGit && !popupPane)
@@ -2459,7 +2501,11 @@ function App() {
   /** The phone shows its terminal list instead of a terminal. */
   const listShown =
     phone &&
-    (phoneList || (!focused && view !== "files" && view !== "repos"));
+    (phoneList ||
+      (!focused &&
+        view !== "files" &&
+        view !== "repos" &&
+        view !== "project"));
   /** The sidebar's edge: a click folds or unfolds it, a drag resizes it
    * (folding below a minimum), like KelpHub's. Saved in this browser. */
   function resizeStart(e: React.PointerEvent) {
@@ -2608,13 +2654,45 @@ function App() {
   /** The open file shown in the main area; none shows the browser. */
   const shownDocument = documents.docs.find((doc) => doc.path === shownDoc);
   /** Shows a project's Repos view (its Git checkouts, read-only). */
-  function openRepos(project: string) {
+  function openRepos(project: string, expanded = "") {
     if (!offersGit || popupPane) return;
     setScope(project);
+    setReposExpanded(expanded);
     setMenu(null);
     setFindPane(0);
     setPhoneList(false);
     chooseMode("repos");
+  }
+  /** A terminal History (the panel or a project's home page) resumed or
+   * restored: shown, with a toast. */
+  function reopened(id: number, existing: boolean) {
+    // The reopened terminal keeps its project (the bridge).
+    void loadLinks();
+    closeDialog();
+    toast(
+      existing ? "This conversation is already open" : "Opened in a new terminal",
+      { key: "restore" },
+    );
+    const pane = all.find((p) => p.id === id);
+    if (pane) openPane(pane);
+    else activate(id);
+  }
+  function copyText(text: string) {
+    navigator.clipboard
+      ?.writeText(text)
+      .then(() => toast("Copied", { key: "copy" }))
+      .catch(fail);
+  }
+  /** Shows a project's home page: its terminals, repositories and
+   * History on one page. */
+  function openProjectHome(project: string) {
+    if (!offersProjects || popupPane) return;
+    setScope(project);
+    setMenu(null);
+    setProjectMenu(null);
+    setFindPane(0);
+    setPhoneList(false);
+    chooseMode("project");
   }
   /** Shows the file browser, at `dir` when given; `project` shows that
    * project's files (from its folder), else every file. */
@@ -3050,6 +3128,12 @@ function App() {
       onNewIn={(project) => void newTab(project)}
       onProjectMenu={(project, x, y) => setProjectMenu({ project, x, y })}
       gitOf={offersGit ? (project) => git.byProject[project.id] : undefined}
+      onProjectHome={
+        offersProjects && !popupPane
+          ? (project) => openProjectHome(project.id)
+          : undefined
+      }
+      homeProject={view === "project" ? scope : undefined}
       onNewProject={
         offersProjects
           ? () => setProjectDialog({ mode: "create" })
@@ -3074,7 +3158,9 @@ function App() {
             file: shownDocument?.path,
             home,
           }
-        : view === "repos" && scopeProject
+        : view === "project" && scopeProject
+          ? { view: "project", project: scopeProject.name }
+          : view === "repos" && scopeProject
           ? { view: "repos", project: scopeProject.name }
           : view === "grid" && !popupPane
           ? { view: "grid" }
@@ -3147,9 +3233,50 @@ function App() {
                   }
                 />
               )
+            ) : view === "project" && scopeProject ? (
+              <ProjectHome
+                key={scopeProject.id}
+                project={scopeProject}
+                projects={userProjects}
+                panes={all.filter(
+                  (p) =>
+                    !p.dead &&
+                    projectOf(p.id, projectLinks, userProjects) ===
+                      scopeProject.id,
+                )}
+                parked={parkedSet}
+                notifications={notifications}
+                home={home}
+                git={git.byProject[scopeProject.id]}
+                gitOffered={offersGit}
+                gitError={git.errors[scopeProject.id]}
+                conversations={online && operations.has("conversations")}
+                rpc={rpc}
+                historyKey={panes.map((p) => p.id).join(",")}
+                onOpenPane={openPane}
+                onNewTerminal={() => void newTab(scopeProject)}
+                onOpenFiles={
+                  filesClient
+                    ? () => openFiles(scopeProject.path, scopeProject.id)
+                    : undefined
+                }
+                onMenu={(x, y) =>
+                  setProjectMenu({ project: scopeProject, x, y })
+                }
+                onCopy={copyText}
+                onSeeTerminals={() => {
+                  if (phone) setPhoneList(true);
+                  else chooseMode("grid");
+                }}
+                onSeeRepos={(repo) => openRepos(scopeProject.id, repo)}
+                onSeeHistory={() => setDialog("recovery")}
+                onRestored={reopened}
+                onBack={phone ? () => setPhoneList(true) : undefined}
+              />
             ) : view === "repos" && scopeProject ? (
               <ReposView
-                key={scopeProject.id}
+                key={`${scopeProject.id}:${reposExpanded}`}
+                expanded={reposExpanded}
                 project={scopeProject}
                 git={git.byProject[scopeProject.id]}
                 loading={!!git.loading[scopeProject.id]}
@@ -3486,7 +3613,13 @@ function App() {
                 <HistoryPanel
                   scope={scopeProject}
                   projects={userProjects}
-                  onAllProjects={() => setScope("")}
+                  onAllProjects={
+                    // A project's home page and Repos view need their
+                    // project: History over them stays scoped.
+                    view === "project" || view === "repos"
+                      ? undefined
+                      : () => setScope("")
+                  }
                   conversations={online && operations.has("conversations")}
                   rpc={rpc}
                   onCopy={(text) =>
@@ -3495,20 +3628,7 @@ function App() {
                       .then(() => toast("Command copied", { key: "copy" }))
                       .catch(fail)
                   }
-                  onRestored={(id, existing) => {
-                    // The reopened terminal keeps its project (the bridge).
-                    void loadLinks();
-                    closeDialog();
-                    toast(
-                      existing
-                        ? "This conversation is already open"
-                        : "Opened in a new terminal",
-                      { key: "restore" },
-                    );
-                    const pane = all.find((p) => p.id === id);
-                    if (pane) openPane(pane);
-                    else activate(id);
-                  }}
+                  onRestored={reopened}
                 />
               )}
               {dialog === "search" && (
