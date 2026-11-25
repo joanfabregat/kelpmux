@@ -343,6 +343,9 @@ for (const [name, engine] of [
     assert.match(await head.innerText(), /~\/work\/alpha/);
     await head.getByRole("button", { name: "Copy the folder's path" }).click();
     assert.equal(await page.evaluate(() => window.copied), "/home/me/work/alpha");
+    // Environments: a link only (the page asks nothing about them).
+    await head.getByRole("button", { name: "Environments" }).click();
+    assert.ok((await page.evaluate(() => window.toasts)).includes("envs alpha"));
 
     // 2. The sections, in order.
     assert.deepEqual(

@@ -19,6 +19,8 @@ pub const HELP: &str = "Owned native terminal workspaces (Linux):
   kelpmux web-bridge [--workspace NAME] [--socket PATH] [--state-dir PATH]
   kelpmux web-relay --config PATH   (browser client; see docs/web.md)
   kelpmux config path|check [FILE]|schema|docs   (~/.config/kelpmux/config.toml; see docs/config.md)
+  kelpmux env list|up NAME [--wait]|down NAME [--wait]|status NAME|logs NAME [--lines N] [--project ID] [--workspace NAME]
+      (a project's environments, .kelp/environments/NAME/environment.toml; see docs/adr/0005-environments.md)
   kelpmux stream-inspect [--workspace NAME] [PANE_ID ...]
   kelpmux server [--socket PATH] [--state-dir PATH] [--shell PATH] [--cwd PATH] [--size CxR] [--config PATH] [--upload-dir PATH] [--upload-retention-days DAYS]
   kelpmux attach [--workspace NAME] [--socket PATH] [--takeover] [--current-client]
@@ -406,6 +408,9 @@ pub fn run(args: &[String]) -> Result<()> {
     }
     if args.first().is_some_and(|arg| arg == "config") {
         return super::user_config::cli(&args[1..]);
+    }
+    if args.first().is_some_and(|arg| arg == "env") {
+        return super::environments::cli(&args[1..]);
     }
     if args.first().is_some_and(|arg| arg == "web-bridge") {
         let (socket, state) = super::web_bridge::paths(&args[1..])?;

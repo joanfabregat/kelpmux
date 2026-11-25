@@ -68,6 +68,8 @@ import {
 import { Sidebar } from "./Sidebar";
 import { ReposView } from "./Repos";
 import { ProjectHome } from "./ProjectHome";
+import { EnvironmentsView, useProjectEnvironments } from "./Environments";
+import { readEnvironmentPanes, type EnvironmentPane } from "./environments";
 import { checkoutsByPath } from "./git";
 import { useProjectGit } from "./git-status";
 import {
@@ -494,6 +496,11 @@ function App() {
     // dialog, the terminal being moved, a project's menu and the project
     // under a dragged row.
     [projectLinks, setProjectLinks] = useState<Record<number, string>>({}),
+    // Environments (bridge API minor 8): which terminals run a project's
+    // environment (pane → environment), marked apart in the sidebar.
+    [environmentPanes, setEnvironmentPanes] = useState<
+      Record<number, EnvironmentPane>
+    >({}),
     [scope, setScope] = useState(""),
     /** The checkout the Repos view shows expanded when it opens (from a
      * project's home page). */
@@ -577,6 +584,9 @@ function App() {
   /** A project's Repos view (bridge `git`, API minor 6, with projects). */
   const offersGit =
     online && operations.has("git") && operations.has("projects");
+  /** A project's Environments view (bridge `environments`, API minor 8). */
+  const offersEnvironments =
+    online && operations.has("environments") && operations.has("projects");
   // The file browser shows only on a connection that offers files, a
   // Repos view only with `git` and a project (phones included).
   const view: SessionMode =
@@ -591,6 +601,10 @@ function App() {
         : savedView === "project"
           ? online && operations.has("projects") && scope
             ? "project"
+            : "single"
+        : savedView === "envs"
+          ? offersEnvironments && scope && scope !== SCRATCH
+            ? "envs"
             : "single"
         : phone
           ? "single"
@@ -814,6 +828,16 @@ function App() {
         : Promise.reject(Error("Not connected")),
   });
   const checkouts = checkoutsByPath(git.byProject);
+  // The Environments view's project, every five seconds while it shows.
+  const envs = useProjectEnvironments({
+    enabled: offersEnvironments,
+    project: view === "envs" ? scope : "",
+    query: (method, params) =>
+      store.session
+        ? store.session.rpc(method, params)
+        : Promise.reject(Error("Not connected")),
+    onStarted: () => void loadEnvironmentPanes(),
+  });
   /** The project a terminal belongs to; a dragged row already shows in
    * the group under it. */
   const projectOfPane = (pane: number) =>
@@ -872,7 +896,8 @@ function App() {
             (!shownTerminal &&
               view !== "files" &&
               view !== "repos" &&
-              view !== "project")),
+              view !== "project" &&
+              view !== "envs")),
         view,
         terminal: shownTerminal?.id || 0,
         filesDir,
@@ -994,6 +1019,27 @@ function App() {
         setFindPane(0);
         setView("project");
         return;
+      case "envs":
+        // A project's Environments view; Scratch has none.
+        if (!offersEnvironments || !project || project === SCRATCH) {
+          if (!offersEnvironments)
+            toast("Environments are not available on this connection", {
+              key: "navigation",
+            });
+          else if (!target.project || project === SCRATCH)
+            toast("Choose a project to see its environments", {
+              key: "navigation",
+            });
+          navigation.automatic();
+          setScope("");
+          if (phone) setPhoneList(true);
+          else setView("grid");
+          return;
+        }
+        setPhoneList(false);
+        setFindPane(0);
+        setView("envs");
+        return;
       case "terminal": {
         const id = target.terminal;
         if (id && !panesRef.current.some((p) => p.id === id)) {
@@ -1106,7 +1152,8 @@ function App() {
       : (phone && phoneList) ||
           view === "files" ||
           view === "repos" ||
-          view === "project"
+          view === "project" ||
+          view === "envs"
         ? []
         : view === "single"
           ? live.filter((p) => p.id === active)
@@ -1199,6 +1246,17 @@ function App() {
     const timer = setInterval(loadLinks, CONFIG_REFRESH_MS);
     return () => clearInterval(timer);
   }, [offersProjects, epoch]);
+  // Which terminals run an environment, asked like the project links.
+  async function loadEnvironmentPanes() {
+    const result = await quietRpc("environment_panes");
+    if (result) setEnvironmentPanes(readEnvironmentPanes(result));
+  }
+  useEffect(() => {
+    if (!offersEnvironments) return;
+    void loadEnvironmentPanes();
+    const timer = setInterval(loadEnvironmentPanes, CONFIG_REFRESH_MS);
+    return () => clearInterval(timer);
+  }, [offersEnvironments, epoch]);
   const mountsLoading = useRef(false);
   /** Loads the disks' mount points for the sidebar's disk tooltips. */
   async function loadDiskMounts() {
@@ -1249,9 +1307,14 @@ function App() {
   }
   function chooseMode(next: SessionMode) {
     if (popupPane) return;
-    // The file browser, the Repos view and a project's home page are not
-    // restored on reload.
-    if (next !== "files" && next !== "repos" && next !== "project")
+    // The file browser, the Repos view, a project's home page and its
+    // Environments view are not restored on reload.
+    if (
+      next !== "files" &&
+      next !== "repos" &&
+      next !== "project" &&
+      next !== "envs"
+    )
       saveView(next);
     setView(next);
   }
@@ -2161,6 +2224,12 @@ function App() {
       items.push(["Files", () => openFiles(project.path, project.id), project.missing]);
     if (offersGit && !popupPane)
       items.push(["Repos", () => openRepos(project.id), project.missing]);
+    if (offersEnvironments && !popupPane && !project.scratch)
+      items.push([
+        "Environments",
+        () => openEnvironments(project.id),
+        project.missing,
+      ]);
     if (!phone)
       items.push([
         "Terminals",
@@ -2505,7 +2574,8 @@ function App() {
       (!focused &&
         view !== "files" &&
         view !== "repos" &&
-        view !== "project"));
+        view !== "project" &&
+        view !== "envs"));
   /** The sidebar's edge: a click folds or unfolds it, a drag resizes it
    * (folding below a minimum), like KelpHub's. Saved in this browser. */
   function resizeStart(e: React.PointerEvent) {
@@ -2693,6 +2763,16 @@ function App() {
     setFindPane(0);
     setPhoneList(false);
     chooseMode("project");
+  }
+  /** Shows a project's Environments view. */
+  function openEnvironments(project: string) {
+    if (!offersEnvironments || popupPane) return;
+    setScope(project);
+    setMenu(null);
+    setProjectMenu(null);
+    setFindPane(0);
+    setPhoneList(false);
+    chooseMode("envs");
   }
   /** Shows the file browser, at `dir` when given; `project` shows that
    * project's files (from its folder), else every file. */
@@ -3134,6 +3214,9 @@ function App() {
           : undefined
       }
       homeProject={view === "project" ? scope : undefined}
+      environmentOf={
+        offersEnvironments ? (pane) => environmentPanes[pane] : undefined
+      }
       onNewProject={
         offersProjects
           ? () => setProjectDialog({ mode: "create" })
@@ -3162,6 +3245,8 @@ function App() {
           ? { view: "project", project: scopeProject.name }
           : view === "repos" && scopeProject
           ? { view: "repos", project: scopeProject.name }
+          : view === "envs" && scopeProject
+          ? { view: "envs", project: scopeProject.name }
           : view === "grid" && !popupPane
           ? { view: "grid" }
           : { view: "terminal", title: focused?.title },
@@ -3270,6 +3355,11 @@ function App() {
                 }}
                 onSeeRepos={(repo) => openRepos(scopeProject.id, repo)}
                 onSeeHistory={() => setDialog("recovery")}
+                onOpenEnvironments={
+                  offersEnvironments && !scopeProject.scratch
+                    ? () => openEnvironments(scopeProject.id)
+                    : undefined
+                }
                 onRestored={reopened}
                 onBack={phone ? () => setPhoneList(true) : undefined}
               />
@@ -3289,6 +3379,23 @@ function App() {
                     : undefined
                 }
                 onNewTerminal={(path) => void newTab(scopeProject, path)}
+                onBack={phone ? () => setPhoneList(true) : undefined}
+              />
+            ) : view === "envs" && scopeProject ? (
+              <EnvironmentsView
+                key={scopeProject.id}
+                project={scopeProject}
+                environments={envs.environments}
+                loading={envs.loading}
+                error={envs.error}
+                pending={envs.pending}
+                onRefresh={envs.refresh}
+                onStart={envs.start}
+                onStop={envs.stop}
+                onCheck={envs.check}
+                onOpenPane={(pane) => {
+                  if (panesRef.current.some((p) => p.id === pane)) activate(pane);
+                }}
                 onBack={phone ? () => setPhoneList(true) : undefined}
               />
             ) : focused ? (
@@ -3614,9 +3721,9 @@ function App() {
                   scope={scopeProject}
                   projects={userProjects}
                   onAllProjects={
-                    // A project's home page and Repos view need their
+                    // A project's home page, Repos and Environments need their
                     // project: History over them stays scoped.
-                    view === "project" || view === "repos"
+                    view === "project" || view === "repos" || view === "envs"
                       ? undefined
                       : () => setScope("")
                   }

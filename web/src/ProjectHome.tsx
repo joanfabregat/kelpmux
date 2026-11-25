@@ -1,7 +1,8 @@
 // A project's home page (`?view=project&project=<id>`): what the project
 // holds, on one page. Opened from a project group's name in the sidebar or
 // its menu's Overview. Its header has the project's colour, name and folder
-// (with copy), New terminal, Open in Files and the project's menu; then
+// (with copy), New terminal, Open in Files, Environments (a link to the
+// Environments view, when the bridge offers it) and the project's menu; then
 // three sections, each with its count and a See all link to the full view:
 // 1. Agents & terminals: the project's live terminals, agents first, each
 //    with its state mark and label, title, folder and last activity; a
@@ -224,6 +225,7 @@ export function ProjectHome({
   onSeeRepos,
   onSeeHistory,
   onRestored,
+  onOpenEnvironments,
   onBack,
 }: {
   project: Project;
@@ -254,6 +256,10 @@ export function ProjectHome({
   onSeeRepos: (repo?: string) => void;
   onSeeHistory: () => void;
   onRestored: (pane: number, existing: boolean) => void;
+  /** The project's Environments view (bridge `environments`, API minor
+   * 8; not for Scratch); without it, no Environments button. Only a link:
+   * the home page asks nothing about environments. */
+  onOpenEnvironments?: () => void;
   /** A phone's way back to its terminal list. */
   onBack?: () => void;
 }) {
@@ -503,6 +509,17 @@ export function ProjectHome({
                 >
                   <Icon name="folder-open" size="sm" />
                   Open in Files
+                </button>
+              )}
+              {onOpenEnvironments && (
+                <button
+                  type="button"
+                  className="small subtle"
+                  disabled={project.missing}
+                  onClick={onOpenEnvironments}
+                >
+                  <Icon name="layers" size="sm" />
+                  Environments
                 </button>
               )}
               <button

@@ -1,0 +1,194 @@
+/* A project's environments (src/Environments.tsx): the Environments view
+   and its reusable section. State marks come from state.css. */
+.envs-view {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  background: var(--bg);
+}
+.envs-view .project-scope .icon-btn {
+  width: 26px;
+  height: 26px;
+  min-height: 0;
+  padding: 0;
+}
+.envs-view .project-scope .grow {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.envs-body {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  padding: var(--s3) var(--s4) var(--s5);
+}
+.envs-section {
+  display: grid;
+  gap: var(--s2);
+  max-width: 980px;
+}
+.env-list {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: var(--s2);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.env-row {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--s3);
+  padding: var(--s2) var(--s3);
+  border: 1px solid var(--line);
+  border-radius: var(--r-md);
+  background: var(--surface-1);
+}
+.env-row.env-running {
+  border-color: color-mix(in srgb, var(--st-done) 35%, var(--line));
+}
+.env-row.env-failed {
+  border-color: color-mix(in srgb, var(--st-failed) 40%, var(--line));
+}
+.env-mark {
+  display: inline-flex;
+  flex: none;
+  padding-top: 3px;
+}
+.env-names {
+  display: grid;
+  flex: 1;
+  gap: 3px;
+  min-width: 0;
+}
+.env-title {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--s1) var(--s2);
+}
+.env-name {
+  color: var(--text);
+  font-weight: 600;
+}
+.env-tag {
+  padding: 0 var(--s1);
+  border-radius: var(--r-sm);
+  background: var(--surface-2);
+  color: var(--text-3);
+  font-size: var(--fs-xs);
+}
+.env-state {
+  color: var(--text-2);
+  font-size: var(--fs-sm);
+}
+.env-state-running {
+  color: var(--st-done);
+}
+.env-state-starting,
+.env-state-stopping {
+  color: var(--st-working);
+}
+.env-state-failed {
+  color: var(--st-failed);
+}
+.env-state-invalid {
+  color: var(--st-input);
+}
+/* The last check, not the state now: quieter. */
+.env-state.env-state-last {
+  opacity: 0.8;
+}
+.env-repo {
+  font-family: var(--font-mono);
+  font-size: var(--fs-xs);
+}
+.env-detail {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: var(--s1) var(--s3);
+  color: var(--text-2);
+  font-size: var(--fs-sm);
+}
+.env-url {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  min-width: 0;
+  color: var(--accent-text);
+  font-family: var(--font-mono);
+  font-size: var(--fs-xs);
+  overflow-wrap: anywhere;
+}
+.env-url .svg-icon {
+  flex: none;
+  width: 12px;
+  height: 12px;
+}
+.env-port {
+  color: var(--text-3);
+  font-family: var(--font-mono);
+  font-size: var(--fs-xs);
+  font-variant-numeric: tabular-nums;
+}
+.env-message {
+  font-size: var(--fs-sm);
+  overflow-wrap: anywhere;
+}
+.env-message.error {
+  color: var(--st-failed);
+}
+.env-actions {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  gap: var(--s1);
+}
+.env-actions .icon-btn {
+  width: 28px;
+  height: 28px;
+  min-height: 0;
+  padding: 0;
+}
+.env-actions button.small {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--s1);
+}
+.envs-note {
+  max-width: 980px;
+  margin-top: var(--s3);
+  font-size: var(--fs-sm);
+}
+
+/* An environment's terminal in the sidebar. */
+.env-pane-tag {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  max-width: 50%;
+  padding: 0 var(--s1);
+  border-radius: var(--r-sm);
+  background: var(--accent-soft);
+  color: var(--accent-text);
+  font-size: var(--fs-xs);
+  font-weight: 500;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Phones: the actions go under the names. */
+.phone .env-row {
+  flex-wrap: wrap;
+}
+.phone .env-actions {
+  width: 100%;
+  justify-content: flex-end;
+}

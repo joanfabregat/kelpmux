@@ -289,6 +289,11 @@ function App() {
                   void bridge("new", scopeProject.scratch ? {} : { project: scopeProject.id })
                 }
                 onOpenFiles={() => w.toasts.push(`files ${scopeProject.path}`)}
+                onOpenEnvironments={
+                  scopeProject.scratch
+                    ? undefined
+                    : () => w.toasts.push(`envs ${scopeProject.id}`)
+                }
                 onMenu={(x, y) => setMenu({ project: scopeProject, x, y })}
                 onCopy={(text) => (w.copied = text)}
                 onSeeTerminals={() => {

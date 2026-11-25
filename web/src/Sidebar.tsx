@@ -19,6 +19,8 @@ import { Vitals } from "./Vitals";
 import { UnreadMark, type SessionMode } from "./Shell";
 import { projectColor, type Project } from "./projects";
 import type { ProjectGit } from "./git";
+import type { EnvironmentPane } from "./environments";
+import "./styles/environments.css";
 import { GitMark } from "./Repos";
 
 /** What a state shortcut in the sidebar summary opens. */
@@ -87,6 +89,9 @@ export type SidebarProps = {
   onProjectHome?: (project: Project) => void;
   /** The project whose home page shows, selected in the sidebar. */
   homeProject?: string;
+  /** The environment a terminal runs (bridge `environment_panes`), shown
+   * as a tag so it stands apart from the project's other terminals. */
+  environmentOf?: (pane: number) => EnvironmentPane | undefined;
 };
 
 /** Projects folded in this browser's sidebar. */
@@ -177,6 +182,7 @@ export function Sidebar(props: SidebarProps) {
     const unread = unreadFor(notifications, p).length;
     const title = p.title || "shell";
     const on = current === p.id && !isParked;
+    const environment = props.environmentOf?.(p.id);
     return (
       <div
         key={p.id}
@@ -185,6 +191,7 @@ export function Sidebar(props: SidebarProps) {
         data-pane={p.id}
         data-project={props.projectOf?.(p.id)}
         data-state={state}
+        data-environment={environment?.env}
         {...(isParked ? {} : props.rowProps(p))}
         onContextMenu={(event) => {
           event.preventDefault();
@@ -203,7 +210,7 @@ export function Sidebar(props: SidebarProps) {
           type="button"
           className={`nav-item term-item ${on ? "current" : ""}`}
           aria-current={on ? "page" : undefined}
-          aria-label={`${isParked ? "Unpark and open" : "Open"} terminal ${p.number || ""} ${title} (${stateLabel[state]}${unread ? `, ${unread} unread` : ""})`}
+          aria-label={`${isParked ? "Unpark and open" : "Open"} terminal ${p.number || ""} ${title}${environment ? `, environment ${environment.env}` : ""} (${stateLabel[state]}${unread ? `, ${unread} unread` : ""})`}
           title={`${title}\n${p.cwd}`}
           onClick={() => (isParked ? props.onUnpark(p) : props.onOpen(p))}
         >
@@ -214,7 +221,14 @@ export function Sidebar(props: SidebarProps) {
           <ProviderLogo kind={p.kind} decorative />
           <span className="grow term-names">
             <span className="term-title">{title}</span>
-            <small className="term-folder">{basename(p.cwd)}</small>
+            <small className="term-folder">
+              {environment && (
+                <span className="env-pane-tag" aria-hidden="true">
+                  env {environment.env}
+                </span>
+              )}{" "}
+              {basename(p.cwd)}
+            </small>
           </span>
           <UnreadMark count={unread} />
         </button>

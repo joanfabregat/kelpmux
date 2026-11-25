@@ -10,6 +10,7 @@
 //   ?view=home                                     a phone's terminal list
 //   ?view=repos&project=<project id>              a project's Repos view
 //   ?view=project&project=<project id>            a project's home page
+//   ?view=envs&project=<project id>               a project's Environments
 //   …&dialog=<panel>[&of=<pane id>]                a panel over that place
 //   …&project=<project id>                          the grid, the file
 //                                                  browser or History
@@ -39,7 +40,7 @@ import { useEffect, useRef, useState } from "react";
  * readHistoryState migrates older entries. */
 export const HISTORY_VERSION = 1;
 
-export type View = "terminal" | "grid" | "files" | "home" | "repos" | "project";
+export type View = "terminal" | "grid" | "files" | "home" | "repos" | "project" | "envs";
 
 export type AppLocation = {
   view: View;
@@ -111,7 +112,7 @@ const owned = [
   "of",
   "project",
 ];
-const views: View[] = ["terminal", "grid", "files", "home", "repos", "project"];
+const views: View[] = ["terminal", "grid", "files", "home", "repos", "project", "envs"];
 
 function id(value: string | null): number {
   return value && /^[1-9]\d{0,9}$/.test(value) ? Number(value) : 0;
@@ -170,7 +171,8 @@ function scoped(view: View | undefined) {
     view === "grid" ||
     view === "files" ||
     view === "repos" ||
-    view === "project"
+    view === "project" ||
+    view === "envs"
   );
 }
 /** Whether a location keeps its project: a scoped view, or History
@@ -243,7 +245,7 @@ export type LocationState = {
   /** The phone shows its terminal list. */
   phoneHome: boolean;
   /** The main area's view, as shown ("single" is one terminal). */
-  view: "single" | "grid" | "files" | "repos" | "project";
+  view: "single" | "grid" | "files" | "repos" | "project" | "envs";
   /** The terminal shown on its own (0: none). */
   terminal: number;
   filesDir: string;
@@ -286,6 +288,8 @@ function placeOf(state: LocationState): AppLocation {
     };
   if (state.view === "project")
     return { ...emptyLocation, view: "project", ...overlay };
+  if (state.view === "envs")
+    return { ...emptyLocation, view: "envs", ...overlay };
   if (state.view === "repos")
     return { ...emptyLocation, view: "repos", ...overlay };
   if (state.view === "grid")

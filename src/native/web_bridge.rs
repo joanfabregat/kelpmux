@@ -12,13 +12,17 @@
 //! (`web_repos`), without running `git` or any other process. The `git`
 //! operation, for a project's Repos view, runs read-only Git commands
 //! through the hardened runner of `web_git` (no hooks, filters, textconv,
-//! external diff, fsmonitor or network), never a write.
+//! external diff, fsmonitor or network), never a write. The environment
+//! operations (`environments`) start and stop a project's declared
+//! environments in panes of their own, only on the browser's explicit
+//! request, and run deploy environments' `status` scripts on threads of
+//! their own.
 //!
 //! Its operations use KelpServer's stream session API on a separate,
 //! short-lived stream connection each (`session`), never the composed UI's
 //! administration.
 use super::{
-    connection,
+    connection, environments,
     projects::Links,
     protocol::*,
     session::{Session, request_id},
@@ -70,8 +74,11 @@ pub const API_VERSION: u64 = 3;
 /// conversations started outside KelpMux in a project's folder;
 /// `web_history`), answered by the bridge's History thread, and the
 /// `resume` parameter of `new` (a conversation by id, or the agent's own
-/// picker).
-pub const API_MINOR: u64 = 7;
+/// picker). Minor 8 added `environments`: the `environments`,
+/// `environment_start`, `environment_stop`, `environment_check` and
+/// `environment_panes` operations on a project's environments
+/// (`environments`, ADR 0005), run on their own threads.
+pub const API_MINOR: u64 = 8;
 /// Largest accepted `Web` request, in bytes of JSON.
 const REQUEST_LIMIT: usize = 65536;
 /// Largest request identifier a browser can represent exactly.
@@ -117,28 +124,18 @@ struct Runtime {
     capabilities: Vec<String>,
 }
 
-struct Api {
+/// Opens checked stream sessions to the relayed server; cloned into the
+/// environment threads.
+#[derive(Clone)]
+struct Sessions {
     peer: Peer,
     runtime: Arc<Mutex<Runtime>>,
     socket: PathBuf,
-    state: PathBuf,
-    monitor: status::Monitor,
-    config: Option<Arc<user_config::Live>>,
-    git: web_git::Worker,
-    history: web_history::Worker,
 }
-
-fn pane(value: &Value) -> Result<u64> {
-    value["pane"]
-        .as_u64()
-        .filter(|p| *p > 0)
-        .ok_or_else(|| "pane required".into())
-}
-
-impl Api {
+impl Sessions {
     /// A fresh stream connection to the same server process and epoch as
     /// the relayed stream, offering `capability`.
-    fn session(&self, capability: &str) -> Result<Session> {
+    fn open(&self, capability: &str) -> Result<Session> {
         let socket = connection::connect(&self.socket)?;
         if Peer::read(&socket)? != self.peer {
             return Err("terminal server changed; reconnect before continuing".into());
@@ -159,6 +156,117 @@ impl Api {
             return Err("terminal handshake is incomplete".into());
         }
         Ok((runtime.epoch.clone(), runtime.capabilities.clone()))
+    }
+}
+
+/// Most environment operations (`environments`, `environment_start`,
+/// `environment_stop`) one bridge runs at once, each on its own thread: a
+/// deploy environment's `status` script may take up to ten seconds and a
+/// Stop waits for its process, so they never hold up the terminals.
+const ENVIRONMENT_THREADS: usize = 3;
+
+struct Api {
+    sessions: Sessions,
+    environment_threads: Arc<std::sync::atomic::AtomicUsize>,
+    state: PathBuf,
+    monitor: status::Monitor,
+    config: Option<Arc<user_config::Live>>,
+    git: web_git::Worker,
+    history: web_history::Worker,
+}
+
+fn pane(value: &Value) -> Result<u64> {
+    value["pane"]
+        .as_u64()
+        .filter(|p| *p > 0)
+        .ok_or_else(|| "pane required".into())
+}
+
+impl Api {
+    /// A fresh stream connection to the same server process and epoch as
+    /// the relayed stream, offering `capability`.
+    fn session(&self, capability: &str) -> Result<Session> {
+        self.sessions.open(capability)
+    }
+    /// The relayed stream's epoch and capabilities.
+    fn runtime(&self) -> Result<(String, Vec<String>)> {
+        self.sessions.runtime()
+    }
+    /// What an environment operation on `{"project": id}` needs. Scratch
+    /// has no environments; the folder comes from the configuration.
+    fn environment_context(&self, p: &Value) -> Result<environments::Context> {
+        let config = self.user_config()?;
+        let project = match p["project"].as_str() {
+            Some(user_config::SCRATCH) => {
+                return Err("Scratch has no environments".into());
+            }
+            Some(id) => config
+                .project(id)
+                .cloned()
+                .ok_or("this project no longer exists")?,
+            None => return Err("project required".into()),
+        };
+        Ok(environments::Context {
+            project,
+            workspace: self.state.clone(),
+            ports: config.environment_ports.1,
+            base: environments::state_base()?,
+            exe: std::env::current_exe()?,
+        })
+    }
+    /// Runs an environment operation on its own thread (at most
+    /// [`ENVIRONMENT_THREADS`] at once); `reply` answers when it is done.
+    /// `environments {project}` lists the project's environments with their
+    /// state, without running any script; `environment_check {project,
+    /// name}` runs a deploy environment's `status` script (the only
+    /// operation that does); `environment_start` and `environment_stop`
+    /// take `{project, name, request}`.
+    fn environment(
+        &self,
+        method: &str,
+        p: &Value,
+        reply: Box<dyn FnOnce(std::result::Result<Value, String>) + Send>,
+    ) -> Result<()> {
+        let context = self.environment_context(p)?;
+        let name = p["name"].as_str().unwrap_or("").to_owned();
+        let request = p["request"].as_str().unwrap_or("").to_owned();
+        if method != "environments" && !environments::valid_name(&name) {
+            return Err("environment name required".into());
+        }
+        if matches!(method, "environment_start" | "environment_stop")
+            && !stream::valid_request(&request)
+        {
+            return Err("environment request identity required".into());
+        }
+        /// Gives the thread's slot back however the thread ends.
+        struct Slot(Arc<std::sync::atomic::AtomicUsize>);
+        impl Drop for Slot {
+            fn drop(&mut self) {
+                self.0.fetch_sub(1, Ordering::AcqRel);
+            }
+        }
+        let threads = self.environment_threads.clone();
+        if threads.fetch_add(1, Ordering::AcqRel) >= ENVIRONMENT_THREADS {
+            threads.fetch_sub(1, Ordering::AcqRel);
+            return Err("busy with other environment operations; try again".into());
+        }
+        let slot = Slot(threads);
+        let sessions = self.sessions.clone();
+        let method = method.to_owned();
+        std::thread::spawn(move || {
+            let _slot = slot;
+            let open = |capability: &str| sessions.open(capability);
+            let result = match method.as_str() {
+                "environments" => environments::list(&context, &open),
+                "environment_start" => environments::start(&context, &name, &request, &open),
+                // Runs the `status` script: only on this explicit request.
+                "environment_check" => environments::status(&context, &name, &open, true),
+                "environment_stop" => environments::stop(&context, &name, &request, &open),
+                other => Err(format!("unsupported environment operation {other}").into()),
+            };
+            reply(result.map_err(|error| error.to_string()));
+        });
+        Ok(())
     }
     fn request(&mut self, method: &str, p: &Value) -> Result<Value> {
         match method {
@@ -250,6 +358,7 @@ impl Api {
             "config" | "config_set" => config_request(self.config.as_deref(), method, p),
             "projects" => self.project_panes(),
             "project_move" => self.project_move(p),
+            "environment_panes" => Ok(environments::panes(&self.state, &self.runtime()?.0)),
             "project_create" | "project_update" | "project_delete" => {
                 self.project_change(method, p)
             }
@@ -675,6 +784,7 @@ const OPERATIONS: &[&str] = &[
     "projects",
     "git",
     "conversations",
+    "environments",
 ];
 
 /// The user configuration operations, while the workspace runs or not:
@@ -1015,9 +1125,12 @@ pub fn run(socket: &Path, state: &Path) -> Result<()> {
         // for a full refresh interval. No sampler runs while it is closed.
         monitor.poll(true);
         let mut api = Api {
-            peer,
-            runtime,
-            socket,
+            sessions: Sessions {
+                peer,
+                runtime,
+                socket,
+            },
+            environment_threads: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
             state,
             monitor,
             config,
@@ -1046,6 +1159,25 @@ pub fn run(socket: &Path, state: &Path) -> Result<()> {
                 let method = web["method"].as_str().unwrap_or("");
                 let result = if !serde_json::to_vec(web).is_ok_and(|b| b.len() <= REQUEST_LIMIT) {
                     Err("web request too large".into())
+                } else if matches!(
+                    method,
+                    "environments" | "environment_start" | "environment_stop" | "environment_check"
+                ) {
+                    let replies = sender.clone();
+                    match api.environment(
+                        method,
+                        &web["params"],
+                        Box::new(move |result| {
+                            let reply = match result {
+                                Ok(result) => json!({"Web": {"id": id, "result": result}}),
+                                Err(error) => json!({"Web": {"id": id, "error": error}}),
+                            };
+                            let _ = replies.send(Outbound::Message(reply));
+                        }),
+                    ) {
+                        Ok(()) => continue,
+                        Err(error) => Err(error),
+                    }
                 } else if method == "git" || method == "conversations" {
                     // Answered by a Git or the History worker thread when
                     // ready, so a slow repository or a large transcript

@@ -55,6 +55,8 @@ pub enum Kind {
     Folder,
     /// A list of folders.
     FolderList,
+    /// A range of TCP ports, `"FIRST-LAST"`.
+    PortRange,
 }
 impl Kind {
     fn label(self) -> &'static str {
@@ -62,6 +64,7 @@ impl Kind {
             Self::Version => "integer",
             Self::Folder => "folder path (string)",
             Self::FolderList => "list of folder paths (strings)",
+            Self::PortRange => "port range (string, `FIRST-LAST`)",
         }
     }
 }
@@ -98,6 +101,10 @@ pub const SECTIONS: &[(&str, &str)] = &[
     ("files", "The web client's file browser."),
     ("projects", "Projects."),
     ("scratch", "Terminals outside any project."),
+    (
+        "environments",
+        "Project environments: dev servers and deployments declared in a project's repositories (`.kelp/environments/`), started only on request from the web client or `kelpmux env`.",
+    ),
 ];
 
 /// Every key of the file. The validator, the default file, the JSON Schema
@@ -147,6 +154,15 @@ pub const KEYS: &[Key] = &[
         example: None,
         doc: "The folder of the built-in Scratch project: terminals created outside any project start in it and belong to Scratch. It must lie inside `files.root` or one of `files.extra_roots`, and need not exist yet.",
         applies: "Immediately: the next terminal created outside a project starts there (the web client creates the folder when it is missing).",
+    },
+    Key {
+        section: "environments",
+        name: "ports",
+        kind: Kind::PortRange,
+        default: "\"41000-41999\"",
+        example: None,
+        doc: "The TCP ports given to environments as `KELP_PORT`: each (project, environment) gets the lowest port of this range that no other one holds and nothing listens on, and keeps it across restarts while it stays in the range. Two port numbers from 1024 to 65535, the first not above the second.",
+        applies: "On the next start of an environment: one whose port falls outside a new range gets a new port.",
     },
 ];
 
@@ -235,6 +251,27 @@ pub struct Config {
     pub scratch_folder: Folder,
     /// The `[[project]]` tables, in the file's order.
     pub projects: Vec<Project>,
+    /// `environments.ports`: as written, and the first and last port.
+    pub environment_ports: (String, (u16, u16)),
+}
+
+/// Parses `"FIRST-LAST"`: ports from 1024 to 65535, FIRST ≤ LAST.
+pub fn port_range(text: &str) -> std::result::Result<(u16, u16), String> {
+    let (first, last) = text
+        .split_once('-')
+        .ok_or("must be two ports joined by `-`, such as \"41000-41999\"")?;
+    let port = |text: &str| {
+        text.trim()
+            .parse::<u16>()
+            .ok()
+            .filter(|port| *port >= 1024)
+            .ok_or("ports must be numbers from 1024 to 65535")
+    };
+    let (first, last) = (port(first)?, port(last)?);
+    if first > last {
+        return Err("the first port must not be above the last".into());
+    }
+    Ok((first, last))
 }
 impl Config {
     /// The project `id` names, if any.
@@ -274,10 +311,14 @@ impl Config {
                 "scratch": { "folder": pick(&self.scratch_folder) },
             })
         };
-        json!({
-            "values": shape(&|folder| json!(folder.written)),
-            "resolved": shape(&|folder| json!(folder.path)),
-        })
+        let ports = &self.environment_ports;
+        let (mut values, mut resolved) = (
+            shape(&|folder| json!(folder.written)),
+            shape(&|folder| json!(folder.path)),
+        );
+        values["environments"] = json!({ "ports": ports.0 });
+        resolved["environments"] = json!({ "ports": [ports.1.0, ports.1.1] });
+        json!({ "values": values, "resolved": resolved })
     }
     /// The file root and extra roots KelpServer is given.
     pub fn roots(&self) -> (PathBuf, Vec<PathBuf>) {
@@ -535,6 +576,28 @@ pub fn validate(text: &str, env: &Env) -> std::result::Result<Config, Vec<Diagno
             error(key_span, None, unknown_message(name, hint));
         }
     }
+    let ports_key = key("environments.ports").expect("known key");
+    let environment_ports = match strings
+        .iter()
+        .find(|(found, _)| std::ptr::eq(*found, ports_key))
+        .and_then(|(_, values)| values.first().cloned())
+    {
+        Some((written, span)) => match port_range(&written) {
+            Ok(range) => Some((written, range)),
+            Err(message) => {
+                error(
+                    span,
+                    Some(ports_key.path()),
+                    format!("`environments.ports` {message}"),
+                );
+                None
+            }
+        },
+        None => {
+            let written = ports_key.default.trim_matches('"').to_owned();
+            port_range(&written).ok().map(|range| (written, range))
+        }
+    };
     let home = &env.home;
     let mut folder =
         |key: &str, written: &str, span: Option<Range<usize>>| match expand(written, home) {
@@ -637,15 +700,16 @@ pub fn validate(text: &str, env: &Env) -> std::result::Result<Config, Vec<Diagno
         }
     }
     let projects = check_projects(&raw_projects, home, &root, &extra, &scratch, &mut error);
-    if !errors.is_empty() {
+    let Some(environment_ports) = environment_ports.filter(|_| errors.is_empty()) else {
         return Err(errors);
-    }
+    };
     Ok(Config {
         files_root: root,
         files_extra_roots: extra,
         projects_base: base,
         scratch_folder: scratch,
         projects,
+        environment_ports,
     })
 }
 
@@ -1001,7 +1065,7 @@ fn check_table(
         let path = key.path();
         let mistyped = || format!("`{path}` must be a {}", key.kind.label());
         match key.kind {
-            Kind::Folder => match item.as_str() {
+            Kind::Folder | Kind::PortRange => match item.as_str() {
                 Some(value) => strings.push((key, vec![(value.to_owned(), item.span())])),
                 None => error(item.span().or(key_span), Some(path.clone()), mistyped()),
             },
@@ -1110,6 +1174,7 @@ pub fn schema() -> Json {
         let mut value = match key.kind {
             Kind::Version => json!({ "type": "integer", "const": VERSION }),
             Kind::Folder => json!({ "type": "string", "minLength": 1, "maxLength": MAX_PATH }),
+            Kind::PortRange => json!({ "type": "string", "pattern": "^[0-9]{4,5}-[0-9]{4,5}$" }),
             Kind::FolderList => json!({
                 "type": "array",
                 "items": { "type": "string", "minLength": 1, "maxLength": MAX_PATH },
@@ -1257,7 +1322,7 @@ pub fn changes(params: &Json) -> std::result::Result<Vec<Change>, String> {
                 .filter(|key| key.kind != Kind::Version)
                 .ok_or_else(|| format!("`{name}` cannot be changed here"))?;
             let value = match (key.kind, value) {
-                (Kind::Folder, Json::String(text)) => vec![text.clone()],
+                (Kind::Folder | Kind::PortRange, Json::String(text)) => vec![text.clone()],
                 (Kind::FolderList, Json::Array(items)) if items.len() <= 64 => items
                     .iter()
                     .map(|item| item.as_str().map(str::to_owned))
