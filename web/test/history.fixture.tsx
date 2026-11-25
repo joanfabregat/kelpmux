@@ -7,7 +7,7 @@
 // `phone` query parameter shows the phone's list instead of the grid. The
 // file root is /home/me: a folder or file outside it shows the root. The
 // project "alpha" (folder /home/me/alpha) scopes the grid, the file
-// browser and Recently closed (`?project=`); another id falls back to
+// browser and History (`?project=`); another id falls back to
 // every project.
 import React, { useEffect, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";

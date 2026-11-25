@@ -92,7 +92,7 @@ import {
   TerminalNotificationsPanel,
   PaneMenu,
   ParkedPanel,
-  RecoveryPanel,
+  HistoryPanel,
   SearchPanel,
 } from "./Panels";
 import { TerminalsPanel } from "./Terminals";
@@ -489,7 +489,7 @@ function App() {
     [userConfig, setUserConfig] = useState<UserConfigState | null>(null),
     // Projects (bridge API minor 5): which project each live terminal
     // belongs to (pane → id; the rest are Scratch's), the project the grid,
-    // the file browser and Recently closed show ("" for all), the project
+    // the file browser and History show ("" for all), the project
     // dialog, the terminal being moved, a project's menu and the project
     // under a dragged row.
     [projectLinks, setProjectLinks] = useState<Record<number, string>>({}),
@@ -2129,7 +2129,7 @@ function App() {
         },
       ]);
     items.push([
-      "Recently closed",
+      "History",
       () => {
         setScope(project.id);
         setDialog("recovery");
@@ -2285,7 +2285,7 @@ function App() {
         )
       : live;
   const streamedIds = new Set(visible.map((p) => p.id));
-  /** The project the grid, the files or Recently closed show, if any. */
+  /** The project the grid, the files or History show, if any. */
   const scopeProject = scope ? projectById(scope) : undefined;
   /** A project view's bar: its colour and name, what it shows, and the way
    * back to every project. */
@@ -2951,8 +2951,8 @@ function App() {
       : "Notifications",
     terminals: "Terminals",
     recovery: scopeProject
-      ? `Recently closed · ${scopeProject.name}`
-      : "Recently closed",
+      ? `History · ${scopeProject.name}`
+      : "History",
     search: "Search terminal history",
     parked: "Parked terminals",
     move: "Move terminal",
@@ -3483,10 +3483,11 @@ function App() {
                 <p className="panel-empty">This terminal is closed.</p>
               )}
               {dialog === "recovery" && (
-                <RecoveryPanel
+                <HistoryPanel
                   scope={scopeProject}
                   projects={userProjects}
                   onAllProjects={() => setScope("")}
+                  conversations={online && operations.has("conversations")}
                   rpc={rpc}
                   onCopy={(text) =>
                     navigator.clipboard
@@ -3501,7 +3502,7 @@ function App() {
                     toast(
                       existing
                         ? "This conversation is already open"
-                        : "Restored in a new terminal",
+                        : "Opened in a new terminal",
                       { key: "restore" },
                     );
                     const pane = all.find((p) => p.id === id);

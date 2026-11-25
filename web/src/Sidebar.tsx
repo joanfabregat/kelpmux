@@ -77,7 +77,7 @@ export type SidebarProps = {
   dropProject?: string;
   /** Creates a terminal in a project. */
   onNewIn?: (project: Project) => void;
-  /** A project's menu (Files, Terminals, Closed, Rename, Delete). */
+  /** A project's menu (Files, Terminals, History, Rename, Delete). */
   onProjectMenu?: (project: Project, x: number, y: number) => void;
   onNewProject?: () => void;
   /** A project's Git facts (bridge `git`), for its changes mark. */
@@ -531,7 +531,7 @@ export function Sidebar(props: SidebarProps) {
       <div className="rail-bottom">
         <div className="tool-grid">
           {tool("terminals", "Terminals", "Terminals", "list", "Ctrl-B o")}
-          {tool("recovery", "Recently closed", "Closed", "history", "Ctrl-B r")}
+          {tool("recovery", "History", "History", "history", "Ctrl-B r")}
           {tool("search", "Search", "Search", "search", "Ctrl-B /")}
           {tool("help", "Help", "Help", "book-open", "Ctrl-B ?")}
         </div>

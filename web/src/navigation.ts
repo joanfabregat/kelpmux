@@ -11,7 +11,7 @@
 //   ?view=repos&project=<project id>              a project's Repos view
 //   …&dialog=<panel>[&of=<pane id>]                a panel over that place
 //   …&project=<project id>                          the grid, the file
-//                                                  browser or Recently closed
+//                                                  browser or History
 //                                                  of one project (`scratch`
 //                                                  for Scratch)
 //
@@ -23,7 +23,7 @@
 // opened with Open in a window, which do not keep a history.
 //
 // Entry rules (historyMode): a move to another place pushes an entry, and so
-// does opening a panel (Settings, Help, Terminals, Search, Recently closed,
+// does opening a panel (Settings, Help, Terminals, Search, History,
 // Parked, Move, System status, a terminal's notifications), so Back closes
 // it; closing that panel goes back to the entry below instead of adding one.
 // Transient interface (menus, tooltips, toasts, the find bar, confirmations,
@@ -54,7 +54,7 @@ export type AppLocation = {
   line: number;
   /** A modal panel over the place, by its URL name (dialogs below). */
   dialog: string;
-  /** The project the grid, the file browser or Recently closed shows
+  /** The project the grid, the file browser or History shows
    * (its id; "" for all). */
   project: string;
   /** The terminal whose notifications the panel shows. */
@@ -79,12 +79,16 @@ const dialogs: Record<string, string> = {
   help: "help",
   terminals: "terminals",
   search: "search",
-  closed: "recovery",
+  history: "recovery",
   parked: "parked",
   move: "move",
   status: "stats",
   notifications: "notifications",
 };
+
+/** Older URL names of panels, read as their current name (the URL is
+ * then rewritten with the current one). */
+const legacyDialogs: Record<string, string> = { closed: "history" };
 
 /** The URL name of an application dialog ("" when it has no entry). */
 export function dialogParam(dialog: string): string {
@@ -140,7 +144,11 @@ export function parseLocation(search: string): Partial<AppLocation> {
     }
     if (result.file || result.side) result.line = id(params.get("line"));
   }
-  const dialog = params.get("dialog") || "";
+  // KelpMux before History named that panel "closed".
+  const asked = params.get("dialog") || "";
+  const dialog = Object.hasOwn(legacyDialogs, asked)
+    ? legacyDialogs[asked]
+    : asked;
   if (dialogFromParam(dialog)) {
     result.dialog = dialog;
     if (dialog === "notifications") result.of = id(params.get("of"));
@@ -148,7 +156,7 @@ export function parseLocation(search: string): Partial<AppLocation> {
   const project = params.get("project") || "";
   if (
     /^[a-z0-9-]{1,64}$/.test(project) &&
-    (scoped(result.view) || result.dialog === "closed")
+    (scoped(result.view) || result.dialog === "history")
   )
     result.project = project;
   return result;
@@ -159,10 +167,10 @@ export function parseLocation(search: string): Partial<AppLocation> {
 function scoped(view: View | undefined) {
   return view === "grid" || view === "files" || view === "repos";
 }
-/** Whether a location keeps its project: a scoped view, or Recently
- * closed over any place. */
+/** Whether a location keeps its project: a scoped view, or History
+ * over any place. */
 function keepsProject(location: Pick<AppLocation, "view" | "dialog">) {
-  return scoped(location.view) || location.dialog === "closed";
+  return scoped(location.view) || location.dialog === "history";
 }
 
 /** Whether a URL names a location (otherwise the application keeps its
@@ -242,7 +250,7 @@ export type LocationState = {
   /** The application's dialog ("" for none). */
   dialog: string;
   notifyPane: number;
-  /** The project the grid, the file browser or Recently closed shows. */
+  /** The project the grid, the file browser or History shows. */
   project?: string;
 };
 
@@ -302,7 +310,7 @@ function sameOverlay(a: AppLocation, b: AppLocation) {
   return (
     a.dialog === b.dialog &&
     a.of === b.of &&
-    (a.dialog !== "closed" || a.project === b.project)
+    (a.dialog !== "history" || a.project === b.project)
   );
 }
 

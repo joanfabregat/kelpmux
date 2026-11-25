@@ -7,7 +7,7 @@
 //    The row menu's Move to project dialog does the same from the keyboard.
 // 3. A project's menu: Terminals shows its grid only, with a way back to
 //    every terminal; Files starts the columns at its folder and colours the
-//    project folders; Recently closed lists its closed terminals only
+//    project folders; History lists its closed terminals only
 //    (Scratch's: those of no existing project).
 // 4. The file browser's "Create project from this folder…": absent on a
 //    project's folder, refused with a clear message on a folder containing
@@ -349,16 +349,16 @@ for (const [name, engine] of [
     );
     await page.waitForSelector('.files-row[data-project-folder="gamma"]');
 
-    // 3. Recently closed, by project.
-    await projectMenu(page, "Alpha", "Recently closed");
+    // 3. History, by project.
+    await projectMenu(page, "Alpha", "History");
     await page.waitForSelector('[data-dialog="recovery"] .list-row');
     assert.deepEqual(
       await page.locator('[data-dialog="recovery"] .list-row').allInnerTexts().then((all) => all.map((t) => t.split("\n")[0])),
       ["cargo test"].map((t) => t),
     );
-    assert.match(await search(page), /dialog=closed&project=alpha/);
+    assert.match(await search(page), /dialog=history&project=alpha/);
     await page.locator("#close-dialog").click();
-    await projectMenu(page, "Scratch", "Recently closed");
+    await projectMenu(page, "Scratch", "History");
     await page.waitForSelector('[data-dialog="recovery"] .list-row');
     assert.equal(
       await page.locator('[data-dialog="recovery"] .list-row').count(),
@@ -423,7 +423,7 @@ for (const [name, engine] of [
       await mobile.context.close();
     }
     console.log(
-      `PASS: ${name} projects: sidebar grouped by project (by name, Scratch last), a dragged row moves its terminal and the bridge keeps it across a reload, Move to project from the keyboard, a project's grid, files and Recently closed, coloured project folders with links, Create project from this folder (refused overlap, created group), project URLs with Back and Forward, unknown project falls back`,
+      `PASS: ${name} projects: sidebar grouped by project (by name, Scratch last), a dragged row moves its terminal and the bridge keeps it across a reload, Move to project from the keyboard, a project's grid, files and History, coloured project folders with links, Create project from this folder (refused overlap, created group), project URLs with Back and Forward, unknown project falls back`,
     );
   } finally {
     await browser.close();

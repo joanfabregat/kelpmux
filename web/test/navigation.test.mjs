@@ -115,7 +115,7 @@ test("a dialog alone opens over the current place", () => {
 test("dialog names map both ways", () => {
   for (const [param, dialog] of [
     ["settings", "config"],
-    ["closed", "recovery"],
+    ["history", "recovery"],
     ["status", "stats"],
     ["help", "help"],
     ["notifications", "notifications"],
@@ -274,12 +274,12 @@ test("history state carries a version", () => {
   });
 });
 
-test("a project scopes the grid, the file browser and Recently closed", () => {
+test("a project scopes the grid, the file browser and History", () => {
   const places = [
     at({ view: "grid", project: "kelp" }),
     at({ view: "files", dir: "/home/me/p/kelp", project: "kelp" }),
     at({ view: "files", file: "/home/me/p/kelp/a.md", project: "scratch" }),
-    terminal(4, { dialog: "closed", project: "kelp" }),
+    terminal(4, { dialog: "history", project: "kelp" }),
   ];
   for (const place of places) {
     const search = locationSearch(place);
@@ -351,4 +351,17 @@ test("a project's Repos view is a place of its own, named with its project", () 
   assert.equal(historyMode(repos, at({ view: "repos", project: "web" })).mode, "push");
   assert.equal(historyMode(repos, at({ view: "grid", project: "kelp" })).mode, "push");
   assert.equal(historyMode(repos, repos).mode, "none");
+});
+
+test("the former Recently closed URL opens History", () => {
+  const wanted = parseLocation("?view=grid&dialog=closed&project=kelp");
+  assert.equal(wanted.dialog, "history");
+  assert.equal(wanted.project, "kelp");
+  assert.equal(dialogFromParam(wanted.dialog), "recovery");
+  // Written back with the current name.
+  assert.equal(
+    locationSearch(resolveLocation(wanted, terminal(1))),
+    "?view=grid&dialog=history&project=kelp",
+  );
+  assert.equal(parseLocation("?view=grid&dialog=constructor").dialog, undefined);
 });

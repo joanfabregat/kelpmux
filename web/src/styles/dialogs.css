@@ -1375,3 +1375,63 @@ button.attention-open:hover {
   background: transparent;
   box-shadow: inset 0 0 0 1.5px var(--text-3);
 }
+
+/* History: closed terminals with their conversations nested under them,
+ * and conversations started outside KelpMux. */
+.history-panel .list-row {
+  border-top: 0;
+}
+.history-group {
+  display: flex;
+  flex-direction: column;
+}
+.history-conversations {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin-left: 22px;
+  padding-left: var(--s2);
+  border-left: 1px solid var(--line);
+}
+.panel-list .history-conversation {
+  padding-block: 6px;
+}
+.panel-list .history-conversation .t.untitled {
+  color: var(--text-2);
+  font-weight: 400;
+}
+.history-external .badge {
+  padding-block: 0;
+  vertical-align: 1px;
+}
+.history-project {
+  --project: var(--text-3);
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  margin-right: 4px;
+  color: var(--text-2);
+}
+.history-project::after {
+  content: "·";
+  margin-left: -1px;
+  color: var(--text-3);
+}
+.history-project .project-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--project);
+}
+.history-project .project-dot.plain {
+  background: transparent;
+  box-shadow: inset 0 0 0 1.5px var(--text-3);
+}
+.history-note {
+  padding: var(--s2);
+}
+@media (max-width: 600px) {
+  .history-conversations {
+    margin-left: 10px;
+  }
+}

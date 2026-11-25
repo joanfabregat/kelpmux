@@ -4,7 +4,7 @@
 // row dropped on another project's group moves the terminal there), the
 // project menu, the Move to project dialog, the project dialog, a project's
 // grid (tiles are plain boxes), its files (the real FilesBrowser over a fake
-// FilesClient transport) and its Recently closed (the real RecoveryPanel),
+// FilesClient transport) and its History (the real HistoryPanel),
 // with the URL kept by useHistorySync. The bridge is `window.bridge(method,
 // params)`, which the test exposes: its state outlives a reload. Terminals
 // have pane ids 11 to 14; the file root is /home/me. `?mode=light` and
@@ -21,7 +21,7 @@ import {
 import { Sidebar } from "../src/Sidebar";
 import { FilesBrowser } from "../src/files/FilesBrowser";
 import { FileMenu, type FileActionsProps } from "../src/files/actions";
-import { RecoveryPanel } from "../src/Panels";
+import { HistoryPanel } from "../src/Panels";
 import { MoveToProjectDialog, ProjectDialog } from "../src/ProjectDialog";
 import { ToastProvider } from "../src/Toast";
 import {
@@ -281,7 +281,7 @@ function App() {
       },
     ],
     [
-      "Recently closed",
+      "History",
       () => {
         setScope(project.id);
         setDialog("recovery");
@@ -419,7 +419,7 @@ function App() {
       {dialog === "recovery" && (
         <div className="modal-shade" data-dialog="recovery">
           <section className="dialog panel">
-            <RecoveryPanel
+            <HistoryPanel
               rpc={bridge}
               scope={scopeProject}
               projects={projects}

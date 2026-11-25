@@ -20,7 +20,7 @@
 // 5. The file browser's columns: a folder clicked in a column pushes, a
 //    keyboard move or a file selected in an earlier column replaces, and
 //    a deep link to a nested folder opens it.
-// 6. Projects: a project's grid, files and Recently closed name it in the
+// 6. Projects: a project's grid, files and History name it in the
 //    URL, Back and Forward walk them, an unknown project falls back.
 // 7. A project's Repos view (`?view=repos&project=`): Back and Forward,
 //    deep links, and the fallbacks without or with an unknown project.
@@ -425,7 +425,7 @@ for (const [name, engine] of [
       assert.deepEqual(deep.errors, []);
       await deep.context.close();
     }
-    // 6. Projects: a project's grid, files and Recently closed name it in
+    // 6. Projects: a project's grid, files and History name it in
     // the URL; Back and Forward move between them and every project's
     // views, and a deep link to an unknown project shows every project.
     {
@@ -442,10 +442,10 @@ for (const [name, engine] of [
       await page.click("#grid");
       await at(page, "grid", "?view=grid");
       await page.click("#alpha-closed");
-      await at(page, "grid @alpha", "?view=grid&dialog=closed&project=alpha");
+      await at(page, "grid @alpha", "?view=grid&dialog=history&project=alpha");
       await back(page);
       await at(page, "grid", "?view=grid");
-      assert.equal(await dialogShown(page), 0, "Back closes Recently closed");
+      assert.equal(await dialogShown(page), 0, "Back closes History");
       await back(page);
       await at(
         page,
@@ -468,6 +468,12 @@ for (const [name, engine] of [
       );
       assert.deepEqual(unknown.errors, []);
       await unknown.context.close();
+      // The former Recently closed URL opens History, renamed in place.
+      const legacy = await open(browser, "?view=grid&dialog=closed&project=alpha");
+      await at(legacy.page, "grid @alpha", "?view=grid&dialog=history&project=alpha");
+      assert.equal(await dialogShown(legacy.page), 1, "History is open");
+      assert.deepEqual(legacy.errors, []);
+      await legacy.context.close();
     }
     // 7. A project's Repos view: a place of its own, named with its
     // project; Back and Forward walk to and from it, a deep link opens it,
@@ -506,7 +512,7 @@ for (const [name, engine] of [
       }
     }
     console.log(
-      `PASS: ${name} history: terminal, grid, folder, file and Settings entries walked back and forward, Back closes panels, no duplicates, replacements for normalised folders, lines, closed files and swapped panels, deep links with fallbacks, legacy URLs, phone list and terminal, file tabs (switching pushes, closing the shown tab replaces with its neighbour or the browser), file browser columns (a folder click pushes, keyboard and file selection replace, nested deep links), projects (grid, files and Recently closed name the project, Back and Forward between them, unknown project falls back), Repos views (named with their project, Back and Forward, deep link and reload, fallbacks without or with an unknown project)`,
+      `PASS: ${name} history: terminal, grid, folder, file and Settings entries walked back and forward, Back closes panels, no duplicates, replacements for normalised folders, lines, closed files and swapped panels, deep links with fallbacks, legacy URLs, phone list and terminal, file tabs (switching pushes, closing the shown tab replaces with its neighbour or the browser), file browser columns (a folder click pushes, keyboard and file selection replace, nested deep links), projects (grid, files and History name the project, Back and Forward between them, unknown project falls back), Repos views (named with their project, Back and Forward, deep link and reload, fallbacks without or with an unknown project)`,
     );
   } finally {
     await browser.close();

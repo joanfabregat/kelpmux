@@ -17,7 +17,7 @@ export const shortcuts: readonly (readonly [string, string])[] = [
   ["Ctrl-B !", "Terminals, agents needing attention"],
   ["Ctrl-B n", "Terminals, finished agents"],
   ["Ctrl-B b", "Notifications of the focused terminal"],
-  ["Ctrl-B r", "Recently closed terminals and previous runs"],
+  ["Ctrl-B r", "History: closed terminals and their conversations"],
   ["Ctrl-B /", "Search terminal history (Tab: focused / all)"],
   ["Ctrl-B p", "Park the focused terminal"],
   ["Ctrl-B u", "Parked terminals"],
