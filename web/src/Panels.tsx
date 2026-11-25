@@ -22,7 +22,13 @@ import { shortcuts } from "./shortcuts";
 import { projectColor, type Project } from "./projects";
 import {
   choiceHint,
-  choiceLabel,
+  choiceText,
+  folderRequest,
+  matchedHint,
+  pickerHint,
+  pickerLabel,
+  pickerRequest,
+  unidentified,
   conversationTitle,
   exactSpan,
   historyRows,
@@ -174,7 +180,11 @@ export function HistoryPanel({
   /** Resumes a conversation in a new terminal of `project`, in its
    * folder; the bridge builds the command from the kind and id. */
   async function resume(c: Conversation, project: string, key: string) {
-    const request = resumeRequest(c, project);
+    await open(key, resumeRequest(c, project));
+  }
+  /** Sends `new` (a resume, the agent's picker or a shell) and shows the
+   * terminal it opened. */
+  async function open(key: string, request: object | null) {
     if (busy || !request) return;
     setBusy(key);
     try {
@@ -297,7 +307,76 @@ export function HistoryPanel({
           }
           const entry = row.entry;
           const nested = entry.conversations || [];
-          const command = nested.length ? "" : resumeCommand(entry);
+          /** Where and when the terminal ran: its secondary line. */
+          const where = (cwd: string) => (
+            <>
+              {entry.workspace !== listing.workspace && `${entry.workspace} · `}
+              {projectTag(row.project)}
+              <span className="mono">{cwd}</span> · {entry.reason} ·{" "}
+              {age(entry.closed_at || 0)}
+            </>
+          );
+          const matched = (c: Conversation) =>
+            c.matched && (
+              <>
+                <span className="history-matched" title={matchedHint}>
+                  matched by folder and time
+                </span>
+                {" · "}
+              </>
+            );
+          // One conversation: one row, titled by it, with its terminal as
+          // the secondary text.
+          if (nested.length === 1) {
+            const c = nested[0];
+            const label = conversationTitle(c);
+            const key = `${entry.key}:${c.kind}:${c.id}`;
+            return (
+              <div
+                className="history-group"
+                role="listitem"
+                key={entry.key}
+                data-entry={entry.key}
+                data-project={row.project}
+              >
+                <div
+                  className="list-row history-terminal history-single"
+                  data-conversation={c.id}
+                >
+                  <ProviderLogo kind={c.kind} />
+                  <div className="grow">
+                    <span
+                      className={`t ${c.titled === false ? "untitled" : ""}`}
+                      title={label}
+                    >
+                      {label}
+                    </span>
+                    <span className="s">
+                      {toolName(c.kind)} · {matched(c)}
+                      {c.titled !== false && (
+                        <>
+                          <span className="history-name">{entry.name}</span>
+                          {" · "}
+                        </>
+                      )}
+                      {where(c.cwd || entry.cwd)}
+                      {span(c) && (
+                        <>
+                          {" · ran "}
+                          <span title={exactSpan(c)}>{span(c)}</span>
+                        </>
+                      )}
+                    </span>
+                  </div>
+                  {conversationActions(c, row.project, key, label)}
+                </div>
+              </div>
+            );
+          }
+          // A closed agent terminal whose conversation is unknown: the
+          // agent's own picker in its folder, never a guessed conversation.
+          const picker = !!conversations && !nested.length && unidentified(entry);
+          const command = nested.length || picker ? "" : resumeCommand(entry);
           return (
             <div
               className="history-group"
@@ -315,11 +394,15 @@ export function HistoryPanel({
                 <div className="grow">
                   <span className="t">{entry.name}</span>
                   <span className="s">
-                    {entry.workspace !== listing.workspace &&
-                      `${entry.workspace} · `}
-                    {projectTag(row.project)}
-                    <span className="mono">{entry.cwd}</span> · {entry.reason} ·{" "}
-                    {age(entry.closed_at || 0)}
+                    {nested.length > 1 && (
+                      <>
+                        <span className="history-count">
+                          {nested.length} conversations
+                        </span>
+                        {" · "}
+                      </>
+                    )}
+                    {where(entry.cwd)}
                   </span>
                 </div>
                 {command && (
@@ -333,25 +416,53 @@ export function HistoryPanel({
                     <Icon name="copy" size="sm" />
                   </button>
                 )}
+                {picker && (
+                  <>
+                    <button
+                      type="button"
+                      className="small success"
+                      title={pickerHint(entry)}
+                      aria-label={`${pickerLabel(entry.kind)}: ${entry.name}`}
+                      disabled={!!busy}
+                      onClick={() =>
+                        open(entry.key, pickerRequest(entry, row.project))
+                      }
+                    >
+                      <Icon name="rotate-ccw" size="sm" />
+                      {pickerLabel(entry.kind)}
+                    </button>
+                    <button
+                      type="button"
+                      className="small subtle"
+                      title={`Open a shell in ${entry.cwd}`}
+                      aria-label={`Open folder ${entry.name}`}
+                      disabled={!!busy}
+                      onClick={() => open(entry.key, folderRequest(entry, row.project))}
+                    >
+                      Open folder
+                    </button>
+                  </>
+                )}
                 {!nested.length &&
+                  !picker &&
                   entry.choices.map((choice) => (
                     <button
                       type="button"
                       key={choice}
                       className={`small ${choice === entry.choices[0] ? "success" : "subtle"}`}
                       title={choiceHint(entry, choice)}
-                      aria-label={`${choiceLabel[choice]} ${entry.name}`}
+                      aria-label={`${choiceText(entry, choice)} ${entry.name}`}
                       disabled={!!busy}
                       onClick={() => restore(entry, choice)}
                     >
                       {choice === entry.choices[0] && (
                         <Icon name="rotate-ccw" size="sm" />
                       )}
-                      {choiceLabel[choice]}
+                      {choiceText(entry, choice)}
                     </button>
                   ))}
               </div>
-              {nested.length > 0 && (
+              {nested.length > 1 && (
                 <div className="history-conversations" role="list">
                   {nested.map((c) => {
                     const label = conversationTitle(c);

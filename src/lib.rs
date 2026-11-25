@@ -91,6 +91,7 @@ pub mod native {
     };
     pub mod cli;
     pub mod config;
+    pub mod environments;
     pub mod error_reporting;
     pub mod history;
     pub mod hover;
@@ -109,6 +110,7 @@ pub mod native {
     pub mod web_assets;
     pub mod web_bridge;
     pub mod web_git;
+    pub mod web_github;
     pub mod web_history;
     pub mod web_relay;
     pub mod web_repos;

@@ -520,8 +520,7 @@ button.attention-open:hover {
 /* Field labels sit one step below section headings. */
 .settings-panel .upload-folder,
 .settings-panel .font-settings label,
-.settings-panel .font-picker,
-.settings-panel .github-link label {
+.settings-panel .font-picker {
   color: var(--text-2);
   font-size: var(--fs-sm);
   font-weight: 400;
@@ -529,7 +528,6 @@ button.attention-open:hover {
 .settings-panel .upload-folder input,
 .settings-panel .upload-folder select,
 .settings-panel .font-settings select,
-.settings-panel .github-link input,
 .settings-panel .font-trigger {
   color: var(--text);
   font-size: var(--fs-md);
@@ -582,17 +580,6 @@ button.attention-open:hover {
   font-size: var(--fs-sm);
   cursor: pointer;
 }
-.github-link label {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-  margin-block: var(--s2);
-  font-weight: 500;
-}
-.github-link input {
-  width: 12em;
-  font-family: var(--font-mono);
-}
 .key-delete-confirm {
   flex-basis: 100%;
 }
@@ -624,14 +611,6 @@ button.attention-open:hover {
 /* Settings opened from a project dialog (GitHub setup) sits above it. */
 .modal-shade.settings-shade {
   z-index: 15;
-}
-.settings-panel .github-actions,
-.github-connect .github-actions {
-  margin-top: var(--s3);
-}
-.settings-panel .github-ignored {
-  margin: var(--s2) 0 0;
-  padding-left: var(--s4);
 }
 
 /* Settings → Info: read-only server facts and effective configuration. */
@@ -839,65 +818,6 @@ button.attention-open:hover {
 }
 .select-chevron {
   color: var(--text-3);
-}
-
-/* ───── GitHub repository picker (project dialogs) ───── */
-.github-picker {
-  margin-block: var(--s4);
-}
-/* The GitHub App connection flow, offered inline until an App is connected. */
-.github-connect {
-  display: grid;
-  gap: var(--s2);
-  margin-top: var(--s2);
-  padding: var(--s3);
-  border: 1px solid var(--line);
-  border-radius: var(--r-md);
-}
-.github-connect > h4,
-.github-connect > p {
-  margin: 0;
-}
-.github-picker > input {
-  width: 100%;
-  margin-top: var(--s2);
-}
-.github-repositories {
-  max-height: 20rem;
-  margin: var(--s2) 0 0;
-  padding: 0;
-  overflow: auto;
-  border: 1px solid var(--line);
-  border-radius: var(--r-md);
-  list-style: none;
-}
-.github-repositories:empty {
-  display: none;
-}
-.github-repositories li {
-  display: flex;
-  align-items: center;
-  gap: var(--s3);
-  padding: var(--s2) var(--s3);
-  border-top: 1px solid var(--line);
-}
-.github-repositories li:first-child {
-  border-top: 0;
-}
-.github-repositories li > span {
-  flex: 1;
-  min-width: 0;
-}
-.github-repositories strong {
-  font-weight: 500;
-}
-.github-repositories small {
-  display: block;
-  color: var(--text-3);
-  font-size: var(--fs-sm);
-}
-.github-repositories button {
-  flex: none;
 }
 
 /* ───── System status ───── */
@@ -1399,6 +1319,19 @@ button.attention-open:hover {
 .panel-list .history-conversation .t.untitled {
   color: var(--text-2);
   font-weight: 400;
+}
+.panel-list .history-single .t.untitled {
+  color: var(--text-2);
+  font-weight: 400;
+}
+/* A conversation linked to its terminal by folder and time: subtle, with
+ * the reason in its tooltip. */
+.history-matched {
+  color: var(--text-3);
+  font-style: italic;
+  text-decoration: underline dotted;
+  text-underline-offset: 2px;
+  cursor: help;
 }
 .history-external .badge {
   padding-block: 0;

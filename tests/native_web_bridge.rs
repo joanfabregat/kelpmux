@@ -111,6 +111,8 @@ impl Bridge {
             .env("SHELL", "/bin/sh")
             // This test's own user configuration.
             .env("XDG_CONFIG_HOME", cwd.join("xdg-config"))
+            // Environment ports and instance folders under this root.
+            .env("XDG_STATE_HOME", cwd.join("xdg-state"))
             // New terminals start in its Scratch folder, `~/scratch`.
             .env("HOME", cwd)
             // Agent transcripts (History) under this HOME only.
@@ -996,6 +998,122 @@ fn git_reports_a_projects_checkouts_read_only() {
     assert_eq!(unknown["error"], "this project no longer exists");
     let path = bridge.web(7, "git", json!({"folder": "/"}));
     assert_eq!(path["error"], "project required");
+    // A github.com origin gives the checkout's `owner/name` (API 3.8),
+    // never the URL (which could hold credentials).
+    git(
+        &api,
+        &[
+            "remote",
+            "add",
+            "origin",
+            "https://user:secret@github.com/owner/api.git",
+        ],
+    );
+    let reply = bridge.web(8, "git", json!({"project": "work", "fresh": true}));
+    assert_eq!(
+        reply["result"]["repos"][0]["github"],
+        Value::Null,
+        "{reply}"
+    );
+    assert!(!reply.to_string().contains("secret"));
+    git(
+        &api,
+        &[
+            "remote",
+            "set-url",
+            "origin",
+            "git@github.com:owner/api.git",
+        ],
+    );
+    let reply = bridge.web(9, "git", json!({"project": "work", "fresh": true}));
+    assert_eq!(
+        reply["result"]["repos"][0]["github"], "owner/api",
+        "{reply}"
+    );
+}
+
+/// `github_*` (API 3.8): signed out without `[github]`, explains a token
+/// source that fails, and checks every request before any work. Nothing
+/// here reaches GitHub.
+#[test]
+fn github_operations_explain_sign_in_and_check_their_requests() {
+    let server = Server::start();
+    let mut bridge = Bridge::start(&server);
+    welcome(&mut bridge);
+    let state = bridge.web(1, "state", json!({}));
+    assert!(
+        state["result"]["operations"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|op| op == "github")
+    );
+    let status = bridge.web(2, "github_status", json!({}));
+    assert_eq!(status["result"]["enabled"], false, "{status}");
+    assert_eq!(status["result"]["signed_in"], false);
+    let config = server.root.join("xdg-config/kelpmux/config.toml");
+    fs::create_dir_all(config.parent().unwrap()).unwrap();
+    fs::write(
+        &config,
+        "[github]\ntoken_command = \"/nonexistent/github-token\"\n",
+    )
+    .unwrap();
+    let mut id = 3;
+    let status = loop {
+        let status = bridge.web(id, "github_status", json!({}));
+        id += 1;
+        if !status["result"]["error"].is_null() || id > 200 {
+            break status;
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    };
+    assert_eq!(status["result"]["enabled"], true, "{status}");
+    assert_eq!(status["result"]["source"], "command");
+    assert_eq!(status["result"]["signed_in"], false);
+    assert!(
+        status["result"]["error"]
+            .as_str()
+            .unwrap()
+            .contains("not an executable"),
+        "{status}"
+    );
+    for (method, params, error) in [
+        ("github_state", json!({"repos": ["../x"]}), "owner/name"),
+        (
+            "github_state",
+            json!({"repos": "a/b"}),
+            "list of owner/name",
+        ),
+        (
+            "github_clone",
+            json!({"project": "scratch", "url": "file:///srv/x.git"}),
+            "HTTPS or SSH",
+        ),
+        (
+            "github_clone",
+            json!({"project": "scratch", "url": "https://u:p@github.com/o/r.git"}),
+            "credentials",
+        ),
+        (
+            "github_clone",
+            json!({"project": "scratch"}),
+            "url required",
+        ),
+        (
+            "github_clone",
+            json!({"project": "nope", "url": "git@github.com:o/r.git"}),
+            "no longer exists",
+        ),
+        ("github_clone_cancel", json!({"clone": 5}), "not known"),
+        ("github_nope", json!({}), "unsupported"),
+    ] {
+        id += 1;
+        let reply = bridge.web(id, method, params);
+        assert!(
+            reply["error"].as_str().is_some_and(|e| e.contains(error)),
+            "{method}: {reply}"
+        );
+    }
 }
 
 /// `conversations` (API 3.7): closed terminals with the conversations they
@@ -1024,6 +1142,11 @@ fn history_lists_conversations_and_new_resumes_them() {
              "cwd": work.to_str().unwrap(), "name": "make",
              "kind": null, "session_id": null, "argv": ["make"],
              "closed_at": now - 9, "reason": "Closed"},
+            // Codex, whose conversation the server never identified.
+            {"key": "old:9", "workspace": "state", "pane": 9,
+             "cwd": root.join("scratch").to_str().unwrap(), "name": "codex",
+             "kind": "codex", "session_id": null, "argv": [],
+             "closed_at": now - 5, "reason": "Closed"},
         ]});
         let mut file = fs::OpenOptions::new()
             .create_new(true)
@@ -1074,7 +1197,7 @@ fn history_lists_conversations_and_new_resumes_them() {
     let mut bridge = Bridge::start(&server);
     welcome(&mut bridge);
     let state = bridge.web(1, "state", json!({}));
-    assert_eq!(state["result"]["api_minor"], 7);
+    assert_eq!(state["result"]["api_minor"], 9);
     assert!(
         state["result"]["operations"]
             .as_array()
@@ -1095,6 +1218,10 @@ fn history_lists_conversations_and_new_resumes_them() {
     let make = entries.iter().find(|e| e["key"] == "old:8").unwrap();
     assert_eq!(make["conversations"], json!([]));
     assert_eq!(make["choices"], json!(["restart", "folder"]));
+    // The only Codex transcript of its folder, ended by its close.
+    let codex = entries.iter().find(|e| e["key"] == "old:9").unwrap();
+    assert_eq!(codex["conversations"][0]["id"], "cx-9", "{listing}");
+    assert_eq!(codex["conversations"][0]["matched"], true);
     let mut external: Vec<(String, String, String)> = result["external"]
         .as_array()
         .unwrap()
@@ -1110,10 +1237,7 @@ fn history_lists_conversations_and_new_resumes_them() {
     external.sort();
     assert_eq!(
         external,
-        [
-            ("cx-9".into(), "scratch".into(), "A scratch idea".into()),
-            ("ext-1".into(), "work".into(), "Started outside".into()),
-        ],
+        [("ext-1".into(), "work".into(), "Started outside".into())],
         "{listing}"
     );
     assert!(!listing.to_string().contains("never sent"));
@@ -1156,6 +1280,28 @@ fn history_lists_conversations_and_new_resumes_them() {
         }
         assert!(Instant::now() < deadline, "{history}");
         id += 1;
+        thread::sleep(Duration::from_millis(100));
+    }
+    // A terminal whose conversation is unknown opens the agent's picker.
+    id += 1;
+    let picker = bridge.web(
+        id,
+        "new",
+        json!({"request": "r-3", "cwd": server.root.join("scratch"),
+               "resume": {"kind": "codex", "picker": true}}),
+    );
+    let pane = picker["result"]["pane"]
+        .as_u64()
+        .unwrap_or_else(|| panic!("{picker}"));
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        id += 1;
+        let history = bridge.web(id, "history", json!({"pane": pane}));
+        let text = history["result"]["History"]["lines"].to_string();
+        if text.contains("codex") {
+            break;
+        }
+        assert!(Instant::now() < deadline, "{history}");
         thread::sleep(Duration::from_millis(100));
     }
 }
@@ -1246,7 +1392,7 @@ fn repos_and_commands_report_read_only_facts_for_the_terminals_table() {
     welcome(&mut bridge);
     let state = bridge.web(1, "state", json!({}));
     assert_eq!(state["result"]["api_version"], 3);
-    assert_eq!(state["result"]["api_minor"], 7);
+    assert_eq!(state["result"]["api_minor"], 9);
     let operations = state["result"]["operations"].as_array().unwrap();
     assert!(operations.iter().any(|op| op == "repos"));
     assert!(operations.iter().any(|op| op == "commands"));
@@ -1619,7 +1765,7 @@ fn file_requests_and_replies_are_relayed_unchanged() {
     }
     assert_eq!(limits["max_read_bytes"], 8 * 1024 * 1024);
     let state = bridge.web(1, "state", json!({}));
-    assert_eq!(state["result"]["api_minor"], 7);
+    assert_eq!(state["result"]["api_minor"], 9);
     assert!(
         state["result"]["operations"]
             .as_array()
@@ -1846,4 +1992,280 @@ fn downloads_are_relayed_with_their_acknowledgements() {
     bridge.send(json!({"Stream": {"type": "file_download_cancel", "request": "file-d3", "download": download}}));
     let done = bridge.expect("cancel", |v| v["Stream"]["request"] == "file-d3")["Stream"].clone();
     assert_eq!(done["type"], "done", "{done}");
+}
+
+/// Polls `environments` until `name` reaches `state`.
+fn environment_state(bridge: &mut Bridge, id: &mut u64, name: &str, state: &str) -> Value {
+    let deadline = Instant::now() + Duration::from_secs(15);
+    loop {
+        *id += 1;
+        let reply = bridge.web(*id, "environments", json!({"project": "work"}));
+        let entry = reply["result"]["environments"]
+            .as_array()
+            .unwrap_or_else(|| panic!("{reply}"))
+            .iter()
+            .find(|e| e["name"] == name)
+            .cloned()
+            .unwrap_or_else(|| panic!("no {name}: {reply}"));
+        if entry["state"] == state {
+            return entry;
+        }
+        assert!(Instant::now() < deadline, "{name} never {state}: {entry}");
+        thread::sleep(Duration::from_millis(100));
+    }
+}
+
+fn declare(folder: &std::path::Path, name: &str, manifest: &str) -> PathBuf {
+    use std::os::unix::fs::PermissionsExt;
+    let dir = folder.join(".kelp/environments").join(name);
+    fs::create_dir_all(&dir).unwrap();
+    for path in [
+        folder.join(".kelp"),
+        folder.join(".kelp/environments"),
+        dir.clone(),
+    ] {
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o755)).unwrap();
+    }
+    fs::write(dir.join("environment.toml"), manifest).unwrap();
+    dir
+}
+
+/// Environments (API 3.8, ADR 0005): a process environment runs in its own
+/// pane of the project with the `KELP_*` variables, is Starting until its
+/// port answers, then Running, and Stop ends it with SIGTERM and closes its
+/// pane; a deploy environment runs `up` and `down` in panes and is
+/// `unknown` until an explicit `environment_check` runs its `status`
+/// script, which listing never does. Nothing starts without a request.
+#[test]
+fn environments_start_report_and_stop() {
+    use std::os::unix::fs::PermissionsExt;
+    let server = Server::start();
+    let mut bridge = Bridge::start(&server);
+    welcome(&mut bridge);
+    let state = bridge.web(1, "state", json!({}));
+    assert_eq!(state["result"]["api_minor"], 9);
+    assert!(
+        state["result"]["operations"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|op| op == "environments")
+    );
+    let created = bridge.web(2, "project_create", json!({"name": "Work"}));
+    assert_eq!(created["result"]["saved"], true, "{created}");
+    let saved = bridge.web(
+        3,
+        "config_set",
+        json!({"changes": {"environments.ports": "45100-45199"}}),
+    );
+    assert_eq!(saved["result"]["saved"], true, "{saved}");
+    let folder = server.root.join("projects/Work");
+    // The port the process environment's readiness waits for: this test
+    // listens on it once the environment has started.
+    let ready = std::net::TcpListener::bind("127.0.0.1:0")
+        .unwrap()
+        .local_addr()
+        .unwrap()
+        .port();
+    declare(
+        &folder,
+        "web",
+        &format!(
+            "kind = \"process\"\ndescription = \"Dev server\"\nurl = \"http://localhost:${{KELP_PORT}}/\"\ncommand = \"echo \\\"$KELP_PROJECT $KELP_ENV $KELP_SLUG $KELP_PORT $PWD\\\" > \\\"$KELP_STATE_DIR/vars\\\"; trap 'echo term > \\\"$KELP_STATE_DIR/term\\\"; exit 0' TERM; while :; do sleep 1; done\"\n[ready]\nport = {ready}\n"
+        ),
+    );
+    let deploy = declare(
+        &folder,
+        "staging",
+        "kind = \"deploy\"\n[scripts]\nup = \"up\"\ndown = \"down\"\nstatus = \"status\"\n",
+    );
+    // The status script leaves a marker each time it runs.
+    let marker = server.root.join("status-ran");
+    let status = format!(
+        "touch '{}'\nif [ -f \"$KELP_STATE_DIR/deployed\" ]; then echo '{{\"state\":\"running\",\"url\":\"https://work-staging.example.test/\"}}'; else echo '{{\"state\":\"stopped\",\"detail\":\"not deployed\"}}'; fi",
+        marker.display()
+    );
+    for (script, body) in [
+        ("up", "touch \"$KELP_STATE_DIR/deployed\""),
+        ("down", "rm -f \"$KELP_STATE_DIR/deployed\""),
+        ("status", status.as_str()),
+    ] {
+        fs::write(deploy.join(script), format!("#!/bin/sh\n{body}\n")).unwrap();
+        fs::set_permissions(deploy.join(script), fs::Permissions::from_mode(0o755)).unwrap();
+    }
+    // A broken manifest is listed with its problem.
+    declare(&folder, "broken", "kind = \"process\"\n");
+
+    let mut id = 10;
+    let listed = bridge.web(4, "environments", json!({"project": "work"}));
+    let names: Vec<&str> = listed["result"]["environments"]
+        .as_array()
+        .unwrap_or_else(|| panic!("{listed}"))
+        .iter()
+        .map(|e| e["name"].as_str().unwrap())
+        .collect();
+    assert_eq!(names, ["broken", "staging", "web"], "{listed}");
+    let broken = &listed["result"]["environments"][0];
+    assert_eq!(broken["state"], "invalid");
+    assert!(
+        broken["error"].as_str().unwrap().contains("command"),
+        "{broken}"
+    );
+    // Listed, never started: no port yet, stopped.
+    let web = environment_state(&mut bridge, &mut id, "web", "stopped");
+    assert_eq!(web["kind"], "process");
+    assert!(web["port"].is_null());
+    // Listing never runs repository code: a deploy environment is unknown
+    // until it is checked on request.
+    let staging = environment_state(&mut bridge, &mut id, "staging", "unknown");
+    assert!(staging["checked"].is_null(), "{staging}");
+    for _ in 0..3 {
+        environment_state(&mut bridge, &mut id, "staging", "unknown");
+    }
+    assert!(!marker.exists(), "listing ran the status script");
+    let checked = check(&mut bridge, &mut id, "staging");
+    assert!(marker.exists(), "the explicit check did not run it");
+    assert_eq!(checked["state"], "stopped", "{checked}");
+    assert_eq!(checked["detail"], "not deployed");
+    assert!(checked["checked"]["at"].as_u64().is_some(), "{checked}");
+    // The listing shows the last check, with its time, as unknown.
+    fs::remove_file(&marker).unwrap();
+    let listed = environment_state(&mut bridge, &mut id, "staging", "unknown");
+    assert_eq!(listed["checked"]["state"], "stopped", "{listed}");
+    assert!(!marker.exists());
+    // Refused: Scratch, an unknown project, an invalid name, no request.
+    id += 1;
+    let scratch = bridge.web(id, "environments", json!({"project": "scratch"}));
+    assert_eq!(scratch["error"], "Scratch has no environments");
+    let invalid = bridge.web(
+        {
+            id += 1;
+            id
+        },
+        "environment_start",
+        json!({"project": "work", "name": "../x", "request": "r1"}),
+    );
+    assert_eq!(invalid["error"], "environment name required");
+    let broken = bridge.web(
+        {
+            id += 1;
+            id
+        },
+        "environment_start",
+        json!({"project": "work", "name": "broken", "request": "r2"}),
+    );
+    assert!(
+        broken["error"].as_str().unwrap().contains("cannot run"),
+        "{broken}"
+    );
+
+    // Start the process environment.
+    let started = bridge.web(
+        {
+            id += 1;
+            id
+        },
+        "environment_start",
+        json!({"project": "work", "name": "web", "request": "env-web-1"}),
+    );
+    let pane = started["result"]["pane"]
+        .as_u64()
+        .unwrap_or_else(|| panic!("{started}"));
+    assert_eq!(started["result"]["port"], 45100);
+    assert_eq!(started["result"]["slug"], "work-web");
+    let starting = environment_state(&mut bridge, &mut id, "web", "starting");
+    assert_eq!(starting["pane"], pane);
+    assert_eq!(starting["url"], "http://localhost:45100/");
+    let again = bridge.web(
+        {
+            id += 1;
+            id
+        },
+        "environment_start",
+        json!({"project": "work", "name": "web", "request": "env-web-2"}),
+    );
+    assert!(
+        again["error"].as_str().unwrap().contains("already running"),
+        "{again}"
+    );
+    // Its pane belongs to the project and is marked as an environment.
+    id += 1;
+    let panes = bridge.web(id, "environment_panes", json!({}));
+    assert_eq!(
+        panes["result"]["panes"][pane.to_string()]["env"],
+        "web",
+        "{panes}"
+    );
+    id += 1;
+    let links = bridge.web(id, "projects", json!({}));
+    assert_eq!(links["result"]["panes"][pane.to_string()], "work");
+    let state_dir = server.root.join("xdg-state/kelpmux/environments/work/web");
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while !state_dir.join("vars").exists() {
+        assert!(Instant::now() < deadline, "the command never ran");
+        thread::sleep(Duration::from_millis(50));
+    }
+    assert_eq!(
+        fs::read_to_string(state_dir.join("vars")).unwrap().trim(),
+        format!("work web work-web 45100 {}", folder.display())
+    );
+    let listener = std::net::TcpListener::bind(("127.0.0.1", ready)).unwrap();
+    environment_state(&mut bridge, &mut id, "web", "running");
+    drop(listener);
+    // Stop: SIGTERM reaches the command, the pane closes.
+    id += 1;
+    let stopped = bridge.web(
+        id,
+        "environment_stop",
+        json!({"project": "work", "name": "web", "request": "env-web-stop"}),
+    );
+    assert_eq!(stopped["result"]["state"], "stopped", "{stopped}");
+    assert!(
+        state_dir.join("term").exists(),
+        "the command got no SIGTERM"
+    );
+    let web = environment_state(&mut bridge, &mut id, "web", "stopped");
+    assert!(web["pane"].is_null(), "{web}");
+    assert_eq!(web["port"], 45100, "the port stays allocated");
+    id += 1;
+    let panes = bridge.web(id, "environment_panes", json!({}));
+    assert_eq!(panes["result"]["panes"], json!({}));
+
+    // The deploy environment: `up` in a pane; its state is unknown until
+    // an explicit check runs `status`.
+    id += 1;
+    let up = bridge.web(
+        id,
+        "environment_start",
+        json!({"project": "work", "name": "staging", "request": "env-staging-up"}),
+    );
+    assert_eq!(up["result"]["action"], "up", "{up}");
+    assert_eq!(up["result"]["port"], 45101);
+    let done = environment_state(&mut bridge, &mut id, "staging", "unknown");
+    assert_eq!(done["checked"]["state"], "stopped", "the last check stays");
+    let running = check(&mut bridge, &mut id, "staging");
+    assert_eq!(running["state"], "running", "{running}");
+    assert_eq!(running["url"], "https://work-staging.example.test/");
+    assert_eq!(running["checked"]["state"], "running");
+    id += 1;
+    let down = bridge.web(
+        id,
+        "environment_stop",
+        json!({"project": "work", "name": "staging", "request": "env-staging-down"}),
+    );
+    assert_eq!(down["result"]["action"], "down", "{down}");
+    environment_state(&mut bridge, &mut id, "staging", "unknown");
+    assert_eq!(check(&mut bridge, &mut id, "staging")["state"], "stopped");
+}
+
+/// Runs a deploy environment's `status` script: `environment_check`.
+fn check(bridge: &mut Bridge, id: &mut u64, name: &str) -> Value {
+    *id += 1;
+    let reply = bridge.web(
+        *id,
+        "environment_check",
+        json!({"project": "work", "name": name}),
+    );
+    assert!(reply["result"].is_object(), "{reply}");
+    reply["result"].clone()
 }

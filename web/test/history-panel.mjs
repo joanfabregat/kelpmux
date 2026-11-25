@@ -1,12 +1,19 @@
 // History (test/history-panel.fixture.tsx), in Chromium and WebKit, against
 // a fake bridge kept here:
-// 1. One list, newest first: closed terminals with the conversations they
-//    hosted nested under them (tool, title, time span, Resume), a closed
-//    terminal without one keeping Rerun and Open folder, and conversations
-//    started outside KelpMux marked as such.
+// 1. One list, newest first: a closed terminal that hosted one
+//    conversation is one row titled by it (the terminal as secondary
+//    text, Resume); one that hosted two or more shows "N conversations"
+//    with them nested under it (tool, title, time span, Resume); a closed
+//    terminal without one keeps Rerun and Open folder; a Codex terminal
+//    whose conversation is unknown shows no conversation, only "Open
+//    Codex's picker here" and Open folder; a conversation matched by
+//    folder and time sits under its terminal, marked; and conversations
+//    started outside KelpMux are marked as such.
 // 2. Resume sends `new` with the conversation's folder, its project (none
 //    for Scratch) and `resume: {kind, id}`, never a command line; a
-//    conversation whose folder is gone cannot be resumed.
+//    conversation whose folder is gone cannot be resumed. The picker sends
+//    `new` with the terminal's folder, project and
+//    `resume: {kind, picker: true}`; Open folder `new` without `resume`.
 // 3. A project's History shows its closed terminals (by their project link)
 //    and its outside conversations only; the URL names it.
 // 4. The former `dialog=closed` URL opens History and is rewritten.
@@ -94,6 +101,53 @@ function fakeBridge() {
       choices: ["restart", "folder"],
       closed_at: now - 7200,
       conversations: [],
+    }),
+    // Codex whose conversation the server never identified: its picker.
+    entry("e:4", "codex", "alpha", {
+      kind: "codex",
+      session_id: null,
+      choices: ["resume"],
+      closed_at: now - 1800,
+      conversations: [],
+    }),
+    // One conversation: one row.
+    entry("e:5", "claude", "alpha", {
+      kind: "claude",
+      session_id: "c-5",
+      choices: ["resume"],
+      closed_at: now - 3000,
+      conversations: [
+        {
+          kind: "claude",
+          id: "c-5",
+          cwd: "/home/me/work/alpha",
+          folder: "/home/me/work/alpha",
+          title: "Label the picker action explicitly",
+          titled: true,
+          first_seen: now - 4 * 3600,
+          last_seen: now - 3100,
+        },
+      ],
+    }),
+    // Its conversation matched by folder and time.
+    entry("e:6", "codex", "alpha", {
+      kind: "codex",
+      session_id: null,
+      choices: ["resume"],
+      closed_at: now - 5000,
+      conversations: [
+        {
+          kind: "codex",
+          id: "01a21031-eea6-73f1-816a-e23ce5e1b0d2",
+          cwd: "/home/me/work/alpha/api",
+          folder: "/home/me/work/alpha/api",
+          title: "Find the conversation this terminal ran",
+          titled: true,
+          first_seen: now - 6 * 3600,
+          last_seen: now - 5050,
+          matched: true,
+        },
+      ],
     }),
     entry("e:3", "codex", "beta", {
       kind: "codex",
@@ -224,6 +278,9 @@ for (const [engine, launcher] of [
     assert.deepEqual(await rows(page), [
       "outside:c-out",
       "e:1",
+      "e:4",
+      "e:5",
+      "e:6",
       "e:2",
       "outside:x-out",
       "e:3",
@@ -247,6 +304,45 @@ for (const [engine, launcher] of [
       await alpha.locator(".history-terminal button").count(),
       0,
     );
+    assert.match(
+      await alpha.locator(".history-terminal").innerText(),
+      /2 conversations/,
+    );
+    // One conversation: a single row titled by it, the terminal secondary.
+    const single = page.locator(`${dialog} [data-entry="e:5"]`);
+    assert.equal(await single.locator(".list-row").count(), 1);
+    assert.equal(await single.locator(".history-conversations").count(), 0);
+    assert.equal(
+      await single.locator(".t").innerText(),
+      "Label the picker action explicitly",
+    );
+    assert.match(
+      await single.locator(".s").innerText(),
+      /^Claude Code · claude · \s*Alpha\s*\/home\/me\/work\/alpha · Closed · \d+m ago · ran 4h ago – \d+m ago$/,
+    );
+    assert.deepEqual(
+      (await single.locator("button").allTextContents()).map((t) => t.trim()),
+      ["", "Resume"],
+    );
+    // Codex without a known conversation: no conversation row, only its
+    // picker, labelled, and Open folder.
+    const unknown = page.locator(`${dialog} [data-entry="e:4"]`);
+    assert.equal(await unknown.locator("[data-conversation]").count(), 0);
+    assert.deepEqual(
+      (await unknown.locator("button").allTextContents()).map((t) => t.trim()),
+      ["Open Codex's picker here", "Open folder"],
+    );
+    // A conversation matched by folder and time: under its terminal, marked.
+    const matched = page.locator(`${dialog} [data-entry="e:6"]`);
+    assert.equal(await matched.locator(".list-row").count(), 1);
+    assert.equal(
+      await matched.locator(".history-matched").innerText(),
+      "matched by folder and time",
+    );
+    assert.match(
+      await matched.locator(".history-matched").getAttribute("title"),
+      /did not record/,
+    );
     const make = page.locator(`${dialog} [data-entry="e:2"]`);
     assert.deepEqual(
       (await make.locator("button").allTextContents()).map((t) => t.trim()),
@@ -262,7 +358,7 @@ for (const [engine, launcher] of [
     // A conversation whose folder is gone cannot be resumed.
     assert.equal(
       await page
-        .locator(`${dialog} [data-entry="e:3"] .history-conversation button.success`)
+        .locator(`${dialog} [data-entry="e:3"] .history-single button.success`)
         .isDisabled(),
       true,
     );
@@ -311,6 +407,34 @@ for (const [engine, launcher] of [
       server.calls.find(([method]) => method === "restore")[1].choice,
       "restart",
     );
+    // The picker: `new` in the terminal's folder and project, asking for
+    // the picker, never a guessed conversation.
+    await unknown.getByRole("button", { name: /^Open Codex's picker here/ }).click();
+    await page.waitForFunction(() => window.restored.length === 4);
+    const opened = () => server.calls.filter(([method]) => method === "new");
+    assert.deepEqual(
+      { ...opened()[2][1], request: undefined },
+      {
+        request: undefined,
+        project: "alpha",
+        cwd: "/home/me/work/alpha",
+        resume: { kind: "codex", picker: true },
+      },
+    );
+    await unknown.getByRole("button", { name: "Open folder codex" }).click();
+    await page.waitForFunction(() => window.restored.length === 5);
+    assert.deepEqual(
+      { ...opened()[3][1], request: undefined },
+      { request: undefined, project: "alpha", cwd: "/home/me/work/alpha" },
+    );
+    // A matched conversation resumes by its id.
+    await matched.getByRole("button", { name: /^Resume / }).click();
+    await page.waitForFunction(() => window.restored.length === 6);
+    assert.deepEqual(opened()[4][1].resume, {
+      kind: "codex",
+      id: "01a21031-eea6-73f1-816a-e23ce5e1b0d2",
+    });
+    assert.equal(opened()[4][1].cwd, "/home/me/work/alpha/api");
 
     // 3. A project's History: its terminals and its outside conversations.
     await page.locator("#scope-alpha").dispatchEvent("click");
@@ -318,9 +442,9 @@ for (const [engine, launcher] of [
       () => document.querySelector("#modal-title")?.textContent === "History · Alpha",
     );
     await page.waitForSelector(`${dialog} .history-group`);
-    assert.deepEqual(await rows(page), ["outside:c-out", "e:1"]);
+    assert.deepEqual(await rows(page), ["outside:c-out", "e:1", "e:4", "e:5", "e:6"]);
     assert.match(await search(page), /dialog=history&project=alpha/);
-    assert.match(await page.locator(".project-scope").innerText(), /Alpha · 2 of 5/);
+    assert.match(await page.locator(".project-scope").innerText(), /Alpha · 5 of 8/);
     await shot(page, engine, "history-project-dark");
     await page.locator("#scope-scratch").dispatchEvent("click");
     await page.waitForFunction(
@@ -333,7 +457,7 @@ for (const [engine, launcher] of [
       () => document.querySelector("#modal-title")?.textContent === "History",
     );
     await page.waitForSelector(`${dialog} .history-group`);
-    assert.equal((await rows(page)).length, 5);
+    assert.equal((await rows(page)).length, 8);
     assert.deepEqual(errors, []);
     await context.close();
 
@@ -363,7 +487,7 @@ for (const [engine, launcher] of [
       );
       await before.page.waitForSelector(`${dialog} .history-group`);
       assert.equal(old.calls[0][0], "closed");
-      assert.deepEqual(await rows(before.page), ["e:1", "e:2", "e:3"]);
+      assert.deepEqual(await rows(before.page), ["e:1", "e:4", "e:5", "e:6", "e:2", "e:3"]);
       assert.equal(await before.page.locator(".history-conversation").count(), 0);
       assert.deepEqual(
         await before.page
@@ -371,6 +495,14 @@ for (const [engine, launcher] of [
           .allTextContents()
           .then((all) => all.map((t) => t.trim())),
         ["", "Resume"],
+      );
+      // An unidentified agent still says what it opens: its picker.
+      assert.deepEqual(
+        await before.page
+          .locator(`${dialog} [data-entry="e:4"] button`)
+          .allTextContents()
+          .then((all) => all.map((t) => t.trim())),
+        ["", "Open Codex's picker here"],
       );
       await before.context.close();
     }
@@ -408,7 +540,7 @@ for (const [engine, launcher] of [
       }
     }
     console.log(
-      `PASS: ${engine} history: closed terminals with nested conversations (tool, title, time span), outside conversations marked, Resume sends new with folder, project and resume, gone folders disabled, copy command, rerun kept, per-project filtering (projects and Scratch) named in the URL, the former dialog=closed URL, an older bridge's closed list`,
+      `PASS: ${engine} history: closed terminals with one conversation as one row and two or more nested (tool, title, time span), an unidentified Codex terminal offering only its labelled picker (new with picker) and Open folder, a conversation matched by folder and time under its terminal, outside conversations marked, Resume sends new with folder, project and resume, gone folders disabled, copy command, rerun kept, per-project filtering (projects and Scratch) named in the URL, the former dialog=closed URL, an older bridge's closed list`,
     );
   } finally {
     await browser.close();

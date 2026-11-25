@@ -1,7 +1,8 @@
 // A project's home page (`?view=project&project=<id>`): what the project
 // holds, on one page. Opened from a project group's name in the sidebar or
 // its menu's Overview. Its header has the project's colour, name and folder
-// (with copy), New terminal, Open in Files and the project's menu; then
+// (with copy), New terminal, Open in Files, Environments (a link to the
+// Environments view, when the bridge offers it) and the project's menu; then
 // three sections, each with its count and a See all link to the full view:
 // 1. Agents & terminals: the project's live terminals, agents first, each
 //    with its state mark and label, title, folder and last activity; a
@@ -11,7 +12,9 @@
 //    that checkout expanded.
 // 3. History: its newest entries (bridge `conversations`, or `closed`
 //    before API minor 7), a closed terminal collapsed to its newest
-//    conversation and their count, each with Resume (conversations.ts,
+//    conversation and their count, each with Resume (only with a known
+//    conversation; an unidentified agent terminal offers its agent's
+//    picker, labelled; a matched conversation is marked) (conversations.ts,
 //    as the History panel).
 // Nothing here adds a bridge operation.
 import React, { useEffect, useRef, useState } from "react";
@@ -35,7 +38,12 @@ import { projectColor, type Project } from "./projects";
 import { displayDir } from "./title-location";
 import {
   choiceHint,
-  choiceLabel,
+  choiceText,
+  matchedHint,
+  pickerHint,
+  pickerLabel,
+  pickerRequest,
+  unidentified,
   conversationTitle,
   exactSpan,
   historyRows,
@@ -217,6 +225,7 @@ export function ProjectHome({
   onSeeRepos,
   onSeeHistory,
   onRestored,
+  onOpenEnvironments,
   onBack,
 }: {
   project: Project;
@@ -247,6 +256,10 @@ export function ProjectHome({
   onSeeRepos: (repo?: string) => void;
   onSeeHistory: () => void;
   onRestored: (pane: number, existing: boolean) => void;
+  /** The project's Environments view (bridge `environments`, API minor
+   * 8; not for Scratch); without it, no Environments button. Only a link:
+   * the home page asks nothing about environments. */
+  onOpenEnvironments?: () => void;
   /** A phone's way back to its terminal list. */
   onBack?: () => void;
 }) {
@@ -359,6 +372,14 @@ export function ProjectHome({
             </span>
             <span className="home-line-sub">
               {toolName(newest.kind)} · {entry.name}
+              {newest.matched && (
+                <>
+                  {" · "}
+                  <span className="history-matched" title={matchedHint}>
+                    matched by folder and time
+                  </span>
+                </>
+              )}
               {nested.length > 1 && (
                 <span className="home-conversations" data-conversations={nested.length}>
                   {" "}
@@ -377,6 +398,9 @@ export function ProjectHome({
         </li>
       );
     }
+    // An agent terminal whose conversation is unknown: its agent's picker
+    // (with `conversations`), never a guessed Resume.
+    const picker = conversations && unidentified(entry);
     const choice = entry.choices[0];
     return (
       <li key={entry.key} className="home-line home-history" data-entry={entry.key}>
@@ -392,18 +416,32 @@ export function ProjectHome({
           </span>
         </span>
         <span className="home-when">{age(entry.closed_at || 0)}</span>
-        {choice && (
+        {picker ? (
           <button
             type="button"
             className="small success"
-            title={choiceHint(entry, choice)}
-            aria-label={`${choiceLabel[choice]} ${entry.name}`}
+            title={pickerHint(entry)}
+            aria-label={`${pickerLabel(entry.kind)}: ${entry.name}`}
             disabled={!!busy}
-            onClick={() => void run(entry.key, "restore", restoreRequest(entry, choice))}
+            onClick={() => void run(entry.key, "new", pickerRequest(entry, row.project))}
           >
             <Icon name="rotate-ccw" size="sm" />
-            {choiceLabel[choice]}
+            {pickerLabel(entry.kind)}
           </button>
+        ) : (
+          choice && (
+            <button
+              type="button"
+              className="small success"
+              title={choiceHint(entry, choice)}
+              aria-label={`${choiceText(entry, choice)} ${entry.name}`}
+              disabled={!!busy}
+              onClick={() => void run(entry.key, "restore", restoreRequest(entry, choice))}
+            >
+              <Icon name="rotate-ccw" size="sm" />
+              {choiceText(entry, choice)}
+            </button>
+          )
         )}
       </li>
     );
@@ -471,6 +509,17 @@ export function ProjectHome({
                 >
                   <Icon name="folder-open" size="sm" />
                   Open in Files
+                </button>
+              )}
+              {onOpenEnvironments && (
+                <button
+                  type="button"
+                  className="small subtle"
+                  disabled={project.missing}
+                  onClick={onOpenEnvironments}
+                >
+                  <Icon name="layers" size="sm" />
+                  Environments
                 </button>
               )}
               <button

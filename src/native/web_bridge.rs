@@ -12,19 +12,26 @@
 //! (`web_repos`), without running `git` or any other process. The `git`
 //! operation, for a project's Repos view, runs read-only Git commands
 //! through the hardened runner of `web_git` (no hooks, filters, textconv,
-//! external diff, fsmonitor or network), never a write.
+//! external diff, fsmonitor or network), never a write. The environment
+//! operations (`environments`) start and stop a project's declared
+//! environments in panes of their own, only on the browser's explicit
+//! request, and run deploy environments' `status` scripts on threads of
+//! their own. The `github_*` operations (`web_github`) are the one place
+//! it reaches the network: as this user, to GitHub's API and to clone a
+//! repository the user picked into a project's folder; the browser gets
+//! public metadata only.
 //!
 //! Its operations use KelpServer's stream session API on a separate,
 //! short-lived stream connection each (`session`), never the composed UI's
 //! administration.
 use super::{
-    connection,
+    connection, environments,
     projects::Links,
     protocol::*,
     session::{Session, request_id},
     status,
     stream::{self, ClosedSession, Event, Request},
-    user_config, web_git, web_history, web_repos,
+    user_config, web_git, web_github, web_history, web_repos,
 };
 use crate::Result;
 use serde_json::{Value, json};
@@ -69,8 +76,17 @@ pub const API_VERSION: u64 = 3;
 /// conversations they hosted, titled from their first prompt, and
 /// conversations started outside KelpMux in a project's folder;
 /// `web_history`), answered by the bridge's History thread, and the
-/// `resume` parameter of `new`.
-pub const API_MINOR: u64 = 7;
+/// `resume` parameter of `new` (a conversation by id, or the agent's own
+/// picker). Minor 8 added `environments`: the `environments`,
+/// `environment_start`, `environment_stop`, `environment_check` and
+/// `environment_panes` operations on a project's environments
+/// (`environments`, ADR 0005), run on their own threads. Minor 9 added
+/// `github`: the GitHub operations with the token this machine already
+/// has (`github_status`, `github_test`, `github_repositories`,
+/// `github_clone`, `github_clone_cancel` and `github_state`, which the
+/// bridge answers from its own thread; `web_github`) and the `github`
+/// (`owner/name`) of each `git` checkout.
+pub const API_MINOR: u64 = 9;
 /// Largest accepted `Web` request, in bytes of JSON.
 const REQUEST_LIMIT: usize = 65536;
 /// Largest request identifier a browser can represent exactly.
@@ -116,28 +132,18 @@ struct Runtime {
     capabilities: Vec<String>,
 }
 
-struct Api {
+/// Opens checked stream sessions to the relayed server; cloned into the
+/// environment threads.
+#[derive(Clone)]
+struct Sessions {
     peer: Peer,
     runtime: Arc<Mutex<Runtime>>,
     socket: PathBuf,
-    state: PathBuf,
-    monitor: status::Monitor,
-    config: Option<Arc<user_config::Live>>,
-    git: web_git::Worker,
-    history: web_history::Worker,
 }
-
-fn pane(value: &Value) -> Result<u64> {
-    value["pane"]
-        .as_u64()
-        .filter(|p| *p > 0)
-        .ok_or_else(|| "pane required".into())
-}
-
-impl Api {
+impl Sessions {
     /// A fresh stream connection to the same server process and epoch as
     /// the relayed stream, offering `capability`.
-    fn session(&self, capability: &str) -> Result<Session> {
+    fn open(&self, capability: &str) -> Result<Session> {
         let socket = connection::connect(&self.socket)?;
         if Peer::read(&socket)? != self.peer {
             return Err("terminal server changed; reconnect before continuing".into());
@@ -158,6 +164,118 @@ impl Api {
             return Err("terminal handshake is incomplete".into());
         }
         Ok((runtime.epoch.clone(), runtime.capabilities.clone()))
+    }
+}
+
+/// Most environment operations (`environments`, `environment_start`,
+/// `environment_stop`) one bridge runs at once, each on its own thread: a
+/// deploy environment's `status` script may take up to ten seconds and a
+/// Stop waits for its process, so they never hold up the terminals.
+const ENVIRONMENT_THREADS: usize = 3;
+
+struct Api {
+    sessions: Sessions,
+    environment_threads: Arc<std::sync::atomic::AtomicUsize>,
+    state: PathBuf,
+    monitor: status::Monitor,
+    config: Option<Arc<user_config::Live>>,
+    git: web_git::Worker,
+    history: web_history::Worker,
+    github: Option<web_github::GitHub>,
+}
+
+fn pane(value: &Value) -> Result<u64> {
+    value["pane"]
+        .as_u64()
+        .filter(|p| *p > 0)
+        .ok_or_else(|| "pane required".into())
+}
+
+impl Api {
+    /// A fresh stream connection to the same server process and epoch as
+    /// the relayed stream, offering `capability`.
+    fn session(&self, capability: &str) -> Result<Session> {
+        self.sessions.open(capability)
+    }
+    /// The relayed stream's epoch and capabilities.
+    fn runtime(&self) -> Result<(String, Vec<String>)> {
+        self.sessions.runtime()
+    }
+    /// What an environment operation on `{"project": id}` needs. Scratch
+    /// has no environments; the folder comes from the configuration.
+    fn environment_context(&self, p: &Value) -> Result<environments::Context> {
+        let config = self.user_config()?;
+        let project = match p["project"].as_str() {
+            Some(user_config::SCRATCH) => {
+                return Err("Scratch has no environments".into());
+            }
+            Some(id) => config
+                .project(id)
+                .cloned()
+                .ok_or("this project no longer exists")?,
+            None => return Err("project required".into()),
+        };
+        Ok(environments::Context {
+            project,
+            workspace: self.state.clone(),
+            ports: config.environment_ports.1,
+            base: environments::state_base()?,
+            exe: std::env::current_exe()?,
+        })
+    }
+    /// Runs an environment operation on its own thread (at most
+    /// [`ENVIRONMENT_THREADS`] at once); `reply` answers when it is done.
+    /// `environments {project}` lists the project's environments with their
+    /// state, without running any script; `environment_check {project,
+    /// name}` runs a deploy environment's `status` script (the only
+    /// operation that does); `environment_start` and `environment_stop`
+    /// take `{project, name, request}`.
+    fn environment(
+        &self,
+        method: &str,
+        p: &Value,
+        reply: Box<dyn FnOnce(std::result::Result<Value, String>) + Send>,
+    ) -> Result<()> {
+        let context = self.environment_context(p)?;
+        let name = p["name"].as_str().unwrap_or("").to_owned();
+        let request = p["request"].as_str().unwrap_or("").to_owned();
+        if method != "environments" && !environments::valid_name(&name) {
+            return Err("environment name required".into());
+        }
+        if matches!(method, "environment_start" | "environment_stop")
+            && !stream::valid_request(&request)
+        {
+            return Err("environment request identity required".into());
+        }
+        /// Gives the thread's slot back however the thread ends.
+        struct Slot(Arc<std::sync::atomic::AtomicUsize>);
+        impl Drop for Slot {
+            fn drop(&mut self) {
+                self.0.fetch_sub(1, Ordering::AcqRel);
+            }
+        }
+        let threads = self.environment_threads.clone();
+        if threads.fetch_add(1, Ordering::AcqRel) >= ENVIRONMENT_THREADS {
+            threads.fetch_sub(1, Ordering::AcqRel);
+            return Err("busy with other environment operations; try again".into());
+        }
+        let slot = Slot(threads);
+        let sessions = self.sessions.clone();
+        let method = method.to_owned();
+        std::thread::spawn(move || {
+            let _slot = slot;
+            let open = |capability: &str| sessions.open(capability);
+            let result = match method.as_str() {
+                "environments" => environments::list(&context, &open),
+                "environment_start" => environments::start(&context, &name, &request, &open),
+                // Runs the `status` script: only on this explicit request.
+                "environment_check" => environments::status(&context, &name, &open, true),
+                "environment_stop" => environments::stop(&context, &name, &request, &open),
+                other => Err(format!("unsupported environment operation {other}").into()),
+            };
+            reply(result.map_err(|error| error.to_string()));
+        });
+        Ok(())
     }
     fn request(&mut self, method: &str, p: &Value) -> Result<Value> {
         match method {
@@ -249,11 +367,73 @@ impl Api {
             "config" | "config_set" => config_request(self.config.as_deref(), method, p),
             "projects" => self.project_panes(),
             "project_move" => self.project_move(p),
+            "environment_panes" => Ok(environments::panes(&self.state, &self.runtime()?.0)),
             "project_create" | "project_update" | "project_delete" => {
                 self.project_change(method, p)
             }
+            method if method.starts_with("github_") => self.github(method, p),
             _ => Err("unsupported web operation".into()),
         }
+    }
+    fn github_service(&self) -> Result<&web_github::GitHub> {
+        self.github
+            .as_ref()
+            .ok_or_else(|| "GitHub is unavailable".into())
+    }
+    /// The GitHub operations (`web_github`). Network work runs on the
+    /// service's own threads; these answer at once with its status.
+    fn github(&self, method: &str, p: &Value) -> Result<Value> {
+        let github = self.github_service()?;
+        match method {
+            "github_status" => github.status(),
+            "github_test" => github.test(),
+            "github_repositories" => github.repositories(p["refresh"] == true),
+            "github_clone" => {
+                // The folder comes from the user configuration, never the
+                // browser; the checkout's name comes from the URL.
+                let config = self.user_config()?;
+                let (project, folder) = match p["project"].as_str() {
+                    Some(user_config::SCRATCH) => {
+                        (user_config::SCRATCH, config.scratch_folder.path.clone())
+                    }
+                    Some(id) => (
+                        id,
+                        config
+                            .project(id)
+                            .ok_or("this project no longer exists")?
+                            .folder
+                            .path
+                            .clone(),
+                    ),
+                    None => return Err("project required".into()),
+                };
+                let url = p["url"].as_str().ok_or("url required")?;
+                github.clone_repository(project, &folder, url)
+            }
+            "github_clone_cancel" => github.cancel_clone(
+                p["clone"]
+                    .as_u64()
+                    .filter(|n| *n > 0)
+                    .ok_or("clone must be a positive number")?,
+            ),
+            _ => Err("unsupported web operation".into()),
+        }
+    }
+    /// Queues GitHub facts about repositories (`{"repos": ["owner/name"]}`,
+    /// the `github` of the `git` checkouts); `reply` answers.
+    fn github_state(
+        &self,
+        p: &Value,
+        reply: Box<dyn FnOnce(std::result::Result<Value, String>) + Send>,
+    ) -> Result<()> {
+        let repos = p["repos"]
+            .as_array()
+            .ok_or("repos takes a list of owner/name")?
+            .iter()
+            .map(|r| r.as_str().map(str::to_owned))
+            .collect::<Option<Vec<_>>>()
+            .ok_or("each repository must be a string")?;
+        self.github_service()?.state_request(repos, reply)
     }
     /// Queues a project's Git facts (`web_git`): `{"project": id}` (or
     /// `scratch`), with `files: true` to list changed files and `fresh:
@@ -561,7 +741,8 @@ impl Api {
     /// the same request returns the same pane. With `resume` (`{kind, id}`)
     /// the pane runs that agent conversation's resume command
     /// ([`resume_argv`]), or the terminal already running it is returned
-    /// with `existing`.
+    /// with `existing`; with `{kind, picker: true}` it opens the agent's
+    /// own conversation picker.
     fn spawn(&self, p: &Value) -> Result<Value> {
         let request = p["request"]
             .as_str()
@@ -615,7 +796,7 @@ impl Api {
             value => Some(resume_argv(value)?),
         };
         let mut session = self.session("pane-lifecycle")?;
-        if let Some((kind, id, _)) = &resume {
+        if let Some((kind, Some(id), _)) = &resume {
             // A conversation that is already open is shown, not started twice.
             let update = session.update()?;
             if let Some(pane) = update.panes.iter().find(|pane| {
@@ -673,7 +854,20 @@ const OPERATIONS: &[&str] = &[
     "projects",
     "git",
     "conversations",
+    "environments",
+    "github",
 ];
+
+/// The GitHub integration of this bridge, reading `[github]` from the live
+/// user configuration.
+fn github_service(config: Option<Arc<user_config::Live>>) -> web_github::GitHub {
+    web_github::GitHub::new(Arc::new(move || {
+        config
+            .as_deref()
+            .and_then(user_config::Live::config)
+            .map(|c| c.github)
+    }))
+}
 
 /// The user configuration operations, while the workspace runs or not:
 /// `config` returns the file's state (the configuration in effect, its
@@ -723,23 +917,30 @@ fn choices(record: &ClosedSession) -> Vec<&'static str> {
 }
 
 /// The command line that resumes an agent conversation, from `new`'s
-/// `resume` (`{"kind": "claude" | "codex", "id": …}`): the same commands
-/// the server's `restore` runs (`claude --resume ID`, `codex resume ID`),
-/// built here from a fixed table and a validated conversation id, never
-/// from a command line the browser sends.
-fn resume_argv(value: &Value) -> Result<(&'static str, String, Vec<String>)> {
-    let id = value["id"]
-        .as_str()
-        .filter(|id| crate::session_id(id))
-        .ok_or("resume needs a valid conversation id")?;
+/// `resume`: `{"kind": "claude" | "codex", "id": …}` runs the same
+/// commands the server's `restore` runs (`claude --resume ID`,
+/// `codex resume ID`); `{"kind": …, "picker": true}` without an id opens
+/// the agent's own conversation picker (`claude --resume`,
+/// `codex resume`), for a closed terminal whose conversation was never
+/// identified. Built here from a fixed table and a validated conversation
+/// id, never from a command line the browser sends; an id that is present
+/// but invalid is refused, never turned into the picker.
+fn resume_argv(value: &Value) -> Result<(&'static str, Option<String>, Vec<String>)> {
     let (kind, program, verb) = match value["kind"].as_str() {
         Some("claude") => ("claude", "claude", "--resume"),
         Some("codex") => ("codex", "codex", "resume"),
         _ => return Err("resume kind must be claude or codex".into()),
     };
+    if value["id"].is_null() && value["picker"] == true {
+        return Ok((kind, None, vec![program.into(), verb.into()]));
+    }
+    let id = value["id"]
+        .as_str()
+        .filter(|id| crate::session_id(id))
+        .ok_or("resume needs a valid conversation id")?;
     Ok((
         kind,
-        id.to_owned(),
+        Some(id.to_owned()),
         vec![program.into(), verb.into(), id.into()],
     ))
 }
@@ -1000,20 +1201,25 @@ pub fn run(socket: &Path, state: &Path) -> Result<()> {
     });
     let socket = socket.to_owned();
     let state = state.to_owned();
+    let github = Some(github_service(config.clone()));
     std::thread::spawn(move || {
         let mut monitor = status::Monitor::default();
         // Prime one bounded sample so opening the status view need not wait
         // for a full refresh interval. No sampler runs while it is closed.
         monitor.poll(true);
         let mut api = Api {
-            peer,
-            runtime,
-            socket,
+            sessions: Sessions {
+                peer,
+                runtime,
+                socket,
+            },
+            environment_threads: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
             state,
             monitor,
             config,
             git: web_git::Worker::start(),
             history: web_history::Worker::start(),
+            github,
         };
         let mut initialized = greeted;
         let mut last_id = 0;
@@ -1037,15 +1243,35 @@ pub fn run(socket: &Path, state: &Path) -> Result<()> {
                 let method = web["method"].as_str().unwrap_or("");
                 let result = if !serde_json::to_vec(web).is_ok_and(|b| b.len() <= REQUEST_LIMIT) {
                     Err("web request too large".into())
-                } else if method == "git" || method == "conversations" {
+                } else if matches!(
+                    method,
+                    "environments" | "environment_start" | "environment_stop" | "environment_check"
+                ) {
+                    let replies = sender.clone();
+                    match api.environment(
+                        method,
+                        &web["params"],
+                        Box::new(move |result| {
+                            let reply = match result {
+                                Ok(result) => json!({"Web": {"id": id, "result": result}}),
+                                Err(error) => json!({"Web": {"id": id, "error": error}}),
+                            };
+                            let _ = replies.send(Outbound::Message(reply));
+                        }),
+                    ) {
+                        Ok(()) => continue,
+                        Err(error) => Err(error),
+                    }
+                } else if matches!(method, "git" | "conversations" | "github_state") {
                     // Answered by a Git or the History worker thread when
                     // ready, so a slow repository or a large transcript
-                    // folder never holds up the other operations.
+                    // folder never holds up the other operations; GitHub's
+                    // repository facts likewise, from their own thread.
                     let replies = sender.clone();
-                    let submit = if method == "git" {
-                        Api::git
-                    } else {
-                        Api::conversations
+                    let submit = match method {
+                        "git" => Api::git,
+                        "conversations" => Api::conversations,
+                        _ => Api::github_state,
                     };
                     match submit(
                         &api,
@@ -1230,15 +1456,28 @@ mod tests {
     #[test]
     fn resume_commands_come_from_a_fixed_table() {
         let (kind, id, argv) = resume_argv(&json!({"kind": "claude", "id": "a-1"})).unwrap();
-        assert_eq!((kind, id.as_str()), ("claude", "a-1"));
+        assert_eq!((kind, id.as_deref()), ("claude", Some("a-1")));
         assert_eq!(argv, ["claude", "--resume", "a-1"]);
-        let (_, _, argv) = resume_argv(&json!({"kind": "codex", "id": "b_2"})).unwrap();
-        assert_eq!(argv, ["codex", "resume", "b_2"]);
+        // Codex takes the rollout's session id (a UUID).
+        let uuid = "01a21031-eea6-73f1-816a-e23ce5e1b0d2";
+        let (_, _, argv) = resume_argv(&json!({"kind": "codex", "id": uuid})).unwrap();
+        assert_eq!(argv, ["codex", "resume", uuid]);
+        // The picker only when asked for, without an id.
+        let (kind, id, argv) = resume_argv(&json!({"kind": "codex", "picker": true})).unwrap();
+        assert_eq!((kind, id), ("codex", None));
+        assert_eq!(argv, ["codex", "resume"]);
+        let (_, _, argv) =
+            resume_argv(&json!({"kind": "claude", "id": null, "picker": true})).unwrap();
+        assert_eq!(argv, ["claude", "--resume"]);
         for bad in [
             json!({"kind": "claude", "id": "x; rm -rf ~"}),
             json!({"kind": "claude", "id": ""}),
+            json!({"kind": "claude", "id": "", "picker": true}),
+            json!({"kind": "claude", "id": "x y", "picker": true}),
             json!({"kind": "bash", "id": "a"}),
+            json!({"kind": "bash", "picker": true}),
             json!({"kind": "codex"}),
+            json!({"kind": "codex", "picker": "yes"}),
             json!("claude --resume a"),
         ] {
             assert!(resume_argv(&bad).is_err(), "{bad}");

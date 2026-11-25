@@ -403,3 +403,24 @@ test("the former Recently closed URL opens History", () => {
   );
   assert.equal(parseLocation("?view=grid&dialog=constructor").dialog, undefined);
 });
+
+test("a project's Environments view is a place of its own, named with its project", () => {
+  const envs = at({ view: "envs", project: "kelp" });
+  const search = locationSearch(envs);
+  assert.equal(search, "?view=envs&project=kelp");
+  assert.deepEqual(resolveLocation(parseLocation(search), terminal(1)), envs);
+  const state = {
+    phoneHome: false,
+    view: "envs",
+    terminal: 3,
+    filesDir: "/x",
+    file: "",
+    side: "",
+    dialog: "",
+    notifyPane: 0,
+    project: "kelp",
+  };
+  assert.deepEqual(locationOf(state), envs);
+  assert.equal(historyMode(envs, at({ view: "repos", project: "kelp" })).mode, "push");
+  assert.equal(historyMode(envs, envs).mode, "none");
+});
