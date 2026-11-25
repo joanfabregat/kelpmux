@@ -137,7 +137,7 @@ pub const KEYS: &[Key] = &[
         default: "\"~/projects\"",
         example: None,
         doc: "The default folder for new projects: a project named `name` goes in `<base>/<name>`. It must lie inside `files.root` or one of `files.extra_roots`, and need not exist yet.",
-        applies: "Immediately. Stored for project support in a later release; nothing uses it yet.",
+        applies: "Immediately: the web client offers `<base>/<name>` for the next project it creates (and creates that folder).",
     },
     Key {
         section: "scratch",
@@ -145,8 +145,8 @@ pub const KEYS: &[Key] = &[
         kind: Kind::Folder,
         default: "\"~/scratch\"",
         example: None,
-        doc: "The folder terminals outside any project start in. It must lie inside `files.root` or one of `files.extra_roots`, and need not exist yet.",
-        applies: "Immediately. Stored for a later release; nothing uses it yet.",
+        doc: "The folder of the built-in Scratch project: terminals created outside any project start in it and belong to Scratch. It must lie inside `files.root` or one of `files.extra_roots`, and need not exist yet.",
+        applies: "Immediately: the next terminal created outside a project starts there (the web client creates the folder when it is missing).",
     },
 ];
 
@@ -162,6 +162,70 @@ pub struct Folder {
     span: Option<Range<usize>>,
 }
 
+/// A project (`[[project]]`): a name and a folder. Its `id` is the stable
+/// name terminals and closed terminals are linked by.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Project {
+    pub id: String,
+    pub name: String,
+    pub folder: Folder,
+    pub color: Option<String>,
+}
+
+/// The id of the built-in Scratch project, which no `[[project]]` may take.
+pub const SCRATCH: &str = "scratch";
+/// Most `[[project]]` tables.
+pub const MAX_PROJECTS: usize = 256;
+/// Longest project name, in characters, and id, in bytes.
+pub const MAX_NAME: usize = 64;
+/// The named project colours; `#rrggbb` is accepted too.
+pub const COLORS: &[&str] = &[
+    "red", "orange", "yellow", "green", "teal", "blue", "purple", "pink", "gray",
+];
+
+/// One field of a `[[project]]` table.
+pub struct ProjectField {
+    pub name: &'static str,
+    pub kind: &'static str,
+    pub required: bool,
+    pub example: &'static str,
+    pub doc: &'static str,
+}
+/// The fields of a `[[project]]` table, for the validator, the default
+/// file, the schema and the reference.
+pub const PROJECT_FIELDS: &[ProjectField] = &[
+    ProjectField {
+        name: "id",
+        kind: "string",
+        required: true,
+        example: "\"kelp\"",
+        doc: "A stable identifier: lowercase letters, digits and `-`, at most 64, starting with a letter or digit; unique, and not `scratch`. Terminals are linked to their project by it, so keep it when renaming. The web client makes one from the name.",
+    },
+    ProjectField {
+        name: "name",
+        kind: "string",
+        required: true,
+        example: "\"Kelp\"",
+        doc: "The name shown: at most 64 characters, without `/` or control characters, unique regardless of case, and not `Scratch`.",
+    },
+    ProjectField {
+        name: "folder",
+        kind: "folder path (string)",
+        required: true,
+        example: "\"~/projects/Kelp\"",
+        doc: "The project's folder. It must lie inside `files.root` or one of `files.extra_roots`, and may not be inside, or contain, another project's folder or `scratch.folder`. It need not exist: a project whose folder is missing shows as missing. Deleting a project never deletes its folder.",
+    },
+    ProjectField {
+        name: "color",
+        kind: "string",
+        required: false,
+        example: "\"teal\"",
+        doc: "Optional: the colour that marks the project in the sidebar and the file browser, one of red, orange, yellow, green, teal, blue, purple, pink, gray, or `#rrggbb`.",
+    },
+];
+/// What `[[project]]` is, for the default file and the reference.
+const PROJECTS_DOC: &str = "Projects: one `[[project]]` table each, with a name and a folder. Every terminal belongs to one project; terminals created outside any project belong to the built-in Scratch project (`scratch.folder`), which is not listed here. The web client adds, renames and deletes projects here too.";
+
 /// A valid configuration.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Config {
@@ -169,10 +233,37 @@ pub struct Config {
     pub files_extra_roots: Vec<Folder>,
     pub projects_base: Folder,
     pub scratch_folder: Folder,
+    /// The `[[project]]` tables, in the file's order.
+    pub projects: Vec<Project>,
 }
 impl Config {
-    /// The values as written, and resolved, in the file's shape.
+    /// The project `id` names, if any.
+    pub fn project(&self, id: &str) -> Option<&Project> {
+        self.projects.iter().find(|project| project.id == id)
+    }
+    /// The values as written, and resolved, in the file's shape, with the
+    /// projects (`projects`: each with its folder as written and resolved,
+    /// and whether that folder is missing, checked now).
     pub fn to_json(&self) -> Json {
+        let mut value = self.values_json();
+        value["projects"] = Json::Array(
+            self.projects
+                .iter()
+                .map(|project| {
+                    json!({
+                        "id": project.id,
+                        "name": project.name,
+                        "folder": project.folder.written,
+                        "path": project.folder.path,
+                        "color": project.color,
+                        "missing": !project.folder.path.is_dir(),
+                    })
+                })
+                .collect(),
+        );
+        value
+    }
+    fn values_json(&self) -> Json {
         let shape = |pick: &dyn Fn(&Folder) -> Json| {
             json!({
                 "files": {
@@ -393,15 +484,19 @@ pub fn validate(text: &str, env: &Env) -> std::result::Result<Config, Vec<Diagno
         errors.push(Diagnostic::new(text, span, key, message));
     };
     let mut strings: Strings = Vec::new();
+    let mut raw_projects: Vec<RawProject> = Vec::new();
     let top_level = || {
         KEYS.iter()
             .filter(|key| key.section.is_empty())
             .map(|key| key.name)
             .chain(SECTIONS.iter().map(|(name, _)| *name))
+            .chain([PROJECT_TABLE])
     };
     for (name, item) in document.iter() {
         let key_span = document.key(name).and_then(|key| key.span());
-        if let Some(section) = SECTIONS.iter().find(|(section, _)| *section == name) {
+        if name == PROJECT_TABLE {
+            raw_projects = read_projects(item, key_span, &mut error);
+        } else if let Some(section) = SECTIONS.iter().find(|(section, _)| *section == name) {
             let Some(table) = item.as_table_like() else {
                 error(
                     item.span().or(key_span),
@@ -541,6 +636,7 @@ pub fn validate(text: &str, env: &Env) -> std::result::Result<Config, Vec<Diagno
             );
         }
     }
+    let projects = check_projects(&raw_projects, home, &root, &extra, &scratch, &mut error);
     if !errors.is_empty() {
         return Err(errors);
     }
@@ -549,7 +645,322 @@ pub fn validate(text: &str, env: &Env) -> std::result::Result<Config, Vec<Diagno
         files_extra_roots: extra,
         projects_base: base,
         scratch_folder: scratch,
+        projects,
     })
+}
+
+/// The array of project tables: `[[project]]`.
+pub const PROJECT_TABLE: &str = "project";
+
+type Span = Option<Range<usize>>;
+/// A `[[project]]` table as written, before its values are checked.
+#[derive(Default)]
+struct RawProject {
+    /// Where the table starts (its first key), for problems with it as a whole.
+    span: Span,
+    id: Option<(String, Span)>,
+    name: Option<(String, Span)>,
+    folder: Option<(String, Span)>,
+    color: Option<(String, Span)>,
+}
+
+/// The diagnostic key of a project's field: `project[0].folder`.
+pub fn project_key(index: usize, field: &str) -> String {
+    format!("{PROJECT_TABLE}[{index}].{field}")
+}
+
+/// Reads the `project` item: an array of tables (`[[project]]`) or of
+/// inline tables, each with known string fields.
+fn read_projects(
+    item: &Item,
+    key_span: Span,
+    error: &mut impl FnMut(Span, Option<String>, String),
+) -> Vec<RawProject> {
+    let mut tables: Vec<(&dyn TableLike, Span)> = Vec::new();
+    if let Some(array) = item.as_array_of_tables() {
+        tables.extend(
+            array
+                .iter()
+                .map(|table| (table as &dyn TableLike, table.span())),
+        );
+    } else if let Some(array) = item.as_array() {
+        for value in array.iter() {
+            match value.as_inline_table() {
+                Some(table) => tables.push((table as &dyn TableLike, value.span())),
+                None => error(
+                    value.span(),
+                    Some(PROJECT_TABLE.into()),
+                    "each `project` must be a table".into(),
+                ),
+            }
+        }
+    } else {
+        error(
+            item.span().or(key_span),
+            Some(PROJECT_TABLE.into()),
+            "`project` must be an array of tables (`[[project]]`)".into(),
+        );
+        return Vec::new();
+    }
+    let mut projects = Vec::new();
+    for (index, (table, span)) in tables.into_iter().enumerate() {
+        let first = table
+            .iter()
+            .next()
+            .and_then(|(name, _)| table.key(name))
+            .and_then(|key| key.span());
+        let mut project = RawProject {
+            span: span.or(first).or(key_span.clone()),
+            ..RawProject::default()
+        };
+        for (name, value) in table.iter() {
+            let span = table.key(name).and_then(|key| key.span());
+            let Some(field) = PROJECT_FIELDS.iter().find(|field| field.name == name) else {
+                let hint = suggestion(name, PROJECT_FIELDS.iter().map(|field| field.name))
+                    .map(|field| format!("{PROJECT_TABLE}.{field}"));
+                error(
+                    span,
+                    None,
+                    unknown_message(&format!("{PROJECT_TABLE}.{name}"), hint),
+                );
+                continue;
+            };
+            let Some(text) = value.as_str() else {
+                error(
+                    value.span().or(span),
+                    Some(project_key(index, field.name)),
+                    format!("`{PROJECT_TABLE}.{}` must be a {}", field.name, field.kind),
+                );
+                continue;
+            };
+            let entry = Some((text.to_owned(), value.span().or(span)));
+            match field.name {
+                "id" => project.id = entry,
+                "name" => project.name = entry,
+                "folder" => project.folder = entry,
+                _ => project.color = entry,
+            }
+        }
+        projects.push(project);
+    }
+    projects
+}
+
+/// Why `id` is not a valid project id, if it is not.
+pub fn id_problem(id: &str) -> Option<&'static str> {
+    let valid = !id.is_empty()
+        && id.len() <= MAX_NAME
+        && id
+            .bytes()
+            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
+        && !id.starts_with('-')
+        && !id.ends_with('-');
+    if !valid {
+        Some(
+            "must be 1–64 lowercase letters, digits and `-`, starting and ending with a letter or digit",
+        )
+    } else if id == SCRATCH {
+        Some("`scratch` is the built-in Scratch project's")
+    } else {
+        None
+    }
+}
+
+/// Why `name` is not a valid project name, if it is not.
+pub fn name_problem(name: &str) -> Option<&'static str> {
+    if name.trim().is_empty() {
+        Some("must not be empty")
+    } else if name.trim() != name {
+        Some("must not start or end with spaces")
+    } else if name.chars().count() > MAX_NAME {
+        Some("must be at most 64 characters")
+    } else if name.chars().any(char::is_control) || name.contains('/') {
+        Some("must not contain `/` or control characters")
+    } else if name == "." || name == ".." {
+        Some("must not be `.` or `..`")
+    } else if name.eq_ignore_ascii_case("scratch") {
+        Some("`Scratch` is the built-in project's name")
+    } else {
+        None
+    }
+}
+
+/// Whether `color` is a named colour or `#rrggbb`.
+pub fn color_valid(color: &str) -> bool {
+    COLORS.contains(&color)
+        || (color.len() == 7
+            && color.starts_with('#')
+            && color[1..].bytes().all(|b| b.is_ascii_hexdigit()))
+}
+
+/// Checks the projects' values and how their folders relate.
+fn check_projects(
+    raw: &[RawProject],
+    home: &Path,
+    root: &Folder,
+    extra: &[Folder],
+    scratch: &Folder,
+    error: &mut impl FnMut(Span, &str, String),
+) -> Vec<Project> {
+    if raw.len() > MAX_PROJECTS {
+        error(
+            raw[MAX_PROJECTS].span.clone(),
+            PROJECT_TABLE,
+            format!("at most {MAX_PROJECTS} projects"),
+        );
+    }
+    let mut projects: Vec<(usize, Project)> = Vec::new();
+    for (index, project) in raw.iter().enumerate() {
+        let label = match &project.name {
+            Some((name, _)) => format!("project “{name}”"),
+            None => format!("project {}", index + 1),
+        };
+        let mut ok = true;
+        for (field, value) in [
+            ("id", &project.id),
+            ("name", &project.name),
+            ("folder", &project.folder),
+        ] {
+            if value.is_none() {
+                error(
+                    project.span.clone(),
+                    &project_key(index, field),
+                    format!("{label} needs `{field}`"),
+                );
+                ok = false;
+            }
+        }
+        let (Some((id, id_span)), Some((name, name_span)), Some((written, folder_span))) =
+            (&project.id, &project.name, &project.folder)
+        else {
+            continue;
+        };
+        if let Some(problem) = id_problem(id) {
+            error(
+                id_span.clone(),
+                &project_key(index, "id"),
+                format!("{label}: `id` {problem}"),
+            );
+            ok = false;
+        } else if projects.iter().any(|(_, other)| other.id == *id) {
+            error(
+                id_span.clone(),
+                &project_key(index, "id"),
+                format!("{label}: another project already has the id `{id}`"),
+            );
+            ok = false;
+        }
+        if let Some(problem) = name_problem(name) {
+            error(
+                name_span.clone(),
+                &project_key(index, "name"),
+                format!("{label}: the name {problem}"),
+            );
+            ok = false;
+        } else if projects
+            .iter()
+            .any(|(_, other)| other.name.to_lowercase() == name.to_lowercase())
+        {
+            error(
+                name_span.clone(),
+                &project_key(index, "name"),
+                format!("another project is already named “{name}”"),
+            );
+            ok = false;
+        }
+        if let Some((color, span)) = &project.color
+            && !color_valid(color)
+        {
+            error(
+                span.clone(),
+                &project_key(index, "color"),
+                format!(
+                    "{label}: `color` must be one of {} or `#rrggbb`",
+                    COLORS.join(", ")
+                ),
+            );
+            ok = false;
+        }
+        let key = project_key(index, "folder");
+        let path = match expand(written, home) {
+            Ok(path) => path,
+            Err(message) => {
+                error(
+                    folder_span.clone(),
+                    &key,
+                    format!("{label}: the folder {message}"),
+                );
+                continue;
+            }
+        };
+        let inside_roots = std::iter::once(root)
+            .chain(extra)
+            .any(|allowed| path.starts_with(&allowed.path));
+        if !inside_roots {
+            error(
+                folder_span.clone(),
+                &key,
+                format!(
+                    "{label}: the folder {} must lie inside `files.root` ({}) or one of `files.extra_roots`",
+                    path.display(),
+                    root.path.display()
+                ),
+            );
+            ok = false;
+        }
+        let overlaps = |other: &Path| path.starts_with(other) || other.starts_with(&path);
+        if overlaps(&scratch.path) {
+            error(
+                folder_span.clone(),
+                &key,
+                format!(
+                    "{label}: the folder {} overlaps the Scratch folder ({})",
+                    path.display(),
+                    scratch.path.display()
+                ),
+            );
+            ok = false;
+        }
+        if let Some((_, other)) = projects
+            .iter()
+            .find(|(_, other)| overlaps(&other.folder.path))
+        {
+            let relation = if path == other.folder.path {
+                "is also the folder of"
+            } else if path.starts_with(&other.folder.path) {
+                "is inside the folder of"
+            } else {
+                "contains the folder of"
+            };
+            error(
+                folder_span.clone(),
+                &key,
+                format!(
+                    "{label}: the folder {} {relation} project “{}” ({})",
+                    path.display(),
+                    other.name,
+                    other.folder.path.display()
+                ),
+            );
+            ok = false;
+        }
+        if ok {
+            projects.push((
+                index,
+                Project {
+                    id: id.clone(),
+                    name: name.clone(),
+                    folder: Folder {
+                        written: written.clone(),
+                        path,
+                        span: folder_span.clone(),
+                    },
+                    color: project.color.as_ref().map(|(color, _)| color.clone()),
+                },
+            ));
+        }
+    }
+    projects.into_iter().map(|(_, project)| project).collect()
 }
 
 type Strings = Vec<(&'static Key, Vec<(String, Option<Range<usize>>)>)>;
@@ -658,6 +1069,22 @@ pub fn template() -> String {
             entry(&mut out, key);
         }
     }
+    // Projects are added at the end of the file, after this example.
+    out.push('\n');
+    out.push_str(&comment(PROJECTS_DOC));
+    for field in PROJECT_FIELDS {
+        out.push_str(&comment(&format!(
+            "`{}`{}: {}",
+            field.name,
+            if field.required { "" } else { " (optional)" },
+            field.doc
+        )));
+    }
+    out.push_str("# Example:\n#\n");
+    out.push_str(&format!("# [[{PROJECT_TABLE}]]\n"));
+    for field in PROJECT_FIELDS {
+        out.push_str(&format!("# {} = {}\n", field.name, field.example));
+    }
     out
 }
 
@@ -717,6 +1144,34 @@ pub fn schema() -> Json {
             }),
         );
     }
+    let fields: serde_json::Map<String, Json> = PROJECT_FIELDS
+        .iter()
+        .map(|field| {
+            let mut value = match field.name {
+                "id" => json!({ "type": "string", "pattern": "^[a-z0-9]([a-z0-9-]*[a-z0-9])?$", "maxLength": MAX_NAME, "not": { "const": SCRATCH } }),
+                "name" => json!({ "type": "string", "minLength": 1, "maxLength": MAX_NAME, "pattern": "^[^/]*$" }),
+                "folder" => json!({ "type": "string", "minLength": 1, "maxLength": MAX_PATH }),
+                _ => json!({ "type": "string", "anyOf": [{ "enum": COLORS }, { "pattern": "^#[0-9a-fA-F]{6}$" }] }),
+            };
+            value["description"] = json!(field.doc);
+            value["examples"] = json!([toml_json(field.example)]);
+            (field.name.to_owned(), value)
+        })
+        .collect();
+    properties.insert(
+        PROJECT_TABLE.into(),
+        json!({
+            "type": "array",
+            "description": PROJECTS_DOC,
+            "maxItems": MAX_PROJECTS,
+            "items": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": PROJECT_FIELDS.iter().filter(|field| field.required).map(|field| field.name).collect::<Vec<_>>(),
+                "properties": fields,
+            },
+        }),
+    );
     json!({
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "$id": REFERENCE_URL,
@@ -750,6 +1205,30 @@ pub fn reference() -> String {
         for key in KEYS.iter().filter(|key| key.section == *section) {
             entry(&mut out, key);
         }
+    }
+    out.push_str(&format!("\n## `[[{PROJECT_TABLE}]]`\n\n{PROJECTS_DOC}\n\n"));
+    out.push_str("```toml\n");
+    out.push_str(&format!("[[{PROJECT_TABLE}]]\n"));
+    for field in PROJECT_FIELDS {
+        out.push_str(&format!("{} = {}\n", field.name, field.example));
+    }
+    out.push_str("```\n");
+    for field in PROJECT_FIELDS {
+        out.push_str(&format!(
+            "\n### `{PROJECT_TABLE}.{}`\n\n{}\n\n",
+            field.name, field.doc
+        ));
+        out.push_str("| | |\n| --- | --- |\n");
+        out.push_str(&format!("| Type | {} |\n", field.kind));
+        out.push_str(&format!(
+            "| Required | {} |\n",
+            if field.required { "yes" } else { "no" }
+        ));
+        out.push_str(&format!(
+            "| Example | `{} = {}` |\n",
+            field.name, field.example
+        ));
+        out.push_str("| Applies | Immediately. |\n");
     }
     // A blank line ends the last table before what follows.
     out.push('\n');
@@ -810,6 +1289,9 @@ fn uncomment(text: &str, key: &Key) -> Option<String> {
                 || header_line
                     .strip_prefix(&header)
                     .is_some_and(|rest| rest.trim_start().starts_with('#'));
+        } else if inside && trimmed.starts_with("# [[") {
+            // The commented `[[project]]` example: not this table's.
+            return None;
         } else if inside && let Some(body) = trimmed.strip_prefix('#') {
             // `body` and `trimmed` are suffixes of `line`.
             let body = body.trim_start_matches([' ', '\t']);
@@ -922,9 +1404,9 @@ pub fn edit(
 
 /// An exclusive `flock` on `.config.toml.lock` beside the file, held until
 /// dropped. Waits at most five seconds.
-struct WriteLock(#[allow(dead_code)] File);
+pub(crate) struct WriteLock(#[allow(dead_code)] File);
 impl WriteLock {
-    fn acquire(target: &Path) -> Result<Self> {
+    pub(crate) fn acquire(target: &Path) -> Result<Self> {
         let name = target
             .file_name()
             .ok_or("the configuration path has no file name")?
@@ -948,7 +1430,7 @@ impl WriteLock {
                 return Err(error.into());
             }
             if Instant::now() >= deadline {
-                return Err("another KelpMux is writing the configuration; try again".into());
+                return Err(format!("another KelpMux is writing {name}; try again").into());
             }
             std::thread::sleep(Duration::from_millis(20));
         }
@@ -967,7 +1449,7 @@ fn write_target(path: &Path) -> Result<PathBuf> {
 /// Replaces `target` with `text`: a temporary file in the same folder,
 /// fsynced, renamed over it, and the folder fsynced. Keeps an existing
 /// file's permissions; a new file is private.
-fn replace(target: &Path, text: &str) -> Result<()> {
+pub(crate) fn replace(target: &Path, text: &str) -> Result<()> {
     let name = target
         .file_name()
         .ok_or("the configuration path has no file name")?
@@ -1040,6 +1522,222 @@ pub fn update(
         }
         Err(errors) => Ok(Err(errors)),
     }
+}
+
+/// A change to the `[[project]]` tables, as the web client asks for it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ProjectChange {
+    Create {
+        id: String,
+        name: String,
+        folder: String,
+        color: Option<String>,
+    },
+    /// Renames a project or changes its colour (`Some(None)` removes it);
+    /// its id and folder stay.
+    Update {
+        id: String,
+        name: Option<String>,
+        color: Option<Option<String>>,
+    },
+    /// Removes the project's table; its folder is left alone.
+    Delete { id: String },
+}
+
+/// The project tables of a document, whether `[[project]]` or an array of
+/// inline tables.
+fn project_tables(document: &mut DocumentMut) -> Vec<&mut dyn TableLike> {
+    match document.get_mut(PROJECT_TABLE) {
+        Some(Item::ArrayOfTables(array)) => array
+            .iter_mut()
+            .map(|table| table as &mut dyn TableLike)
+            .collect(),
+        Some(Item::Value(Value::Array(array))) => array
+            .iter_mut()
+            .filter_map(Value::as_inline_table_mut)
+            .map(|table| table as &mut dyn TableLike)
+            .collect(),
+        _ => Vec::new(),
+    }
+}
+
+/// Sets a string value, keeping the old value's comments and spacing.
+fn set_string(table: &mut dyn TableLike, name: &str, text: &str) {
+    let mut value = Value::from(text);
+    match table.get_mut(name) {
+        Some(Item::Value(old)) => {
+            *value.decor_mut() = old.decor().clone();
+            *old = value;
+        }
+        Some(item) => *item = Item::Value(value),
+        None => {
+            table.insert(name, Item::Value(value));
+        }
+    }
+}
+
+/// Applies a project change to the file's text, keeping comments and
+/// formatting (a new project is added at the end of the file), and
+/// validates the result.
+pub fn edit_projects(
+    text: &str,
+    change: &ProjectChange,
+    env: &Env,
+) -> std::result::Result<String, Vec<Diagnostic>> {
+    let problem = |message: String| {
+        vec![Diagnostic {
+            key: Some(PROJECT_TABLE.into()),
+            line: 1,
+            column: 1,
+            message,
+        }]
+    };
+    let mut document = text.parse::<DocumentMut>().map_err(|error| {
+        vec![Diagnostic::new(
+            text,
+            error.span(),
+            None,
+            format!("invalid TOML: {}", error.message().trim()),
+        )]
+    })?;
+    let missing = |id: &str| problem(format!("no project has the id `{id}`"));
+    let edited = match change {
+        ProjectChange::Create {
+            id,
+            name,
+            folder,
+            color,
+        } => {
+            let mut table = toml_edit::Table::new();
+            table.insert("id", toml_edit::value(id.as_str()));
+            table.insert("name", toml_edit::value(name.as_str()));
+            table.insert("folder", toml_edit::value(folder.as_str()));
+            if let Some(color) = color {
+                table.insert("color", toml_edit::value(color.as_str()));
+            }
+            match document.get_mut(PROJECT_TABLE) {
+                Some(Item::Value(Value::Array(array))) => {
+                    array.push(table.into_inline_table());
+                    document.to_string()
+                }
+                None | Some(Item::ArrayOfTables(_)) => {
+                    // Appended as text: the comments above stay where they are.
+                    let mut out = text.to_owned();
+                    if !out.is_empty() && !out.ends_with('\n') {
+                        out.push('\n');
+                    }
+                    if !out.is_empty() {
+                        out.push('\n');
+                    }
+                    let mut added = DocumentMut::new();
+                    let mut array = toml_edit::ArrayOfTables::new();
+                    array.push(table);
+                    added.insert(PROJECT_TABLE, Item::ArrayOfTables(array));
+                    out.push_str(&added.to_string());
+                    out
+                }
+                Some(_) => {
+                    return Err(problem(
+                        "`project` must be an array of tables (`[[project]]`)".into(),
+                    ));
+                }
+            }
+        }
+        ProjectChange::Update { id, name, color } => {
+            let mut tables = project_tables(&mut document);
+            let table = tables
+                .iter_mut()
+                .find(|table| table.get("id").and_then(Item::as_str) == Some(id.as_str()))
+                .ok_or_else(|| missing(id))?;
+            if let Some(name) = name {
+                set_string(&mut **table, "name", name);
+            }
+            match color {
+                Some(Some(color)) => set_string(&mut **table, "color", color),
+                Some(None) => {
+                    table.remove("color");
+                }
+                None => {}
+            }
+            document.to_string()
+        }
+        ProjectChange::Delete { id } => {
+            let is = |table: &dyn TableLike| table.get("id").and_then(Item::as_str) == Some(id);
+            match document.get_mut(PROJECT_TABLE) {
+                Some(Item::ArrayOfTables(array)) => {
+                    let index = array
+                        .iter()
+                        .position(|table| is(table))
+                        .ok_or_else(|| missing(id))?;
+                    array.remove(index);
+                    if array.is_empty() {
+                        document.remove(PROJECT_TABLE);
+                    }
+                }
+                Some(Item::Value(Value::Array(array))) => {
+                    let index = array
+                        .iter()
+                        .position(|value| value.as_inline_table().is_some_and(|table| is(table)))
+                        .ok_or_else(|| missing(id))?;
+                    array.remove(index);
+                }
+                _ => return Err(missing(id)),
+            }
+            document.to_string()
+        }
+    };
+    validate(&edited, env)?;
+    Ok(edited)
+}
+
+/// Applies a project change to the file under the write lock, as
+/// [`update`] does for keys.
+pub fn update_projects(
+    path: &Path,
+    change: &ProjectChange,
+    env: &Env,
+) -> Result<std::result::Result<(), Vec<Diagnostic>>> {
+    create_parent(path)?;
+    let target = write_target(path)?;
+    let _lock = WriteLock::acquire(&target)?;
+    let current = read(&target)?.unwrap_or_else(template);
+    match edit_projects(&current, change, env) {
+        Ok(text) => {
+            replace(&target, &text)?;
+            Ok(Ok(()))
+        }
+        Err(errors) => Ok(Err(errors)),
+    }
+}
+
+/// A project id made from `name`: lowercase ASCII letters and digits, other
+/// characters as `-`, at most 48 bytes, followed by `-2`, `-3`… when
+/// `taken` holds it (ids are never reused, so `taken` includes the ids
+/// terminals are still linked to).
+pub fn new_project_id(name: &str, taken: &[String]) -> String {
+    let mut slug = String::new();
+    for c in name.chars().flat_map(char::to_lowercase) {
+        if c.is_ascii_lowercase() || c.is_ascii_digit() {
+            slug.push(c);
+        } else if !slug.is_empty() && !slug.ends_with('-') {
+            slug.push('-');
+        }
+        if slug.len() >= 48 {
+            break;
+        }
+    }
+    let mut slug = slug.trim_end_matches('-').to_owned();
+    if slug.is_empty() || slug == SCRATCH {
+        slug = format!("project{}", if slug.is_empty() { "" } else { "-scratch" });
+    }
+    let free = |id: &str| !taken.iter().any(|taken| taken == id);
+    if free(&slug) {
+        return slug;
+    }
+    (2..)
+        .map(|n| format!("{slug}-{n}"))
+        .find(|id| free(id))
+        .expect("a free id")
 }
 
 /// The file's state as the web client shows it.
@@ -1235,6 +1933,23 @@ impl Live {
     pub fn set(&self, params: &Json) -> Result<Json> {
         let changes = changes(params)?;
         let result = update(&self.path, &changes, &self.env)?;
+        let config = self.reload();
+        Ok(match result {
+            Ok(()) => json!({ "saved": true, "errors": [], "config": config }),
+            Err(errors) => json!({
+                "saved": false,
+                "errors": errors.iter().map(Diagnostic::to_json).collect::<Vec<_>>(),
+                "config": config,
+            }),
+        })
+    }
+    /// The configuration in effect.
+    pub fn config(&self) -> Option<Config> {
+        self.state.lock().ok().map(|state| state.applied.clone())
+    }
+    /// Saves a project change, then returns `{saved, errors, config}`.
+    pub fn change_projects(&self, change: &ProjectChange) -> Result<Json> {
+        let result = update_projects(&self.path, change, &self.env)?;
         let config = self.reload();
         Ok(match result {
             Ok(()) => json!({ "saved": true, "errors": [], "config": config }),
@@ -1564,7 +2279,7 @@ mod tests {
             text.contains("\nfolder = \"/mnt/data/scratch\"\n"),
             "{text}"
         );
-        assert!(!text.contains("# folder = "), "{text}");
+        assert!(!text.contains("# folder = \"~/scratch\""), "{text}");
         // Untouched keys stay commented out, documentation and all.
         assert!(text.contains("\n# root = \"~\"\n"));
         assert_eq!(text.lines().count(), template().lines().count(), "{text}");
@@ -1729,6 +2444,149 @@ mod tests {
         let saved = live.set(&json!({"projects.base": "~/p"})).unwrap();
         assert_eq!(saved["saved"], true, "{saved}");
         assert_eq!(saved["config"]["values"]["projects"]["base"], "~/p");
+    }
+
+    #[test]
+    fn projects_are_read_and_checked() {
+        let home = Path::new("/home/u");
+        let config = validate(
+            "[[project]]\nid = \"kelp\"\nname = \"Kelp\"\nfolder = \"~/projects/kelp\"\ncolor = \"teal\"\n\n[[project]]\nid = \"web\"\nname = \"Web site\"\nfolder = \"~/work/web\"\n",
+            &env(home),
+        )
+        .unwrap();
+        assert_eq!(config.projects.len(), 2);
+        assert_eq!(config.projects[0].folder.path, home.join("projects/kelp"));
+        assert_eq!(config.projects[0].color.as_deref(), Some("teal"));
+        assert_eq!(config.project("web").unwrap().name, "Web site");
+        let json = config.to_json();
+        assert_eq!(json["projects"][1]["id"], "web");
+        assert_eq!(json["projects"][1]["missing"], true);
+        // Inline tables are tables too.
+        validate(
+            "project = [{ id = \"a\", name = \"A\", folder = \"~/a\" }]\n",
+            &env(home),
+        )
+        .unwrap();
+        assert_eq!(
+            messages(
+                "[[project]]\nid = \"a\"\nname = \"A\"\nfolder = \"~/p/a\"\n[[project]]\nid = \"a\"\nname = \"a\"\nfolder = \"~/p/a/sub\"\nfoldr = \"x\"\n"
+            ),
+            [
+                "9:1: unknown key `project.foldr`; did you mean `project.folder`?",
+                "6:6: project “a”: another project already has the id `a`",
+                "7:8: another project is already named “a”",
+                "8:10: project “a”: the folder /home/u/p/a/sub is inside the folder of project “A” (/home/u/p/a)",
+            ]
+        );
+        assert_eq!(
+            messages(
+                "[[project]]\nid = \"Bad\"\nname = \"x/y\"\nfolder = \"/srv\"\ncolor = \"plaid\"\n[[project]]\nname = \"B\"\nfolder = \"~\"\n"
+            ),
+            [
+                "2:6: project “x/y”: `id` must be 1–64 lowercase letters, digits and `-`, starting and ending with a letter or digit",
+                "3:8: project “x/y”: the name must not contain `/` or control characters",
+                "5:9: project “x/y”: `color` must be one of red, orange, yellow, green, teal, blue, purple, pink, gray or `#rrggbb`",
+                "4:10: project “x/y”: the folder /srv must lie inside `files.root` (/home/u) or one of `files.extra_roots`",
+                "6:1: project “B” needs `id`",
+            ]
+        );
+        // The Scratch folder is a project's folder too.
+        assert_eq!(
+            messages("[[project]]\nid = \"s\"\nname = \"S\"\nfolder = \"~/scratch/s\"\n"),
+            [
+                "4:10: project “S”: the folder /home/u/scratch/s overlaps the Scratch folder (/home/u/scratch)"
+            ]
+        );
+        assert_eq!(
+            messages("[[project]]\nid = \"scratch\"\nname = \"Scratch\"\nfolder = \"~/x\"\n"),
+            [
+                "2:6: project “Scratch”: `id` `scratch` is the built-in Scratch project's",
+                "3:8: project “Scratch”: the name `Scratch` is the built-in project's name",
+            ]
+        );
+    }
+
+    #[test]
+    fn project_changes_keep_the_file_and_are_validated() {
+        let home = Path::new("/home/u");
+        let create = |id: &str, name: &str, folder: &str| ProjectChange::Create {
+            id: id.into(),
+            name: name.into(),
+            folder: folder.into(),
+            color: None,
+        };
+        // Added after the documented example at the end of the default file.
+        let text = edit_projects(
+            &template(),
+            &create("kelp", "Kelp", "~/projects/Kelp"),
+            &env(home),
+        )
+        .unwrap();
+        assert!(text.starts_with(&template()), "{text}");
+        assert!(
+            text.ends_with(
+                "\n[[project]]\nid = \"kelp\"\nname = \"Kelp\"\nfolder = \"~/projects/Kelp\"\n"
+            ),
+            "{text}"
+        );
+        let text =
+            edit_projects(&text, &create("web", "Web", "~/projects/Web"), &env(home)).unwrap();
+        assert_eq!(validate(&text, &env(home)).unwrap().projects.len(), 2);
+        // Overlapping folders are refused with the new project's key.
+        let errors = edit_projects(
+            &text,
+            &create("sub", "Sub", "~/projects/Kelp/sub"),
+            &env(home),
+        )
+        .unwrap_err();
+        assert_eq!(errors[0].key.as_deref(), Some("project[2].folder"));
+        // Rename and recolour keep the id, folder and comments.
+        let hand = "# mine\n[[project]] # first\nid = \"kelp\"\nname = \"Kelp\"   # shown\nfolder = \"~/k\"\ncolor = \"red\"\n";
+        let renamed = edit_projects(
+            hand,
+            &ProjectChange::Update {
+                id: "kelp".into(),
+                name: Some("Kelp 2".into()),
+                color: Some(None),
+            },
+            &env(home),
+        )
+        .unwrap();
+        assert_eq!(
+            renamed,
+            "# mine\n[[project]] # first\nid = \"kelp\"\nname = \"Kelp 2\"   # shown\nfolder = \"~/k\"\n"
+        );
+        let deleted = edit_projects(
+            &renamed,
+            &ProjectChange::Delete { id: "kelp".into() },
+            &env(home),
+        )
+        .unwrap();
+        assert!(validate(&deleted, &env(home)).unwrap().projects.is_empty());
+        assert!(
+            edit_projects(
+                hand,
+                &ProjectChange::Delete { id: "nope".into() },
+                &env(home)
+            )
+            .is_err()
+        );
+        // An inline array grows inline.
+        let inline = "project = [{ id = \"a\", name = \"A\", folder = \"~/a\" }]\n";
+        let text = edit_projects(inline, &create("b", "B", "~/b"), &env(home)).unwrap();
+        assert_eq!(validate(&text, &env(home)).unwrap().projects.len(), 2);
+        assert!(text.starts_with("project = ["), "{text}");
+    }
+
+    #[test]
+    fn project_ids_come_from_names_and_are_never_reused() {
+        assert_eq!(new_project_id("Kelp Mux!", &[]), "kelp-mux");
+        assert_eq!(new_project_id("Élan  vital", &[]), "lan-vital");
+        assert_eq!(new_project_id("???", &[]), "project");
+        assert_eq!(new_project_id("Scratch", &[]), "project-scratch");
+        let taken = ["kelp".to_owned(), "kelp-2".to_owned()];
+        assert_eq!(new_project_id("Kelp", &taken), "kelp-3");
+        assert!(id_problem(&new_project_id(&"x".repeat(200), &[])).is_none());
     }
 
     #[test]

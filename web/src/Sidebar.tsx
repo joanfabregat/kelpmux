@@ -17,6 +17,7 @@ import {
 } from "./state/model";
 import { Vitals } from "./Vitals";
 import { UnreadMark, type SessionMode } from "./Shell";
+import { projectColor, type Project } from "./projects";
 
 /** What a state shortcut in the sidebar summary opens. */
 const openStateLabel: Partial<Record<DisplayState, string>> = {
@@ -65,7 +66,30 @@ export type SidebarProps = {
   onFiles?: () => void;
   /** The user configuration file has errors: Settings shows them. */
   configProblem?: boolean;
+  /** Projects (bridge API minor 5), in the sidebar's order with Scratch
+   * last; with none but Scratch the terminals show as one list. */
+  projects?: Project[];
+  /** The project a terminal belongs to. */
+  projectOf?: (pane: number) => string;
+  /** The project under a terminal being dragged. */
+  dropProject?: string;
+  /** Creates a terminal in a project. */
+  onNewIn?: (project: Project) => void;
+  /** A project's menu (Files, Terminals, Closed, Rename, Delete). */
+  onProjectMenu?: (project: Project, x: number, y: number) => void;
+  onNewProject?: () => void;
 };
+
+/** Projects folded in this browser's sidebar. */
+const foldedKey = "kelpmux-folded-projects";
+function loadFolded(): string[] {
+  try {
+    const value = JSON.parse(localStorage.getItem(foldedKey) || "[]");
+    return Array.isArray(value) ? value.filter((id) => typeof id === "string") : [];
+  } catch {
+    return [];
+  }
+}
 
 /** The left sidebar, like the TUI's, and the only navigation: the state
  * counts, then every terminal in this browser's order with its live state
@@ -95,6 +119,19 @@ export function Sidebar(props: SidebarProps) {
     vitals,
   } = props;
   const [parkedOpen, setParkedOpen] = useState(true);
+  const [foldedProjects, setFoldedProjects] = useState(loadFolded);
+  function toggleProject(id: string) {
+    const next = foldedProjects.includes(id)
+      ? foldedProjects.filter((other) => other !== id)
+      : [...foldedProjects, id];
+    setFoldedProjects(next);
+    try {
+      localStorage.setItem(foldedKey, JSON.stringify(next));
+    } catch {}
+  }
+  const projects = props.projects || [];
+  /** Grouped by project once there is a project besides Scratch. */
+  const grouped = projects.length > 1 && !!props.projectOf;
   const summary = rollup(terminals.concat(parked), notifications);
   /** An entry for another view (the grid, the files): a row like a tab's
    * with an icon in the number column, selected while its view shows. */
@@ -137,6 +174,7 @@ export function Sidebar(props: SidebarProps) {
         className={`nav-cell term-row ${isParked ? "parked-row" : ""} ${props.rowClass(p)}`}
         data-drop-pane={isParked ? undefined : p.id}
         data-pane={p.id}
+        data-project={props.projectOf?.(p.id)}
         data-state={state}
         {...(isParked ? {} : props.rowProps(p))}
         onContextMenu={(event) => {
@@ -288,10 +326,116 @@ export function Sidebar(props: SidebarProps) {
       </div>
       <nav className="rail-scroll" aria-label="Terminal tabs">
         {/* The tabs, + New terminal and the parked terminals. */}
-        <div className="term-list" role="list" aria-label="Terminals">
-          {terminals.map((p) => row(p, false))}
-          {!terminals.length && <p className="rail-empty">No open terminals</p>}
-        </div>
+        {grouped ? (
+          projects.map((project) => {
+            const members = terminals.filter(
+              (p) => props.projectOf!(p.id) === project.id,
+            );
+            const open = !foldedProjects.includes(project.id);
+            const color = projectColor(project);
+            return (
+              <section
+                key={project.id}
+                className={`project-group ${props.dropProject === project.id ? "drop-target" : ""}`}
+                data-project-group={project.id}
+                aria-label={project.scratch ? "Scratch" : `Project ${project.name}`}
+                style={color ? ({ "--project": color } as React.CSSProperties) : undefined}
+              >
+                <div
+                  className="project-head"
+                  data-drop-project={project.id}
+                  onContextMenu={(event) => {
+                    event.preventDefault();
+                    props.onProjectMenu?.(project, event.clientX, event.clientY);
+                  }}
+                >
+                  <button
+                    type="button"
+                    className="project-fold"
+                    aria-expanded={open}
+                    title={`${project.name}\n${project.path}`}
+                    onClick={() => toggleProject(project.id)}
+                  >
+                    <Icon
+                      name={open ? "chevron-down" : "chevron-right"}
+                      size="sm"
+                      className="project-chevron"
+                    />
+                    <span
+                      className={`project-dot ${color ? "" : "plain"}`}
+                      aria-hidden="true"
+                    />
+                    <span className="grow project-name">{project.name}</span>
+                    {!open && members.length > 0 && (
+                      <StateCounts rollup={rollup(members, notifications)} />
+                    )}
+                    <span className="count">{members.length || ""}</span>
+                  </button>
+                  {project.missing && (
+                    <Tooltip content={`The folder ${project.path} is missing`}>
+                      <span
+                        className="project-missing"
+                        tabIndex={0}
+                        aria-label={`The folder of ${project.name} is missing`}
+                      >
+                        <Icon name="circle-alert" size="sm" />
+                      </span>
+                    </Tooltip>
+                  )}
+                  <span className="project-actions">
+                    {props.onNewIn && (
+                      <Tooltip content={`New terminal in ${project.name}`}>
+                        <button
+                          type="button"
+                          className="icon-btn"
+                          aria-label={`New terminal in ${project.name}`}
+                          disabled={project.missing}
+                          onClick={() => props.onNewIn!(project)}
+                        >
+                          <Icon name="plus" size="sm" />
+                        </button>
+                      </Tooltip>
+                    )}
+                    {props.onProjectMenu && (
+                      <button
+                        type="button"
+                        className="icon-btn"
+                        aria-label={`Menu for ${project.name}`}
+                        aria-haspopup="menu"
+                        onClick={(event) => {
+                          const rect = event.currentTarget.getBoundingClientRect();
+                          props.onProjectMenu!(
+                            project,
+                            Math.max(8, rect.right - 220),
+                            rect.bottom,
+                          );
+                        }}
+                      >
+                        <Icon name="ellipsis" size="sm" />
+                      </button>
+                    )}
+                  </span>
+                </div>
+                {open && (
+                  <div
+                    className="term-list"
+                    role="list"
+                    aria-label={project.name}
+                  >
+                    {members.map((p) => row(p, false))}
+                  </div>
+                )}
+              </section>
+            );
+          })
+        ) : (
+          <div className="term-list" role="list" aria-label="Terminals">
+            {terminals.map((p) => row(p, false))}
+            {!terminals.length && (
+              <p className="rail-empty">No open terminals</p>
+            )}
+          </div>
+        )}
         {/* Like the TUI's "+ New tab" row, right under the tabs: a rule
             on each side of the label centred between them. Folded, the
             plus between two short rules. */}
@@ -311,6 +455,16 @@ export function Sidebar(props: SidebarProps) {
             <span className="rail-new-rule" aria-hidden="true" />
           </button>
         </Tooltip>
+        {props.onNewProject && (
+          <button
+            type="button"
+            className="rail-new-project"
+            onClick={props.onNewProject}
+          >
+            <Icon name="folder-plus" size="sm" />
+            <span className="rail-new-text">New project</span>
+          </button>
+        )}
         {parked.length > 0 && (
           <div className="parked-section">
             <button

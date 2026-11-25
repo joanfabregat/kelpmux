@@ -95,6 +95,7 @@ pub mod native {
     pub mod history;
     pub mod hover;
     pub mod input;
+    pub mod projects;
     pub mod protocol;
     pub mod render;
     pub mod session;

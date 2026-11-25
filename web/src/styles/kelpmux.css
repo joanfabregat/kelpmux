@@ -512,3 +512,129 @@ button.terminal-card-head {
   color: var(--text-3);
   cursor: help;
 }
+
+/* ───────── Projects in the sidebar ───────── */
+/* A group per project (Scratch last): a quiet header with its colour dot,
+ * name and count, a + and a menu that show on hover (always on touch), then
+ * its terminal rows, unchanged. A terminal dragged over a group marks it. */
+.project-group {
+  --project: var(--text-3);
+  border-radius: var(--r-md);
+}
+.project-group + .project-group {
+  margin-top: var(--s2);
+}
+.project-group.drop-target {
+  background: color-mix(in srgb, var(--project) 10%, transparent);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--project) 55%, transparent);
+}
+.project-head {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  min-height: 28px;
+  padding-right: var(--s1);
+  color: var(--text-2);
+}
+.project-fold {
+  display: flex;
+  flex: 1;
+  align-items: center;
+  gap: var(--s2);
+  min-width: 0;
+  min-height: 28px;
+  padding: 0 var(--s2) 0 var(--s2);
+  border: 0;
+  border-radius: var(--r-sm);
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+  font: inherit;
+  font-size: var(--fs-sm);
+  font-weight: 600;
+  text-align: left;
+  justify-content: flex-start;
+}
+.project-fold:hover {
+  color: var(--text);
+}
+.project-chevron {
+  flex: none;
+  color: var(--text-3);
+}
+.project-dot {
+  flex: none;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--project);
+}
+.project-dot.plain {
+  background: transparent;
+  box-shadow: inset 0 0 0 1.5px var(--text-3);
+}
+.project-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.project-fold .count {
+  color: var(--text-3);
+  font-size: var(--fs-xs);
+  font-weight: 400;
+}
+.project-missing {
+  display: inline-flex;
+  color: var(--st-input);
+}
+.project-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  /* Quiet until the header is hovered or focused; still in the
+     accessibility tree and reachable with Tab. */
+  opacity: 0;
+}
+.project-head:hover .project-actions,
+.project-head:focus-within .project-actions,
+.touch .project-actions {
+  opacity: 1;
+}
+.project-actions .icon-btn {
+  width: 22px;
+  height: 22px;
+  min-height: 0;
+  padding: 0;
+}
+.rail-new-project {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--s1);
+  width: 100%;
+  min-height: 24px;
+  margin: calc(-1 * var(--s1)) 0 var(--s2);
+  border: 0;
+  background: transparent;
+  color: var(--text-3);
+  cursor: pointer;
+  font: inherit;
+  font-size: var(--fs-xs);
+}
+.rail-new-project:hover {
+  color: var(--text-2);
+}
+.rail.folded .project-fold .grow,
+.rail.folded .project-fold .count,
+.rail.folded .project-fold .state-counts,
+.rail.folded .project-chevron,
+.rail.folded .project-actions,
+.rail.folded .project-missing {
+  display: none;
+}
+.rail.folded .project-fold {
+  justify-content: center;
+  padding: 0;
+}

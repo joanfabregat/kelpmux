@@ -70,6 +70,12 @@ import {
   matchPrefix,
 } from "./columns";
 import { startDownload } from "./downloads";
+import {
+  projectAt,
+  projectColor,
+  projectFolder,
+  type Project,
+} from "../projects";
 
 export { loadHidden } from "./actions";
 
@@ -117,10 +123,18 @@ export type FilesBrowserProps = FileActionsProps & {
   onBack?: () => void;
   /** The Files view's tab strip, above the header. */
   tabs?: React.ReactNode;
+  /** Every project, Scratch included: their folders show in their colour. */
+  projects?: Project[];
+  /** A project's files: the columns start at its folder. */
+  scope?: Project;
+  /** Shows a project's files. */
+  onOpenProject?: (project: Project) => void;
+  /** Leaves a project's files for every file. */
+  onAllFiles?: () => void;
 };
 
 export function FilesBrowser(props: FilesBrowserProps) {
-  const { client, dir, home, phone } = props;
+  const { client, dir, home, phone, projects, scope } = props;
   const [columns, setColumns] = useState<Record<string, Column>>({});
   const [hidden, setHidden] = useShowHidden();
   const [editing, setEditing] = useState<Editing | null>(null);
@@ -186,14 +200,21 @@ export function FilesBrowser(props: FilesBrowserProps) {
   const { root, busy, uploading, dropOn, folderDrop } = actions;
   /** The folder to show instead of `dir`: the root for `~` when the root
    * is not the home folder, and for a folder outside the root. */
-  const start =
-    root &&
-    (dir === "~"
-      ? !home || !withinRoot(home, root)
-      : !withinRoot(dir, root, home))
+  const start = scope
+    ? // A project's view stays inside the project's folder.
+      dir.startsWith("/") && isInside(dir, scope.path)
+      ? dir
+      : scope.path
+    : root &&
+        (dir === "~"
+          ? !home || !withinRoot(home, root)
+          : !withinRoot(dir, root, home))
       ? root
       : dir;
-  const folders = columnFolders(dir, root, home);
+  /** Where the columns start: the project's folder in a project's view,
+   * else the root. */
+  const base = scope?.path || root;
+  const folders = columnFolders(dir, base, home);
   const shown = phone ? folders.slice(-1) : folders;
   const shownKey = shown.join("\n");
 
@@ -247,8 +268,8 @@ export function FilesBrowser(props: FilesBrowserProps) {
     setMenu(null);
     // Outside the root: the root, in place of this folder (not a move).
     if (start !== dir) {
-      const { toast, onDir } = latest.current.props;
-      if (dir !== "~") toast(outsideRootMessage, { tone: "error" });
+      const { toast, onDir, scope: scoped } = latest.current.props;
+      if (dir !== "~" && !scoped) toast(outsideRootMessage, { tone: "error" });
       return onDir(start, true);
     }
     // A new connection lists every column again; the same one only the
@@ -566,7 +587,19 @@ export function FilesBrowser(props: FilesBrowserProps) {
     handle.addEventListener("pointercancel", end);
   }
 
-  const crumbs = rootCrumbs(dir, root, home);
+  const crumbs = rootCrumbs(dir, base, home).map((crumb, index) =>
+    index === 0 && scope ? { ...crumb, label: scope.name } : crumb,
+  );
+  /** The project whose folder holds the deepest folder shown. */
+  const here = projects ? projectAt(dir, projects) : undefined;
+  const hereColor = projectColor(here);
+  /** A crumb that is a project's folder, in its colour. */
+  const crumbProject = (path: string) =>
+    projects ? projectFolder(path, projects) : undefined;
+  const crumbStyle = (path: string) => {
+    const color = projectColor(crumbProject(path));
+    return color ? ({ "--project": color } as React.CSSProperties) : undefined;
+  };
   // The crumbs scroll to the deepest folder (narrow screens).
   useLayoutEffect(() => {
     const bar = crumbBar.current;
@@ -633,11 +666,20 @@ export function FilesBrowser(props: FilesBrowserProps) {
         : paths[0]
       : "";
     const deepest = at === folders.length - 1;
+    // A column inside a project's folder has a thin rule in its colour.
+    const columnColor = projects
+      ? projectColor(projectAt(folder, projects))
+      : "";
     return (
       <div
         key={folder}
-        className={`files-column ${isActive ? "active" : ""} ${dropOn === folder ? "drop-target" : ""}`}
-        style={phone ? undefined : { width: widths[index] || COLUMN_WIDTH }}
+        className={`files-column ${isActive ? "active" : ""} ${dropOn === folder ? "drop-target" : ""} ${columnColor ? "in-project" : ""}`}
+        style={
+          {
+            ...(phone ? {} : { width: widths[index] || COLUMN_WIDTH }),
+            ...(columnColor ? { "--project": columnColor } : {}),
+          } as React.CSSProperties
+        }
         role="group"
         aria-label={`Contents of ${folder === home ? "Home" : baseName(folder)}`}
         aria-busy={state?.loading || !state}
@@ -710,10 +752,20 @@ export function FilesBrowser(props: FilesBrowserProps) {
             // A folder (or a link) shown as the next column has the
             // Finder's chevron, as does every folder.
             const chevron = folderRow || (lit && !!folders[at + 1]);
+            // A project's folder shows in the project's colour.
+            const rowProject =
+              folderRow && projects ? projectFolder(path, projects) : undefined;
+            const rowColor = projectColor(rowProject);
             return (
               <div
                 key={entry.name}
-                className={`files-row ${lit ? "highlighted" : ""} ${dropOn === path ? "drop-target" : ""} ${menu?.path === path ? "menu-open" : ""} ${outside ? "outside" : ""}`}
+                className={`files-row ${lit ? "highlighted" : ""} ${dropOn === path ? "drop-target" : ""} ${menu?.path === path ? "menu-open" : ""} ${outside ? "outside" : ""} ${rowProject ? "project-folder" : ""}`}
+                style={
+                  rowColor
+                    ? ({ "--project": rowColor } as React.CSSProperties)
+                    : undefined
+                }
+                data-project-folder={rowProject?.id}
                 data-path={path}
                 data-kind={entry.kind}
                 data-outside={outside || undefined}
@@ -752,7 +804,11 @@ export function FilesBrowser(props: FilesBrowserProps) {
                     }}
                   >
                     <span className="files-name">{entry.name}</span>
-                    <small className="files-meta">{entryMeta(entry)}</small>
+                    <small className="files-meta">
+                      {rowProject
+                        ? `Project ${rowProject.name} · ${entryMeta(entry)}`
+                        : entryMeta(entry)}
+                    </small>
                   </button>
                 )}
                 <button
@@ -827,7 +883,9 @@ export function FilesBrowser(props: FilesBrowserProps) {
               )}
               <button
                 type="button"
-                className={`ghost files-crumb ${dropOn === crumb.path ? "drop-target" : ""}`}
+                className={`ghost files-crumb ${dropOn === crumb.path ? "drop-target" : ""} ${crumbProject(crumb.path) ? "project-crumb" : ""}`}
+                style={crumbStyle(crumb.path)}
+                data-project-folder={crumbProject(crumb.path)?.id}
                 aria-current={
                   index === crumbs.length - 1 ? "location" : undefined
                 }
@@ -839,6 +897,9 @@ export function FilesBrowser(props: FilesBrowserProps) {
                 {...folderDrop(crumb.path)}
               >
                 {crumb.label === "~" ? <Icon name="house" size="sm" /> : null}
+                {crumbProject(crumb.path) && (
+                  <span className="project-dot" aria-hidden="true" />
+                )}
                 <span title={index === 0 ? crumb.path : undefined}>
                   {crumb.label === "~" ? "Home" : crumb.label}
                 </span>
@@ -846,13 +907,40 @@ export function FilesBrowser(props: FilesBrowserProps) {
             </React.Fragment>
           ))}
         </nav>
+        {scope && props.onAllFiles ? (
+          <button
+            type="button"
+            className="ghost small files-project-link"
+            onClick={props.onAllFiles}
+          >
+            All files
+          </button>
+        ) : here && props.onOpenProject ? (
+          <button
+            type="button"
+            className="ghost small files-project-link"
+            style={
+              hereColor
+                ? ({ "--project": hereColor } as React.CSSProperties)
+                : undefined
+            }
+            title={`Show the files of ${here.name}`}
+            onClick={() => props.onOpenProject!(here)}
+          >
+            <span
+              className={`project-dot ${hereColor ? "" : "plain"}`}
+              aria-hidden="true"
+            />
+            {here.name}
+          </button>
+        ) : null}
         <div className="files-tools">
           <button
             type="button"
             className="icon-btn"
             title="Parent folder"
             aria-label="Parent folder"
-            disabled={!canGoUp(dir, root)}
+            disabled={!canGoUp(dir, base)}
             onClick={() => {
               setActive("");
               props.onDir(parentPath(dir));

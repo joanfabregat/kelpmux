@@ -1,6 +1,7 @@
 // The user configuration (~/.config/kelpmux/config.toml) as the web bridge
 // reports it (`config`, `Config` notices, `config_set` results), read
 // defensively, and the changes a Settings form makes to it.
+import { readProjects, type Project } from "./projects.ts";
 export type ConfigProblem = {
   /** The key it concerns (`files.root`), if any. */
   key: string | null;
@@ -23,6 +24,8 @@ export type UserConfigState = {
   values: UserConfigValues;
   resolved: UserConfigValues;
   errors: ConfigProblem[];
+  /** The `[[project]]` tables in effect (bridge API minor 5). */
+  projects: Project[];
 };
 export type SaveResult = {
   saved: boolean;
@@ -78,6 +81,7 @@ export function readUserConfig(value: any): UserConfigState | null {
     values,
     resolved,
     errors: readProblems(value.errors),
+    projects: readProjects(value.projects),
   };
 }
 

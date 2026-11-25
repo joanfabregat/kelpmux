@@ -55,7 +55,7 @@ test("URLs stay readable and keep parameters they do not own", () => {
       terminal(4, { side: "/a/b.ts", line: 3 }),
       "?project=p1&view=x&scratch=1",
     ),
-    "?project=p1&scratch=1&view=terminal&terminal=4&side=/a/b.ts&line=3",
+    "?scratch=1&view=terminal&terminal=4&side=/a/b.ts&line=3",
   );
   // A dialog's `of` only goes with notifications; a line only with a file.
   assert.equal(
@@ -87,13 +87,14 @@ test("KelpHub-era URLs map to the nearest place", () => {
     hasLocation(parseLocation("?project=a&workspace=b&view=events")),
     false,
   );
-  // A legacy URL is rewritten with its other parameters intact.
+  // A legacy URL is rewritten with its other parameters intact (KelpHub's
+  // `project` now names a KelpMux project, which a terminal does not keep).
   assert.equal(
     locationSearch(
       terminal(7),
       "?project=a&workspace=b&view=terminals&terminal=7",
     ),
-    "?project=a&workspace=b&view=terminal&terminal=7",
+    "?workspace=b&view=terminal&terminal=7",
   );
 });
 
@@ -271,4 +272,49 @@ test("history state carries a version", () => {
   assert.deepEqual(readHistoryState({ kelpmux: { v: 999, overlay: true } }), {
     overlay: false,
   });
+});
+
+test("a project scopes the grid, the file browser and Recently closed", () => {
+  const places = [
+    at({ view: "grid", project: "kelp" }),
+    at({ view: "files", dir: "/home/me/p/kelp", project: "kelp" }),
+    at({ view: "files", file: "/home/me/p/kelp/a.md", project: "scratch" }),
+    terminal(4, { dialog: "closed", project: "kelp" }),
+  ];
+  for (const place of places) {
+    const search = locationSearch(place);
+    assert.match(search, /project=/);
+    assert.deepEqual(
+      resolveLocation(parseLocation(search), terminal(1)),
+      place,
+      search,
+    );
+  }
+  // A terminal alone keeps none; an invalid id is ignored.
+  assert.equal(locationSearch(terminal(4, { project: "kelp" })), "?view=terminal&terminal=4");
+  assert.equal(parseLocation("?view=grid&project=Bad!").project, undefined);
+  assert.equal(parseLocation("?view=terminal&terminal=2&project=kelp").project, undefined);
+  // The state's project reaches the location only where it applies.
+  const state = {
+    phoneHome: false,
+    view: "grid",
+    terminal: 0,
+    filesDir: "",
+    file: "",
+    side: "",
+    dialog: "",
+    notifyPane: 0,
+    project: "kelp",
+  };
+  assert.equal(locationOf(state).project, "kelp");
+  assert.equal(locationOf({ ...state, view: "single", terminal: 3 }).project, "");
+  assert.equal(
+    locationOf({ ...state, view: "single", terminal: 3, dialog: "recovery" }).project,
+    "kelp",
+  );
+  // Another project's grid is another place: a push.
+  assert.equal(
+    historyMode(at({ view: "grid", project: "a" }), at({ view: "grid", project: "b" })).mode,
+    "push",
+  );
 });

@@ -20,6 +20,8 @@
 // 5. The file browser's columns: a folder clicked in a column pushes, a
 //    keyboard move or a file selected in an earlier column replaces, and
 //    a deep link to a nested folder opens it.
+// 6. Projects: a project's grid, files and Recently closed name it in the
+//    URL, Back and Forward walk them, an unknown project falls back.
 import { build } from "vite";
 import { chromium, webkit } from "playwright";
 import { readFileSync } from "node:fs";
@@ -421,8 +423,52 @@ for (const [name, engine] of [
       assert.deepEqual(deep.errors, []);
       await deep.context.close();
     }
+    // 6. Projects: a project's grid, files and Recently closed name it in
+    // the URL; Back and Forward move between them and every project's
+    // views, and a deep link to an unknown project shows every project.
+    {
+      const { context, page, errors } = await open(browser);
+      await at(page, "grid", "?view=grid");
+      await page.click("#alpha-grid");
+      await at(page, "grid @alpha", "?view=grid&project=alpha");
+      await page.click("#alpha-files");
+      await at(
+        page,
+        "folder /home/me/alpha @alpha",
+        "?view=files&dir=/home/me/alpha&project=alpha",
+      );
+      await page.click("#grid");
+      await at(page, "grid", "?view=grid");
+      await page.click("#alpha-closed");
+      await at(page, "grid @alpha", "?view=grid&dialog=closed&project=alpha");
+      await back(page);
+      await at(page, "grid", "?view=grid");
+      assert.equal(await dialogShown(page), 0, "Back closes Recently closed");
+      await back(page);
+      await at(
+        page,
+        "folder /home/me/alpha @alpha",
+        "?view=files&dir=/home/me/alpha&project=alpha",
+      );
+      await back(page);
+      await at(page, "grid @alpha", "?view=grid&project=alpha");
+      await back(page);
+      await at(page, "grid", "?view=grid");
+      await forward(page);
+      await at(page, "grid @alpha", "?view=grid&project=alpha");
+      assert.deepEqual(errors, []);
+      await context.close();
+      const unknown = await open(browser, "?view=grid&project=gone");
+      await at(unknown.page, "grid", "?view=grid");
+      assert.match(
+        await unknown.page.locator("#toast").innerText(),
+        /gone does not exist/,
+      );
+      assert.deepEqual(unknown.errors, []);
+      await unknown.context.close();
+    }
     console.log(
-      `PASS: ${name} history: terminal, grid, folder, file and Settings entries walked back and forward, Back closes panels, no duplicates, replacements for normalised folders, lines, closed files and swapped panels, deep links with fallbacks, legacy URLs, phone list and terminal, file tabs (switching pushes, closing the shown tab replaces with its neighbour or the browser), file browser columns (a folder click pushes, keyboard and file selection replace, nested deep links)`,
+      `PASS: ${name} history: terminal, grid, folder, file and Settings entries walked back and forward, Back closes panels, no duplicates, replacements for normalised folders, lines, closed files and swapped panels, deep links with fallbacks, legacy URLs, phone list and terminal, file tabs (switching pushes, closing the shown tab replaces with its neighbour or the browser), file browser columns (a folder click pushes, keyboard and file selection replace, nested deep links), projects (grid, files and Recently closed name the project, Back and Forward between them, unknown project falls back)`,
     );
   } finally {
     await browser.close();

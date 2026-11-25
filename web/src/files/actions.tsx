@@ -63,6 +63,11 @@ export type FileActionsProps = {
   onRenamed: (from: string, to: string) => void;
   /** Entries were trashed or deleted (their unchanged editors close). */
   onRemoved: (paths: string[]) => void;
+  /** Creates a project from a folder (its menu's "Create project from this
+   * folder…"; no item without it, or for a folder that is a project's). */
+  onCreateProject?: (path: string) => void;
+  /** Whether a folder is a project's folder. */
+  isProjectFolder?: (path: string) => boolean;
   upload: {
     unavailable: string | null;
     limits: UploadLimits | null;
@@ -430,6 +435,16 @@ export function useFileActions(
         !props.insertTarget,
       ],
       ["Copy path", () => props.onCopyPath(path)],
+      ...(props.onCreateProject &&
+      entry.kind === "dir" &&
+      !props.isProjectFolder?.(path)
+        ? [
+            [
+              "Create project from this folder…",
+              () => props.onCreateProject!(path),
+            ] as MenuItem,
+          ]
+        : []),
       // A folder downloads as a `.tar.gz` archive; a link as what it points
       // to (a file only); special files not at all.
       ...(client.canDownload && can.download

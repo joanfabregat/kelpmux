@@ -34,6 +34,13 @@ test("a bridge configuration is read defensively", () => {
     { key: null, line: 3, column: 1, message: "unknown key `x`" },
     { key: null, line: 1, column: 1, message: "no position" },
   ]);
+  // A bridge before projects (API minor 4) has none.
+  assert.deepEqual(config.projects, []);
+  assert.equal(
+    readUserConfig({ ...state, projects: [{ id: "a", name: "A", path: "/a" }] })
+      .projects[0].folder,
+    "/a",
+  );
   assert.equal(readUserConfig(null), null);
   assert.equal(readUserConfig({ ...state, path: 1 }), null);
   assert.equal(

@@ -3,7 +3,7 @@
 // and help. The Terminals table (agents and overview) lives in Terminals.tsx.
 // Each is a list of rows with mouse actions; nothing here changes the TUI's
 // layout.
-import { useEffect, useRef, useState } from "react";
+import React, { useEffect, useRef, useState } from "react";
 import type { NumberedPane, SearchMatch } from "@kelpcore/web/types.ts";
 import { Icon } from "./status";
 import { age } from "./format";
@@ -18,6 +18,7 @@ import {
   type Notification,
 } from "./state/model";
 import { shortcuts } from "./shortcuts";
+import { SCRATCH, projectColor, type Project } from "./projects";
 
 const name = (p: NumberedPane) => p.title || "shell";
 
@@ -119,6 +120,9 @@ export type ClosedEntry = {
   closed_at?: number | null;
   reason: string;
   choices: ("resume" | "restart" | "folder")[];
+  /** The project the terminal belonged to (bridge API minor 5); none or
+   * one that no longer exists: Scratch. */
+  project?: string | null;
 };
 const choiceLabel = {
   resume: "Resume",
@@ -147,6 +151,9 @@ export function resumeCommand(entry: Pick<ClosedEntry, "kind" | "session_id">) {
 }
 
 export function RecoveryPanel({
+  scope,
+  projects,
+  onAllProjects,
   rpc,
   onRestored,
   onCopy,
@@ -154,6 +161,12 @@ export function RecoveryPanel({
   rpc: (method: string, params?: any) => Promise<any>;
   onRestored: (pane: number, existing: boolean) => void;
   onCopy: (text: string) => void;
+  /** Only this project's closed terminals (Scratch's: those of no
+   * existing project). */
+  scope?: Project;
+  /** The user's projects, to tell Scratch's entries apart. */
+  projects?: Project[];
+  onAllProjects?: () => void;
 }) {
   const [listing, setListing] = useState<{
     workspace: string;
@@ -190,10 +203,35 @@ export function RecoveryPanel({
         <p className="panel-empty">Loading recently closed terminals…</p>
       </div>
     );
+  const projectOfEntry = (entry: ClosedEntry) =>
+    entry.project && projects?.some((project) => project.id === entry.project)
+      ? entry.project
+      : SCRATCH;
+  const entries = scope
+    ? listing.entries.filter((entry) => projectOfEntry(entry) === scope.id)
+    : listing.entries;
+  const color = projectColor(scope);
   return (
     <div className="panel-body">
+      {scope && (
+        <div
+          className="project-scope"
+          data-scope={scope.id}
+          style={color ? ({ "--project": color } as React.CSSProperties) : undefined}
+        >
+          <span className={`project-dot ${color ? "" : "plain"}`} aria-hidden="true" />
+          <span className="grow">
+            <b>{scope.name}</b> · {entries.length} of {listing.entries.length}
+          </span>
+          {onAllProjects && (
+            <button type="button" className="ghost small" onClick={onAllProjects}>
+              All projects
+            </button>
+          )}
+        </div>
+      )}
       <div className="panel-list" role="list">
-        {listing.entries.map((entry) => {
+        {entries.map((entry) => {
           const command = resumeCommand(entry);
           return (
             <div className="list-row" role="listitem" key={entry.key}>
@@ -241,7 +279,7 @@ export function RecoveryPanel({
             </div>
           );
         })}
-        {!listing.entries.length && (
+        {!entries.length && (
           <p className="panel-empty">
             Closed terminals and previous runs with an agent or a program will
             appear here.
