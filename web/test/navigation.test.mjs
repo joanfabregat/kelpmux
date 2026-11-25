@@ -353,6 +353,78 @@ test("a project's Repos view is a place of its own, named with its project", () 
   assert.equal(historyMode(repos, repos).mode, "none");
 });
 
+test("a Repos view's checkout, tab, revision, commit and file are its URL's", () => {
+  const sha = "4f2a9c1e8b7d6a5f4e3d2c1b0a9f8e7d6c5b4a39";
+  const history = at({
+    view: "repos",
+    project: "kelp",
+    repo: "/home/me/kelp/api",
+    tab: "history",
+    rev: "feat/x",
+    commit: sha,
+  });
+  const search = locationSearch(history);
+  assert.equal(
+    search,
+    `?view=repos&project=kelp&repo=/home/me/kelp/api&tab=history&rev=feat/x&commit=${sha}`,
+  );
+  assert.deepEqual(resolveLocation(parseLocation(search), grid), history);
+  const changes = at({
+    view: "repos",
+    project: "kelp",
+    repo: "/home/me/kelp/api",
+    tab: "changes",
+    change: "src/a b.rs",
+  });
+  assert.equal(
+    locationSearch(changes),
+    "?view=repos&project=kelp&repo=/home/me/kelp/api&tab=changes&path=src/a%20b.rs",
+  );
+  assert.deepEqual(resolveLocation(parseLocation(locationSearch(changes)), grid), changes);
+  // Invalid or out-of-place fields are dropped: a revision that is an
+  // option or revision syntax, a path that leaves the repository, a
+  // commit outside History, a relative checkout.
+  const parsed = (query) => resolveLocation(parseLocation(query), grid);
+  for (const rev of ["--output=x", "-c", "HEAD:../", "@{-1}", "a..b", "HEAD~1"])
+    assert.equal(
+      parsed(`?view=repos&project=k&repo=/r&tab=history&rev=${encodeURIComponent(rev)}`).rev,
+      "",
+      rev,
+    );
+  for (const path of ["../x", "/etc/passwd", "-rf", ".git/config", "a//b"])
+    assert.equal(
+      parsed(`?view=repos&project=k&repo=/r&tab=changes&path=${encodeURIComponent(path)}`).change,
+      "",
+      path,
+    );
+  assert.equal(parsed(`?view=repos&project=k&repo=/r&tab=changes&commit=${sha}`).commit, "");
+  assert.equal(parsed("?view=repos&project=k&repo=r&tab=history").repo, "");
+  assert.equal(parsed("?view=repos&project=k&repo=/r&tab=nope").tab, "");
+  // The fields belong to the Repos view only.
+  assert.equal(parsed("?view=grid&repo=/r&tab=history").repo, "");
+  // Each step within the view is an entry of its own.
+  const open = at({ view: "repos", project: "kelp", repo: "/home/me/kelp/api" });
+  assert.equal(historyMode(at({ view: "repos", project: "kelp" }), open).mode, "push");
+  assert.equal(historyMode(open, history).mode, "push");
+  assert.equal(historyMode(history, { ...history, commit: "" }).mode, "push");
+  // The state's place.
+  assert.deepEqual(
+    locationOf({
+      phoneHome: false,
+      view: "repos",
+      terminal: 0,
+      filesDir: "",
+      file: "",
+      side: "",
+      dialog: "",
+      notifyPane: 0,
+      project: "kelp",
+      repos: { repo: "/home/me/kelp/api", tab: "history", rev: "feat/x", commit: sha, change: "" },
+    }),
+    history,
+  );
+});
+
 test("a project's home page is a place of its own, named with its project", () => {
   const home = at({ view: "project", project: "kelp" });
   const search = locationSearch(home);

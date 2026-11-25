@@ -313,7 +313,11 @@ for (const [name, engine] of [
     // 4. Back to the Repos view, Forward to the files.
     await page.goBack();
     await repoRow(page, "api").waitFor();
-    assert.equal(await search(page), "?view=repos&project=alpha");
+    assert.equal(
+      await search(page),
+      "?view=repos&project=alpha&repo=/home/me/work/alpha/api",
+      "the open checkout is part of the place",
+    );
     await page.goForward();
     await page.locator(".files-row").first().waitFor();
     assert.match(await search(page), /^\?view=files/);

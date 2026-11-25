@@ -34,9 +34,11 @@ import {
 } from "../src/projects";
 import {
   dialogFromParam,
+  emptyReposPlace,
   locationOf,
   useHistorySync,
   type AppLocation,
+  type ReposPlace,
 } from "../src/navigation";
 import { interfaceVariables, themeVariables } from "../src/appearance";
 import "../src/styles/base.css";
@@ -151,6 +153,7 @@ function App() {
   const [dir, setDir] = useState("~");
   const [dialog, setDialog] = useState("");
   const [opened, setOpened] = useState("");
+  const [place, setPlace] = useState<ReposPlace>(emptyReposPlace);
   const [menu, setMenu] = useState<{ project: Project; x: number; y: number } | null>(null);
   const scratch = scratchProject("~/scratch", "/home/me/scratch");
   const all = sidebarProjects(projects, scratch);
@@ -187,6 +190,7 @@ function App() {
     dialog,
     notifyPane: 0,
     project: scope,
+    repos: place,
   });
   const navigation = useHistorySync({
     here: ready ? here : null,
@@ -207,6 +211,7 @@ function App() {
           navigation.automatic();
           return setView("grid");
         }
+        setPlace({ repo: target.repo, tab: target.tab, rev: target.rev, commit: target.commit, change: target.change });
         return setView("repos");
       }
       if (target.view === "grid" || target.view === "home") return setView("grid");
@@ -216,6 +221,7 @@ function App() {
     },
   });
   const openRepos = (project: string) => {
+    setPlace(emptyReposPlace);
     setScope(project);
     setView("repos");
   };
@@ -296,6 +302,8 @@ function App() {
             {shown === "repos" && scopeProject ? (
               <ReposView
                 key={scopeProject.id}
+                place={place}
+                onPlace={setPlace}
                 project={scopeProject}
                 git={git.byProject[scopeProject.id]}
                 loading={!!git.loading[scopeProject.id]}

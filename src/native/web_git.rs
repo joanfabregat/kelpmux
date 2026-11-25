@@ -40,7 +40,11 @@
 //!   Git inside a submodule, whose configuration it did not read);
 //! - runs only `config --list`, `status`, the plumbing `diff-index` and
 //!   `diff-files --numstat` (which, unlike `diff`, never refresh the index)
-//!   and `log -1`, none of which writes or touches the network;
+//!   and `log -1`, none of which writes or touches the network (the
+//!   history operations of `web_git_history` add `rev-parse --verify`,
+//!   `for-each-ref`, `log`, `diff-tree`, `ls-files` and patches from
+//!   `diff-index` and `diff-files`, all read-only plumbing or `log`, with
+//!   `--no-ext-diff --no-textconv` on every diff);
 //! - runs in its own session with standard input closed, is killed with its
 //!   process group after [`TIMEOUT`], at the request's deadline
 //!   ([`BUDGET`]) or when the bridge dies, and has its standard output and
@@ -61,7 +65,10 @@
 //!   user's private group) or others, under directories owned by the user
 //!   or root and not so writable unless sticky (see [`check_config`],
 //!   [`check_git_dir`]); otherwise the checkout shows "skipped: untrusted
-//!   config". The user's global configuration stays trusted.
+//!   config". The user's global configuration stays trusted. A checkout
+//!   whose configuration (any scope) sets a `core.worktree` other than its
+//!   own root (a submodule's names its own) shows "skipped: core.worktree is
+//!   elsewhere": Git would treat another folder as its working tree.
 //!
 //! The browser never supplies a path: it names a project, whose folder
 //! comes from the user configuration. Untracked files are read directly (to
@@ -214,9 +221,9 @@ pub fn github_slug(url: &str) -> Option<String> {
 type Result<T> = std::result::Result<T, String>;
 
 /// A process's bounded output.
-struct Output {
-    bytes: Vec<u8>,
-    truncated: bool,
+pub(crate) struct Output {
+    pub(crate) bytes: Vec<u8>,
+    pub(crate) truncated: bool,
 }
 
 fn drain(mut pipe: impl Read, limit: usize) -> Output {
@@ -262,6 +269,11 @@ const HARDENING: &[&str] = &[
     "color.ui=false",
     "gc.auto=0",
     "maintenance.auto=false",
+    // A repository could raise this so that a diff loads a huge blob into
+    // memory to look for NUL bytes and lines; above it a blob is binary.
+    "core.bigFileThreshold=8m",
+    // The log and commit parsers read UTF-8, whatever the repository asks.
+    "i18n.logOutputEncoding=UTF-8",
 ];
 
 /// A verified checkout root, the overrides of the filter drivers its
@@ -282,6 +294,11 @@ const EMPTY_TREE_SHA256: &str = "6ef19b41225c5369f1c104d45d8d85efa9b057b53b14b4b
 /// Why a checkout is refused when a file its configuration comes from could
 /// be changed by someone else.
 pub const UNTRUSTED: &str = "skipped: untrusted config";
+
+/// Why a checkout whose configuration sets a `core.worktree` other than its
+/// own root (a submodule's Git directory names its own) is refused: Git
+/// would read (and list) another folder's files as its working tree.
+pub const WORKTREE: &str = "skipped: core.worktree is elsewhere";
 
 /// The most alternate object directories followed (Git's own limit).
 const ALTERNATES_DEPTH: usize = 5;
@@ -471,6 +488,23 @@ pub fn check_config(entries: &[ConfigEntry], root: &Path, uid: u32) -> Result<()
     Ok(())
 }
 
+/// Refuses a checkout whose configuration (any scope) sets a
+/// `core.worktree` that is not the checkout root itself ([`WORKTREE`]): Git
+/// would read, list and diff another folder's files. A relative value is
+/// relative to the Git directory, as Git reads it; a submodule's Git
+/// directory names its own checkout this way.
+pub fn check_worktree(entries: &[ConfigEntry], git_dir: &Path, root: &Path) -> Result<()> {
+    use std::os::unix::ffi::OsStrExt;
+    let root = fs::canonicalize(root).map_err(|_| WORKTREE.to_owned())?;
+    for entry in entries.iter().filter(|e| e.key == b"core.worktree") {
+        let named = git_dir.join(std::ffi::OsStr::from_bytes(entry.value));
+        match fs::canonicalize(named) {
+            Ok(path) if path == root => {}
+            _ => return Err(WORKTREE.to_owned()),
+        }
+    }
+    Ok(())
+}
 /// The first line of a small Git metadata file, `None` when it is missing.
 fn metadata_line(path: &Path) -> Result<Option<String>> {
     let mut text = String::new();
@@ -593,6 +627,7 @@ impl Checkout {
         }
         let entries = parse_config(&list.bytes)?;
         check_config(&entries, root, uid)?;
+        check_worktree(&entries, &git_dir, root)?;
         checkout.filters = filter_overrides(&entries)?;
         if entries
             .iter()
@@ -607,6 +642,29 @@ impl Checkout {
             .and_then(|e| std::str::from_utf8(e.value).ok())
             .and_then(github_slug);
         Ok(checkout)
+    }
+
+    /// The verified checkout root.
+    pub(crate) fn root(&self) -> &Path {
+        &self.root
+    }
+
+    /// The empty tree of the repository's object format.
+    pub(crate) fn empty_tree(&self) -> &'static str {
+        self.empty_tree
+    }
+
+    /// The instant this checkout's Git commands must end by.
+    pub(crate) fn deadline(&self) -> Instant {
+        self.deadline
+    }
+
+    /// Runs one Git command in the checkout through the hardened runner
+    /// (see [`Checkout::git`]); for `web_git_history`, whose commands are
+    /// read-only too and take every argument after `--end-of-options` or
+    /// `--`.
+    pub(crate) fn run(&self, args: &[&str], limit: usize) -> Result<Output> {
+        self.git(args, limit)
     }
 
     /// Runs one Git command in the checkout through the hardened runner,
@@ -753,7 +811,7 @@ pub struct Status {
     pub changes: Vec<Change>,
 }
 
-fn text(bytes: &[u8]) -> String {
+pub(crate) fn text(bytes: &[u8]) -> String {
     String::from_utf8_lossy(bytes).into_owned()
 }
 
@@ -870,6 +928,28 @@ pub fn text_lines(bytes: &[u8]) -> Option<u64> {
 /// unreadable, or on another file system than the checkout root (`device`),
 /// such as a mount that could hang. Never blocks on a FIFO.
 fn untracked_lines(root: &Path, device: u64, relative: &str) -> Option<u64> {
+    match read_untracked(root, device, relative, UNTRACKED_SIZE)? {
+        Untracked::Content(bytes) => text_lines(&bytes),
+        Untracked::TooLarge(_) => None,
+    }
+}
+
+/// What [`read_untracked`] found.
+pub(crate) enum Untracked {
+    Content(Vec<u8>),
+    /// Larger than the limit: its size, unread.
+    TooLarge(u64),
+}
+
+/// An untracked file's content, at most `limit` bytes, under the rules of
+/// [`untracked_lines`]: `None` when it is not a regular file inside `root`
+/// reached without symbolic links, on the checkout's file system.
+pub(crate) fn read_untracked(
+    root: &Path,
+    device: u64,
+    relative: &str,
+    limit: u64,
+) -> Option<Untracked> {
     let relative = Path::new(relative);
     if relative
         .components()
@@ -889,15 +969,18 @@ fn untracked_lines(root: &Path, device: u64, relative: &str) -> Option<u64> {
         .open(parent.join(path.file_name()?))
         .ok()?;
     let metadata = file.metadata().ok()?;
-    if !metadata.is_file() || metadata.dev() != device || metadata.len() > UNTRACKED_SIZE {
+    if !metadata.is_file() || metadata.dev() != device {
         return None;
+    }
+    if metadata.len() > limit {
+        return Some(Untracked::TooLarge(metadata.len()));
     }
     let mut bytes = Vec::new();
-    file.take(UNTRACKED_SIZE + 1).read_to_end(&mut bytes).ok()?;
-    if bytes.len() as u64 > UNTRACKED_SIZE {
-        return None;
+    file.take(limit + 1).read_to_end(&mut bytes).ok()?;
+    if bytes.len() as u64 > limit {
+        return Some(Untracked::TooLarge(bytes.len() as u64));
     }
-    text_lines(&bytes)
+    Some(Untracked::Content(bytes))
 }
 
 /// Inspects one verified checkout (see [`Checkout::open`]).
@@ -1175,7 +1258,7 @@ pub struct Request {
 }
 
 /// The error of a checkout the project's [`BUDGET`] left no time for.
-const OUT_OF_TIME: &str = "not inspected: this project's time budget ran out";
+pub(crate) const OUT_OF_TIME: &str = "not inspected: this project's time budget ran out";
 
 /// The checkouts of a project folder, inspected within [`BUDGET`]: every
 /// Git command ends by the request's deadline.
@@ -1214,8 +1297,11 @@ pub fn project(cache: &Cache, request: &Request) -> Value {
 }
 
 type Reply = Box<dyn FnOnce(std::result::Result<Value, String>) + Send>;
+/// Work for a Git thread: a project's facts, or a history operation
+/// (`web_git_history`), given the bridge's checkout cache.
+pub type Task = Box<dyn FnOnce(&Cache) -> std::result::Result<Value, String> + Send>;
 struct Job {
-    request: Request,
+    task: Task,
     queued: Instant,
     reply: Reply,
 }
@@ -1252,18 +1338,24 @@ impl Worker {
                         (job.reply)(Err(BUSY.into()));
                         continue;
                     }
-                    (job.reply)(Ok(project(&cache, &job.request)));
+                    (job.reply)((job.task)(&cache));
                 }
             });
         }
         Self { jobs }
     }
 
-    /// Queues a request; `reply` receives its result on a worker thread.
+    /// Queues a project's request; `reply` receives its result on a worker
+    /// thread.
     pub fn submit(&self, request: Request, reply: Reply) -> std::result::Result<(), String> {
+        self.submit_task(Box::new(move |cache| Ok(project(cache, &request))), reply)
+    }
+
+    /// Queues any Git work under the same bounds (threads, queue, staleness).
+    pub fn submit_task(&self, task: Task, reply: Reply) -> std::result::Result<(), String> {
         self.jobs
             .try_send(Job {
-                request,
+                task,
                 queued: Instant::now(),
                 reply,
             })
@@ -1583,6 +1675,43 @@ mod tests {
             },
         );
         assert_eq!(value["repos"][0]["error"], UNTRUSTED);
+    }
+
+    /// A `core.worktree` elsewhere would list and diff another folder's
+    /// files; one naming the checkout itself (as a submodule's) is fine.
+    #[test]
+    fn a_worktree_elsewhere_is_refused() {
+        let temp = Temp::new();
+        let path = temp.0.join("repo");
+        init(&path);
+        let outside = temp.0.join("outside");
+        fs::create_dir_all(&outside).unwrap();
+        fs::write(outside.join("secret.txt"), "secret\n").unwrap();
+        let open = |path: &Path| Checkout::open(path, uid(), true, later()).map(|_| ());
+        append_config(&path, "[core]\n\tworktree = ../../outside\n");
+        assert_eq!(open(&path), Err(WORKTREE.to_owned()));
+        let value = project(
+            &Cache::default(),
+            &Request {
+                folder: path.clone(),
+                list: true,
+                fresh: true,
+            },
+        );
+        assert_eq!(value["repos"][0]["error"], WORKTREE, "{value}");
+        assert!(!value.to_string().contains("secret"), "{value}");
+        // Its own root, relative to the Git directory or absolute.
+        let own = temp.0.join("own");
+        init(&own);
+        append_config(&own, "[core]\n\tworktree = ..\n");
+        assert_eq!(open(&own), Ok(()));
+        let absolute = temp.0.join("absolute");
+        init(&absolute);
+        append_config(
+            &absolute,
+            &format!("[core]\n\tworktree = {}\n", absolute.display()),
+        );
+        assert_eq!(open(&absolute), Ok(()));
     }
 
     /// A `commondir` (even in a plain `.git` directory) or alternate object
