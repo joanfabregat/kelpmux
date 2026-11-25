@@ -40,7 +40,7 @@ const library = (entry, name, emptyOutDir) =>
   });
 await library("./idle.fixture.tsx", "fixture", true);
 await library(
-  "../node_modules/@kelpcore/web/web/src/session-worker.ts",
+  "../../web-core/src/session-worker.ts",
   "worker",
   false,
 );

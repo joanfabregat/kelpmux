@@ -1,8 +1,0 @@
-[workspace]
-members = ["crates/server", "crates/protocol", "crates/client"]
-resolver = "2"
-
-# The client core uses the in-repository protocol crate, so the server, the
-# native client and client-core.wasm always share one protocol revision.
-[workspace.dependencies]
-kelpclient-protocol = { path = "crates/protocol", version = "0.3.0" }

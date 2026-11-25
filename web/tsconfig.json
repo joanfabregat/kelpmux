@@ -12,8 +12,8 @@
     "skipLibCheck": true,
     "allowImportingTsExtensions": true
   },
-  // @kelpcore/web ships TypeScript source and plain .mjs modules (the
-  // in-browser SSH layer). Listing it type-checks it with this project and
-  // loads those .mjs files, which TypeScript otherwise skips in node_modules.
-  "include": ["src", "node_modules/@kelpcore/web/web/src"]
+  // @kelpcore/web (../web-core, linked as an npm workspace) is TypeScript
+  // source and plain .mjs modules (the in-browser SSH layer). Listing it
+  // type-checks it with this project and loads those .mjs files.
+  "include": ["src", "../web-core/src"]
 }

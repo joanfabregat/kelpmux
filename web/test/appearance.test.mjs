@@ -141,7 +141,7 @@ test("terminal color follows the interface unless forced dark or light", () => {
   // terminal.css maps every --tv-* property inside terminals.
   const terminalCss = readFileSync(
     new URL(
-      "../node_modules/@kelpcore/web/web/src/terminal.css",
+      "../../web-core/src/terminal.css",
       import.meta.url,
     ),
     "utf8",

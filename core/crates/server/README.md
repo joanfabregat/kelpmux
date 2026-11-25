@@ -1,7 +1,0 @@
-# KelpServer
-
-The persistent terminal server crate and executable of the [KelpServer repository](../../README.md). It owns PTYs, process lifecycle, per-pane leases and sizes, authoritative terminal emulation, scrollback, search, closed-session records, recovery metadata and agent activity reporting. It remains useful without KelpHub. Recovery metadata cannot preserve live processes across crashes or reboot.
-
-The server uses the sibling [protocol crate](../protocol) for wire types and has no dependency on any client crate. The TUI, its client state library and the terminals-only web client live in [KelpMux](https://github.com/joanfabregat/kelpmux); all of them are pane-stream clients. Project/Git workflows and authenticated management belong to KelpHub; file uploads and file operations (list, read, write, rename, trash, delete) on the host where the shells run are generic stream capabilities (`uploads`, `files`). The browser relay (`kelpmux web-relay`) belongs to KelpMux; browsers reach a workspace only after SSH authentication, through a bridge command such as `kelpserver bridge` or `kelpmux web-bridge`.
-
-Build from the repository root with `cargo build -p kelpserver --release --locked`. Install `kelpserver` beside `kelpmux`, or set `KELPSERVER_BINARY`. See the [repository README](../../README.md), [contribution policy](../../CONTRIBUTING.md), [security policy](../../SECURITY.md) and the [independent terminal stream contract](docs/native-client-protocol.md). Licensed under [Apache-2.0](LICENSE).

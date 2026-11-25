@@ -1,6 +1,6 @@
 # Agent polling adapters
 
-Agent discovery, the polling adapter registry, OSC 7501 terminal program status, conversation metadata and notification history are KelpServer behavior. They are documented in [KelpServer's agent polling guide](https://github.com/joanfabregat/kelpcore/blob/main/docs/agent-polling.md); KelpMux builds against the KelpServer revision pinned in `Cargo.toml`.
+Agent discovery, the polling adapter registry, OSC 7501 terminal program status, conversation metadata and notification history are KelpServer behavior. They are documented in [KelpServer's agent polling guide](server/agent-polling.md).
 
 ## TUI controls
 

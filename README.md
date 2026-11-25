@@ -1,23 +1,20 @@
 # KelpMux
 
-KelpMux is the open-source terminal interface for persistent workspaces. This repository contains the TUI and the terminals-only web client. The terminal server ([KelpServer](https://github.com/joanfabregat/kelpcore)), the protocol crate, the shared Rust/WASM client library and the browser terminal layer live in the [KelpCore](https://github.com/joanfabregat/kelpcore) repository and are pinned dependencies. The TUI provides grid and sidebar views, agent activity, parking, recently closed sessions, recovery and system metrics. Detaching leaves shells and agents running.
+KelpMux is the open-source terminal interface for persistent workspaces. This repository contains the TUI, the terminals-only web client, and the components they share with KelpHub: the terminal server (KelpServer), the protocol crate, the Rust/WASM client core and the browser terminal layer. The TUI provides grid and sidebar views, agent activity, parking, recently closed sessions, recovery and system metrics. Detaching leaves shells and agents running.
 
 TUI feature development is frozen while the separately maintained KelpHub web application evolves. Compatibility, security and necessary fixes remain in scope; feature parity with the web application is not required.
 
-## Workspace
+## Architecture
 
 | Package | Location | Responsibility |
 | --- | --- | --- |
 | `kelpmux` | `src/`, `web/` | Terminal interface, web client (bridge, relay assets and browser UI) and optional legacy tmux adapter |
-| `kelpclient` | [joanfabregat/kelpcore](https://github.com/joanfabregat/kelpcore) (Git dependency) | Shared terminal state, selection/history utilities and WASM bindings |
-| `kelpserver` | [joanfabregat/kelpcore](https://github.com/joanfabregat/kelpcore) (Git dependency, 0.3) | PTYs, authoritative terminal state, persistent sessions and the pane stream session API |
-| `kelpclient-protocol` | [joanfabregat/kelpcore](https://github.com/joanfabregat/kelpcore) (Git dependency) | Portable wire types and validation |
+| `kelpserver` | [crates/server](crates/server) | Library and `kelpserver` executable: PTYs, authoritative terminal state (Alacritty's engine), persistent sessions, the pane stream and its session API, the SSH bridge |
+| `kelpclient-protocol` | [crates/protocol](crates/protocol) | Portable wire types, the stream version constant, validation and the binary screen codec, with no server, client-state or WASM dependency |
+| `kelpclient` | [crates/client](crates/client) | Shared terminal client state, selection/history utilities and WASM bindings, used natively by the TUI and compiled to `client-core.wasm` for browsers |
+| `@kelpcore/web` (npm, private) | [web-core](web-core) | Browser terminal layer: renderer, in-browser SSH, the shared worker session, input encoding, the `Terminal` React component and the file browser client and editor |
 
-The `web/` directory holds the terminals-only browser client (see [docs/web.md](docs/web.md)); its terminal layer is the `@kelpcore/web` npm package from KelpCore, pinned in `web/package.json`. KelpHub owns the full web application with project management, authenticated management backend and its hosting. See [MIGRATION.md](MIGRATION.md) for history provenance and the removal of the composed-screen protocol.
-
-### KelpCore pin
-
-`kelpserver`, `kelpclient-protocol` and `kelpclient` are declared once, in `[workspace.dependencies]` of the root `Cargo.toml`, with the identical KelpCore Git URL and `rev`. Keep the URL string and revision identical for all three, or Cargo builds two protocol crates. The browser's `client-core.wasm` (built from `kelpclient`) must use protocol types from the same KelpCore revision as the server it talks to. The web client's `@kelpcore/web` dependency in `web/package.json` pins the same KelpCore commit. To move to a newer KelpCore, change the `rev` of all three entries, run `cargo update -p kelpserver -p kelpclient-protocol -p kelpclient`, update the `@kelpcore/web` commit and `web/package-lock.json` (`npm install --ignore-scripts --package-lock-only`), and review and audit both lockfile changes.
+The four crates form one Cargo workspace and the two npm packages (`web`, `web-core`) one npm workspace with a single root `package-lock.json`, so the server, the TUI, `client-core.wasm` and the browser layer always come from the same commit. KelpServer has no dependency on any client; its stream contract is in [docs/server/native-client-protocol.md](docs/server/native-client-protocol.md), its session API in [docs/server/session-api.md](docs/server/session-api.md) and its internals in [docs/server/architecture.md](docs/server/architecture.md). The shared components lived in the separate KelpCore repository until they were merged back here with their history ([ADR 0004](docs/adr/0004-kelpcore-merged-into-kelpmux.md)); KelpCore's ADRs are kept in [docs/adr/core](docs/adr/core). The `web/` directory holds the terminals-only browser client (see [docs/web.md](docs/web.md)). KelpHub owns the full web application with project management, authenticated management backend and its hosting. See [MIGRATION.md](MIGRATION.md) for history provenance and the removal of the composed-screen protocol.
 
 ## Build and run
 
@@ -27,7 +24,7 @@ cargo build -p kelpserver --bin kelpserver --release --locked
 cargo test --workspace --locked
 ```
 
-The second command builds the pinned KelpServer executable from the locked dependency into `target/release/kelpserver`. The native lifecycle tests start `kelpserver` from beside the test build of `kelpmux`, so build it for the test profile too (`cargo build -p kelpserver --bin kelpserver --locked`) before `cargo test`. Install `target/release/kelpmux` and `target/release/kelpserver` together, or configure `KELPSERVER_BINARY` with the server path. Build the portable browser core with `cargo build -p kelpclient --release --locked --target wasm32-unknown-unknown` after installing that Rust target. Run builds in your environment's approved container workflow. Release archives include both executables.
+The second command builds the KelpServer executable from `crates/server` into `target/release/kelpserver`. The native lifecycle tests start `kelpserver` from beside the test build of `kelpmux`, so build it for the test profile too (`cargo build -p kelpserver --bin kelpserver --locked`) before `cargo test`. Install `target/release/kelpmux` and `target/release/kelpserver` together, or configure `KELPSERVER_BINARY` with the server path. Build the portable browser core with `cargo build -p kelpclient --release --locked --target wasm32-unknown-unknown` after installing that Rust target. Run builds in your environment's approved container workflow. Release archives include both executables.
 
 ```sh
 kelpmux start --workspace trial

@@ -2,12 +2,25 @@ Kelpmux
 Copyright 2026 Joan Fabregat and Kelpmux contributors
 Licensed under the Apache License, Version 2.0.
 
-KelpServer, the KelpClient terminal client core (also served to browsers as
-client-core.wasm) and the @kelpcore/web browser terminal layer come from
-KelpCore (https://github.com/joanfabregat/kelpcore), Copyright 2026 Joan
-Fabregat and Kelpmux contributors, licensed under Apache-2.0, at the revision
-pinned in Cargo.toml and web/package.json. KelpClient and the terminal layer
-were moved there from Kelpmux at commit 7179aa3.
+KelpServer (crates/server, crates/protocol) was extracted from Kelpmux at
+commit eb31da5 into the KelpServer repository, later renamed KelpCore
+(https://github.com/joanfabregat/kelpcore). The client core (crates/client)
+and the browser terminal layer (web-core/) were moved there from Kelpmux at
+commit 7179aa3. KelpCore was merged back into Kelpmux with its history. All
+of it remains the work of Joan Fabregat and the Kelpmux contributors, under
+the same Apache-2.0 license.
+
+The file operations (crates/server/src/native/files.rs) adapt the design and
+parts of the code of KelpHub's workspace file browser
+(server/src/management/files.rs at commit ed69304), Copyright 2026 Joan
+Fabregat, moved into KelpCore under the Apache License, Version 2.0, with
+the copyright holder's approval.
+
+The file browser and editor UI (web-core/src/files/: the request client, path
+and document models, language detection, the CodeMirror editor and its
+theme) is derived from KelpHub (web/src/files/ at commit 7057705),
+Copyright 2026 Joan Fabregat, moved with the copyright holder's approval
+into KelpCore under the Apache License, Version 2.0.
 
 Native release archives use Alacritty's terminal engine and other Rust
 dependencies, copyright their respective authors. Exact versions, license
@@ -18,7 +31,8 @@ Native status-bar metrics incorporate code adapted from Vitals
 (https://github.com/joanfabregat/vitals), Copyright (c) 2026 Joan Fabrégat,
 licensed under MIT. The complete license is in assets/licenses/vitals-MIT.txt.
 
-Optional embedded web assets include React and React DOM (MIT), Chromium
+Optional embedded web assets include React and React DOM (MIT), the
+CodeMirror 6 and Lezer packages of the file editor (MIT), Chromium
 libapps WASSH/WASI bindings (BSD), and the upstream OpenSSH WASM client.
 Browser-side OpenSSH incorporates OpenSSL, zlib and ldns. The web client also
 bundles JetBrains Mono (SIL OFL 1.1), Lucide icon geometry (ISC) and terminal
