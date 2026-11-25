@@ -252,8 +252,9 @@ export function ProjectHome({
   onMenu: (x: number, y: number) => void;
   onCopy: (text: string) => void;
   onSeeTerminals: () => void;
-  /** The Repos view, with `repo` (its path) expanded when given. */
-  onSeeRepos: (repo?: string) => void;
+  /** The Repos view, with `repo` (its path) open when given, on `tab`
+   * (its Changes when it has any). */
+  onSeeRepos: (repo?: string, tab?: string) => void;
   onSeeHistory: () => void;
   onRestored: (pane: number, existing: boolean) => void;
   /** The project's Environments view (bridge `environments`, API minor
@@ -593,7 +594,9 @@ export function ProjectHome({
                     <RepoLine
                       key={repo.path}
                       repo={repo}
-                      onOpen={() => onSeeRepos(repo.path)}
+                      onOpen={() =>
+                        onSeeRepos(repo.path, repo.files > 0 ? "changes" : "")
+                      }
                     />
                   ))}
                 </ul>

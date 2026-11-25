@@ -32,9 +32,11 @@ import {
 } from "../src/projects";
 import {
   dialogFromParam,
+  emptyReposPlace,
   locationOf,
   useHistorySync,
   type AppLocation,
+  type ReposPlace,
 } from "../src/navigation";
 import { interfaceVariables, themeVariables } from "../src/appearance";
 import "../src/styles/base.css";
@@ -93,7 +95,7 @@ function App() {
   const [scope, setScope] = useState("");
   const [active, setActive] = useState(11);
   const [dialog, setDialog] = useState("");
-  const [expanded, setExpanded] = useState("");
+  const [place, setPlace] = useState<ReposPlace>(emptyReposPlace);
   const [phoneList, setPhoneList] = useState(phone);
   const [parked] = useState(() => new Set([16]));
   const [menu, setMenu] = useState<{ project: Project; x: number; y: number } | null>(null);
@@ -137,6 +139,7 @@ function App() {
     dialog,
     notifyPane: 0,
     project: scope,
+    repos: place,
   });
   const navigation = useHistorySync({
     here: ready ? here : null,
@@ -160,7 +163,8 @@ function App() {
           return setView("grid");
         }
         setPhoneList(false);
-        if (target.view === "repos") setExpanded("");
+        if (target.view === "repos")
+          setPlace({ repo: target.repo, tab: target.tab, rev: target.rev, commit: target.commit, change: target.change });
         return setView(target.view);
       }
       if (target.view === "home" || target.view === "grid") {
@@ -178,9 +182,9 @@ function App() {
     setPhoneList(false);
     setView("project");
   };
-  const openRepos = (id: string, repo = "") => {
+  const openRepos = (id: string, repo = "", tab = "") => {
     setScope(id);
-    setExpanded(repo);
+    setPlace(repo ? { ...emptyReposPlace, repo, tab } : emptyReposPlace);
     setPhoneList(false);
     setView("repos");
   };
@@ -300,15 +304,16 @@ function App() {
                   if (phone) setPhoneList(true);
                   else setView("grid");
                 }}
-                onSeeRepos={(repo) => openRepos(scopeProject.id, repo)}
+                onSeeRepos={(repo, tab) => openRepos(scopeProject.id, repo, tab)}
                 onSeeHistory={() => setDialog("recovery")}
                 onRestored={reopened}
                 onBack={phone ? () => setPhoneList(true) : undefined}
               />
             ) : shown === "repos" && scopeProject ? (
               <ReposView
-                key={`${scopeProject.id}:${expanded}`}
-                expanded={expanded}
+                key={scopeProject.id}
+                place={place}
+                onPlace={setPlace}
                 project={scopeProject}
                 git={git.byProject[scopeProject.id]}
                 loading={!!git.loading[scopeProject.id]}

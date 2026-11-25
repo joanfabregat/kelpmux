@@ -13,7 +13,11 @@
 //   picker), shows this project's clones while they run, and GitHub's
 //   facts (visibility, default branch, open pull requests, last push) on
 //   the rows of checkouts whose origin is on github.com. Cloning is the
-//   only write, and the bridge makes it.
+//   only write, and the bridge makes it. With the bridge's history
+//   operations (API minor 10) the open checkout shows tabs Changes,
+//   History and Branches with a details pane (RepoHistory.tsx); one
+//   checkout is open at a time, and which one, its tab and selection are
+//   the URL's (navigation.ts ReposPlace).
 import React, { useEffect, useRef, useState } from "react";
 import { Icon } from "./status";
 import { Tooltip } from "./Tooltip";
@@ -40,6 +44,9 @@ import {
   type Rpc,
 } from "./GitHub";
 import { readGitHubStatus, type GitHubClone, type GitHubFacts } from "./github-state";
+import { CheckoutPanel } from "./RepoHistory";
+import { defaultTab } from "./git-history";
+import { emptyReposPlace, type ReposPlace } from "./navigation";
 import "./styles/repos.css";
 
 /** `+12 −3`, with each side coloured. */
@@ -185,6 +192,10 @@ function RepoRow({
   onNewTerminal,
   isRoot,
   facts,
+  history,
+  project,
+  place,
+  onPlace,
 }: {
   repo: GitRepo;
   /** GitHub's facts about its origin repository, when known. */
@@ -195,12 +206,19 @@ function RepoRow({
   onShowInFiles?: (path: string) => void;
   onNewTerminal?: (path: string) => void;
   isRoot: boolean;
+  /** The bridge's history operations (API minor 10), when offered. */
+  history?: Rpc | null;
+  project: string;
+  place: ReposPlace;
+  onPlace: (place: ReposPlace) => void;
 }) {
   const head = headLabel(repo);
   const counts = aheadBehind(repo);
   const changed = repoChanged(repo);
   const listed = repo.changes || [];
   const kinds = changeKinds(repo);
+  const panel = !!history && !repo.error && (!!repo.head || repo.files > 0);
+  const expandable = panel || repo.files > 0;
   return (
     <li
       className={`git-repo ${changed ? "changed" : "clean"} ${repo.error ? "error" : ""}`}
@@ -212,14 +230,14 @@ function RepoRow({
           type="button"
           className="git-repo-toggle"
           aria-expanded={open}
-          disabled={!repo.files}
+          disabled={!expandable}
           aria-label={`${repo.name}${head ? ` on ${head}` : ""}: ${repo.error || changesSummary({ ...repo, partial: repo.truncated })}`}
           onClick={onToggle}
         >
           <Icon
             name={open ? "chevron-down" : "chevron-right"}
             size="sm"
-            className={`git-chevron ${repo.files ? "" : "hidden"}`}
+            className={`git-chevron ${expandable ? "" : "hidden"}`}
           />
           <span className="git-repo-names">
             <span className="git-repo-title">
@@ -311,7 +329,21 @@ function RepoRow({
           )}
         </span>
       </div>
-      {open && repo.files > 0 && (
+      {open && panel && history && (
+        <CheckoutPanel
+          rpc={history}
+          project={project}
+          repo={repo.path}
+          place={place}
+          defaultTab={defaultTab(repo)}
+          changesKey={[repo.head, repo.files, repo.staged, repo.unstaged, repo.untracked, repo.added, repo.removed].join(":")}
+          historyKey={[repo.head, repo.branch, repo.ahead, repo.behind].join(":")}
+          changeCount={repo.files}
+          onPlace={(next) => onPlace({ ...place, ...next, repo: repo.path })}
+          onOpenFile={onOpenFile ? (path) => onOpenFile(`${repo.path.replace(/\/+$/, "")}/${path}`) : undefined}
+        />
+      )}
+      {open && !panel && repo.files > 0 && (
         <ul className="git-changes" aria-label={`Changed files in ${repo.name}`}>
           {listed.map((change) => (
             <ChangeRow
@@ -450,8 +482,10 @@ export function ReposView({
   onShowInFiles,
   onNewTerminal,
   onBack,
-  expanded,
+  place = emptyReposPlace,
+  onPlace,
   github,
+  history,
 }: {
   project: Project;
   git?: ProjectGit;
@@ -469,22 +503,23 @@ export function ReposView({
   onNewTerminal?: (path: string) => void;
   /** A phone's way back to its terminal list. */
   onBack?: () => void;
-  /** A checkout (its path) shown expanded when the view opens, as a
-   * project's home page asks. */
-  expanded?: string;
+  /** The open checkout (its path), its tab and selection: the URL's. */
+  place?: ReposPlace;
+  /** Opens another checkout, tab or selection (a new history entry). */
+  onPlace: (place: ReposPlace) => void;
+  /** The bridge's history operations (API minor 10), when offered: the
+   * open checkout's tabs and details pane. */
+  history?: Rpc | null;
 }) {
-  const [open, setOpen] = useState<Set<string>>(
-    () => new Set(expanded ? [expanded] : []),
-  );
   // The checkout asked for scrolls into view once it is listed.
-  const scrolled = useRef(false);
+  const scrolled = useRef("");
   useEffect(() => {
-    if (!expanded || scrolled.current || !git) return;
-    scrolled.current = true;
+    if (!place.repo || scrolled.current === place.repo || !git) return;
+    scrolled.current = place.repo;
     document
-      .querySelector(`.git-repo[data-path="${CSS.escape(expanded)}"]`)
+      .querySelector(`.git-repo[data-path="${CSS.escape(place.repo)}"]`)
       ?.scrollIntoView({ block: "nearest" });
-  }, [expanded, git]);
+  }, [place.repo, git]);
   const [picking, setPicking] = useState(false);
   const color = projectColor(project);
   const repos = git?.repos || [];
@@ -501,12 +536,8 @@ export function ReposView({
     </button>
   );
   const toggle = (path: string) =>
-    setOpen((current) => {
-      const next = new Set(current);
-      if (next.has(path)) next.delete(path);
-      else next.add(path);
-      return next;
-    });
+    onPlace(place.repo === path ? emptyReposPlace : { ...emptyReposPlace, repo: path });
+  const detail = !!history && !!(place.commit || place.change);
   return (
     <section className="repos-view" aria-label={`Repositories of ${project.name}`}>
       <div
@@ -577,14 +608,18 @@ export function ReposView({
           </div>
         ) : (
           <>
-            <ul className="git-repos" aria-label="Repositories">
+            <ul className={`git-repos ${detail ? "has-detail" : ""}`} aria-label="Repositories">
               {repos.map((repo) => (
                 <RepoRow
                   key={repo.path}
                   repo={repo}
                   facts={repo.github ? facts[repo.github] : undefined}
                   isRoot={repo.path === git.folder && repos.length > 1}
-                  open={open.has(repo.path)}
+                  history={history}
+                  project={project.id}
+                  place={place.repo === repo.path ? place : emptyReposPlace}
+                  onPlace={onPlace}
+                  open={place.repo === repo.path}
                   onToggle={() => toggle(repo.path)}
                   onOpenFile={onOpenFile}
                   onShowInFiles={onShowInFiles}

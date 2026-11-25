@@ -144,7 +144,9 @@ import {
   dialogFromParam,
   locationOf,
   useHistorySync,
+  emptyReposPlace,
   type AppLocation,
+  type ReposPlace,
 } from "./navigation";
 import {
   barKeyBytes,
@@ -502,9 +504,9 @@ function App() {
       Record<number, EnvironmentPane>
     >({}),
     [scope, setScope] = useState(""),
-    /** The checkout the Repos view shows expanded when it opens (from a
-     * project's home page). */
-    [reposExpanded, setReposExpanded] = useState(""),
+    /** The Repos view's open checkout, its tab and selection (the
+     * URL's `repo`, `tab`, `rev`, `commit` and `path`). */
+    [reposPlace, setReposPlace] = useState<ReposPlace>(emptyReposPlace),
     [projectDialog, setProjectDialog] = useState<{
       mode: "create" | "rename";
       project?: Project;
@@ -838,6 +840,14 @@ function App() {
         : Promise.reject(Error("Not connected")),
     onStarted: () => void loadEnvironmentPanes(),
   });
+  /** The bridge's history operations (API minor 10), when offered. */
+  const gitHistory =
+    offersGit && operations.has("git_history")
+      ? (method: string, params?: any) =>
+          store.session
+            ? store.session.rpc(method, params)
+            : Promise.reject(Error("Not connected"))
+      : null;
   /** The bridge's GitHub operations (API minor 9), when offered. */
   const github =
     online && operations.has("github")
@@ -916,6 +926,7 @@ function App() {
         dialog,
         notifyPane,
         project: scope,
+        repos: reposPlace,
       });
   const navigation = useHistorySync({
     here,
@@ -1002,7 +1013,13 @@ function App() {
         }
         setPhoneList(false);
         setFindPane(0);
-        setReposExpanded("");
+        setReposPlace({
+          repo: target.repo,
+          tab: target.tab,
+          rev: target.rev,
+          commit: target.commit,
+          change: target.change,
+        });
         setView("repos");
         return;
       case "project":
@@ -2732,10 +2749,10 @@ function App() {
   /** The open file shown in the main area; none shows the browser. */
   const shownDocument = documents.docs.find((doc) => doc.path === shownDoc);
   /** Shows a project's Repos view (its Git checkouts, read-only). */
-  function openRepos(project: string, expanded = "") {
+  function openRepos(project: string, repo = "", tab = "") {
     if (!offersGit || popupPane) return;
     setScope(project);
-    setReposExpanded(expanded);
+    setReposPlace(repo ? { ...emptyReposPlace, repo, tab } : emptyReposPlace);
     setMenu(null);
     setFindPane(0);
     setPhoneList(false);
@@ -3361,7 +3378,7 @@ function App() {
                   if (phone) setPhoneList(true);
                   else chooseMode("grid");
                 }}
-                onSeeRepos={(repo) => openRepos(scopeProject.id, repo)}
+                onSeeRepos={(repo, tab) => openRepos(scopeProject.id, repo, tab)}
                 onSeeHistory={() => setDialog("recovery")}
                 onOpenEnvironments={
                   offersEnvironments && !scopeProject.scratch
@@ -3373,8 +3390,10 @@ function App() {
               />
             ) : view === "repos" && scopeProject ? (
               <ReposView
-                key={`${scopeProject.id}:${reposExpanded}`}
-                expanded={reposExpanded}
+                key={scopeProject.id}
+                place={reposPlace}
+                onPlace={setReposPlace}
+                history={gitHistory}
                 project={scopeProject}
                 git={git.byProject[scopeProject.id]}
                 loading={!!git.loading[scopeProject.id]}
