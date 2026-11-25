@@ -1207,6 +1207,7 @@ mod tests {
             name: "n".into(),
             kind,
             session_id: session.map(Into::into),
+            sessions: vec![],
             argv: argv.iter().map(|a| (*a).into()).collect(),
             closed_at: Some(1),
             reason: "Closed".into(),

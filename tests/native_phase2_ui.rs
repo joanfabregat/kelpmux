@@ -336,6 +336,7 @@ fn recovery_and_sound_settings_are_actionable_and_small_screen_help_scrolls() {
         name: "task".into(),
         cwd: "/project".into(),
         session_id: Some("abc".into()),
+        sessions: vec![],
         pane: 1,
         argv: vec![],
         closed_at: Some(2),
