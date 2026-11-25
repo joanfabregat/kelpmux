@@ -538,6 +538,7 @@ for (const [name, engine] of [
       await forward(page);
       await at(page, "repos @alpha", "?view=repos&project=alpha");
       await back(page);
+      await at(page, "project @alpha", "?view=project&project=alpha");
       await page.reload();
       await ready(page);
       await at(page, "project @alpha", "?view=project&project=alpha");
