@@ -82,6 +82,11 @@ export type SidebarProps = {
   onNewProject?: () => void;
   /** A project's Git facts (bridge `git`), for its changes mark. */
   gitOf?: (project: Project) => ProjectGit | undefined;
+  /** Opens a project's home page (its name in the group header); without
+   * it, the name folds the group like the chevron. */
+  onProjectHome?: (project: Project) => void;
+  /** The project whose home page shows, selected in the sidebar. */
+  homeProject?: string;
 };
 
 /** Projects folded in this browser's sidebar. */
@@ -357,7 +362,8 @@ export function Sidebar(props: SidebarProps) {
                     type="button"
                     className="project-fold"
                     aria-expanded={open}
-                    title={`${project.name}\n${project.path}`}
+                    aria-label={`${open ? "Fold" : "Unfold"} ${project.name}`}
+                    title={open ? "Fold" : "Unfold"}
                     onClick={() => toggleProject(project.id)}
                   >
                     <Icon
@@ -365,6 +371,20 @@ export function Sidebar(props: SidebarProps) {
                       size="sm"
                       className="project-chevron"
                     />
+                  </button>
+                  <button
+                    type="button"
+                    className={`project-open ${props.homeProject === project.id ? "current" : ""}`}
+                    aria-current={
+                      props.homeProject === project.id ? "page" : undefined
+                    }
+                    title={`${project.name}\n${project.path}`}
+                    onClick={() =>
+                      props.onProjectHome
+                        ? props.onProjectHome(project)
+                        : toggleProject(project.id)
+                    }
+                  >
                     <span
                       className={`project-dot ${color ? "" : "plain"}`}
                       aria-hidden="true"

@@ -24,6 +24,8 @@
 //    URL, Back and Forward walk them, an unknown project falls back.
 // 7. A project's Repos view (`?view=repos&project=`): Back and Forward,
 //    deep links, and the fallbacks without or with an unknown project.
+// 8. A project's home page (`?view=project&project=`): History over it,
+//    Back and Forward, a reload, and the same fallbacks.
 import { build } from "vite";
 import { chromium, webkit } from "playwright";
 import { readFileSync } from "node:fs";
@@ -511,8 +513,49 @@ for (const [name, engine] of [
         await fallback.context.close();
       }
     }
+    // 8. A project's home page (`?view=project&project=`): a place of its
+    // own; its History is a panel over it that Back closes; Back and
+    // Forward walk to and from it; a deep link and a reload open it, and
+    // one without a project or with an unknown project falls back.
+    {
+      const { context, page, errors } = await open(browser);
+      await at(page, "grid", "?view=grid");
+      await page.click("#alpha-home");
+      await at(page, "project @alpha", "?view=project&project=alpha");
+      await page.click("#alpha-closed");
+      await at(page, "project @alpha", "?view=project&dialog=history&project=alpha");
+      await back(page);
+      await at(page, "project @alpha", "?view=project&project=alpha");
+      assert.equal(await dialogShown(page), 0, "Back closes History");
+      await page.click("#alpha-repos");
+      await at(page, "repos @alpha", "?view=repos&project=alpha");
+      await back(page);
+      await at(page, "project @alpha", "?view=project&project=alpha");
+      await back(page);
+      await at(page, "grid", "?view=grid");
+      await forward(page);
+      await at(page, "project @alpha", "?view=project&project=alpha");
+      await forward(page);
+      await at(page, "repos @alpha", "?view=repos&project=alpha");
+      await back(page);
+      await page.reload();
+      await ready(page);
+      await at(page, "project @alpha", "?view=project&project=alpha");
+      assert.deepEqual(errors, []);
+      await context.close();
+      for (const [search, message] of [
+        ["?view=project", /Choose a project/],
+        ["?view=project&project=gone", /gone does not exist/],
+      ]) {
+        const fallback = await open(browser, search);
+        await at(fallback.page, "grid", "?view=grid");
+        assert.match(await fallback.page.locator("#toast").innerText(), message);
+        assert.deepEqual(fallback.errors, []);
+        await fallback.context.close();
+      }
+    }
     console.log(
-      `PASS: ${name} history: terminal, grid, folder, file and Settings entries walked back and forward, Back closes panels, no duplicates, replacements for normalised folders, lines, closed files and swapped panels, deep links with fallbacks, legacy URLs, phone list and terminal, file tabs (switching pushes, closing the shown tab replaces with its neighbour or the browser), file browser columns (a folder click pushes, keyboard and file selection replace, nested deep links), projects (grid, files and History name the project, Back and Forward between them, unknown project falls back), Repos views (named with their project, Back and Forward, deep link and reload, fallbacks without or with an unknown project)`,
+      `PASS: ${name} history: terminal, grid, folder, file and Settings entries walked back and forward, Back closes panels, no duplicates, replacements for normalised folders, lines, closed files and swapped panels, deep links with fallbacks, legacy URLs, phone list and terminal, file tabs (switching pushes, closing the shown tab replaces with its neighbour or the browser), file browser columns (a folder click pushes, keyboard and file selection replace, nested deep links), projects (grid, files and History name the project, Back and Forward between them, unknown project falls back), Repos views (named with their project, Back and Forward, deep link and reload, fallbacks without or with an unknown project), project home pages (History over them closed by Back, Back and Forward, reload, fallbacks)`,
     );
   } finally {
     await browser.close();

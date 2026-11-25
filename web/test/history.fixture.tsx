@@ -8,7 +8,8 @@
 // file root is /home/me: a folder or file outside it shows the root. The
 // project "alpha" (folder /home/me/alpha) scopes the grid, the file
 // browser and History (`?project=`); another id falls back to
-// every project.
+// every project. Its Repos view and home page (`view=repos`,
+// `view=project`) need it and fall back to the grid without it.
 import React, { useEffect, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import {
@@ -30,7 +31,7 @@ const parentPath = (path: string) =>
 
 function App() {
   const [ready, setReady] = useState(false);
-  const [view, setView] = useState<"single" | "grid" | "files" | "repos">(
+  const [view, setView] = useState<"single" | "grid" | "files" | "repos" | "project">(
     "grid",
   );
   const [active, setActive] = useState(11);
@@ -51,11 +52,16 @@ function App() {
   const shown =
     phone && view === "grid"
       ? "single"
-      : view === "repos" && !project
+      : (view === "repos" || view === "project") && !project
         ? "grid"
         : view;
   const here = locationOf({
-    phoneHome: phone && phoneList && shown !== "files" && shown !== "repos",
+    phoneHome:
+      phone &&
+      phoneList &&
+      shown !== "files" &&
+      shown !== "repos" &&
+      shown !== "project",
     view: shown,
     terminal: active,
     filesDir,
@@ -78,9 +84,9 @@ function App() {
         navigation.automatic();
       }
       setProject(target.project === "alpha" ? "alpha" : "");
-      if (target.view === "repos") {
-        // As main.tsx: a Repos view needs a project (an unknown one has
-        // had its toast above).
+      if (target.view === "repos" || target.view === "project") {
+        // As main.tsx: a Repos view or a project's home page needs a
+        // project (an unknown one has had its toast above).
         if (target.project !== "alpha") {
           if (!target.project) setToast("Choose a project");
           navigation.automatic();
@@ -89,7 +95,7 @@ function App() {
           return;
         }
         setPhoneList(false);
-        setView("repos");
+        setView(target.view);
         return;
       }
       if (target.view === "home") return void (phone && setPhoneList(true));
@@ -240,6 +246,16 @@ function App() {
           }}
         >
           Alpha's repos
+        </button>
+        <button
+          id="alpha-home"
+          onClick={() => {
+            setProject("alpha");
+            setPhoneList(false);
+            setView("project");
+          }}
+        >
+          Alpha's home
         </button>
         <button
           id="grid"
