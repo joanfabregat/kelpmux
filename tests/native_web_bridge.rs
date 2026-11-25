@@ -113,6 +113,9 @@ impl Bridge {
             .env("XDG_CONFIG_HOME", cwd.join("xdg-config"))
             // New terminals start in its Scratch folder, `~/scratch`.
             .env("HOME", cwd)
+            // Agent transcripts (History) under this HOME only.
+            .env_remove("CLAUDE_CONFIG_DIR")
+            .env_remove("CODEX_HOME")
             .arg("web-bridge")
             .arg("--socket")
             .arg(socket)
@@ -995,6 +998,168 @@ fn git_reports_a_projects_checkouts_read_only() {
     assert_eq!(path["error"], "project required");
 }
 
+/// `conversations` (API 3.7): closed terminals with the conversations they
+/// hosted, titled from the first prompt of their transcripts, and
+/// conversations started outside KelpMux in a project's or the Scratch
+/// folder; `new` with `resume` runs the resume command built by the bridge.
+#[test]
+fn history_lists_conversations_and_new_resumes_them() {
+    use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
+    let server = Server::start_with(|root| {
+        let work = root.join("projects/Work");
+        fs::create_dir_all(work.join("sub")).unwrap();
+        fs::create_dir_all(root.join("scratch")).unwrap();
+        let state = root.join("state");
+        fs::DirBuilder::new().mode(0o700).create(&state).unwrap();
+        let history = json!({"entries": [
+            {"key": "old:7", "workspace": "state", "pane": 7,
+             "cwd": work.to_str().unwrap(), "name": "claude tab",
+             "kind": "claude", "session_id": "conv-1", "argv": [],
+             "closed_at": now - 5, "reason": "Closed"},
+            {"key": "old:8", "workspace": "state", "pane": 8,
+             "cwd": work.to_str().unwrap(), "name": "make",
+             "kind": null, "session_id": null, "argv": ["make"],
+             "closed_at": now - 9, "reason": "Closed"},
+        ]});
+        let mut file = fs::OpenOptions::new()
+            .create_new(true)
+            .write(true)
+            .mode(0o600)
+            .open(state.join("tab-history.json"))
+            .unwrap();
+        file.write_all(&serde_json::to_vec(&history).unwrap())
+            .unwrap();
+        let claude = |cwd: &std::path::Path, id: &str, prompt: &str| {
+            let dir = root
+                .join(".claude/projects")
+                .join(cwd.to_str().unwrap().replace(['/', '.'], "-"));
+            fs::create_dir_all(&dir).unwrap();
+            let lines = [
+                json!({"type": "permission-mode", "sessionId": id}),
+                json!({"type": "user", "cwd": cwd, "sessionId": id,
+                       "timestamp": "2026-11-24T10:00:00Z",
+                       "message": {"role": "user", "content": prompt}}),
+                json!({"type": "assistant", "message": {"content": "never sent"}}),
+            ];
+            let text: String = lines.iter().map(|l| format!("{l}\n")).collect();
+            fs::write(dir.join(format!("{id}.jsonl")), text).unwrap();
+        };
+        claude(&work, "conv-1", "Make the History list");
+        claude(&work.join("sub"), "ext-1", "Started outside");
+        claude(&root.join("elsewhere"), "ext-2", "Not in a project");
+        let codex_day = {
+            // Today's date folder (UTC), like Codex's local date.
+            let day = now / 86_400;
+            let output = std::process::Command::new("date")
+                .args(["-u", "-d", &format!("@{}", day * 86_400), "+%Y/%m/%d"])
+                .output()
+                .unwrap();
+            String::from_utf8(output.stdout).unwrap().trim().to_owned()
+        };
+        let codex = root.join(".codex/sessions").join(codex_day);
+        fs::create_dir_all(&codex).unwrap();
+        let lines = [
+            json!({"type": "session_meta", "payload": {"id": "cx-9",
+                   "cwd": root.join("scratch"), "source": "cli"}}),
+            json!({"type": "event_msg", "payload": {"type": "user_message",
+                   "message": "A scratch idea"}}),
+        ];
+        let text: String = lines.iter().map(|l| format!("{l}\n")).collect();
+        fs::write(codex.join("rollout-2026-11-24T10-00-00-cx-9.jsonl"), text).unwrap();
+    });
+    let mut bridge = Bridge::start(&server);
+    welcome(&mut bridge);
+    let state = bridge.web(1, "state", json!({}));
+    assert_eq!(state["result"]["api_minor"], 7);
+    assert!(
+        state["result"]["operations"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|op| op == "conversations")
+    );
+    let created = bridge.web(2, "project_create", json!({"name": "Work"}));
+    assert_eq!(created["result"]["saved"], true, "{created}");
+
+    let listing = bridge.web(3, "conversations", json!({}));
+    let result = &listing["result"];
+    assert_eq!(result["workspace"], "state", "{listing}");
+    let entries = result["entries"].as_array().unwrap();
+    let agent = entries.iter().find(|e| e["key"] == "old:7").unwrap();
+    assert_eq!(agent["conversations"][0]["id"], "conv-1", "{listing}");
+    assert_eq!(agent["conversations"][0]["title"], "Make the History list");
+    let make = entries.iter().find(|e| e["key"] == "old:8").unwrap();
+    assert_eq!(make["conversations"], json!([]));
+    assert_eq!(make["choices"], json!(["restart", "folder"]));
+    let mut external: Vec<(String, String, String)> = result["external"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|row| {
+            (
+                row["id"].as_str().unwrap().into(),
+                row["project"].as_str().unwrap().into(),
+                row["title"].as_str().unwrap().into(),
+            )
+        })
+        .collect();
+    external.sort();
+    assert_eq!(
+        external,
+        [
+            ("cx-9".into(), "scratch".into(), "A scratch idea".into()),
+            ("ext-1".into(), "work".into(), "Started outside".into()),
+        ],
+        "{listing}"
+    );
+    assert!(!listing.to_string().contains("never sent"));
+
+    // Resuming opens a terminal in the project that runs the resume command.
+    let folder = server.root.join("projects/Work");
+    let bad = bridge.web(
+        4,
+        "new",
+        json!({"request": "r-1", "project": "work", "cwd": folder,
+               "resume": {"kind": "claude", "id": "x; touch pwned"}}),
+    );
+    assert!(
+        bad["error"].as_str().unwrap().contains("conversation id"),
+        "{bad}"
+    );
+    let resumed = bridge.web(
+        5,
+        "new",
+        json!({"request": "r-2", "project": "work", "cwd": folder,
+               "resume": {"kind": "claude", "id": "conv-1"}}),
+    );
+    let pane = resumed["result"]["pane"]
+        .as_u64()
+        .unwrap_or_else(|| panic!("{resumed}"));
+    let links = bridge.web(6, "projects", json!({}));
+    assert_eq!(
+        links["result"]["panes"][pane.to_string()],
+        "work",
+        "{links}"
+    );
+    // The shell was asked to run `claude --resume conv-1` (absent here).
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let mut id = 7;
+    loop {
+        let history = bridge.web(id, "history", json!({"pane": pane}));
+        let text = history["result"]["History"]["lines"].to_string();
+        if text.contains("claude") {
+            break;
+        }
+        assert!(Instant::now() < deadline, "{history}");
+        id += 1;
+        thread::sleep(Duration::from_millis(100));
+    }
+}
+
 #[test]
 fn the_user_configuration_is_saved_validated_and_pushed_live() {
     let server = Server::start();
@@ -1081,7 +1246,7 @@ fn repos_and_commands_report_read_only_facts_for_the_terminals_table() {
     welcome(&mut bridge);
     let state = bridge.web(1, "state", json!({}));
     assert_eq!(state["result"]["api_version"], 3);
-    assert_eq!(state["result"]["api_minor"], 6);
+    assert_eq!(state["result"]["api_minor"], 7);
     let operations = state["result"]["operations"].as_array().unwrap();
     assert!(operations.iter().any(|op| op == "repos"));
     assert!(operations.iter().any(|op| op == "commands"));
@@ -1454,7 +1619,7 @@ fn file_requests_and_replies_are_relayed_unchanged() {
     }
     assert_eq!(limits["max_read_bytes"], 8 * 1024 * 1024);
     let state = bridge.web(1, "state", json!({}));
-    assert_eq!(state["result"]["api_minor"], 6);
+    assert_eq!(state["result"]["api_minor"], 7);
     assert!(
         state["result"]["operations"]
             .as_array()

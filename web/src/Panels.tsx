@@ -1,12 +1,13 @@
 // Workspace dialogs, the web equivalents of the TUI's: a terminal's
-// notifications, recently closed (recovery), search, parked terminals, move
-// and help. The Terminals table (agents and overview) lives in Terminals.tsx.
+// notifications, History (closed terminals and their agent conversations),
+// search, parked terminals, move and help. The Terminals table (agents and
+// overview) lives in Terminals.tsx.
 // Each is a list of rows with mouse actions; nothing here changes the TUI's
 // layout.
 import React, { useEffect, useRef, useState } from "react";
 import type { NumberedPane, SearchMatch } from "@kelpcore/web/types.ts";
 import { Icon } from "./status";
-import { age } from "./format";
+import { age, basename } from "./format";
 import { StateMark } from "./state/StateMark";
 import { ProviderLogo } from "./state/ProviderLogo";
 import {
@@ -108,6 +109,23 @@ export function TerminalNotificationsPanel({
   );
 }
 
+/** One agent conversation of History (bridge API minor 7): one a closed
+ * terminal hosted, or one started outside KelpMux (`project` set). */
+export type Conversation = {
+  kind: string;
+  id: string;
+  cwd: string;
+  /** Where resuming opens: its folder, else its terminal's (or project's);
+   * null when neither exists. */
+  folder?: string | null;
+  /** From its first prompt (or its terminal's name). */
+  title?: string | null;
+  titled?: boolean;
+  first_seen?: number | null;
+  last_seen?: number | null;
+  /** An outside conversation's project (`scratch` for Scratch). */
+  project?: string;
+};
 export type ClosedEntry = {
   key: string;
   workspace: string;
@@ -123,6 +141,15 @@ export type ClosedEntry = {
   /** The project the terminal belonged to (bridge API minor 5); none or
    * one that no longer exists: Scratch. */
   project?: string | null;
+  /** The conversations it hosted, newest first (bridge API minor 7). */
+  conversations?: Conversation[];
+};
+export type HistoryListing = {
+  workspace: string;
+  entries: ClosedEntry[];
+  /** Conversations started outside KelpMux (bridge API minor 7). */
+  external?: Conversation[];
+  truncated?: boolean;
 };
 const choiceLabel = {
   resume: "Resume",
@@ -149,11 +176,39 @@ export function resumeCommand(entry: Pick<ClosedEntry, "kind" | "session_id">) {
   const id = entry.session_id;
   return id && /^[A-Za-z0-9_-]{1,128}$/.test(id) ? `${base} ${id}` : base;
 }
+const toolName = (kind: string) =>
+  kind === "codex" ? "Codex" : kind === "claude" ? "Claude Code" : kind;
+/** When a conversation ran: "3h ago" or "2d ago – 3h ago". */
+function span(c: Conversation) {
+  const first = c.first_seen || 0;
+  const last = c.last_seen || 0;
+  if (!first && !last) return "";
+  if (!first || !last || age(first) === age(last)) return age(last || first);
+  return `${age(first)} – ${age(last)}`;
+}
+function exactSpan(c: Conversation) {
+  const when = (at?: number | null) =>
+    at ? new Date(at * 1000).toLocaleString() : "";
+  return [when(c.first_seen), when(c.last_seen)].filter(Boolean).join(" – ");
+}
+const conversationTitle = (c: Conversation) =>
+  c.title || `Conversation in ${basename(c.cwd || "/")}`;
 
-export function RecoveryPanel({
+/** One row of History: a closed terminal (with its conversations) or a
+ * conversation started outside KelpMux; newest first. */
+type HistoryRow =
+  | { type: "terminal"; at: number; entry: ClosedEntry; project: string }
+  | { type: "external"; at: number; conversation: Conversation; project: string };
+
+/** History: closed terminals with every agent conversation they hosted,
+ * and conversations started outside KelpMux in a project's folder, each
+ * resumable in a new terminal of its project. With a bridge before API
+ * minor 7, the closed terminals only, with their restore choices. */
+export function HistoryPanel({
   scope,
   projects,
   onAllProjects,
+  conversations,
   rpc,
   onRestored,
   onCopy,
@@ -161,27 +216,26 @@ export function RecoveryPanel({
   rpc: (method: string, params?: any) => Promise<any>;
   onRestored: (pane: number, existing: boolean) => void;
   onCopy: (text: string) => void;
-  /** Only this project's closed terminals (Scratch's: those of no
-   * existing project). */
+  /** Only this project's entries (Scratch's: those of no existing
+   * project). */
   scope?: Project;
   /** The user's projects, to tell Scratch's entries apart. */
   projects?: Project[];
   onAllProjects?: () => void;
+  /** The bridge lists conversations (`conversations`, API minor 7). */
+  conversations?: boolean;
 }) {
-  const [listing, setListing] = useState<{
-    workspace: string;
-    entries: ClosedEntry[];
-  } | null>(null);
+  const [listing, setListing] = useState<HistoryListing | null>(null);
   const [busy, setBusy] = useState("");
   useEffect(() => {
     let alive = true;
-    rpc("closed").then((result) => {
+    rpc(conversations ? "conversations" : "closed").then((result) => {
       if (alive) setListing(result || { workspace: "", entries: [] });
     });
     return () => {
       alive = false;
     };
-  }, []);
+  }, [conversations]);
   async function restore(entry: ClosedEntry, choice: string) {
     if (busy) return;
     setBusy(entry.key);
@@ -197,22 +251,111 @@ export function RecoveryPanel({
       setBusy("");
     }
   }
+  /** Resumes a conversation in a new terminal of `project`, in its
+   * folder; the bridge builds the command from the kind and id. */
+  async function resume(c: Conversation, project: string, key: string) {
+    if (busy || !c.folder) return;
+    setBusy(key);
+    try {
+      const result = await rpc("new", {
+        request: crypto.randomUUID(),
+        ...(project !== SCRATCH ? { project } : {}),
+        cwd: c.folder,
+        resume: { kind: c.kind, id: c.id },
+      });
+      if (result?.pane) onRestored(result.pane, !!result.existing);
+    } finally {
+      setBusy("");
+    }
+  }
   if (!listing)
     return (
       <div className="panel-body">
-        <p className="panel-empty">Loading recently closed terminals…</p>
+        <p className="panel-empty">Loading history…</p>
       </div>
     );
-  const projectOfEntry = (entry: ClosedEntry) =>
-    entry.project && projects?.some((project) => project.id === entry.project)
-      ? entry.project
-      : SCRATCH;
-  const entries = scope
-    ? listing.entries.filter((entry) => projectOfEntry(entry) === scope.id)
-    : listing.entries;
+  const known = (id?: string | null) =>
+    !!id && !!projects?.some((project) => project.id === id);
+  const projectOfId = (id?: string | null) => (known(id) ? id! : SCRATCH);
+  const rows: HistoryRow[] = [
+    ...listing.entries.map(
+      (entry): HistoryRow => ({
+        type: "terminal",
+        at: entry.closed_at || 0,
+        entry,
+        project: projectOfId(entry.project),
+      }),
+    ),
+    ...(listing.external || []).map(
+      (conversation): HistoryRow => ({
+        type: "external",
+        at: conversation.last_seen || 0,
+        conversation,
+        project: projectOfId(conversation.project),
+      }),
+    ),
+  ]
+    // Newest first; the bridge's order (this workspace first) breaks ties.
+    .map((row, index) => ({ row, index }))
+    .sort((a, b) => b.row.at - a.row.at || a.index - b.index)
+    .map(({ row }) => row);
+  const shown = scope ? rows.filter((row) => row.project === scope.id) : rows;
   const color = projectColor(scope);
+  /** A row's project, in the global list. */
+  const projectTag = (id: string) => {
+    if (scope) return null;
+    const project = projects?.find((p) => p.id === id);
+    const tint = projectColor(project);
+    return (
+      <span
+        className="history-project"
+        style={tint ? ({ "--project": tint } as React.CSSProperties) : undefined}
+      >
+        <span className={`project-dot ${tint ? "" : "plain"}`} aria-hidden="true" />
+        {project ? project.name : "Scratch"}
+      </span>
+    );
+  };
+  const conversationActions = (
+    c: Conversation,
+    project: string,
+    key: string,
+    label: string,
+  ) => {
+    const command = resumeCommand({ kind: c.kind, session_id: c.id });
+    return (
+      <>
+        {command && (
+          <button
+            type="button"
+            className="icon-btn"
+            title={`Copy “${command}”`}
+            aria-label={`Copy the resume command of ${label}`}
+            onClick={() => onCopy(command)}
+          >
+            <Icon name="copy" size="sm" />
+          </button>
+        )}
+        <button
+          type="button"
+          className="small success"
+          title={
+            c.folder
+              ? `Resume in a new terminal in ${c.folder}`
+              : "Its folder no longer exists"
+          }
+          aria-label={`Resume ${label}`}
+          disabled={!!busy || !c.folder}
+          onClick={() => resume(c, project, key)}
+        >
+          <Icon name="rotate-ccw" size="sm" />
+          Resume
+        </button>
+      </>
+    );
+  };
   return (
-    <div className="panel-body">
+    <div className="panel-body history-panel">
       {scope && (
         <div
           className="project-scope"
@@ -221,7 +364,7 @@ export function RecoveryPanel({
         >
           <span className={`project-dot ${color ? "" : "plain"}`} aria-hidden="true" />
           <span className="grow">
-            <b>{scope.name}</b> · {entries.length} of {listing.entries.length}
+            <b>{scope.name}</b> · {shown.length} of {rows.length}
           </span>
           {onAllProjects && (
             <button type="button" className="ghost small" onClick={onAllProjects}>
@@ -231,58 +374,143 @@ export function RecoveryPanel({
         </div>
       )}
       <div className="panel-list" role="list">
-        {entries.map((entry) => {
-          const command = resumeCommand(entry);
-          return (
-            <div className="list-row" role="listitem" key={entry.key}>
-              {entry.kind ? (
-                <ProviderLogo kind={entry.kind} />
-              ) : (
-                <Icon name="terminal" size="sm" className="faint" />
-              )}
-              <div className="grow">
-                <span className="t">{entry.name}</span>
-                <span className="s">
-                  {entry.workspace !== listing.workspace &&
-                    `${entry.workspace} · `}
-                  <span className="mono">{entry.cwd}</span> · {entry.reason} ·{" "}
-                  {age(entry.closed_at || 0)}
-                </span>
+        {shown.map((row) => {
+          if (row.type === "external") {
+            const c = row.conversation;
+            const label = conversationTitle(c);
+            const key = `external:${c.kind}:${c.id}`;
+            return (
+              <div
+                className="list-row history-external"
+                role="listitem"
+                key={key}
+                data-conversation={c.id}
+                data-project={row.project}
+              >
+                <ProviderLogo kind={c.kind} />
+                <div className="grow">
+                  <span className="t" title={label}>
+                    {label}
+                  </span>
+                  <span className="s">
+                    <span className="badge">outside KelpMux</span>{" "}
+                    {toolName(c.kind)} · {projectTag(row.project)}
+                    <span className="mono">{c.cwd}</span> ·{" "}
+                    <span title={exactSpan(c)}>{span(c)}</span>
+                  </span>
+                </div>
+                {conversationActions(c, row.project, key, label)}
               </div>
-              {command && (
-                <button
-                  type="button"
-                  className="icon-btn"
-                  title={`Copy “${command}”`}
-                  aria-label={`Copy the resume command of ${entry.name}`}
-                  onClick={() => onCopy(command)}
-                >
-                  <Icon name="copy" size="sm" />
-                </button>
+            );
+          }
+          const entry = row.entry;
+          const nested = entry.conversations || [];
+          const command = nested.length ? "" : resumeCommand(entry);
+          return (
+            <div
+              className="history-group"
+              role="listitem"
+              key={entry.key}
+              data-entry={entry.key}
+              data-project={row.project}
+            >
+              <div className="list-row history-terminal">
+                {entry.kind ? (
+                  <ProviderLogo kind={entry.kind} />
+                ) : (
+                  <Icon name="terminal" size="sm" className="faint" />
+                )}
+                <div className="grow">
+                  <span className="t">{entry.name}</span>
+                  <span className="s">
+                    {entry.workspace !== listing.workspace &&
+                      `${entry.workspace} · `}
+                    {projectTag(row.project)}
+                    <span className="mono">{entry.cwd}</span> · {entry.reason} ·{" "}
+                    {age(entry.closed_at || 0)}
+                  </span>
+                </div>
+                {command && (
+                  <button
+                    type="button"
+                    className="icon-btn"
+                    title={`Copy “${command}”`}
+                    aria-label={`Copy the resume command of ${entry.name}`}
+                    onClick={() => onCopy(command)}
+                  >
+                    <Icon name="copy" size="sm" />
+                  </button>
+                )}
+                {!nested.length &&
+                  entry.choices.map((choice) => (
+                    <button
+                      type="button"
+                      key={choice}
+                      className={`small ${choice === entry.choices[0] ? "success" : "subtle"}`}
+                      title={choiceHint(entry, choice)}
+                      aria-label={`${choiceLabel[choice]} ${entry.name}`}
+                      disabled={!!busy}
+                      onClick={() => restore(entry, choice)}
+                    >
+                      {choice === entry.choices[0] && (
+                        <Icon name="rotate-ccw" size="sm" />
+                      )}
+                      {choiceLabel[choice]}
+                    </button>
+                  ))}
+              </div>
+              {nested.length > 0 && (
+                <div className="history-conversations" role="list">
+                  {nested.map((c) => {
+                    const label = conversationTitle(c);
+                    const key = `${entry.key}:${c.kind}:${c.id}`;
+                    return (
+                      <div
+                        className="list-row history-conversation"
+                        role="listitem"
+                        key={key}
+                        data-conversation={c.id}
+                      >
+                        <ProviderLogo kind={c.kind} />
+                        <div className="grow">
+                          <span className={`t ${c.titled === false ? "untitled" : ""}`} title={label}>
+                            {label}
+                          </span>
+                          <span className="s">
+                            {toolName(c.kind)}
+                            {c.cwd && c.cwd !== entry.cwd && (
+                              <>
+                                {" · "}
+                                <span className="mono">{c.cwd}</span>
+                              </>
+                            )}
+                            {span(c) && (
+                              <>
+                                {" · "}
+                                <span title={exactSpan(c)}>{span(c)}</span>
+                              </>
+                            )}
+                          </span>
+                        </div>
+                        {conversationActions(c, row.project, key, label)}
+                      </div>
+                    );
+                  })}
+                </div>
               )}
-              {entry.choices.map((choice) => (
-                <button
-                  type="button"
-                  key={choice}
-                  className={`small ${choice === entry.choices[0] ? "success" : "subtle"}`}
-                  title={choiceHint(entry, choice)}
-                  aria-label={`${choiceLabel[choice]} ${entry.name}`}
-                  disabled={!!busy}
-                  onClick={() => restore(entry, choice)}
-                >
-                  {choice === entry.choices[0] && (
-                    <Icon name="rotate-ccw" size="sm" />
-                  )}
-                  {choiceLabel[choice]}
-                </button>
-              ))}
             </div>
           );
         })}
-        {!entries.length && (
+        {!shown.length && (
           <p className="panel-empty">
-            Closed terminals and previous runs with an agent or a program will
-            appear here.
+            Closed terminals with their agent conversations, and conversations
+            started outside KelpMux in a project's folder, will appear here.
+          </p>
+        )}
+        {listing.truncated && (
+          <p className="setting-hint history-note">
+            Conversations outside KelpMux: the last 30 days, at most 200 per
+            project.
           </p>
         )}
       </div>

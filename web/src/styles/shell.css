@@ -468,7 +468,7 @@ button.rail-mark:hover:not(:disabled) {
   position: relative;
 }
 /* Sessions: one tab per session. The tabs scroll sideways instead of
- * wrapping; New session, Recently closed and the view toggle stay put. */
+ * wrapping; New session, History and the view toggle stay put. */
 .term-tabs {
   display: flex;
   flex: 1 1 auto;
@@ -540,7 +540,7 @@ button.icon-btn.term-tab-close {
   opacity: 0;
   pointer-events: none;
 }
-/* Recently closed: the workspace's (or Scratch's) closed sessions. */
+/* History: the workspace's (or Scratch's) closed sessions. */
 .closed-popover {
   width: min(380px, calc(100vw - 16px));
   max-height: min(420px, calc(100vh - var(--topbar) - 24px));

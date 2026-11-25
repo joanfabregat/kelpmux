@@ -332,7 +332,7 @@ for (const engine of [chromium, webkit]) {
       // Short, readable labels.
       assert.deepEqual(
         await page.locator(".tool-grid .tool-item .grow").allTextContents(),
-        ["Terminals", "Closed", "Search", "Help"],
+        ["Terminals", "History", "Search", "Help"],
       );
       // 4. The Grid entry is at the bottom, not selected in single view; the
       // shown terminal's tab is.

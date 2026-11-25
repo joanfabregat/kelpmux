@@ -24,7 +24,7 @@ use super::{
     session::{Session, request_id},
     status,
     stream::{self, ClosedSession, Event, Request},
-    user_config, web_git, web_repos,
+    user_config, web_git, web_history, web_repos,
 };
 use crate::Result;
 use serde_json::{Value, json};
@@ -64,8 +64,13 @@ pub const API_VERSION: u64 = 3;
 /// `project` for `new`, the `project` of each `closed` entry, and the
 /// `projects` of the `config` result. Minor 6 added `git`: read-only Git
 /// facts of a project's checkouts (`web_git`), computed on the bridge's
-/// own Git worker threads and answered when ready.
-pub const API_MINOR: u64 = 6;
+/// own Git worker threads and answered when ready. Minor 7 added
+/// `conversations`: the History listing (closed terminals with the agent
+/// conversations they hosted, titled from their first prompt, and
+/// conversations started outside KelpMux in a project's folder;
+/// `web_history`), answered by the bridge's History thread, and the
+/// `resume` parameter of `new`.
+pub const API_MINOR: u64 = 7;
 /// Largest accepted `Web` request, in bytes of JSON.
 const REQUEST_LIMIT: usize = 65536;
 /// Largest request identifier a browser can represent exactly.
@@ -119,6 +124,7 @@ struct Api {
     monitor: status::Monitor,
     config: Option<Arc<user_config::Live>>,
     git: web_git::Worker,
+    history: web_history::Worker,
 }
 
 fn pane(value: &Value) -> Result<u64> {
@@ -432,6 +438,62 @@ impl Api {
     /// this workspace's first, newest first within each group, with the
     /// restore actions each entry offers.
     fn closed(&self) -> Result<Value> {
+        let (current, entries) = self.closed_entries()?;
+        Ok(json!({ "workspace": current, "entries": entries }))
+    }
+    /// Queues the History listing (`web_history`): the `closed` entries,
+    /// each with the agent `conversations` it hosted (newest first, titled
+    /// from their first prompt), and the `external` conversations started
+    /// outside KelpMux in a project's or the Scratch folder. The server is
+    /// asked here; the transcripts are read on the History thread, which
+    /// answers through `reply`.
+    fn conversations(
+        &self,
+        _: &Value,
+        reply: Box<dyn FnOnce(std::result::Result<Value, String>) + Send>,
+    ) -> Result<()> {
+        let (workspace, entries) = self.closed_entries()?;
+        // Conversations a live terminal runs are not outside ones.
+        let live = self
+            .session("pane-lifecycle")
+            .and_then(|mut session| session.update())
+            .map(|update| {
+                update
+                    .panes
+                    .iter()
+                    .filter_map(|pane| {
+                        Some((pane.kind?.as_str().to_owned(), pane.session_id.clone()?))
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        let scopes = self
+            .user_config()
+            .map(|config| {
+                config
+                    .projects
+                    .iter()
+                    .map(|project| web_history::Scope {
+                        id: project.id.clone(),
+                        folder: project.folder.path.clone(),
+                    })
+                    .chain([web_history::Scope {
+                        id: user_config::SCRATCH.into(),
+                        folder: config.scratch_folder.path.clone(),
+                    }])
+                    .collect()
+            })
+            .unwrap_or_default();
+        let request = web_history::Request {
+            workspace,
+            entries,
+            live,
+            scopes,
+        };
+        Ok(self.history.submit(request, reply)?)
+    }
+    /// The `closed` entries, with their restore choices and project.
+    fn closed_entries(&self) -> Result<(String, Vec<Value>)> {
         let current = self.workspace_name();
         let mut records = Self::records(&mut self.session("closed-sessions")?)?;
         records.sort_by_key(|r| {
@@ -451,7 +513,7 @@ impl Api {
                 Ok(value)
             })
             .collect::<Result<Vec<_>>>()?;
-        Ok(json!({ "workspace": current, "entries": entries }))
+        Ok((current, entries))
     }
     /// Reopens a closed terminal through the server's `restore`: `resume`
     /// reopens an agent conversation, `restart` reruns a shell's last
@@ -496,7 +558,10 @@ impl Api {
     /// (the terminal belongs to it and starts in its folder) and an
     /// optional absolute working directory. Without either it starts in the
     /// Scratch folder (`scratch.folder`, created when missing). A retry with
-    /// the same request returns the same pane.
+    /// the same request returns the same pane. With `resume` (`{kind, id}`)
+    /// the pane runs that agent conversation's resume command
+    /// ([`resume_argv`]), or the terminal already running it is returned
+    /// with `existing`.
     fn spawn(&self, p: &Value) -> Result<Value> {
         let request = p["request"]
             .as_str()
@@ -545,10 +610,26 @@ impl Api {
         if !cwd.is_absolute() || !cwd.is_dir() {
             return Err("cwd must be an existing absolute directory".into());
         }
-        let Event::Spawned { pane, .. } = self.session("pane-lifecycle")?.call(Request::Spawn {
+        let resume = match &p["resume"] {
+            Value::Null => None,
+            value => Some(resume_argv(value)?),
+        };
+        let mut session = self.session("pane-lifecycle")?;
+        if let Some((kind, id, _)) = &resume {
+            // A conversation that is already open is shown, not started twice.
+            let update = session.update()?;
+            if let Some(pane) = update.panes.iter().find(|pane| {
+                !pane.dead
+                    && pane.kind.map(|k| k.as_str()) == Some(*kind)
+                    && pane.session_id.as_deref() == Some(id.as_str())
+            }) {
+                return Ok(json!({ "pane": pane.id, "existing": true }));
+            }
+        }
+        let Event::Spawned { pane, .. } = session.call(Request::Spawn {
             request: request.to_owned(),
             cwd: Some(cwd),
-            argv: vec![],
+            argv: resume.map(|(_, _, argv)| argv).unwrap_or_default(),
             shell: None,
         })?
         else {
@@ -591,6 +672,7 @@ const OPERATIONS: &[&str] = &[
     "config",
     "projects",
     "git",
+    "conversations",
 ];
 
 /// The user configuration operations, while the workspace runs or not:
@@ -638,6 +720,28 @@ fn choices(record: &ClosedSession) -> Vec<&'static str> {
     } else {
         vec!["folder"]
     }
+}
+
+/// The command line that resumes an agent conversation, from `new`'s
+/// `resume` (`{"kind": "claude" | "codex", "id": …}`): the same commands
+/// the server's `restore` runs (`claude --resume ID`, `codex resume ID`),
+/// built here from a fixed table and a validated conversation id, never
+/// from a command line the browser sends.
+fn resume_argv(value: &Value) -> Result<(&'static str, String, Vec<String>)> {
+    let id = value["id"]
+        .as_str()
+        .filter(|id| crate::session_id(id))
+        .ok_or("resume needs a valid conversation id")?;
+    let (kind, program, verb) = match value["kind"].as_str() {
+        Some("claude") => ("claude", "claude", "--resume"),
+        Some("codex") => ("codex", "codex", "resume"),
+        _ => return Err("resume kind must be claude or codex".into()),
+    };
+    Ok((
+        kind,
+        id.to_owned(),
+        vec![program.into(), verb.into(), id.into()],
+    ))
 }
 
 fn home() -> Result<PathBuf> {
@@ -909,6 +1013,7 @@ pub fn run(socket: &Path, state: &Path) -> Result<()> {
             monitor,
             config,
             git: web_git::Worker::start(),
+            history: web_history::Worker::start(),
         };
         let mut initialized = greeted;
         let mut last_id = 0;
@@ -932,11 +1037,18 @@ pub fn run(socket: &Path, state: &Path) -> Result<()> {
                 let method = web["method"].as_str().unwrap_or("");
                 let result = if !serde_json::to_vec(web).is_ok_and(|b| b.len() <= REQUEST_LIMIT) {
                     Err("web request too large".into())
-                } else if method == "git" {
-                    // Answered by a Git worker thread when ready, so a slow
-                    // repository never holds up the other operations.
+                } else if method == "git" || method == "conversations" {
+                    // Answered by a Git or the History worker thread when
+                    // ready, so a slow repository or a large transcript
+                    // folder never holds up the other operations.
                     let replies = sender.clone();
-                    match api.git(
+                    let submit = if method == "git" {
+                        Api::git
+                    } else {
+                        Api::conversations
+                    };
+                    match submit(
+                        &api,
                         &web["params"],
                         Box::new(move |result| {
                             let reply = match result {
@@ -1095,6 +1207,7 @@ mod tests {
             name: "n".into(),
             kind,
             session_id: session.map(Into::into),
+            sessions: vec![],
             argv: argv.iter().map(|a| (*a).into()).collect(),
             closed_at: Some(1),
             reason: "Closed".into(),
@@ -1113,5 +1226,22 @@ mod tests {
         let shell = record(None, None, &["htop", "-d", "5"]);
         assert_eq!(choices(&shell), ["restart", "folder"]);
         assert_eq!(choices(&record(None, None, &[])), ["folder"]);
+    }
+    #[test]
+    fn resume_commands_come_from_a_fixed_table() {
+        let (kind, id, argv) = resume_argv(&json!({"kind": "claude", "id": "a-1"})).unwrap();
+        assert_eq!((kind, id.as_str()), ("claude", "a-1"));
+        assert_eq!(argv, ["claude", "--resume", "a-1"]);
+        let (_, _, argv) = resume_argv(&json!({"kind": "codex", "id": "b_2"})).unwrap();
+        assert_eq!(argv, ["codex", "resume", "b_2"]);
+        for bad in [
+            json!({"kind": "claude", "id": "x; rm -rf ~"}),
+            json!({"kind": "claude", "id": ""}),
+            json!({"kind": "bash", "id": "a"}),
+            json!({"kind": "codex"}),
+            json!("claude --resume a"),
+        ] {
+            assert!(resume_argv(&bad).is_err(), "{bad}");
+        }
     }
 }
