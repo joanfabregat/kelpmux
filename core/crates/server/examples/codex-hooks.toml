@@ -1,0 +1,43 @@
+# Merge these optional tables into your Codex config; review/trust through /hooks.
+# kelpmux must be on the hook process's PATH. Adjust to an absolute binary path if needed.
+[[hooks.SessionStart]]
+[[hooks.SessionStart.hooks]]
+type = "command"
+command = "kelpmux event codex || true"
+timeout = 3
+
+[[hooks.UserPromptSubmit]]
+[[hooks.UserPromptSubmit.hooks]]
+type = "command"
+command = "kelpmux event codex || true"
+timeout = 3
+
+[[hooks.PreToolUse]]
+[[hooks.PreToolUse.hooks]]
+type = "command"
+command = "kelpmux event codex || true"
+timeout = 3
+
+[[hooks.PostToolUse]]
+[[hooks.PostToolUse.hooks]]
+type = "command"
+command = "kelpmux event codex || true"
+timeout = 3
+
+[[hooks.PermissionRequest]]
+[[hooks.PermissionRequest.hooks]]
+type = "command"
+command = "kelpmux event codex || true"
+timeout = 3
+
+[[hooks.Stop]]
+[[hooks.Stop.hooks]]
+type = "command"
+command = "kelpmux event codex || true"
+timeout = 3
+
+[[hooks.SessionEnd]]
+[[hooks.SessionEnd.hooks]]
+type = "command"
+command = "kelpmux event codex || true"
+timeout = 3

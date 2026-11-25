@@ -1,0 +1,13 @@
+{
+  "hooks": {
+    "SessionStart": [{"hooks": [{"type": "command", "command": "kelpmux event claude || true", "timeout": 3}]}],
+    "UserPromptSubmit": [{"hooks": [{"type": "command", "command": "kelpmux event claude || true", "timeout": 3}]}],
+    "PreToolUse": [{"hooks": [{"type": "command", "command": "kelpmux event claude || true", "timeout": 3}]}],
+    "PostToolUse": [{"hooks": [{"type": "command", "command": "kelpmux event claude || true", "timeout": 3}]}],
+    "PermissionRequest": [{"hooks": [{"type": "command", "command": "kelpmux event claude || true", "timeout": 3}]}],
+    "Notification": [{"hooks": [{"type": "command", "command": "kelpmux event claude || true", "timeout": 3}]}],
+    "Stop": [{"hooks": [{"type": "command", "command": "kelpmux event claude || true", "timeout": 3}]}],
+    "StopFailure": [{"hooks": [{"type": "command", "command": "kelpmux event claude || true", "timeout": 3}]}],
+    "SessionEnd": [{"hooks": [{"type": "command", "command": "kelpmux event claude || true", "timeout": 3}]}]
+  }
+}

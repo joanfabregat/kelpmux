@@ -1,0 +1,13 @@
+KelpClient
+Copyright 2026 Joan Fabregat and Kelpmux contributors
+Licensed under the Apache License, Version 2.0.
+
+KelpClient was moved into KelpCore from Kelpmux
+(https://github.com/joanfabregat/kelpmux) at commit 7179aa3. The moved code
+remains the work of Joan Fabregat and the Kelpmux contributors, under the
+same Apache-2.0 license.
+
+KelpClient uses serde, serde_json, unicode-width and other Rust
+dependencies, copyright their respective authors. Exact versions and license
+expressions are recorded in Cargo.lock and the dependency metadata.
+KelpClient's Apache-2.0 license does not replace those dependencies' licenses.

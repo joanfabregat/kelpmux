@@ -1,0 +1,98 @@
+//! In-process Linux metrics adapted from Vitals (MIT); see assets/licenses/vitals-MIT.txt.
+//! No subprocesses or CPU state files. Filesystem sampling is cached independently.
+pub mod clock;
+pub mod cpu;
+pub mod disk;
+pub mod mem;
+use serde::{Deserialize, Serialize};
+use std::{
+    fs,
+    path::{Path, PathBuf},
+    time::{Duration, Instant},
+};
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Vitals {
+    pub cpu: Option<u8>,
+    pub memory: Option<u8>,
+    pub swap: Option<u8>,
+    pub disks: Vec<u8>,
+    pub date: Option<String>,
+    pub time: Option<String>,
+}
+pub struct Sampler {
+    proc_root: PathBuf,
+    cpu: Option<cpu::State>,
+    metrics_at: Option<Instant>,
+    disks_at: Option<Instant>,
+    current: Vitals,
+    disk_readings: Vec<(String, u8)>,
+}
+impl Default for Sampler {
+    fn default() -> Self {
+        Self::with_proc_root(Path::new("/proc"))
+    }
+}
+impl Sampler {
+    pub fn with_proc_root(proc_root: &Path) -> Self {
+        Self {
+            proc_root: proc_root.into(),
+            cpu: None,
+            metrics_at: None,
+            disks_at: None,
+            current: Vitals::default(),
+            disk_readings: Vec::new(),
+        }
+    }
+    pub fn sample(&mut self) -> Vitals {
+        self.sample_at(Instant::now())
+    }
+    /// Explicit monotonic clock keeps cache tests deterministic without sleeps.
+    pub fn sample_at(&mut self, time: Instant) -> Vitals {
+        if self
+            .metrics_at
+            .is_none_or(|last| time.saturating_duration_since(last) >= Duration::from_secs(1))
+        {
+            self.current.cpu = fs::read_to_string(self.proc_root.join("stat"))
+                .ok()
+                .and_then(|text| cpu::parse_stat(&text))
+                .map(|sample| {
+                    let (percent, state) = cpu::percent(self.cpu, sample);
+                    if let Some(state) = state {
+                        self.cpu = Some(state);
+                    }
+                    percent
+                });
+            let memory = fs::read_to_string(self.proc_root.join("meminfo"))
+                .ok()
+                .and_then(|text| mem::parse_meminfo(&text));
+            self.current.memory = memory.map(|usage| usage.memory);
+            self.current.swap = memory.map(|usage| usage.swap);
+            let clock = clock::now();
+            self.current.date = clock.as_ref().map(clock::LocalTime::date);
+            self.current.time = clock
+                .as_ref()
+                .map(|clock| format!("{} {}", clock.time(), clock.zone));
+            self.metrics_at = Some(time);
+        }
+        if self
+            .disks_at
+            .is_none_or(|last| time.saturating_duration_since(last) >= Duration::from_secs(5))
+        {
+            self.disk_readings = fs::read_to_string(self.proc_root.join("self/mounts"))
+                .ok()
+                .map(|mounts| disk::readings_with_mounts(&mounts, 10 << 30))
+                .unwrap_or_default();
+            self.current.disks = self
+                .disk_readings
+                .iter()
+                .map(|(_, percent)| *percent)
+                .collect();
+            self.disks_at = Some(time);
+        }
+        self.current.clone()
+    }
+    pub fn disk_readings(&self) -> &[(String, u8)] {
+        &self.disk_readings
+    }
+}
