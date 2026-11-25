@@ -284,6 +284,8 @@ pub struct Checkout {
     filters: Vec<String>,
     empty_tree: &'static str,
     deadline: Instant,
+    /// Longest one Git command may run: [`TIMEOUT`] unless set.
+    timeout: Duration,
     /// The `origin` remote's github.com `owner/name` ([`github_slug`]).
     github: Option<String>,
 }
@@ -617,6 +619,7 @@ impl Checkout {
             empty_tree: EMPTY_TREE_SHA1,
             deadline,
             github: None,
+            timeout: TIMEOUT,
         };
         let list = checkout.git(
             &["config", "-z", "--list", "--show-scope", "--show-origin"],
@@ -667,6 +670,23 @@ impl Checkout {
         self.git(args, limit)
     }
 
+    /// Lets each Git command run up to `timeout` (still within the deadline):
+    /// for the safe-removal check, whose `status` of a large checkout may
+    /// take longer than the Repos view's [`TIMEOUT`].
+    pub fn with_timeout(mut self, timeout: Duration) -> Self {
+        self.timeout = timeout;
+        self
+    }
+
+    /// Runs a read-only Git command through the hardened runner (see the
+    /// module's threat model) and returns its standard output, at most
+    /// [`OUTPUT_LIMIT`] bytes, and whether it was cut there. The arguments
+    /// must be a fixed command chosen by the caller, never browser input.
+    pub fn output(&self, args: &[&str]) -> Result<(Vec<u8>, bool)> {
+        let output = self.git(args, OUTPUT_LIMIT)?;
+        Ok((output.bytes, output.truncated))
+    }
+
     /// Runs one Git command in the checkout through the hardened runner,
     /// killed after [`TIMEOUT`] or at the checkout's deadline.
     fn git(&self, args: &[&str], limit: usize) -> Result<Output> {
@@ -674,7 +694,7 @@ impl Checkout {
         if started >= self.deadline {
             return Err(OUT_OF_TIME.into());
         }
-        let deadline = (started + TIMEOUT).min(self.deadline);
+        let deadline = (started + self.timeout).min(self.deadline);
         let mut command = Command::new(git_binary()?);
         command.env_clear();
         for key in ["HOME", "XDG_CONFIG_HOME"] {
@@ -745,7 +765,7 @@ impl Checkout {
         let error = err.join().map_err(|_| "Git output reader failed")?;
         match status {
             None if deadline == self.deadline => Err(OUT_OF_TIME.into()),
-            None => Err(format!("Git took longer than {}s", TIMEOUT.as_secs())),
+            None => Err(format!("Git took longer than {}s", self.timeout.as_secs())),
             Some(status) if !status.success() => Err(failure(&error.bytes, status.code())),
             Some(_) => Ok(output),
         }

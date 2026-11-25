@@ -27,9 +27,10 @@
 //! short-lived stream connection each (`session`), never the composed UI's
 //! administration.
 use super::{
-    connection, environments,
+    archive, connection, environments,
     projects::Links,
     protocol::*,
+    removal,
     session::{Session, request_id},
     status,
     stream::{self, ClosedSession, Event, Request},
@@ -90,8 +91,15 @@ pub const API_VERSION: u64 = 3;
 /// (`owner/name`) of each `git` checkout. Minor 10 added `git_history`:
 /// read-only history and diffs of a checkout (`git_branches`, `git_log`,
 /// `git_commit`, `git_diff` and `git_changes`; `web_git_history`), on the
-/// same Git worker threads.
-pub const API_MINOR: u64 = 10;
+/// same Git worker threads. Minor 11 added `archive`: a project's `status`
+/// and `archive` in the `config` result, and the `project_status`,
+/// `project_check_removal`, `project_archive`, `project_restore`,
+/// `project_delete_folder`, `archive_jobs`, `archive_cancel`,
+/// `archive_list`, `archive_status` and `archive_test` operations
+/// (`archive`, `removal`, ADR 0006): checks, listings and the test answer
+/// from threads of their own, and archive, restore and delete run as
+/// detached `kelpmux project` jobs that outlive the connection.
+pub const API_MINOR: u64 = 11;
 /// Largest accepted `Web` request, in bytes of JSON.
 const REQUEST_LIMIT: usize = 65536;
 /// Largest request identifier a browser can represent exactly.
@@ -177,10 +185,13 @@ impl Sessions {
 /// deploy environment's `status` script may take up to ten seconds and a
 /// Stop waits for its process, so they never hold up the terminals.
 const ENVIRONMENT_THREADS: usize = 3;
+/// Most archive checks, listings and tests one bridge runs at once.
+const ARCHIVE_THREADS: usize = 2;
 
 struct Api {
     sessions: Sessions,
     environment_threads: Arc<std::sync::atomic::AtomicUsize>,
+    archive_threads: Arc<std::sync::atomic::AtomicUsize>,
     state: PathBuf,
     monitor: status::Monitor,
     config: Option<Arc<user_config::Live>>,
@@ -377,8 +388,180 @@ impl Api {
                 self.project_change(method, p)
             }
             method if method.starts_with("github_") => self.github(method, p),
+            "project_status"
+            | "project_archive"
+            | "project_restore"
+            | "project_delete_folder"
+            | "archive_jobs"
+            | "archive_cancel"
+            | "archive_status" => self.archive(method, p),
             _ => Err("unsupported web operation".into()),
         }
+    }
+    /// The live terminals of project `id` in this run.
+    fn live_project_panes(&self, id: &str) -> Result<usize> {
+        let epoch = self.runtime()?.0;
+        let linked = self.links().panes(&epoch);
+        let mut session = self.session("pane-lifecycle")?;
+        Ok(session
+            .update()?
+            .panes
+            .iter()
+            .filter(|pane| !pane.dead && linked.get(&pane.id).is_some_and(|p| p == id))
+            .count())
+    }
+    /// The status and archive operations (`archive`, ADR 0006) that answer
+    /// at once. Archive, restore and delete start a detached `kelpmux
+    /// project` job; the browser follows it with `archive_jobs`. Every path
+    /// and project comes from the user configuration; the browser names a
+    /// project, a confirmed check's fingerprint, an archive object of that
+    /// project and, for a restore, a new folder inside `projects.base`.
+    fn archive(&self, method: &str, p: &Value) -> Result<Value> {
+        let ctx = archive::Context::current()?;
+        let text = |key: &str, limit: usize| -> Result<Option<String>> {
+            match &p[key] {
+                Value::Null => Ok(None),
+                Value::String(text)
+                    if text.len() <= limit && !text.chars().any(char::is_control) =>
+                {
+                    Ok(Some(text.clone()))
+                }
+                _ => Err(format!("{key} must be a string of at most {limit} bytes").into()),
+            }
+        };
+        let id = || -> Result<String> {
+            text("id", 64)?
+                .filter(|id| user_config::id_problem(id).is_none())
+                .ok_or_else(|| "project id required".into())
+        };
+        let fingerprint = || -> Result<String> {
+            text("fingerprint", 16)?
+                .filter(|f| f.len() == 16 && f.bytes().all(|b| b.is_ascii_hexdigit()))
+                .ok_or_else(|| "the confirmed check's fingerprint is required".into())
+        };
+        let busy = |id: &str| -> Result<()> {
+            match self.live_project_panes(id)? {
+                0 => Ok(()),
+                n => Err(format!(
+                    "close this project's {n} open terminal{} first: their programs run in its folder",
+                    if n == 1 { "" } else { "s" }
+                )
+                .into()),
+            }
+        };
+        match method {
+            "project_status" => {
+                let live = self
+                    .config
+                    .as_deref()
+                    .ok_or("the user configuration is unavailable: HOME is not set")?;
+                let status = p["status"]
+                    .as_str()
+                    .and_then(user_config::ProjectStatus::parse)
+                    .filter(|s| *s != user_config::ProjectStatus::Archived)
+                    .ok_or("status must be active or paused")?;
+                archive::set_status(&ctx, &id()?, status)?;
+                Ok(json!({ "saved": true, "errors": [], "config": live.reload() }))
+            }
+            "archive_jobs" => Ok(archive::jobs(&ctx)),
+            "archive_cancel" => {
+                let project = text("project", 64)?.ok_or("project required")?;
+                Ok(archive::cancel(&ctx, &project)?)
+            }
+            "archive_status" => Ok(archive::status(&self.user_config()?)),
+            "project_archive" => {
+                let id = id()?;
+                busy(&id)?;
+                Ok(archive::spawn(
+                    &ctx,
+                    &id,
+                    &[
+                        "archive".into(),
+                        id.clone(),
+                        "--fingerprint".into(),
+                        fingerprint()?,
+                    ],
+                )?)
+            }
+            "project_restore" => {
+                let id = id()?;
+                let mut args = vec!["restore".to_owned(), id.clone()];
+                if let Some(object) = text("object", 1024)?.filter(|o| !o.is_empty()) {
+                    args.extend(["--object".into(), object]);
+                }
+                if let Some(folder) = text("folder", 4096)?.filter(|f| !f.trim().is_empty()) {
+                    args.extend(["--folder".into(), folder]);
+                }
+                Ok(archive::spawn(&ctx, &id, &args)?)
+            }
+            "project_delete_folder" => {
+                let id = id()?;
+                let name = text("name", 256)?.ok_or("type the project's name to confirm")?;
+                busy(&id)?;
+                let mut args = vec![
+                    "delete".to_owned(),
+                    id.clone(),
+                    "--fingerprint".into(),
+                    fingerprint()?,
+                    "--name".into(),
+                    name,
+                ];
+                if p["remove"] == true {
+                    args.push("--remove".into());
+                }
+                Ok(archive::spawn(&ctx, &id, &args)?)
+            }
+            _ => Err("unsupported web operation".into()),
+        }
+    }
+    /// The archive operations that take time or the network, each on its
+    /// own thread (at most [`ARCHIVE_THREADS`] at once): `project_check_removal
+    /// {id, mode}`, `archive_list {id}` and `archive_test`.
+    fn archive_async(
+        &self,
+        method: &str,
+        p: &Value,
+        reply: Box<dyn FnOnce(std::result::Result<Value, String>) + Send>,
+    ) -> Result<()> {
+        let ctx = archive::Context::current()?;
+        let id = p["id"].as_str().unwrap_or("").to_owned();
+        if method != "archive_test" && user_config::id_problem(&id).is_some() {
+            return Err("project id required".into());
+        }
+        let mode = match method {
+            "project_check_removal" => Some(
+                p["mode"]
+                    .as_str()
+                    .and_then(removal::Mode::parse)
+                    .ok_or("mode must be archive or delete")?,
+            ),
+            _ => None,
+        };
+        /// Gives the thread's slot back however the thread ends.
+        struct Slot(Arc<std::sync::atomic::AtomicUsize>);
+        impl Drop for Slot {
+            fn drop(&mut self) {
+                self.0.fetch_sub(1, Ordering::AcqRel);
+            }
+        }
+        let threads = self.archive_threads.clone();
+        if threads.fetch_add(1, Ordering::AcqRel) >= ARCHIVE_THREADS {
+            threads.fetch_sub(1, Ordering::AcqRel);
+            return Err("busy with other archive operations; try again".into());
+        }
+        let slot = Slot(threads);
+        let method = method.to_owned();
+        std::thread::spawn(move || {
+            let _slot = slot;
+            let result = match (method.as_str(), mode) {
+                ("project_check_removal", Some(mode)) => archive::check(&ctx, &id, mode),
+                ("archive_list", _) => archive::list(&ctx, &id),
+                ("archive_test", _) => archive::test(&ctx),
+                _ => Err("unsupported archive operation".into()),
+            };
+            reply(result);
+        });
+        Ok(())
     }
     fn github_service(&self) -> Result<&web_github::GitHub> {
         self.github
@@ -888,6 +1071,7 @@ const OPERATIONS: &[&str] = &[
     "environments",
     "github",
     "git_history",
+    "archive",
 ];
 
 /// The GitHub integration of this bridge, reading `[github]` from the live
@@ -1246,6 +1430,7 @@ pub fn run(socket: &Path, state: &Path) -> Result<()> {
                 socket,
             },
             environment_threads: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+            archive_threads: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
             state,
             monitor,
             config,
@@ -1298,6 +1483,25 @@ pub fn run(socket: &Path, state: &Path) -> Result<()> {
                     // History and diffs: on the Git worker threads too.
                     let replies = sender.clone();
                     match api.git_history(
+                        method,
+                        &web["params"],
+                        Box::new(move |result| {
+                            let reply = match result {
+                                Ok(result) => json!({"Web": {"id": id, "result": result}}),
+                                Err(error) => json!({"Web": {"id": id, "error": error}}),
+                            };
+                            let _ = replies.send(Outbound::Message(reply));
+                        }),
+                    ) {
+                        Ok(()) => continue,
+                        Err(error) => Err(error),
+                    }
+                } else if matches!(
+                    method,
+                    "project_check_removal" | "archive_list" | "archive_test"
+                ) {
+                    let replies = sender.clone();
+                    match api.archive_async(
                         method,
                         &web["params"],
                         Box::new(move |result| {

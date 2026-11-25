@@ -19,7 +19,6 @@ This file lists open work only. Done work is in the Git history and the changelo
 - **GitHub App with device-flow sign-in**: a GitHub App the user signs in to with the device flow (scoped, no keys on the machine) and a token broker for the managed offering, replacing the machine's own GitHub token.
 - **GitHub pull requests**: read-only list of a repository's pull requests with checks and reviews, in the Repos view and the project page.
 - **Worktrees**: discover a repository's worktrees and start an agent in a checkout or a new worktree, one per agent.
-- **Safe removal**: before deleting a checkout or folder, list everything not safely on a remote; re-check before deleting.
 - **Agent marks**: a finished turn stays highlighted until seen in any browser; per-project roll-ups (check what KelpMux already has first).
 - **Environments, what remains** ([ADR 0005](docs/adr/0005-environments.md) shipped `process` and `deploy` environments in panes): reclaiming ports, health history, dependencies between environments; containers and routing are under Runtime backends and Dev and staging deployments below.
 - **Project instructions**: `.kelp/AGENTS.md` in a configuration repository, with `AGENTS.md` and a `CLAUDE.md` pointer generated at the project root.
@@ -27,7 +26,7 @@ This file lists open work only. Done work is in the Git history and the changelo
 
 ## New features
 
-- **Project status and archive**: active, paused and archived projects; archiving packs the project folder as tar.gz, uploads it to GCS or S3-compatible storage with a verified checksum, then removes it from the machine after the safe-removal check. Restore from an archive.
+- **S3-compatible archive backend**: project archives ([ADR 0006](docs/adr/0006-project-archive.md)) go to Google Cloud Storage only; add `archive.backend = "s3"` (AWS S3, Garage, MinIO) with multipart upload, checksums and credentials that never touch the browser.
 - **Runtime backends** (KelpHub ADR 0006): one interface over the Docker Engine API (Docker, Podman's socket or any compatible engine) and Kubernetes, replacing the Podman-specific tooling on the host.
 - **KelpMux in a container or a pod**: an image with sshd, the terminal server and the bridge, the home folder on a volume; SSH stays the way in. Explore a second way in through an API (token or passkey to the relay, bridge on a local socket) later.
 - **Dev and staging deployments**: environments run in containers through the runtime backend, and a KelpMux reverse proxy routes `<slug>.<domain>` to each running instance, as the wildcard domain does on jbox today.

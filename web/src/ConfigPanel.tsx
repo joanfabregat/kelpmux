@@ -13,6 +13,7 @@ import type { HardwareKeyboard } from "@kelpcore/web/touch-keys.ts";
 import { UploadSettings } from "./Upload";
 import { ConfigProblems, FilesAndFolders } from "./UserConfig";
 import { GitHubSettings, type Rpc } from "./GitHub";
+import { ArchiveSettings } from "./Archive";
 import {
   type ConfigChanges,
   type SaveResult,
@@ -53,6 +54,8 @@ export type ConfigPanelProps = {
   saveUserConfig: (changes: ConfigChanges) => Promise<SaveResult | null>;
   /** The bridge's GitHub operations, when it offers them (API minor 9). */
   github: Rpc | null;
+  /** The bridge's archive operations, when it offers them (API minor 11). */
+  archive?: Rpc | null;
   /** A touch device: the hardware keyboard setting applies. */
   touch: boolean;
 };
@@ -79,6 +82,7 @@ export function ConfigPanel({
   userConfig,
   saveUserConfig,
   github,
+  archive = null,
   touch,
 }: ConfigPanelProps) {
   const idle = idleMinutes(connection);
@@ -295,6 +299,9 @@ export function ConfigPanel({
       </section>
       <section hidden={settingsSection !== "github"}>
         {settingsSection === "github" && <GitHubSettings rpc={github} />}
+      </section>
+      <section hidden={settingsSection !== "archive"}>
+        {settingsSection === "archive" && <ArchiveSettings rpc={archive} />}
       </section>
       <section hidden={settingsSection !== "keys"}>{keyContent}</section>
       <section hidden={settingsSection !== "connection"}>

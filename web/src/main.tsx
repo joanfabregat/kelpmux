@@ -68,6 +68,8 @@ import {
 import { Sidebar } from "./Sidebar";
 import { ReposView } from "./Repos";
 import { ProjectHome } from "./ProjectHome";
+import { ArchivedPanel, RemovalDialog, useArchiveJobs } from "./Archive";
+import { statusActions } from "./archive-state";
 import { EnvironmentsView, useProjectEnvironments } from "./Environments";
 import { readEnvironmentPanes, type EnvironmentPane } from "./environments";
 import { checkoutsByPath } from "./git";
@@ -690,7 +692,13 @@ function App() {
       setConfirmAction(null);
     }
   }
+  /** Archive… or Delete… of a project (RemovalDialog), open. */
+  const [removal, setRemoval] = useState<{
+    mode: "archive" | "delete";
+    project: Project;
+  } | null>(null);
   const overlayOpen =
+    !!removal ||
     !!dialog ||
     !!confirmAction ||
     keyModal ||
@@ -856,6 +864,49 @@ function App() {
             ? store.session.rpc(method, params)
             : Promise.reject(Error("Not connected"))
       : null;
+  /** The bridge's archive operations (API minor 11), when offered. */
+  const archiveRpc =
+    online && operations.has("archive")
+      ? (method: string, params?: any) =>
+          store.session
+            ? store.session.rpc(method, params)
+            : Promise.reject(Error("Not connected"))
+      : null;
+  /** Archive, restore and delete jobs, from every browser; a job ending
+   * here says so. The configuration's change (status, folder) arrives as
+   * a `Config` notice. */
+  const archiveJobs = useArchiveJobs(archiveRpc, (job) => {
+    const name =
+      userProjects.find((project) => project.id === job.project)?.name ||
+      job.project;
+    if (job.state === "done") {
+      if (job.kind === "delete" && job.result?.removed && scope === job.project)
+        setScope("");
+      toast(
+        job.kind === "archive"
+          ? `Archived “${name}”`
+          : job.kind === "restore"
+            ? `Restored “${name}”`
+            : `Deleted the folder of “${name}”`,
+        { key: "archive", tone: "success" },
+      );
+    } else if (job.state === "failed")
+      toast(`${name}: ${job.error || "failed"}`, { key: "archive", tone: "error" });
+  });
+  async function setProjectStatus(project: Project, status: "active" | "paused") {
+    try {
+      const result = await rpc("project_status", { id: project.id, status });
+      const config = readUserConfig(result?.config);
+      if (config) setUserConfig(config);
+      if (result?.saved)
+        toast(status === "paused" ? `Paused “${project.name}”` : `Resumed “${project.name}”`, {
+          key: "project",
+        });
+      else if (result) fail(Error(result.errors?.[0]?.message || "Not saved"));
+    } catch (error) {
+      fail(error);
+    }
+  }
   /** The project a terminal belongs to; a dragged row already shows in
    * the group under it. */
   const projectOfPane = (pane: number) =>
@@ -2211,13 +2262,30 @@ function App() {
       );
     return { saved: true, problems: {} };
   }
+  /** Removes a project from KelpMux only (`project_delete`): its folder
+   * stays. True once removed. */
+  async function removeProjectOnly(project: Project) {
+    const result = await rpc("project_delete", { id: project.id, confirmed: true });
+    const config = readUserConfig(result?.config);
+    if (config) setUserConfig(config);
+    if (result?.saved) {
+      if (scope === project.id) setScope("");
+      toast(`Removed “${project.name}” from KelpMux`, { key: "project" });
+      return true;
+    }
+    if (result) fail(Error(result.errors?.[0]?.message || "Not removed"));
+    return false;
+  }
   function deleteProject(project: Project) {
+    const archived = project.status === "archived";
     setConfirmAction({
-      title: "Delete project",
-      text: `Delete the project “${project.name}”? Its folder ${project.path} and its files stay; its terminals move to Scratch.`,
+      title: archived ? "Remove from KelpMux" : "Delete project",
+      text: archived
+        ? `Remove the archived project “${project.name}” from KelpMux? Its archive${project.archive ? ` gs://${project.archive.bucket}/${project.archive.object}` : ""} stays in the storage, but KelpMux no longer lists it; its terminals move to Scratch.`
+        : `Delete the project “${project.name}”? Its folder ${project.path} and its files stay; its terminals move to Scratch.`,
       buttons: [
         {
-          label: "Delete project",
+          label: archived ? "Remove from KelpMux" : "Delete project",
           color: "danger",
           action: async () => {
             const result = await rpc("project_delete", {
@@ -2244,6 +2312,21 @@ function App() {
     // Its home page, unless it is the page shown.
     if (!popupPane && !(view === "project" && scope === project.id))
       items.push(["Overview", () => openProjectHome(project.id)]);
+    if (archiveRpc && project.status === "archived") {
+      // Its folder is in the archive: only its page, History, Restore
+      // (on its page) and removal from KelpMux.
+      items.push([
+        "History",
+        () => {
+          setScope(project.id);
+          setDialog("recovery");
+        },
+      ]);
+      if (!popupPane)
+        items.push(["Restore…", () => openProjectHome(project.id)]);
+      items.push(["Remove from KelpMux…", () => deleteProject(project)]);
+      return items;
+    }
     items.push(["New terminal", () => void newTab(project), project.missing]);
     if (filesClient && !popupPane)
       items.push(["Files", () => openFiles(project.path, project.id), project.missing]);
@@ -2271,7 +2354,19 @@ function App() {
         setDialog("recovery");
       },
     ]);
-    if (!project.scratch)
+    if (!project.scratch && archiveRpc) {
+      items.push(["Rename…", () => setProjectDialog({ mode: "rename", project })]);
+      for (const action of statusActions(project))
+        if (action === "pause" || action === "resume")
+          items.push([
+            action === "pause" ? "Pause" : "Resume",
+            () => void setProjectStatus(project, action === "pause" ? "paused" : "active"),
+          ]);
+        else if (action === "archive")
+          items.push(["Archive…", () => setRemoval({ mode: "archive", project }), project.missing]);
+        else if (action === "delete")
+          items.push(["Delete…", () => setRemoval({ mode: "delete", project })]);
+    } else if (!project.scratch)
       items.push(
         ["Rename…", () => setProjectDialog({ mode: "rename", project })],
         ["Delete…", () => deleteProject(project)],
@@ -3387,6 +3482,17 @@ function App() {
                 }
                 onRestored={reopened}
                 onBack={phone ? () => setPhoneList(true) : undefined}
+                archived={
+                  archiveRpc && scopeProject.status === "archived" ? (
+                    <ArchivedPanel
+                      project={scopeProject}
+                      rpc={archiveRpc}
+                      jobs={archiveJobs}
+                      base={userConfig?.values.projects.base || "~/projects"}
+                      taken={userProjects.map((project) => project.folder)}
+                    />
+                  ) : undefined
+                }
               />
             ) : view === "repos" && scopeProject ? (
               <ReposView
@@ -3708,6 +3814,7 @@ function App() {
                   userConfig={userConfig}
                   saveUserConfig={saveUserConfig}
                   github={github}
+                  archive={archiveRpc}
                   touch={touch}
                 />
               )}
@@ -3813,6 +3920,17 @@ function App() {
             y={projectMenu.y}
             items={projectMenuItems(projectMenu.project)}
             onClose={() => setProjectMenu(null)}
+          />
+        )}
+        {removal && archiveRpc && (
+          <RemovalDialog
+            key={`${removal.mode}:${removal.project.id}`}
+            mode={removal.mode}
+            project={removal.project}
+            rpc={archiveRpc}
+            jobs={archiveJobs}
+            onRemoveOnly={() => removeProjectOnly(removal.project)}
+            onClose={() => setRemoval(null)}
           />
         )}
         {projectDialog && (

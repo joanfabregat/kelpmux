@@ -157,7 +157,11 @@ fn gh_binary() -> Option<PathBuf> {
 /// Runs a token program (argv only, no shell) in its own session, killed
 /// after `timeout`; returns its first line of output. Its error output is
 /// discarded, and failures say only how it ended.
-fn run_token_command(program: &Path, args: &[&str], timeout: Duration) -> Result<String> {
+pub(crate) fn run_token_command(
+    program: &Path,
+    args: &[&str],
+    timeout: Duration,
+) -> Result<String> {
     let name = if args.is_empty() {
         format!("`{}`", program.display())
     } else {
