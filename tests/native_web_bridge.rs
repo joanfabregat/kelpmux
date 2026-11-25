@@ -1032,6 +1032,145 @@ fn git_reports_a_projects_checkouts_read_only() {
     );
 }
 
+/// The history operations (API 3.10): a checkout's branches, log, commit
+/// details, diffs and working changes, for checkouts `git` reported only,
+/// with revisions and paths checked before any Git runs.
+#[test]
+fn git_history_reads_a_checkouts_history_and_diffs() {
+    let server = Server::start();
+    let mut bridge = Bridge::start(&server);
+    welcome(&mut bridge);
+    let state = bridge.web(1, "state", json!({}));
+    assert_eq!(state["result"]["api_minor"], 10);
+    assert!(
+        state["result"]["operations"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|op| op == "git_history")
+    );
+    let created = bridge.web(2, "project_create", json!({"name": "Hist"}));
+    assert_eq!(created["result"]["saved"], true, "{created}");
+    let folder = server.root.join("projects/Hist");
+    let git = |dir: &std::path::Path, args: &[&str]| {
+        let status = std::process::Command::new("git")
+            .args(args)
+            .current_dir(dir)
+            .env("GIT_CONFIG_NOSYSTEM", "1")
+            .env("GIT_CONFIG_GLOBAL", "/dev/null")
+            .env("GIT_AUTHOR_NAME", "T")
+            .env("GIT_AUTHOR_EMAIL", "t@example.invalid")
+            .env("GIT_COMMITTER_NAME", "T")
+            .env("GIT_COMMITTER_EMAIL", "t@example.invalid")
+            .stdout(std::process::Stdio::null())
+            .status()
+            .unwrap();
+        assert!(status.success());
+    };
+    let api = folder.join("api");
+    fs::create_dir_all(&api).unwrap();
+    git(&api, &["init", "-q", "-b", "main"]);
+    fs::write(api.join("a.txt"), "one\n").unwrap();
+    git(&api, &["add", "."]);
+    git(&api, &["commit", "-q", "-m", "First"]);
+    fs::write(api.join("a.txt"), "one\ntwo\n").unwrap();
+    git(&api, &["commit", "-q", "-am", "Second"]);
+    fs::write(api.join("a.txt"), "one\ntwo\nthree\n").unwrap();
+    fs::write(api.join("new.txt"), "n\n").unwrap();
+    // The checkout's path as `git` reports it.
+    let listed = bridge.web(3, "git", json!({"project": "hist"}));
+    let repo = listed["result"]["repos"][0]["path"]
+        .as_str()
+        .unwrap_or_else(|| panic!("{listed}"))
+        .to_owned();
+    let at = |extra: Value| {
+        let mut params = json!({"project": "hist", "repo": repo});
+        params
+            .as_object_mut()
+            .unwrap()
+            .extend(extra.as_object().unwrap().clone());
+        params
+    };
+    let branches = bridge.web(4, "git_branches", at(json!({})));
+    assert_eq!(branches["result"]["current"], "main", "{branches}");
+    assert_eq!(branches["result"]["branches"][0]["subject"], "Second");
+    let log = bridge.web(5, "git_log", at(json!({"limit": 1})));
+    assert_eq!(log["result"]["commits"][0]["subject"], "Second", "{log}");
+    assert_eq!(log["result"]["more"], true);
+    let sha = log["result"]["commits"][0]["sha"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let commit = bridge.web(6, "git_commit", at(json!({"rev": &sha[..10]})));
+    assert_eq!(commit["result"]["sha"], sha, "{commit}");
+    assert_eq!(commit["result"]["files"][0]["path"], "a.txt");
+    let diff = bridge.web(
+        7,
+        "git_diff",
+        at(json!({"kind": "commit", "rev": sha, "path": "a.txt"})),
+    );
+    assert_eq!(
+        diff["result"]["files"][0]["hunks"][0]["lines"],
+        json!([" one", "+two"]),
+        "{diff}"
+    );
+    let changes = bridge.web(8, "git_changes", at(json!({})));
+    assert_eq!(
+        changes["result"]["unstaged"][0]["path"], "a.txt",
+        "{changes}"
+    );
+    assert_eq!(changes["result"]["untracked"][0]["path"], "new.txt");
+    let untracked = bridge.web(
+        9,
+        "git_diff",
+        at(json!({"kind": "untracked", "path": "new.txt"})),
+    );
+    assert_eq!(
+        untracked["result"]["files"][0]["hunks"][0]["lines"],
+        json!(["+n"])
+    );
+    // Refused before any Git: options, revision syntax, paths outside,
+    // checkouts `git` did not report.
+    let refused = [
+        (
+            "git_log",
+            at(json!({"rev": "--output=/tmp/x"})),
+            "invalid revision",
+        ),
+        ("git_log", at(json!({"rev": "@{-1}"})), "invalid revision"),
+        (
+            "git_commit",
+            at(json!({"rev": "HEAD:../"})),
+            "invalid revision",
+        ),
+        (
+            "git_diff",
+            at(json!({"kind": "unstaged", "path": "../../etc/passwd"})),
+            "invalid path: a relative path inside the repository",
+        ),
+        (
+            "git_diff",
+            at(json!({"kind": "commit", "rev": "HEAD", "path": "-c"})),
+            "invalid path: a relative path inside the repository",
+        ),
+        (
+            "git_log",
+            json!({"project": "hist", "repo": "/"}),
+            "this repository is not one of the project's checkouts",
+        ),
+        (
+            "git_log",
+            json!({"project": "hist"}),
+            "repo must be the path of one of the project's checkouts",
+        ),
+        ("git_log", at(json!({"rev": "nope"})), "unknown revision"),
+    ];
+    for (n, (method, params, error)) in refused.into_iter().enumerate() {
+        let reply = bridge.web(10 + n as u64, method, params);
+        assert_eq!(reply["error"], error, "{method}: {reply}");
+    }
+}
+
 /// `github_*` (API 3.8): signed out without `[github]`, explains a token
 /// source that fails, and checks every request before any work. Nothing
 /// here reaches GitHub.
@@ -1197,7 +1336,7 @@ fn history_lists_conversations_and_new_resumes_them() {
     let mut bridge = Bridge::start(&server);
     welcome(&mut bridge);
     let state = bridge.web(1, "state", json!({}));
-    assert_eq!(state["result"]["api_minor"], 9);
+    assert_eq!(state["result"]["api_minor"], 10);
     assert!(
         state["result"]["operations"]
             .as_array()
@@ -1392,7 +1531,7 @@ fn repos_and_commands_report_read_only_facts_for_the_terminals_table() {
     welcome(&mut bridge);
     let state = bridge.web(1, "state", json!({}));
     assert_eq!(state["result"]["api_version"], 3);
-    assert_eq!(state["result"]["api_minor"], 9);
+    assert_eq!(state["result"]["api_minor"], 10);
     let operations = state["result"]["operations"].as_array().unwrap();
     assert!(operations.iter().any(|op| op == "repos"));
     assert!(operations.iter().any(|op| op == "commands"));
@@ -1765,7 +1904,7 @@ fn file_requests_and_replies_are_relayed_unchanged() {
     }
     assert_eq!(limits["max_read_bytes"], 8 * 1024 * 1024);
     let state = bridge.web(1, "state", json!({}));
-    assert_eq!(state["result"]["api_minor"], 9);
+    assert_eq!(state["result"]["api_minor"], 10);
     assert!(
         state["result"]["operations"]
             .as_array()
@@ -2043,7 +2182,7 @@ fn environments_start_report_and_stop() {
     let mut bridge = Bridge::start(&server);
     welcome(&mut bridge);
     let state = bridge.web(1, "state", json!({}));
-    assert_eq!(state["result"]["api_minor"], 9);
+    assert_eq!(state["result"]["api_minor"], 10);
     assert!(
         state["result"]["operations"]
             .as_array()

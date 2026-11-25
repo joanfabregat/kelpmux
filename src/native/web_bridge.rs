@@ -10,7 +10,9 @@
 //! like typing into a pane. It only reads, for display, which repository
 //! and branch a pane's folder is in and which program a pane runs
 //! (`web_repos`), without running `git` or any other process. The `git`
-//! operation, for a project's Repos view, runs read-only Git commands
+//! operation, for a project's Repos view, and the history operations
+//! (`git_branches`, `git_log`, `git_commit`, `git_diff`, `git_changes`;
+//! `web_git_history`) run read-only Git commands
 //! through the hardened runner of `web_git` (no hooks, filters, textconv,
 //! external diff, fsmonitor or network), never a write. The environment
 //! operations (`environments`) start and stop a project's declared
@@ -31,7 +33,7 @@ use super::{
     session::{Session, request_id},
     status,
     stream::{self, ClosedSession, Event, Request},
-    user_config, web_git, web_github, web_history, web_repos,
+    user_config, web_git, web_git_history, web_github, web_history, web_repos,
 };
 use crate::Result;
 use serde_json::{Value, json};
@@ -85,8 +87,11 @@ pub const API_VERSION: u64 = 3;
 /// has (`github_status`, `github_test`, `github_repositories`,
 /// `github_clone`, `github_clone_cancel` and `github_state`, which the
 /// bridge answers from its own thread; `web_github`) and the `github`
-/// (`owner/name`) of each `git` checkout.
-pub const API_MINOR: u64 = 9;
+/// (`owner/name`) of each `git` checkout. Minor 10 added `git_history`:
+/// read-only history and diffs of a checkout (`git_branches`, `git_log`,
+/// `git_commit`, `git_diff` and `git_changes`; `web_git_history`), on the
+/// same Git worker threads.
+pub const API_MINOR: u64 = 10;
 /// Largest accepted `Web` request, in bytes of JSON.
 const REQUEST_LIMIT: usize = 65536;
 /// Largest request identifier a browser can represent exactly.
@@ -444,8 +449,18 @@ impl Api {
         p: &Value,
         reply: Box<dyn FnOnce(std::result::Result<Value, String>) + Send>,
     ) -> Result<()> {
+        let request = web_git::Request {
+            folder: self.project_folder(p)?,
+            list: p["files"] == true,
+            fresh: p["fresh"] == true,
+        };
+        Ok(self.git.submit(request, reply)?)
+    }
+    /// A project's folder (`{"project": id}`, or `scratch`), from the user
+    /// configuration.
+    fn project_folder(&self, p: &Value) -> Result<PathBuf> {
         let config = self.user_config()?;
-        let folder = match p["project"].as_str() {
+        Ok(match p["project"].as_str() {
             Some(user_config::SCRATCH) => config.scratch_folder.path.clone(),
             Some(id) => config
                 .project(id)
@@ -454,13 +469,29 @@ impl Api {
                 .path
                 .clone(),
             None => return Err("project required".into()),
-        };
-        let request = web_git::Request {
-            folder,
-            list: p["files"] == true,
-            fresh: p["fresh"] == true,
-        };
-        Ok(self.git.submit(request, reply)?)
+        })
+    }
+    /// Queues a history operation (`web_git_history`) on a checkout of a
+    /// project: `{"project": id, "repo": path, …}`, where `repo` must be the
+    /// path `git` reported for one of the project's checkouts (discovered
+    /// again on the Git thread); the method's own parameters are validated
+    /// here, before any Git runs. `reply` answers later.
+    fn git_history(
+        &self,
+        method: &str,
+        p: &Value,
+        reply: Box<dyn FnOnce(std::result::Result<Value, String>) + Send>,
+    ) -> Result<()> {
+        let folder = self.project_folder(p)?;
+        let repo = p["repo"]
+            .as_str()
+            .filter(|repo| repo.starts_with('/') && repo.len() <= 4096)
+            .ok_or("repo must be the path of one of the project's checkouts")?
+            .to_owned();
+        let query = web_git_history::parse(method, p)?;
+        Ok(self
+            .git
+            .submit_task(web_git_history::task(folder, repo, query), reply)?)
     }
     fn links(&self) -> Links {
         Links::at(&self.state)
@@ -856,6 +887,7 @@ const OPERATIONS: &[&str] = &[
     "conversations",
     "environments",
     "github",
+    "git_history",
 ];
 
 /// The GitHub integration of this bridge, reading `[github]` from the live
@@ -1249,6 +1281,23 @@ pub fn run(socket: &Path, state: &Path) -> Result<()> {
                 ) {
                     let replies = sender.clone();
                     match api.environment(
+                        method,
+                        &web["params"],
+                        Box::new(move |result| {
+                            let reply = match result {
+                                Ok(result) => json!({"Web": {"id": id, "result": result}}),
+                                Err(error) => json!({"Web": {"id": id, "error": error}}),
+                            };
+                            let _ = replies.send(Outbound::Message(reply));
+                        }),
+                    ) {
+                        Ok(()) => continue,
+                        Err(error) => Err(error),
+                    }
+                } else if web_git_history::METHODS.contains(&method) {
+                    // History and diffs: on the Git worker threads too.
+                    let replies = sender.clone();
+                    match api.git_history(
                         method,
                         &web["params"],
                         Box::new(move |result| {

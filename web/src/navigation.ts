@@ -9,6 +9,12 @@
 //   ?view=files&file=<path>[&line=<n>]             an open file
 //   ?view=home                                     a phone's terminal list
 //   ?view=repos&project=<project id>              a project's Repos view
+//     [&repo=<checkout path>[&tab=changes|history|branches]
+//      [&rev=<branch or commit>][&commit=<sha>][&path=<file>]]
+//                                                  one checkout open on a
+//                                                  tab: History of `rev`
+//                                                  with `commit` open, or
+//                                                  Changes with `path`'s diff
 //   ?view=project&project=<project id>            a project's home page
 //   ?view=envs&project=<project id>               a project's Environments
 //   …&dialog=<panel>[&of=<pane id>]                a panel over that place
@@ -61,7 +67,68 @@ export type AppLocation = {
   project: string;
   /** The terminal whose notifications the panel shows. */
   of: number;
+  /** The Repos view's open checkout (its path), tab, the revision its
+   * History shows, the commit open beside it and the working-change file
+   * whose diff Changes shows; all "" for none (view "repos" only). */
+  repo: string;
+  tab: string;
+  rev: string;
+  commit: string;
+  change: string;
 };
+
+/** The Repos view's own place within a project. */
+export type ReposPlace = Pick<AppLocation, "repo" | "tab" | "rev" | "commit" | "change">;
+export const emptyReposPlace: ReposPlace = {
+  repo: "",
+  tab: "",
+  rev: "",
+  commit: "",
+  change: "",
+};
+const repoTabNames = ["changes", "history", "branches"];
+/** A revision as the bridge accepts one (git-history.ts validRevision). */
+function revision(value: string | null): string {
+  if (!value || value.length > 255 || value === "@") return "";
+  if (/^[0-9a-fA-F]{4,64}$/.test(value)) return value;
+  if (/^[-/]|[/.]$|\.\.|@\{|\/\/|[\u0000- \u007f~^:?*[\\]/.test(value)) return "";
+  return value
+    .split("/")
+    .every((part) => part && !part.startsWith(".") && !part.endsWith(".lock"))
+    ? value
+    : "";
+}
+/** A path inside a repository (git-history.ts validRepoPath). */
+function repoPath(value: string | null): string {
+  return value &&
+    value.length <= 4096 &&
+    !/^[-:/]/.test(value) &&
+    !/[\u0000-\u001f\u007f]/.test(value) &&
+    value
+      .split("/")
+      .every((p) => p && p !== "." && p !== ".." && p.toLowerCase() !== ".git")
+    ? value
+    : "";
+}
+/** The Repos place a URL names (valid fields only, each needing the one
+ * before: a tab needs a checkout, a commit the History tab, a file the
+ * Changes tab). */
+function parseReposPlace(params: URLSearchParams): ReposPlace {
+  const repo = path(params.get("repo"));
+  if (!repo.startsWith("/")) return emptyReposPlace;
+  const tab = repoTabNames.includes(params.get("tab") || "")
+    ? params.get("tab")!
+    : "";
+  const history = tab === "history";
+  const commit = params.get("commit") || "";
+  return {
+    repo,
+    tab,
+    rev: history ? revision(params.get("rev")) : "",
+    commit: history && /^[0-9a-f]{4,64}$/.test(commit) ? commit : "",
+    change: tab === "changes" ? repoPath(params.get("path")) : "",
+  };
+}
 
 export const emptyLocation: AppLocation = {
   view: "grid",
@@ -73,6 +140,7 @@ export const emptyLocation: AppLocation = {
   dialog: "",
   of: 0,
   project: "",
+  ...emptyReposPlace,
 };
 
 /** Panels with an entry: URL name → the application's dialog name. */
@@ -111,6 +179,11 @@ const owned = [
   "dialog",
   "of",
   "project",
+  "repo",
+  "tab",
+  "rev",
+  "commit",
+  "path",
 ];
 const views: View[] = ["terminal", "grid", "files", "home", "repos", "project", "envs"];
 
@@ -145,6 +218,7 @@ export function parseLocation(search: string): Partial<AppLocation> {
       result.dir = result.file ? "" : path(params.get("dir"));
     }
     if (result.file || result.side) result.line = id(params.get("line"));
+    if (view === "repos") Object.assign(result, parseReposPlace(params));
   }
   // KelpMux before History named that panel "closed".
   const asked = params.get("dialog") || "";
@@ -237,6 +311,13 @@ export function locationSearch(location: AppLocation, currentSearch = "") {
   }
   if (location.project && keepsProject(location))
     add("project", location.project);
+  if (location.view === "repos" && location.repo) {
+    add("repo", location.repo);
+    if (location.tab) add("tab", location.tab);
+    if (location.rev) add("rev", location.rev);
+    if (location.commit) add("commit", location.commit);
+    if (location.change) add("path", location.change);
+  }
   return `?${parts.join("&")}`;
 }
 
@@ -260,6 +341,8 @@ export type LocationState = {
   notifyPane: number;
   /** The project the grid, the file browser or History shows. */
   project?: string;
+  /** The Repos view's open checkout, tab and selection. */
+  repos?: ReposPlace;
 };
 
 /** The location the application state shows. */
@@ -291,7 +374,12 @@ function placeOf(state: LocationState): AppLocation {
   if (state.view === "envs")
     return { ...emptyLocation, view: "envs", ...overlay };
   if (state.view === "repos")
-    return { ...emptyLocation, view: "repos", ...overlay };
+    return {
+      ...emptyLocation,
+      view: "repos",
+      ...(state.repos?.repo ? state.repos : emptyReposPlace),
+      ...overlay,
+    };
   if (state.view === "grid")
     return { ...emptyLocation, view: "grid", ...overlay };
   return {
@@ -315,6 +403,11 @@ export function sameBase(a: AppLocation, b: AppLocation) {
     a.dir === b.dir &&
     a.file === b.file &&
     a.side === b.side &&
+    a.repo === b.repo &&
+    a.tab === b.tab &&
+    a.rev === b.rev &&
+    a.commit === b.commit &&
+    a.change === b.change &&
     (!scoped(a.view) || a.project === b.project)
   );
 }

@@ -18,7 +18,6 @@ This file lists open work only. Done work is in the Git history and the changelo
 
 - **GitHub App with device-flow sign-in**: a GitHub App the user signs in to with the device flow (scoped, no keys on the machine) and a token broker for the managed offering, replacing the machine's own GitHub token.
 - **GitHub pull requests**: read-only list of a repository's pull requests with checks and reviews, in the Repos view and the project page.
-- **Repository history**: branches, log, commit details and file diffs in the Repos view, with revisions validated before use.
 - **Worktrees**: discover a repository's worktrees and start an agent in a checkout or a new worktree, one per agent.
 - **Safe removal**: before deleting a checkout or folder, list everything not safely on a remote; re-check before deleting.
 - **Agent marks**: a finished turn stays highlighted until seen in any browser; per-project roll-ups (check what KelpMux already has first).
@@ -32,7 +31,6 @@ This file lists open work only. Done work is in the Git history and the changelo
 - **Runtime backends** (KelpHub ADR 0006): one interface over the Docker Engine API (Docker, Podman's socket or any compatible engine) and Kubernetes, replacing the Podman-specific tooling on the host.
 - **KelpMux in a container or a pod**: an image with sshd, the terminal server and the bridge, the home folder on a volume; SSH stays the way in. Explore a second way in through an API (token or passkey to the relay, bridge on a local socket) later.
 - **Dev and staging deployments**: environments run in containers through the runtime backend, and a KelpMux reverse proxy routes `<slug>.<domain>` to each running instance, as the wildcard domain does on jbox today.
-- **Review working changes**: a diff of uncommitted changes per file from the Repos view.
 - **Scratch terminals**: optional fresh folder per terminal under the Scratch folder, never deleted automatically.
 
 ## Loose ends

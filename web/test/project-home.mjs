@@ -16,7 +16,8 @@
 //    shows; a terminal line opens that terminal; the folder copies.
 // 4. See all opens the project's grid, Repos view and History (a panel
 //    over the page, which Back closes); a repository line opens the Repos
-//    view with that checkout expanded. Back and Forward walk them all.
+//    view with that checkout open on its Changes (in the URL). Back and
+//    Forward walk them all.
 // 5. The project menu's Overview opens another project's page (not
 //    offered for the page shown); Scratch's page is reachable by URL; a
 //    URL without a project or with an unknown one falls back.
@@ -489,7 +490,7 @@ for (const [name, engine] of [
     await page.goBack();
     await loaded(page, "alpha");
     await api.click();
-    await at(page, "?view=repos&project=alpha");
+    await at(page, "?view=repos&project=alpha&repo=/home/me/work/alpha/api&tab=changes");
     await page.locator(".git-change").first().waitFor();
     assert.equal(
       await page
