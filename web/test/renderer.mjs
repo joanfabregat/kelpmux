@@ -5,7 +5,7 @@ import assert from "node:assert/strict";
 const source = stripTypeScriptTypes(
   readFileSync(
     new URL(
-      "../node_modules/@kelpcore/web/web/src/renderer.ts",
+      "../../web-core/src/renderer.ts",
       import.meta.url,
     ),
     "utf8",

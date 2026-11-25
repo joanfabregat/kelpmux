@@ -1,0 +1,5 @@
+# Kelp terminal protocol
+
+Portable terminal wire types, the stream version constant, cell validation and the binary screen codec (`screens`, the `binary-screens` capability, specified in [binary-screens.md](../../docs/server/binary-screens.md)) shared by the [server](../server) in the [KelpMux repository](../../README.md) and its clients, including the Rust/WASM [client core](../client). This crate has no server, client presentation or WASM dependency, and builds for `wasm32-unknown-unknown`. Terminal stream version 1 is unchanged by the extraction; version 0.2.0 removed `LOCAL_PROTOCOL_VERSION` with the composed protocol 58 (ADR 0002 step 3). Version 0.3.0 removes the remaining client presentation: the `PaneInfo` fields `parked`, `number` and `palette`, `Status::text`, `Status::marker`, `WORKING_FRAMES` and `StatusSource::label`. Clients own tab numbers, colours, parking, status labels and glyphs.
+
+See [stream documentation](../../docs/server/native-client-protocol.md), [contribution policy](../../CONTRIBUTING.md), [security policy](../../SECURITY.md) and the repository [Apache-2.0 license](../../LICENSE).

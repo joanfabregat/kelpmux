@@ -6,12 +6,11 @@ This file lists open work only. Done work is in the Git history and the changelo
 
 ## In progress
 
-- **Project home page**: one page per project with its live agents and terminals, its repositories and their state, and its history (closed terminals, past conversations), each with a link to the full view.
-- **History**: closed terminals with every conversation they hosted, plus conversations started outside KelpMux, all resumable (merging).
+- **Terminal server**: record when each terminal opens and detect Codex conversation ids reliably, so History never has to match by folder and time.
 
-## Repository structure
+## Terminal server
 
-- **Merge KelpCore into KelpMux**, with its history: the terminal server, protocol, client core and browser terminal layer become crates and a local npm package of this repository. A KelpMux ADR supersedes KelpCore ADR 0003; the KelpCore repository is archived.
+- Raise the crates' `rust-version` to 1.89 and fix the let-chain Clippy lints this enables.
 - Forward every bridge notice through the shared browser worker, then remove the 5 s config and project polling.
 
 ## Imported from KelpHub

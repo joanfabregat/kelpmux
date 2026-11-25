@@ -34,13 +34,13 @@ ring = "0.17.14"
 tar = { version = "0.4.46", default-features = false }
 
 [workspace]
+members = ["crates/server", "crates/protocol", "crates/client"]
 resolver = "2"
 
 # KelpServer, the protocol types and the client core (kelpclient, also built
-# as client-core.wasm) come from one KelpCore revision. All three entries
-# must keep the identical URL and rev, or Cargo builds two protocol crates
-# (and client-core.wasm would disagree with the server).
+# as client-core.wasm) are workspace members, so the server, the TUI and
+# client-core.wasm always share one protocol revision.
 [workspace.dependencies]
-kelpserver = { git = "https://github.com/joanfabregat/kelpcore", rev = "5ca7b6d49d197fe3d206e4fe3b1f55936334b55b" }
-kelpclient-protocol = { git = "https://github.com/joanfabregat/kelpcore", rev = "5ca7b6d49d197fe3d206e4fe3b1f55936334b55b" }
-kelpclient = { git = "https://github.com/joanfabregat/kelpcore", rev = "5ca7b6d49d197fe3d206e4fe3b1f55936334b55b" }
+kelpserver = { path = "crates/server", version = "0.3.0-beta.2" }
+kelpclient-protocol = { path = "crates/protocol", version = "0.3.0" }
+kelpclient = { path = "crates/client", version = "0.1.0" }

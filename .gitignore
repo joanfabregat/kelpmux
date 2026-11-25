@@ -9,3 +9,6 @@
 *.pem
 *.log
 /metadata.json
+
+# Node dependencies of the npm workspaces (web, web-core).
+/node_modules/

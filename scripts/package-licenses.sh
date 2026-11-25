@@ -26,23 +26,6 @@ while IFS=$'\t' read -r name version manifest source; do
     cp "$dir/AUTHORS" "$dest/"
     found=1
   fi
-  # A crate inside a pinned Git repository (kelpclient-protocol from
-  # KelpCore) may rely on the repository's root license files: look up to
-  # Cargo's checkout root, which it marks with .cargo-ok.
-  if [[ "$found" != 1 && $source == git+* ]]; then
-    root=$dir
-    while [[ $root == */* && ! -e $root/.cargo-ok ]]; do
-      root=${root%/*}
-    done
-    if [[ -e $root/.cargo-ok ]]; then
-      for file in "$root"/LICENSE* "$root"/NOTICE*; do
-        if [[ -f "$file" ]]; then
-          cp "$file" "$dest/"
-          found=1
-        fi
-      done
-    fi
-  fi
   if [[ "$found" != 1 ]]; then
     printf 'Missing packaged license text for %s %s\n' "$name" "$version" >&2
     exit 1

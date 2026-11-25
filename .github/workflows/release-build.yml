@@ -41,8 +41,8 @@ jobs:
             ~/.cargo/registry
             ~/.cargo/git/db
             target/release
-          key: rust-release-${{ matrix.runner }}-${{ matrix.target }}-1.99.0-${{ hashFiles('Cargo.lock', 'Cargo.toml', '.cargo/**') }}-${{ github.sha }}
-          restore-keys: rust-release-${{ matrix.runner }}-${{ matrix.target }}-1.99.0-${{ hashFiles('Cargo.lock', 'Cargo.toml', '.cargo/**') }}-
+          key: rust-release-${{ matrix.runner }}-${{ matrix.target }}-1.99.0-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'crates/*/Cargo.toml', '.cargo/**') }}-${{ github.sha }}
+          restore-keys: rust-release-${{ matrix.runner }}-${{ matrix.target }}-1.99.0-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'crates/*/Cargo.toml', '.cargo/**') }}-
       - run: rustup toolchain install 1.99.0 --profile minimal
       - run: cargo +1.99.0 fetch --locked
       - name: Check release version
@@ -55,7 +55,7 @@ jobs:
             test "$TAG" = "v$version"
           fi
       - run: cargo +1.99.0 build --workspace --release --locked --offline
-      # KelpServer at the revision pinned in Cargo.toml, built from Cargo.lock.
+      # KelpServer, the workspace member in crates/server.
       - run: cargo +1.99.0 build --release --locked --offline -p kelpserver --bin kelpserver
       - name: Collect locked dependency license texts
         run: bash scripts/package-licenses.sh target/dependency-licenses

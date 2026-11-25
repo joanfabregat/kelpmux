@@ -1,0 +1,9 @@
+{
+  "name": "kelpmux-workspaces",
+  "private": true,
+  "license": "Apache-2.0",
+  "workspaces": [
+    "web-core",
+    "web"
+  ]
+}
