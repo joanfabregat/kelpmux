@@ -998,6 +998,122 @@ fn git_reports_a_projects_checkouts_read_only() {
     assert_eq!(unknown["error"], "this project no longer exists");
     let path = bridge.web(7, "git", json!({"folder": "/"}));
     assert_eq!(path["error"], "project required");
+    // A github.com origin gives the checkout's `owner/name` (API 3.8),
+    // never the URL (which could hold credentials).
+    git(
+        &api,
+        &[
+            "remote",
+            "add",
+            "origin",
+            "https://user:secret@github.com/owner/api.git",
+        ],
+    );
+    let reply = bridge.web(8, "git", json!({"project": "work", "fresh": true}));
+    assert_eq!(
+        reply["result"]["repos"][0]["github"],
+        Value::Null,
+        "{reply}"
+    );
+    assert!(!reply.to_string().contains("secret"));
+    git(
+        &api,
+        &[
+            "remote",
+            "set-url",
+            "origin",
+            "git@github.com:owner/api.git",
+        ],
+    );
+    let reply = bridge.web(9, "git", json!({"project": "work", "fresh": true}));
+    assert_eq!(
+        reply["result"]["repos"][0]["github"], "owner/api",
+        "{reply}"
+    );
+}
+
+/// `github_*` (API 3.8): signed out without `[github]`, explains a token
+/// source that fails, and checks every request before any work. Nothing
+/// here reaches GitHub.
+#[test]
+fn github_operations_explain_sign_in_and_check_their_requests() {
+    let server = Server::start();
+    let mut bridge = Bridge::start(&server);
+    welcome(&mut bridge);
+    let state = bridge.web(1, "state", json!({}));
+    assert!(
+        state["result"]["operations"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|op| op == "github")
+    );
+    let status = bridge.web(2, "github_status", json!({}));
+    assert_eq!(status["result"]["enabled"], false, "{status}");
+    assert_eq!(status["result"]["signed_in"], false);
+    let config = server.root.join("xdg-config/kelpmux/config.toml");
+    fs::create_dir_all(config.parent().unwrap()).unwrap();
+    fs::write(
+        &config,
+        "[github]\ntoken_command = \"/nonexistent/github-token\"\n",
+    )
+    .unwrap();
+    let mut id = 3;
+    let status = loop {
+        let status = bridge.web(id, "github_status", json!({}));
+        id += 1;
+        if !status["result"]["error"].is_null() || id > 200 {
+            break status;
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    };
+    assert_eq!(status["result"]["enabled"], true, "{status}");
+    assert_eq!(status["result"]["source"], "command");
+    assert_eq!(status["result"]["signed_in"], false);
+    assert!(
+        status["result"]["error"]
+            .as_str()
+            .unwrap()
+            .contains("not an executable"),
+        "{status}"
+    );
+    for (method, params, error) in [
+        ("github_state", json!({"repos": ["../x"]}), "owner/name"),
+        (
+            "github_state",
+            json!({"repos": "a/b"}),
+            "list of owner/name",
+        ),
+        (
+            "github_clone",
+            json!({"project": "scratch", "url": "file:///srv/x.git"}),
+            "HTTPS or SSH",
+        ),
+        (
+            "github_clone",
+            json!({"project": "scratch", "url": "https://u:p@github.com/o/r.git"}),
+            "credentials",
+        ),
+        (
+            "github_clone",
+            json!({"project": "scratch"}),
+            "url required",
+        ),
+        (
+            "github_clone",
+            json!({"project": "nope", "url": "git@github.com:o/r.git"}),
+            "no longer exists",
+        ),
+        ("github_clone_cancel", json!({"clone": 5}), "not known"),
+        ("github_nope", json!({}), "unsupported"),
+    ] {
+        id += 1;
+        let reply = bridge.web(id, method, params);
+        assert!(
+            reply["error"].as_str().is_some_and(|e| e.contains(error)),
+            "{method}: {reply}"
+        );
+    }
 }
 
 /// `conversations` (API 3.7): closed terminals with the conversations they
@@ -1081,7 +1197,7 @@ fn history_lists_conversations_and_new_resumes_them() {
     let mut bridge = Bridge::start(&server);
     welcome(&mut bridge);
     let state = bridge.web(1, "state", json!({}));
-    assert_eq!(state["result"]["api_minor"], 8);
+    assert_eq!(state["result"]["api_minor"], 9);
     assert!(
         state["result"]["operations"]
             .as_array()
@@ -1276,7 +1392,7 @@ fn repos_and_commands_report_read_only_facts_for_the_terminals_table() {
     welcome(&mut bridge);
     let state = bridge.web(1, "state", json!({}));
     assert_eq!(state["result"]["api_version"], 3);
-    assert_eq!(state["result"]["api_minor"], 8);
+    assert_eq!(state["result"]["api_minor"], 9);
     let operations = state["result"]["operations"].as_array().unwrap();
     assert!(operations.iter().any(|op| op == "repos"));
     assert!(operations.iter().any(|op| op == "commands"));
@@ -1649,7 +1765,7 @@ fn file_requests_and_replies_are_relayed_unchanged() {
     }
     assert_eq!(limits["max_read_bytes"], 8 * 1024 * 1024);
     let state = bridge.web(1, "state", json!({}));
-    assert_eq!(state["result"]["api_minor"], 8);
+    assert_eq!(state["result"]["api_minor"], 9);
     assert!(
         state["result"]["operations"]
             .as_array()
@@ -1927,7 +2043,7 @@ fn environments_start_report_and_stop() {
     let mut bridge = Bridge::start(&server);
     welcome(&mut bridge);
     let state = bridge.web(1, "state", json!({}));
-    assert_eq!(state["result"]["api_minor"], 8);
+    assert_eq!(state["result"]["api_minor"], 9);
     assert!(
         state["result"]["operations"]
             .as_array()

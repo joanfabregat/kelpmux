@@ -16,7 +16,7 @@ This file lists open work only. Done work is in the Git history and the changelo
 
 ## Imported from KelpHub
 
-- **GitHub App integration**: App setup, the repository picker, cloning into a project, read-only repository state.
+- **GitHub App with device-flow sign-in**: a GitHub App the user signs in to with the device flow (scoped, no keys on the machine) and a token broker for the managed offering, replacing the machine's own GitHub token.
 - **GitHub pull requests**: read-only list of a repository's pull requests with checks and reviews, in the Repos view and the project page.
 - **Repository history**: branches, log, commit details and file diffs in the Repos view, with revisions validated before use.
 - **Worktrees**: discover a repository's worktrees and start an agent in a checkout or a new worktree, one per agent.
@@ -42,4 +42,5 @@ This file lists open work only. Done work is in the Git history and the changelo
 - A WebKit drag-and-drop test for uploads.
 - An ADR for the Files view (browser, editor, tabs, columns).
 - Device checks of the mobile UI on real phones (kelpmux#110).
+- GitHub clones: a per-user clone cap and a size limit for hosts other than github.com.
 - The web client replaces the TUI pre-prod on jbox once it reaches parity; the TUI pre-prod stays untouched until then.

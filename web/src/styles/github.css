@@ -1,0 +1,190 @@
+/* GitHub in the web client (src/GitHub.tsx): Settings → GitHub, the
+   repository picker and the facts on the Repos view's rows. Colours come
+   from the theme's tokens. */
+.github-list {
+  display: flex;
+  flex-direction: column;
+  margin: var(--s2) 0;
+  padding: 0;
+  list-style: none;
+  border: 1px solid var(--line);
+  border-radius: var(--r-md);
+}
+.github-list > li {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--s3);
+  padding: var(--s2) var(--s3);
+  min-width: 0;
+}
+.github-list > li + li {
+  border-top: 1px solid var(--line);
+}
+.github-item {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+.github-item strong {
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+.github-item small {
+  color: var(--text-3);
+  font-size: var(--fs-xs);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.github-setup pre {
+  margin: var(--s2) 0 0;
+  padding: var(--s2);
+  overflow-x: auto;
+  border-radius: var(--r-sm);
+  background: var(--surface-1);
+  font-family: var(--font-mono);
+  font-size: var(--fs-xs);
+}
+.github-setup p {
+  margin: 0 0 var(--s2);
+}
+/* Settings → GitHub: what the bridge knows, as label and value rows. */
+.github-facts-list {
+  display: grid;
+  grid-template-columns: max-content minmax(0, 1fr);
+  gap: var(--s2) var(--s4);
+  margin: var(--s3) 0;
+}
+.github-facts-list dt {
+  color: var(--text-2);
+}
+.github-facts-list dd {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--s1);
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+@media (max-width: 520px) {
+  .github-facts-list {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 2px;
+  }
+  .github-facts-list dd {
+    margin-bottom: var(--s2);
+  }
+}
+
+/* The picker. */
+.github-picker {
+  width: min(640px, 100%);
+  gap: var(--s2);
+}
+.github-picker .confirm-buttons {
+  margin-top: var(--s2);
+}
+.github-url {
+  display: flex;
+  align-items: flex-end;
+  gap: var(--s2);
+}
+.github-url .project-field {
+  flex: 1;
+  min-width: 0;
+}
+.github-search {
+  display: flex;
+  align-items: center;
+  gap: var(--s2);
+}
+.github-search input:not([type]) {
+  flex: 1;
+  min-width: 0;
+}
+.github-protocol {
+  display: inline-flex;
+  gap: var(--s2);
+  color: var(--text-2);
+  font-size: var(--fs-sm);
+  white-space: nowrap;
+}
+.github-protocol label {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  cursor: pointer;
+}
+.github-protocol input {
+  min-height: 0;
+  margin: 0;
+}
+.github-repositories {
+  max-height: min(420px, 50vh);
+  overflow-y: auto;
+}
+.github-repositories > li.faint {
+  justify-content: flex-start;
+}
+
+/* The Repos view. */
+.repos-clones {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s2);
+  margin: 0 0 var(--s3);
+  padding: 0;
+  list-style: none;
+}
+.repos-clone {
+  display: flex;
+  align-items: center;
+  gap: var(--s2);
+  padding: var(--s2) var(--s3);
+  border: 1px dashed var(--line-strong);
+  border-radius: var(--r-md);
+  font-size: var(--fs-sm);
+  min-width: 0;
+}
+.repos-clone .grow {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.repos-clone.failed {
+  border-color: color-mix(in srgb, var(--st-failed) 45%, transparent);
+  color: color-mix(in srgb, var(--st-failed) 60%, var(--text));
+}
+.github-facts {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--s2);
+  color: var(--text-2);
+  font-size: var(--fs-xs);
+}
+.github-facts > span {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+}
+.github-facts-link {
+  color: var(--text-2);
+}
+
+/* An icon link among the Repos row's icon buttons. */
+a.icon-link {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border-radius: var(--r-md);
+  color: var(--text-2);
+}
+a.icon-link:hover {
+  background: var(--surface-3);
+  color: var(--text);
+}

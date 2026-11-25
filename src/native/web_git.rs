@@ -191,6 +191,24 @@ pub struct Repo {
     pub truncated: bool,
     /// Why the checkout could not be inspected.
     pub error: Option<String>,
+    /// `owner/name` when the `origin` remote is a github.com repository
+    /// (never the URL itself, which may hold credentials).
+    pub github: Option<String>,
+}
+
+/// The `owner/name` of a github.com remote URL: `https://github.com/o/n`,
+/// `git@github.com:o/n` or `ssh://git@github.com/o/n`, with or without
+/// `.git`. URLs with credentials, another host or extra path are `None`.
+pub fn github_slug(url: &str) -> Option<String> {
+    let path = url
+        .strip_prefix("https://github.com/")
+        .or_else(|| url.strip_prefix("git@github.com:"))
+        .or_else(|| url.strip_prefix("ssh://git@github.com/"))?;
+    let path = path.strip_suffix('/').unwrap_or(path);
+    let path = path.strip_suffix(".git").unwrap_or(path);
+    let (owner, name) = path.split_once('/')?;
+    let valid = super::user_config::github_name;
+    (valid(owner) && valid(name)).then(|| format!("{owner}/{name}"))
 }
 
 type Result<T> = std::result::Result<T, String>;
@@ -218,7 +236,7 @@ fn drain(mut pipe: impl Read, limit: usize) -> Output {
     Output { bytes, truncated }
 }
 
-fn git_binary() -> Result<&'static str> {
+pub(crate) fn git_binary() -> Result<&'static str> {
     GIT_BINARIES
         .iter()
         .copied()
@@ -254,6 +272,8 @@ pub struct Checkout {
     filters: Vec<String>,
     empty_tree: &'static str,
     deadline: Instant,
+    /// The `origin` remote's github.com `owner/name` ([`github_slug`]).
+    github: Option<String>,
 }
 
 const EMPTY_TREE_SHA1: &str = "4b825dc642cb6eb9a060e54bf8d69288fbee4904";
@@ -562,6 +582,7 @@ impl Checkout {
             filters: Vec::new(),
             empty_tree: EMPTY_TREE_SHA1,
             deadline,
+            github: None,
         };
         let list = checkout.git(
             &["config", "-z", "--list", "--show-scope", "--show-origin"],
@@ -579,6 +600,12 @@ impl Checkout {
         {
             checkout.empty_tree = EMPTY_TREE_SHA256;
         }
+        checkout.github = entries
+            .iter()
+            .rev()
+            .find(|e| e.key == b"remote.origin.url")
+            .and_then(|e| std::str::from_utf8(e.value).ok())
+            .and_then(github_slug);
         Ok(checkout)
     }
 
@@ -895,6 +922,7 @@ pub fn inspect(checkout: &Checkout, list: bool) -> Result<Repo> {
         ahead: status.ahead,
         behind: status.behind,
         truncated: out.truncated,
+        github: checkout.github.clone(),
         ..Repo::default()
     };
     let mut changes = status.changes;
@@ -1733,5 +1761,41 @@ mod tests {
         assert_eq!(private_group_of(1001, 4, passwd, groups), None);
         assert_eq!(text_lines(b"a\nb"), Some(2));
         assert_eq!(text_lines(b"a\0b"), None);
+    }
+
+    #[test]
+    fn github_remotes_give_their_owner_and_name_only() {
+        for url in [
+            "https://github.com/joan/kelp.git",
+            "https://github.com/joan/kelp",
+            "git@github.com:joan/kelp.git",
+            "ssh://git@github.com/joan/kelp.git",
+        ] {
+            assert_eq!(github_slug(url).as_deref(), Some("joan/kelp"), "{url}");
+        }
+        for url in [
+            "https://x-access-token:secret@github.com/joan/kelp.git",
+            "https://gitlab.com/joan/kelp.git",
+            "https://github.com/joan/kelp/tree/main",
+            "https://github.com/joan",
+            "https://github.com/../kelp",
+            "/srv/git/kelp.git",
+        ] {
+            assert_eq!(github_slug(url), None, "{url}");
+        }
+        // The Repos view reads it from the checkout's own configuration.
+        let temp = Temp::new();
+        let path = temp.0.join("r");
+        init(&path);
+        setup(
+            &path,
+            &[
+                "remote",
+                "add",
+                "origin",
+                "https://github.com/joan/kelp.git",
+            ],
+        );
+        assert_eq!(repo_at(&path).github.as_deref(), Some("joan/kelp"));
     }
 }
