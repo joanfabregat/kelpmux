@@ -117,7 +117,6 @@ jobs:
           path: target/tmux-3.8
           key: ${{ steps.tmux-cache.outputs.cache-primary-key }}
   wasm:
-    name: Client core for browsers (WASM)
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
