@@ -7,7 +7,7 @@
 import React, { useEffect, useRef, useState } from "react";
 import type { NumberedPane, SearchMatch } from "@kelpcore/web/types.ts";
 import { Icon } from "./status";
-import { age, basename } from "./format";
+import { age } from "./format";
 import { StateMark } from "./state/StateMark";
 import { ProviderLogo } from "./state/ProviderLogo";
 import {
@@ -19,7 +19,22 @@ import {
   type Notification,
 } from "./state/model";
 import { shortcuts } from "./shortcuts";
-import { SCRATCH, projectColor, type Project } from "./projects";
+import { projectColor, type Project } from "./projects";
+import {
+  choiceHint,
+  choiceLabel,
+  conversationTitle,
+  exactSpan,
+  historyRows,
+  restoreRequest,
+  resumeCommand,
+  resumeRequest,
+  span,
+  toolName,
+  type ClosedEntry,
+  type Conversation,
+  type HistoryListing,
+} from "./conversations";
 
 const name = (p: NumberedPane) => p.title || "shell";
 
@@ -109,96 +124,6 @@ export function TerminalNotificationsPanel({
   );
 }
 
-/** One agent conversation of History (bridge API minor 7): one a closed
- * terminal hosted, or one started outside KelpMux (`project` set). */
-export type Conversation = {
-  kind: string;
-  id: string;
-  cwd: string;
-  /** Where resuming opens: its folder, else its terminal's (or project's);
-   * null when neither exists. */
-  folder?: string | null;
-  /** From its first prompt (or its terminal's name). */
-  title?: string | null;
-  titled?: boolean;
-  first_seen?: number | null;
-  last_seen?: number | null;
-  /** An outside conversation's project (`scratch` for Scratch). */
-  project?: string;
-};
-export type ClosedEntry = {
-  key: string;
-  workspace: string;
-  pane: number;
-  cwd: string;
-  name: string;
-  kind?: string | null;
-  session_id?: string | null;
-  argv: string[];
-  closed_at?: number | null;
-  reason: string;
-  choices: ("resume" | "restart" | "folder")[];
-  /** The project the terminal belonged to (bridge API minor 5); none or
-   * one that no longer exists: Scratch. */
-  project?: string | null;
-  /** The conversations it hosted, newest first (bridge API minor 7). */
-  conversations?: Conversation[];
-};
-export type HistoryListing = {
-  workspace: string;
-  entries: ClosedEntry[];
-  /** Conversations started outside KelpMux (bridge API minor 7). */
-  external?: Conversation[];
-  truncated?: boolean;
-};
-const choiceLabel = {
-  resume: "Resume",
-  restart: "Rerun",
-  folder: "Open folder",
-};
-const choiceHint = (entry: ClosedEntry, choice: ClosedEntry["choices"][0]) =>
-  choice === "resume"
-    ? entry.session_id
-      ? "Resume this conversation in a new terminal"
-      : "Open the agent's conversation picker in its folder"
-    : choice === "restart"
-      ? `Rerun ${entry.argv.join(" ")} in its folder`
-      : "Open a shell in this folder";
-/** The command the TUI copies for an agent conversation. */
-export function resumeCommand(entry: Pick<ClosedEntry, "kind" | "session_id">) {
-  const base =
-    entry.kind === "codex"
-      ? "codex resume"
-      : entry.kind === "claude"
-        ? "claude --resume"
-        : "";
-  if (!base) return "";
-  const id = entry.session_id;
-  return id && /^[A-Za-z0-9_-]{1,128}$/.test(id) ? `${base} ${id}` : base;
-}
-const toolName = (kind: string) =>
-  kind === "codex" ? "Codex" : kind === "claude" ? "Claude Code" : kind;
-/** When a conversation ran: "3h ago" or "2d ago – 3h ago". */
-function span(c: Conversation) {
-  const first = c.first_seen || 0;
-  const last = c.last_seen || 0;
-  if (!first && !last) return "";
-  if (!first || !last || age(first) === age(last)) return age(last || first);
-  return `${age(first)} – ${age(last)}`;
-}
-function exactSpan(c: Conversation) {
-  const when = (at?: number | null) =>
-    at ? new Date(at * 1000).toLocaleString() : "";
-  return [when(c.first_seen), when(c.last_seen)].filter(Boolean).join(" – ");
-}
-const conversationTitle = (c: Conversation) =>
-  c.title || `Conversation in ${basename(c.cwd || "/")}`;
-
-/** One row of History: a closed terminal (with its conversations) or a
- * conversation started outside KelpMux; newest first. */
-type HistoryRow =
-  | { type: "terminal"; at: number; entry: ClosedEntry; project: string }
-  | { type: "external"; at: number; conversation: Conversation; project: string };
 
 /** History: closed terminals with every agent conversation they hosted,
  * and conversations started outside KelpMux in a project's folder, each
@@ -240,12 +165,7 @@ export function HistoryPanel({
     if (busy) return;
     setBusy(entry.key);
     try {
-      const result = await rpc("restore", {
-        key: entry.key,
-        choice,
-        request: crypto.randomUUID(),
-        confirmed: true,
-      });
+      const result = await rpc("restore", restoreRequest(entry, choice));
       if (result?.pane) onRestored(result.pane, !!result.existing);
     } finally {
       setBusy("");
@@ -254,15 +174,11 @@ export function HistoryPanel({
   /** Resumes a conversation in a new terminal of `project`, in its
    * folder; the bridge builds the command from the kind and id. */
   async function resume(c: Conversation, project: string, key: string) {
-    if (busy || !c.folder) return;
+    const request = resumeRequest(c, project);
+    if (busy || !request) return;
     setBusy(key);
     try {
-      const result = await rpc("new", {
-        request: crypto.randomUUID(),
-        ...(project !== SCRATCH ? { project } : {}),
-        cwd: c.folder,
-        resume: { kind: c.kind, id: c.id },
-      });
+      const result = await rpc("new", request);
       if (result?.pane) onRestored(result.pane, !!result.existing);
     } finally {
       setBusy("");
@@ -274,31 +190,7 @@ export function HistoryPanel({
         <p className="panel-empty">Loading history…</p>
       </div>
     );
-  const known = (id?: string | null) =>
-    !!id && !!projects?.some((project) => project.id === id);
-  const projectOfId = (id?: string | null) => (known(id) ? id! : SCRATCH);
-  const rows: HistoryRow[] = [
-    ...listing.entries.map(
-      (entry): HistoryRow => ({
-        type: "terminal",
-        at: entry.closed_at || 0,
-        entry,
-        project: projectOfId(entry.project),
-      }),
-    ),
-    ...(listing.external || []).map(
-      (conversation): HistoryRow => ({
-        type: "external",
-        at: conversation.last_seen || 0,
-        conversation,
-        project: projectOfId(conversation.project),
-      }),
-    ),
-  ]
-    // Newest first; the bridge's order (this workspace first) breaks ties.
-    .map((row, index) => ({ row, index }))
-    .sort((a, b) => b.row.at - a.row.at || a.index - b.index)
-    .map(({ row }) => row);
+  const rows = historyRows(listing, projects);
   const shown = scope ? rows.filter((row) => row.project === scope.id) : rows;
   const color = projectColor(scope);
   /** A row's project, in the global list. */

@@ -9,7 +9,7 @@
 //   its direct subfolders that are checkouts) with the branch, upstream,
 //   ahead/behind, changed files and last commit; a row expands to its
 //   changed files, which open in the Files editor.
-import React, { useState } from "react";
+import React, { useEffect, useRef, useState } from "react";
 import { Icon } from "./status";
 import { Tooltip } from "./Tooltip";
 import {
@@ -310,6 +310,7 @@ export function ReposView({
   onShowInFiles,
   onNewTerminal,
   onBack,
+  expanded,
 }: {
   project: Project;
   git?: ProjectGit;
@@ -324,8 +325,22 @@ export function ReposView({
   onNewTerminal?: (path: string) => void;
   /** A phone's way back to its terminal list. */
   onBack?: () => void;
+  /** A checkout (its path) shown expanded when the view opens, as a
+   * project's home page asks. */
+  expanded?: string;
 }) {
-  const [open, setOpen] = useState<Set<string>>(() => new Set());
+  const [open, setOpen] = useState<Set<string>>(
+    () => new Set(expanded ? [expanded] : []),
+  );
+  // The checkout asked for scrolls into view once it is listed.
+  const scrolled = useRef(false);
+  useEffect(() => {
+    if (!expanded || scrolled.current || !git) return;
+    scrolled.current = true;
+    document
+      .querySelector(`.git-repo[data-path="${CSS.escape(expanded)}"]`)
+      ?.scrollIntoView({ block: "nearest" });
+  }, [expanded, git]);
   const color = projectColor(project);
   const repos = git?.repos || [];
   const toggle = (path: string) =>

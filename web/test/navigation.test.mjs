@@ -353,6 +353,44 @@ test("a project's Repos view is a place of its own, named with its project", () 
   assert.equal(historyMode(repos, repos).mode, "none");
 });
 
+test("a project's home page is a place of its own, named with its project", () => {
+  const home = at({ view: "project", project: "kelp" });
+  const search = locationSearch(home);
+  assert.equal(search, "?view=project&project=kelp");
+  assert.deepEqual(resolveLocation(parseLocation(search), terminal(1)), home);
+  // Scratch's page has the same URL shape.
+  assert.equal(
+    locationSearch(at({ view: "project", project: "scratch" })),
+    "?view=project&project=scratch",
+  );
+  const state = {
+    phoneHome: false,
+    view: "project",
+    terminal: 3,
+    filesDir: "/x",
+    file: "",
+    side: "",
+    dialog: "",
+    notifyPane: 0,
+    project: "kelp",
+  };
+  assert.deepEqual(locationOf(state), home);
+  // Its History (See all) is a panel over it, keeping the project; closing
+  // it goes back to the page.
+  const history = locationOf({ ...state, dialog: "recovery" });
+  assert.equal(locationSearch(history), "?view=project&dialog=history&project=kelp");
+  assert.deepEqual(historyMode(home, history), { mode: "push", overlay: true });
+  assert.equal(historyMode(history, home, { overlay: true }).mode, "back");
+  // The project's grid, Repos view or another project's page: a push.
+  for (const next of [
+    at({ view: "grid", project: "kelp" }),
+    at({ view: "repos", project: "kelp" }),
+    at({ view: "project", project: "web" }),
+  ])
+    assert.equal(historyMode(home, next).mode, "push");
+  assert.equal(historyMode(home, home).mode, "none");
+});
+
 test("the former Recently closed URL opens History", () => {
   const wanted = parseLocation("?view=grid&dialog=closed&project=kelp");
   assert.equal(wanted.dialog, "history");
