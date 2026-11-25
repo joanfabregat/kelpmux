@@ -7,6 +7,7 @@ const sections: readonly (readonly [string, string, IconName])[] = [
   ["alerts", "Notifications", "bell"],
   ["shortcuts", "Keyboard", "book-open"],
   ["uploads", "Uploads", "upload"],
+  ["files", "Files & folders", "folder"],
   ["keys", "Security keys", "key-round"],
   ["connection", "Connection", "plug"],
 ];
@@ -20,10 +21,13 @@ export function Settings({
   active,
   onChange,
   children,
+  alerts = [],
 }: {
   active: string;
   onChange: (value: string) => void;
   children: ReactNode;
+  /** Sections that need attention (a configuration error). */
+  alerts?: string[];
 }) {
   return (
     <div className="settings-layout">
@@ -64,6 +68,9 @@ export function Settings({
           >
             <Icon name={icon} size="sm" />
             {label}
+            {alerts.includes(id) && (
+              <Icon name="circle-alert" size="sm" className="config-alert" />
+            )}
           </button>
         ))}
       </nav>

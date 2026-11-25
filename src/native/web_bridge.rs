@@ -20,7 +20,7 @@ use super::{
     session::{Session, request_id},
     status,
     stream::{self, ClosedSession, Event, Request},
-    web_repos,
+    user_config, web_repos,
 };
 use crate::Result;
 use serde_json::{Value, json};
@@ -51,8 +51,11 @@ pub const API_VERSION: u64 = 3;
 /// their replies (and Welcome `file_limits`) unchanged, which a bridge of
 /// minor 1 cannot parse. Minor 3 added `downloads`: the bridge relays
 /// KelpServer's `file_download_*` requests and events (KelpCore
-/// `file-downloads`), which a bridge of minor 2 cannot parse.
-pub const API_MINOR: u64 = 3;
+/// `file-downloads`), which a bridge of minor 2 cannot parse. Minor 4
+/// added `config`: the `config` and `config_set` operations on the user
+/// configuration (`user_config`), and the `Config` notice the bridge sends
+/// when the file changes.
+pub const API_MINOR: u64 = 4;
 /// Largest accepted `Web` request, in bytes of JSON.
 const REQUEST_LIMIT: usize = 65536;
 /// Largest request identifier a browser can represent exactly.
@@ -104,6 +107,7 @@ struct Api {
     socket: PathBuf,
     state: PathBuf,
     monitor: status::Monitor,
+    config: Option<Arc<user_config::Live>>,
 }
 
 fn pane(value: &Value) -> Result<u64> {
@@ -225,6 +229,7 @@ impl Api {
             "commands" => self.commands(),
             "closed" => self.closed(),
             "restore" => self.restore(p),
+            "config" | "config_set" => config_request(self.config.as_deref(), method, p),
             _ => Err("unsupported web operation".into()),
         }
     }
@@ -367,7 +372,39 @@ const OPERATIONS: &[&str] = &[
     "uploads",
     "files",
     "downloads",
+    "config",
 ];
+
+/// The user configuration operations, while the workspace runs or not:
+/// `config` returns the file's state (the configuration in effect, its
+/// problems), `config_set` validates and saves `params.changes`
+/// (`{"files.root": "~", …}`) and returns `{saved, errors, config}`. The
+/// browser chooses values, never the file: it is this user's own.
+fn config_request(config: Option<&user_config::Live>, method: &str, p: &Value) -> Result<Value> {
+    let config = config.ok_or("the user configuration is unavailable: HOME is not set")?;
+    match method {
+        "config" => Ok(config.json()),
+        _ => config.set(&p["changes"]),
+    }
+}
+
+/// Watches the user configuration for this connection. Changes reach the
+/// browser as `Config` notices once the bridge relays the workspace
+/// (`running`); while it is stopped the browser asks with `config`.
+fn live_config(
+    sender: mpsc::SyncSender<Outbound>,
+    running: Arc<AtomicBool>,
+) -> Option<Arc<user_config::Live>> {
+    let path = user_config::default_path().ok()?;
+    let env = user_config::Env::current().ok()?;
+    Some(user_config::Live::start(
+        path,
+        env,
+        Box::new(move |value| {
+            !running.load(Ordering::Acquire) || sender.send(Outbound::Message(value)).is_ok()
+        }),
+    ))
+}
 /// Most panes whose foreground program one `commands` call reports.
 const MAX_COMMAND_PANES: usize = 128;
 
@@ -485,7 +522,7 @@ fn first_shell(socket: &Path) -> Result<()> {
 /// Serves the browser while the workspace is not running: answers its hello
 /// with a `Workspace` notice, its `state` and, on request, `start`. Returns
 /// the connection to the started server.
-fn stopped(socket: &Path, state: &Path) -> Result<UnixStream> {
+fn stopped(socket: &Path, state: &Path, config: Option<&user_config::Live>) -> Result<UnixStream> {
     let workspace = state.file_name().unwrap_or_default().to_string_lossy();
     let mut input = io::stdin().lock();
     let mut output = io::stdout().lock();
@@ -525,9 +562,10 @@ fn stopped(socket: &Path, state: &Path) -> Result<UnixStream> {
                     "workspace": workspace,
                     "version": env!("CARGO_PKG_VERSION"),
                     "running": false,
-                    "operations": ["state", "start"],
+                    "operations": ["state", "start", "config"],
                 })),
                 "start" => start(socket, state, &web["params"]),
+                "config" | "config_set" => config_request(config, method, &web["params"]),
                 _ => Err("the workspace server is not running; start it first".into()),
             }
         };
@@ -550,12 +588,17 @@ pub fn run(socket: &Path, state: &Path) -> Result<()> {
     if unsafe { libc::isatty(0) } == 1 || unsafe { libc::isatty(1) } == 1 {
         return Err("web bridge requires SSH without a PTY".into());
     }
+    let (sender, receiver) = mpsc::sync_channel::<Outbound>(2);
+    // `Config` notices wait until this thread writes the relayed stream.
+    let relaying = Arc::new(AtomicBool::new(false));
+    let config = live_config(sender.clone(), relaying.clone());
     // A workspace that is not running is offered to the browser to start.
     let (mut upstream, greeted) = match connection::connect(socket) {
         Ok(stream) => (stream, false),
-        Err(_) if server_absent(socket) => (stopped(socket, state)?, true),
+        Err(_) if server_absent(socket) => (stopped(socket, state, config.as_deref())?, true),
         Err(error) => return Err(error),
     };
+    relaying.store(true, Ordering::Release);
     if greeted {
         // The browser's hello was answered while stopped; greet the server.
         write_message(
@@ -571,7 +614,6 @@ pub fn run(socket: &Path, state: &Path) -> Result<()> {
     let observations = runtime.clone();
     let reader = upstream.try_clone()?;
     let writer = Arc::new(Mutex::new(upstream));
-    let (sender, receiver) = mpsc::sync_channel::<Outbound>(2);
     let events = sender.clone();
     let ready = Arc::new(AtomicBool::new(false));
     let handshake = ready.clone();
@@ -647,6 +689,7 @@ pub fn run(socket: &Path, state: &Path) -> Result<()> {
             socket,
             state,
             monitor,
+            config,
         };
         let mut initialized = greeted;
         let mut last_id = 0;

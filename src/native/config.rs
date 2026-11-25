@@ -65,20 +65,7 @@ impl Settings {
     /// `workspace.json`, keeping the server's and any other key unchanged.
     pub fn persist(&self, state: &Path) -> Result<()> {
         let path = state.join(FILE);
-        let mut object = match read_bounded(&path, MAX_SETTINGS, false) {
-            Ok(bytes) => match serde_json::from_slice::<serde_json::Value>(&bytes)? {
-                serde_json::Value::Object(object) => object,
-                _ => return Err("workspace.json must contain a JSON object".into()),
-            },
-            Err(error)
-                if error
-                    .downcast_ref::<std::io::Error>()
-                    .is_some_and(|error| error.kind() == std::io::ErrorKind::NotFound) =>
-            {
-                serde_json::Map::new()
-            }
-            Err(error) => return Err(error),
-        };
+        let mut object = workspace_object(&path)?;
         object.insert("template".into(), serde_json::to_value(&self.template)?);
         match &self.ui {
             // Saved in the TUI's form when it accepts them (legacy values
@@ -97,6 +84,36 @@ impl Settings {
         }
         journal::atomic(&path, &serde_json::Value::Object(object))
     }
+}
+
+/// The JSON object of a `workspace.json`, empty when there is no file.
+fn workspace_object(path: &Path) -> Result<serde_json::Map<String, serde_json::Value>> {
+    match read_bounded(path, MAX_SETTINGS, false) {
+        Ok(bytes) => match serde_json::from_slice::<serde_json::Value>(&bytes)? {
+            serde_json::Value::Object(object) => Ok(object),
+            _ => Err("workspace.json must contain a JSON object".into()),
+        },
+        Err(error)
+            if error
+                .downcast_ref::<std::io::Error>()
+                .is_some_and(|error| error.kind() == std::io::ErrorKind::NotFound) =>
+        {
+            Ok(serde_json::Map::new())
+        }
+        Err(error) => Err(error),
+    }
+}
+
+/// Records the user configuration's file roots for the next server start:
+/// `files_root` (KelpServer's `--files-root`) and `files_extra_roots`
+/// (`--files-extra-root`, a KelpServer that predates it ignores the key and
+/// preserves it). Every other key stays unchanged.
+pub fn persist_file_roots(state: &Path, root: &Path, extra: &[PathBuf]) -> Result<()> {
+    let path = state.join(FILE);
+    let mut object = workspace_object(&path)?;
+    object.insert("files_root".into(), serde_json::to_value(root)?);
+    object.insert("files_extra_roots".into(), serde_json::to_value(extra)?);
+    journal::atomic(&path, &serde_json::Value::Object(object))
 }
 
 /// The workspace's `workspace.json`, if it exists and is valid.
@@ -167,4 +184,40 @@ pub fn legacy_sidebar_folded(state: &Path) -> Option<bool> {
 }
 pub fn legacy_sidebar_accent(state: &Path) -> Option<super::ui::Accent> {
     legacy_json(&state.join("sidebar-accent.json"), MAX_PREFERENCE).ok()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn file_roots_are_recorded_beside_other_keys() {
+        let state = std::env::temp_dir().join(format!(
+            "kelpmux-roots-{}-{}",
+            std::process::id(),
+            crate::now()
+        ));
+        std::fs::create_dir_all(&state).unwrap();
+        let path = state.join(FILE);
+        std::fs::write(
+            &path,
+            r#"{"shell":"/bin/sh","files_root":"/old","future":1}"#,
+        )
+        .unwrap();
+        persist_file_roots(&state, Path::new("/home/u"), &[PathBuf::from("/mnt/data")]).unwrap();
+        let value: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        assert_eq!(
+            value,
+            serde_json::json!({
+                "shell": "/bin/sh",
+                "files_root": "/home/u",
+                "files_extra_roots": ["/mnt/data"],
+                "future": 1,
+            })
+        );
+        // KelpServer's own reading of the file accepts it.
+        let server = super::super::lifecycle::Settings::load(&path).unwrap();
+        assert_eq!(server.files_root.as_deref(), Some(Path::new("/home/u")));
+        std::fs::remove_dir_all(&state).unwrap();
+    }
 }
