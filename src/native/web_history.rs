@@ -22,7 +22,10 @@
 //! read only when it is a regular file owned by that user. The outside
 //! conversations are bounded: transcripts modified in the last [`DAYS`]
 //! days, at most [`PER_PROJECT`] per project and [`MAX_EXTERNAL`] in all,
-//! the Codex walk limited to those days' date folders. What was parsed is
+//! the Codex walk limited to those days' date folders. A closed agent
+//! terminal whose conversation the server never identified is linked to a
+//! transcript only when exactly one can be its own ([`correlate`]). What
+//! was parsed is
 //! kept in memory per bridge ([`Index`]) and parsed again only when the file
 //! was replaced, or changed while it still had no title. The work runs on
 //! the bridge's own History thread ([`Worker`]), never on the terminals'.
@@ -161,8 +164,10 @@ impl Index {
     }
 
     /// The History listing: `{workspace, entries, external, truncated}`.
-    /// Each entry gains `conversations` (newest first); `external` lists the
-    /// outside conversations, newest first, each with its `project`.
+    /// Each entry gains `conversations` (newest first; an agent terminal
+    /// whose conversation is unknown gets the one transcript [`correlate`]
+    /// finds for it, with `matched`); `external` lists the outside
+    /// conversations, newest first, each with its `project`.
     pub fn list(&mut self, roots: &Roots, request: &Request, now: SystemTime) -> Value {
         let now_secs = now.duration_since(UNIX_EPOCH).unwrap_or_default().as_secs();
         let since = now_secs.saturating_sub(DAYS * 86_400);
@@ -172,15 +177,47 @@ impl Index {
             .map(|root| self.codex_files(root, now_secs))
             .unwrap_or_default();
         let mut linked: HashSet<(String, String)> = request.live.iter().cloned().collect();
+        let known: Vec<Vec<Conversation>> = request.entries.iter().map(conversations_of).collect();
+        for conversation in known.iter().flatten() {
+            linked.insert((conversation.kind.to_owned(), conversation.id.clone()));
+        }
+        // Agent terminals whose conversation the server never identified:
+        // linked to the one transcript that can only be theirs, if any.
+        let unknown: Vec<Option<Unknown>> = request
+            .entries
+            .iter()
+            .zip(&known)
+            .map(|(entry, known)| unknown_of(entry, known))
+            .collect();
+        let matched = self.matches(roots, &codex, &unknown, &linked, since);
+        for found in matched.values() {
+            linked.insert((found.meta.kind.to_owned(), found.meta.id.clone()));
+        }
         let mut entries = Vec::with_capacity(request.entries.len());
-        for entry in &request.entries {
+        for (index, (entry, conversations)) in request.entries.iter().zip(known).enumerate() {
             let mut entry = entry.clone();
-            let conversations = conversations_of(&entry);
             let terminal_cwd = entry["cwd"].as_str().unwrap_or_default().to_owned();
             let name = entry["name"].as_str().unwrap_or_default().to_owned();
-            let mut rows = Vec::with_capacity(conversations.len());
+            let mut rows = Vec::with_capacity(conversations.len() + 1);
+            if let Some(found) = matched.get(&index) {
+                let cwd = found.meta.cwd.clone().unwrap_or_default();
+                let folder = [cwd.as_str(), terminal_cwd.as_str()]
+                    .into_iter()
+                    .find(|path| is_folder(path))
+                    .map(str::to_owned);
+                rows.push(json!({
+                    "kind": found.meta.kind,
+                    "id": found.meta.id,
+                    "cwd": cwd,
+                    "folder": folder,
+                    "title": found.meta.title.clone().unwrap_or_else(|| name.clone()),
+                    "titled": found.meta.title.is_some(),
+                    "first_seen": found.meta.first,
+                    "last_seen": found.modified,
+                    "matched": true,
+                }));
+            }
             for conversation in conversations.into_iter().rev() {
-                linked.insert((conversation.kind.to_owned(), conversation.id.clone()));
                 let found = self.find(roots, &codex, &conversation);
                 let (title, first, last) = match &found {
                     Some(found) => (
@@ -269,6 +306,87 @@ impl Index {
                 })
             }
         }
+    }
+
+    /// The transcripts that can only belong to an agent terminal whose
+    /// conversation is unknown ([`correlate`]), by `unknown`'s index.
+    /// Codex's candidates are the date folders' transcripts; Claude Code's
+    /// those of the folders named after the terminal's folder or one inside
+    /// it, modified between [`DAYS`] days ago and the terminal's close (plus
+    /// [`MATCH_SLACK`]): more than [`PER_PROJECT`] of them and the terminal
+    /// is left unmatched, since its candidate could not be unique.
+    fn matches(
+        &mut self,
+        roots: &Roots,
+        codex: &[CodexFile],
+        unknown: &[Option<Unknown>],
+        linked: &HashSet<(String, String)>,
+        since: u64,
+    ) -> HashMap<usize, Found> {
+        let mut terminals = unknown.to_vec();
+        if terminals.iter().all(Option::is_none) {
+            return HashMap::new();
+        }
+        let mut pool: Vec<Found> = Vec::new();
+        let mut seen: HashSet<PathBuf> = HashSet::new();
+        if terminals.iter().flatten().any(|t| t.kind == "codex") {
+            for file in codex {
+                if file.modified >= since
+                    && seen.insert(file.path.clone())
+                    && let Some(hit) = self.read(&file.path, "codex")
+                {
+                    pool.push(hit);
+                }
+            }
+        }
+        let projects = roots.claude.as_deref().map(|root| root.join("projects"));
+        let dirs: Vec<(String, PathBuf)> = match &projects {
+            Some(projects)
+                if terminals.iter().flatten().any(|t| t.kind == "claude")
+                    && self.owned_dir(projects, false) =>
+            {
+                self.list_entries(projects, true)
+            }
+            _ => Vec::new(),
+        };
+        for slot in terminals.iter_mut() {
+            let Some(terminal) = slot.as_ref().filter(|t| t.kind == "claude") else {
+                continue;
+            };
+            let prefix = normalize(&terminal.cwd.to_string_lossy());
+            let until = terminal.closed_at.saturating_add(MATCH_SLACK);
+            let mut paths = Vec::new();
+            for (name, dir) in &dirs {
+                let name = normalize(name);
+                if name != prefix && !name.starts_with(&format!("{prefix}-")) {
+                    continue;
+                }
+                for (file, path) in self.list_dir(dir) {
+                    if file.ends_with(".jsonl")
+                        && self
+                            .modified(&path)
+                            .is_some_and(|modified| modified >= since && modified <= until)
+                    {
+                        paths.push(path);
+                    }
+                }
+            }
+            if paths.len() > PER_PROJECT {
+                *slot = None;
+                continue;
+            }
+            for path in paths {
+                if seen.insert(path.clone())
+                    && let Some(hit) = self.read(&path, "claude")
+                {
+                    pool.push(hit);
+                }
+            }
+        }
+        correlate(&terminals, &pool, linked)
+            .into_iter()
+            .map(|(index, candidate)| (index, pool[candidate].clone()))
+            .collect()
     }
 
     /// Conversations whose folder is inside a project's (or Scratch's) and
@@ -604,6 +722,94 @@ fn conversations_of(entry: &Value) -> Vec<Conversation> {
     list
 }
 
+/// How long after a terminal closed its conversation's transcript may
+/// still have been written (the agent saving on exit), in seconds.
+pub const MATCH_SLACK: u64 = 120;
+
+/// A closed agent terminal whose conversation the server never identified
+/// (KelpServer sees a Codex rollout only while Codex holds it open).
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Unknown {
+    kind: &'static str,
+    cwd: PathBuf,
+    closed_at: u64,
+}
+
+/// A closed entry that ran Claude Code or Codex, hosted no known
+/// conversation and has a folder and a closing time to match by.
+fn unknown_of(entry: &Value, known: &[Conversation]) -> Option<Unknown> {
+    if !known.is_empty() {
+        return None;
+    }
+    let cwd = PathBuf::from(entry["cwd"].as_str()?);
+    Some(Unknown {
+        kind: kind(&entry["kind"])?,
+        closed_at: entry["closed_at"].as_u64()?,
+        cwd: cwd.is_absolute().then_some(cwd)?,
+    })
+}
+
+/// Links each unknown terminal (by index) to a transcript of `pool` (by
+/// index) when exactly one can be its conversation: the same tool, not a
+/// subagent's, not hosted by another terminal or a live pane (`linked`),
+/// its folder the terminal's or inside it, first active no later than the
+/// close and last active no later than [`MATCH_SLACK`] after it. A
+/// transcript that is also a candidate of another unknown terminal is
+/// linked to neither. The records hold no opening time, so an older
+/// conversation in the same folder makes the terminal ambiguous: it is
+/// then left unmatched rather than guessed.
+fn correlate(
+    terminals: &[Option<Unknown>],
+    pool: &[Found],
+    linked: &HashSet<(String, String)>,
+) -> HashMap<usize, usize> {
+    // One candidate per conversation: its most recent transcript.
+    let mut best: HashMap<(&str, &str), usize> = HashMap::new();
+    for (index, found) in pool.iter().enumerate() {
+        let key = (found.meta.kind, found.meta.id.as_str());
+        if best
+            .get(&key)
+            .is_none_or(|&other| pool[other].modified < found.modified)
+        {
+            best.insert(key, index);
+        }
+    }
+    let mut candidates: Vec<usize> = best.into_values().collect();
+    candidates.sort_unstable();
+    let sets: Vec<Vec<usize>> = terminals
+        .iter()
+        .map(|terminal| {
+            let Some(t) = terminal else {
+                return Vec::new();
+            };
+            candidates
+                .iter()
+                .copied()
+                .filter(|&index| {
+                    let found = &pool[index];
+                    found.meta.kind == t.kind
+                        && !found.meta.sub
+                        && !linked.contains(&(found.meta.kind.to_owned(), found.meta.id.clone()))
+                        && inside(found.meta.cwd.as_deref(), &t.cwd)
+                        && found.modified <= t.closed_at.saturating_add(MATCH_SLACK)
+                        && found.meta.first.is_none_or(|first| first <= t.closed_at)
+                })
+                .collect()
+        })
+        .collect();
+    let mut claims: HashMap<usize, usize> = HashMap::new();
+    for &index in sets.iter().flatten() {
+        *claims.entry(index).or_default() += 1;
+    }
+    sets.iter()
+        .enumerate()
+        .filter_map(|(terminal, set)| match set.as_slice() {
+            [only] if claims[only] == 1 => Some((terminal, *only)),
+            _ => None,
+        })
+        .collect()
+}
+
 /// The folder names Claude Code may have used for `cwd`: every `/` and `.`
 /// replaced by `-` (as documented), then every other character that is
 /// not a letter or digit too (newer versions).
@@ -894,10 +1100,16 @@ fn parse_codex(file: fs::File) -> Option<Meta> {
             let Some(id) = payload["id"].as_str().filter(|id| crate::session_id(id)) else {
                 return true;
             };
+            // A subagent's or reviewer's thread: a parent, a structured
+            // source (`{"subagent": …}`) or a `thread_source` other than
+            // the user's.
             let sub = payload["parent_thread_id"]
                 .as_str()
                 .is_some_and(|parent| !parent.is_empty())
-                || payload["source"].is_object();
+                || payload["source"].is_object()
+                || payload["thread_source"]
+                    .as_str()
+                    .is_some_and(|source| source != "user");
             meta = Some(Meta {
                 kind: "codex",
                 id: id.into(),
@@ -1383,6 +1595,115 @@ mod tests {
             index.read(&path, "claude").unwrap().meta.title.as_deref(),
             Some("Now titled")
         );
+    }
+
+    fn candidate(kind: &'static str, id: &str, cwd: &str, first: u64, last: u64) -> Found {
+        Found {
+            meta: Meta {
+                kind,
+                id: id.into(),
+                cwd: Some(cwd.into()),
+                title: Some(format!("title {id}")),
+                first: Some(first),
+                sub: false,
+            },
+            modified: last,
+        }
+    }
+    fn terminal(kind: &'static str, cwd: &str, closed_at: u64) -> Option<Unknown> {
+        Some(Unknown {
+            kind,
+            cwd: cwd.into(),
+            closed_at,
+        })
+    }
+
+    #[test]
+    fn unknown_terminals_link_only_a_unique_candidate() {
+        let none = HashSet::new();
+        let close = 10_000;
+        // Unique: same tool, folder inside the terminal's, ended by the
+        // close (plus the slack); other tools, folders and later or
+        // subagent transcripts do not count.
+        let mut sub = candidate("codex", "sub", "/w", 9_000, 9_500);
+        sub.meta.sub = true;
+        let pool = vec![
+            candidate("claude", "c", "/w", 9_000, 9_900),
+            candidate("codex", "x", "/w/api", 9_000, close + MATCH_SLACK),
+            candidate("codex", "other-dir", "/w2", 9_000, 9_900),
+            candidate("codex", "started-after", "/w", close + 1, close + 5),
+            sub,
+        ];
+        let terminals = [None, terminal("codex", "/w", close)];
+        assert_eq!(correlate(&terminals, &pool, &none), HashMap::from([(1, 1)]));
+        // Ambiguous: two candidates, none linked.
+        let mut two = pool.clone();
+        two.push(candidate("codex", "y", "/w", 1_000, 2_000));
+        assert!(correlate(&terminals, &two, &none).is_empty());
+        // Too late: written after the close and its slack.
+        let late = vec![candidate(
+            "codex",
+            "x",
+            "/w",
+            9_000,
+            close + MATCH_SLACK + 1,
+        )];
+        assert!(correlate(&terminals, &late, &none).is_empty());
+        // Already hosted by another terminal or a live pane.
+        let linked = HashSet::from([("codex".to_owned(), "x".to_owned())]);
+        assert!(correlate(&terminals, &pool, &linked).is_empty());
+        // Wanted by two unknown terminals: linked to neither.
+        let both = [
+            terminal("codex", "/w", close),
+            terminal("codex", "/w/api", close),
+        ];
+        assert!(correlate(&both, &pool, &none).is_empty());
+        // The same conversation's two transcripts count once.
+        let mut copies = pool.clone();
+        copies.push(candidate("codex", "x", "/w/api", 9_000, 9_000));
+        assert_eq!(
+            correlate(&terminals, &copies, &none),
+            HashMap::from([(1, 1)])
+        );
+    }
+
+    #[test]
+    fn a_closed_codex_terminal_without_id_gets_its_only_transcript() {
+        let world = World::new();
+        let repo = world.alpha.join("repo");
+        let mut lines = vec![codex_meta("x-only", &repo, false)];
+        lines.extend(codex_user("Fix the resume button"));
+        world.codex("x-only", &lines);
+        // A reviewer thread of it is never a candidate.
+        let mut guardian = vec![codex_meta("x-guard", &repo, false).replace(
+            "\"source\":\"cli\"",
+            "\"source\":\"cli\",\"thread_source\":\"guardian_review\"",
+        )];
+        guardian.extend(codex_user("review"));
+        world.codex("x-guard", &guardian);
+        let mut entry = closed("e:1", &world.alpha, Some("codex"), None);
+        // After the transcript's session started (its fixed timestamp).
+        entry["closed_at"] = json!(crate::now().max(1_795_520_000) + 5);
+        let shell = closed("e:2", &world.alpha, None, None);
+        let mut index = Index::default();
+        let listing = index.list(
+            &world.roots,
+            &world.request(vec![entry.clone(), shell]),
+            SystemTime::now(),
+        );
+        let conversations = &listing["entries"][0]["conversations"];
+        assert_eq!(conversations.as_array().unwrap().len(), 1, "{listing}");
+        assert_eq!(conversations[0]["id"], "x-only");
+        assert_eq!(conversations[0]["matched"], true);
+        assert_eq!(conversations[0]["title"], "Fix the resume button");
+        assert_eq!(listing["entries"][1]["conversations"], json!([]));
+        // It is no longer an outside conversation.
+        assert_eq!(listing["external"], json!([]), "{listing}");
+        // Closed long before the transcript was written: not linked.
+        entry["closed_at"] = json!(100);
+        let listing = index.list(&world.roots, &world.request(vec![entry]), SystemTime::now());
+        assert_eq!(listing["entries"][0]["conversations"], json!([]));
+        assert_eq!(listing["external"][0]["id"], "x-only");
     }
 
     #[test]

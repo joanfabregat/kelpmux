@@ -24,6 +24,10 @@ export type Conversation = {
   last_seen?: number | null;
   /** An outside conversation's project (`scratch` for Scratch). */
   project?: string;
+  /** Linked to its closed terminal by folder and time: the server never
+   * identified the terminal's conversation and this transcript is the
+   * only one that can be it. */
+  matched?: boolean;
 };
 export type ClosedEntry = {
   key: string;
@@ -62,6 +66,28 @@ export const choiceLabel = {
   restart: "Rerun",
   folder: "Open folder",
 };
+/** A closed agent terminal whose conversation is not known: it offers its
+ * agent's picker, never a Resume. */
+export const unidentified = (entry: ClosedEntry) =>
+  (entry.kind === "codex" || entry.kind === "claude") && !entry.session_id;
+/** "Open Codex's picker here": the agent's own conversation picker. */
+export const pickerLabel = (kind?: string | null) =>
+  `Open ${kind === "codex" ? "Codex" : "Claude"}'s picker here`;
+export const pickerHint = (entry: ClosedEntry) =>
+  `KelpMux did not record which conversation this terminal ran: runs “${resumeCommand(
+    { kind: entry.kind },
+  )}” in ${entry.cwd}, where you choose it`;
+export const matchedHint =
+  "KelpMux did not record this terminal's conversation; this is the only one of its tool in that folder that ended by the time the terminal closed";
+/** A restore choice's label: the server's `resume` of an unidentified
+ * agent opens its picker, and says so. */
+export const choiceText = (
+  entry: ClosedEntry,
+  choice: ClosedEntry["choices"][0],
+) =>
+  choice === "resume" && unidentified(entry)
+    ? pickerLabel(entry.kind)
+    : choiceLabel[choice];
 export const choiceHint = (
   entry: ClosedEntry,
   choice: ClosedEntry["choices"][0],
@@ -69,13 +95,15 @@ export const choiceHint = (
   choice === "resume"
     ? entry.session_id
       ? "Resume this conversation in a new terminal"
-      : "Open the agent's conversation picker in its folder"
+      : pickerHint(entry)
     : choice === "restart"
       ? `Rerun ${entry.argv.join(" ")} in its folder`
       : "Open a shell in this folder";
 
 /** The command the TUI copies for an agent conversation. */
-export function resumeCommand(entry: Pick<ClosedEntry, "kind" | "session_id">) {
+export function resumeCommand(
+  entry: Pick<ClosedEntry, "kind"> & { session_id?: string | null },
+) {
   const base =
     entry.kind === "codex"
       ? "codex resume"
@@ -147,6 +175,26 @@ export function resumeRequest(c: Conversation, project: string) {
     ...(project !== SCRATCH ? { project } : {}),
     cwd: c.folder,
     resume: { kind: c.kind, id: c.id },
+  };
+}
+/** The bridge's `new` that opens an unidentified agent terminal's picker
+ * (`claude --resume`, `codex resume`, no id) in a new terminal of
+ * `project`, in the terminal's folder. */
+export function pickerRequest(entry: ClosedEntry, project: string) {
+  return {
+    request: crypto.randomUUID(),
+    ...(project !== SCRATCH ? { project } : {}),
+    cwd: entry.cwd,
+    resume: { kind: entry.kind, picker: true },
+  };
+}
+/** The bridge's `new` that opens a shell in a closed terminal's folder,
+ * in `project`. */
+export function folderRequest(entry: ClosedEntry, project: string) {
+  return {
+    request: crypto.randomUUID(),
+    ...(project !== SCRATCH ? { project } : {}),
+    cwd: entry.cwd,
   };
 }
 /** The bridge's `restore` of a closed terminal with one of its choices. */

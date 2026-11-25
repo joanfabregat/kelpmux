@@ -4,6 +4,11 @@ import {
   historyRows,
   resumeRequest,
   restoreRequest,
+  choiceText,
+  folderRequest,
+  pickerRequest,
+  resumeCommand,
+  unidentified,
 } from "../src/conversations.ts";
 import { agentsFirst } from "../src/state/terminals.ts";
 
@@ -72,4 +77,24 @@ test("a project's terminals list agents first, each group in order", () => {
     { id: 4, kind: "codex" },
   ];
   assert.deepEqual(agentsFirst(panes).map((p) => p.id), [2, 4, 1, 3]);
+});
+
+test("an agent terminal without a known conversation opens its picker, labelled", () => {
+  const codex = { ...entry("k", 1, "alpha"), kind: "codex", session_id: null, choices: ["resume"] };
+  assert.equal(unidentified(codex), true);
+  assert.equal(unidentified({ ...codex, session_id: "x-1" }), false);
+  assert.equal(unidentified({ ...codex, kind: null }), false);
+  assert.equal(choiceText(codex, "resume"), "Open Codex's picker here");
+  assert.equal(choiceText({ ...codex, kind: "claude" }, "resume"), "Open Claude's picker here");
+  assert.equal(choiceText({ ...codex, session_id: "x-1" }, "resume"), "Resume");
+  assert.equal(resumeCommand({ kind: "codex" }), "codex resume");
+  assert.deepEqual(
+    { ...pickerRequest(codex, "alpha"), request: undefined },
+    { request: undefined, project: "alpha", cwd: "/a", resume: { kind: "codex", picker: true } },
+  );
+  assert.equal("project" in pickerRequest(codex, "scratch"), false);
+  assert.deepEqual(
+    { ...folderRequest(codex, "alpha"), request: undefined },
+    { request: undefined, project: "alpha", cwd: "/a" },
+  );
 });
