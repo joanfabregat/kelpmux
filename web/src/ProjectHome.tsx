@@ -16,7 +16,10 @@
 //    conversation; an unidentified agent terminal offers its agent's
 //    picker, labelled; a matched conversation is marked) (conversations.ts,
 //    as the History panel).
-// Nothing here adds a bridge operation.
+// An archived project (API minor 11) shows the `archived` body it is given
+// (Archive.tsx's ArchivedPanel, with Restore) instead of its terminals and
+// repositories, and no New terminal, Files or Environments. Nothing here
+// adds a bridge operation.
 import React, { useEffect, useRef, useState } from "react";
 import type { NumberedPane } from "@kelpcore/web/types.ts";
 import { Icon } from "./status";
@@ -227,6 +230,7 @@ export function ProjectHome({
   onRestored,
   onOpenEnvironments,
   onBack,
+  archived,
 }: {
   project: Project;
   /** The user's projects, to tell Scratch's History entries apart. */
@@ -263,8 +267,13 @@ export function ProjectHome({
   onOpenEnvironments?: () => void;
   /** A phone's way back to its terminal list. */
   onBack?: () => void;
+  /** An archived project's body (ArchivedPanel): shown instead of its
+   * terminals and repositories, without their actions. */
+  archived?: React.ReactNode;
 }) {
   const color = projectColor(project);
+  /** Archived (and the bridge offers archives): no terminals or repos. */
+  const isArchived = project.status === "archived" && !!archived;
   const [listing, setListing] = useState<HistoryListing | null>(null);
   const [busy, setBusy] = useState("");
   /** The bridge, read by the listing effect without restarting it. */
@@ -484,7 +493,16 @@ export function ProjectHome({
                     <Icon name="copy" size="sm" />
                   </button>
                 </Tooltip>
-                {project.missing && (
+                {isArchived ? (
+                  <span className="home-archived">
+                    <Icon name="archive" size="sm" /> Archived
+                  </span>
+                ) : project.status === "paused" ? (
+                  <span className="home-archived">
+                    <Icon name="pause" size="sm" /> Paused
+                  </span>
+                ) : null}
+                {project.missing && !isArchived && (
                   <span className="home-missing">
                     <Icon name="circle-alert" size="sm" /> Folder missing
                   </span>
@@ -492,6 +510,8 @@ export function ProjectHome({
               </span>
             </div>
             <div className="home-actions">
+              {!isArchived && (
+                <>
               <button
                 type="button"
                 className="small"
@@ -523,6 +543,8 @@ export function ProjectHome({
                   Environments
                 </button>
               )}
+                </>
+              )}
               <button
                 type="button"
                 className="icon-btn"
@@ -538,6 +560,10 @@ export function ProjectHome({
             </div>
           </header>
 
+          {isArchived ? (
+            archived
+          ) : (
+          <>
           <Section
             id="terminals"
             title="Agents & terminals"
@@ -608,6 +634,8 @@ export function ProjectHome({
                 </p>
               )}
             </Section>
+          )}
+          </>
           )}
 
           <Section

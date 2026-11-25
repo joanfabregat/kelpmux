@@ -1041,7 +1041,7 @@ fn git_history_reads_a_checkouts_history_and_diffs() {
     let mut bridge = Bridge::start(&server);
     welcome(&mut bridge);
     let state = bridge.web(1, "state", json!({}));
-    assert_eq!(state["result"]["api_minor"], 10);
+    assert_eq!(state["result"]["api_minor"], 11);
     assert!(
         state["result"]["operations"]
             .as_array()
@@ -1336,7 +1336,7 @@ fn history_lists_conversations_and_new_resumes_them() {
     let mut bridge = Bridge::start(&server);
     welcome(&mut bridge);
     let state = bridge.web(1, "state", json!({}));
-    assert_eq!(state["result"]["api_minor"], 10);
+    assert_eq!(state["result"]["api_minor"], 11);
     assert!(
         state["result"]["operations"]
             .as_array()
@@ -1531,7 +1531,7 @@ fn repos_and_commands_report_read_only_facts_for_the_terminals_table() {
     welcome(&mut bridge);
     let state = bridge.web(1, "state", json!({}));
     assert_eq!(state["result"]["api_version"], 3);
-    assert_eq!(state["result"]["api_minor"], 10);
+    assert_eq!(state["result"]["api_minor"], 11);
     let operations = state["result"]["operations"].as_array().unwrap();
     assert!(operations.iter().any(|op| op == "repos"));
     assert!(operations.iter().any(|op| op == "commands"));
@@ -1904,7 +1904,7 @@ fn file_requests_and_replies_are_relayed_unchanged() {
     }
     assert_eq!(limits["max_read_bytes"], 8 * 1024 * 1024);
     let state = bridge.web(1, "state", json!({}));
-    assert_eq!(state["result"]["api_minor"], 10);
+    assert_eq!(state["result"]["api_minor"], 11);
     assert!(
         state["result"]["operations"]
             .as_array()
@@ -2182,7 +2182,7 @@ fn environments_start_report_and_stop() {
     let mut bridge = Bridge::start(&server);
     welcome(&mut bridge);
     let state = bridge.web(1, "state", json!({}));
-    assert_eq!(state["result"]["api_minor"], 10);
+    assert_eq!(state["result"]["api_minor"], 11);
     assert!(
         state["result"]["operations"]
             .as_array()
@@ -2407,4 +2407,152 @@ fn check(bridge: &mut Bridge, id: &mut u64, name: &str) -> Value {
     );
     assert!(reply["result"].is_object(), "{reply}");
     reply["result"].clone()
+}
+
+/// Project status, the safe-removal check and a folder deletion run as a
+/// detached `kelpmux project` job (API 10). Archiving itself is covered
+/// against a stand-in for Cloud Storage in `tests/archive_gcs.rs`.
+#[test]
+fn project_status_check_and_delete_run_through_the_bridge() {
+    let server = Server::start();
+    let mut bridge = Bridge::start(&server);
+    welcome(&mut bridge);
+    let state = bridge.web(1, "state", json!({}));
+    assert_eq!(state["result"]["api_minor"], 11, "{state}");
+    assert!(
+        state["result"]["operations"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|op| op == "archive")
+    );
+    let status = bridge.web(2, "archive_status", json!({}));
+    assert_eq!(status["result"]["configured"], false, "{status}");
+    let folder = server.root.join("projects/doomed");
+    fs::create_dir_all(folder.join("sub")).unwrap();
+    fs::write(folder.join("sub/notes.txt"), "notes").unwrap();
+    let config = server.root.join("xdg-config/kelpmux/config.toml");
+    fs::create_dir_all(config.parent().unwrap()).unwrap();
+    fs::write(
+        &config,
+        "[[project]]\nid = \"doomed\"\nname = \"Doomed\"\nfolder = \"~/projects/doomed\"\n",
+    )
+    .unwrap();
+    // Paused, then active again.
+    let mut id = 3;
+    let paused = loop {
+        let reply = bridge.web(
+            id,
+            "project_status",
+            json!({"id": "doomed", "status": "paused"}),
+        );
+        id += 1;
+        if reply["result"]["saved"] == true || id > 100 {
+            break reply;
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    };
+    assert_eq!(paused["result"]["saved"], true, "{paused}");
+    assert!(
+        fs::read_to_string(&config)
+            .unwrap()
+            .contains("status = \"paused\"")
+    );
+    let refused = bridge.web(
+        id,
+        "project_status",
+        json!({"id": "doomed", "status": "archived"}),
+    );
+    assert!(
+        refused["error"]
+            .as_str()
+            .unwrap()
+            .contains("active or paused"),
+        "{refused}"
+    );
+    id += 1;
+    // Archiving is off, and needs a confirmed check.
+    let refused = bridge.web(id, "project_archive", json!({"id": "doomed"}));
+    assert!(
+        refused["error"].as_str().unwrap().contains("fingerprint"),
+        "{refused}"
+    );
+    id += 1;
+    let check = bridge.web(
+        id,
+        "project_check_removal",
+        json!({"id": "doomed", "mode": "delete"}),
+    );
+    id += 1;
+    let check = check["result"].clone();
+    assert_eq!(check["project"], "doomed", "{check}");
+    assert_eq!(check["exists"], true);
+    assert_eq!(check["other_files"]["files"], 1);
+    assert_eq!(check["allowed"], true);
+    let fingerprint = check["fingerprint"].as_str().unwrap().to_owned();
+    for (params, expected) in [
+        (json!({"id": "../x", "mode": "delete"}), "project id"),
+        (json!({"id": "doomed", "mode": "burn"}), "archive or delete"),
+    ] {
+        let reply = bridge.web(id, "project_check_removal", params);
+        id += 1;
+        assert!(
+            reply["error"]
+                .as_str()
+                .is_some_and(|e| e.contains(expected)),
+            "{reply}"
+        );
+    }
+    // The wrong name: the job fails and the folder stays.
+    let started = bridge.web(
+        id,
+        "project_delete_folder",
+        json!({"id": "doomed", "fingerprint": fingerprint, "name": "doomed"}),
+    );
+    id += 1;
+    assert!(started["result"]["jobs"].is_array(), "{started}");
+    let job = wait_job(&mut bridge, &mut id, "doomed");
+    assert_eq!(job["state"], "failed", "{job}");
+    assert!(job["error"].as_str().unwrap().contains("name"));
+    assert!(folder.is_dir());
+    // The right name: deleted, and removed from the configuration.
+    bridge.web(
+        id,
+        "project_delete_folder",
+        json!({"id": "doomed", "fingerprint": fingerprint, "name": "Doomed", "remove": true}),
+    );
+    id += 1;
+    let job = wait_job(&mut bridge, &mut id, "doomed");
+    assert_eq!(job["state"], "done", "{job}");
+    assert_eq!(job["result"]["removed"], true);
+    assert!(fs::symlink_metadata(&folder).is_err());
+    assert!(!fs::read_to_string(&config).unwrap().contains("doomed"));
+    let left: Vec<_> = fs::read_dir(server.root.join("projects"))
+        .unwrap()
+        .flatten()
+        .map(|e| e.file_name())
+        .collect();
+    assert!(left.is_empty(), "{left:?}");
+}
+
+/// The last job of `project` once it is no longer running.
+fn wait_job(bridge: &mut Bridge, id: &mut u64, project: &str) -> Value {
+    let deadline = Instant::now() + Duration::from_secs(20);
+    loop {
+        let jobs = bridge.web(*id, "archive_jobs", json!({}));
+        *id += 1;
+        let job = jobs["result"]["jobs"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|j| j["project"] == project)
+            .cloned();
+        if let Some(job) = job
+            && job["state"] != "running"
+        {
+            return job;
+        }
+        assert!(Instant::now() < deadline, "the job did not finish: {jobs}");
+        std::thread::sleep(Duration::from_millis(50));
+    }
 }

@@ -89,6 +89,7 @@ pub mod native {
         bridge, connection, diagnostics, engine, hooks, lifecycle, recovery, reference, stream,
         uploads,
     };
+    pub mod archive;
     pub mod cli;
     pub mod config;
     pub mod environments;
@@ -98,6 +99,7 @@ pub mod native {
     pub mod input;
     pub mod projects;
     pub mod protocol;
+    pub mod removal;
     pub mod render;
     pub mod session;
     pub mod status;

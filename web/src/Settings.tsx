@@ -9,6 +9,7 @@ const sections: readonly (readonly [string, string, IconName])[] = [
   ["uploads", "Uploads", "upload"],
   ["files", "Files & folders", "folder"],
   ["github", "GitHub", "git-branch"],
+  ["archive", "Archive", "archive"],
   ["keys", "Security keys", "key-round"],
   ["connection", "Connection", "plug"],
 ];

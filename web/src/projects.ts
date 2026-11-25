@@ -22,7 +22,47 @@ export type Project = {
   missing: boolean;
   /** Scratch, the built-in project. */
   scratch?: boolean;
+  /** Its status (bridge API minor 11; `active` before): paused projects
+   * show dimmed, archived ones in the sidebar's Archived group. */
+  status?: ProjectStatus;
+  /** Its last archive (API minor 11), kept after a restore. */
+  archive?: ArchiveRecord | null;
 };
+
+export type ProjectStatus = "active" | "paused" | "archived";
+
+/** Where a project's last archive went (config.toml `[project.archive]`). */
+export type ArchiveRecord = {
+  backend: string;
+  bucket: string;
+  object: string;
+  size: number | null;
+  sha256: string | null;
+  crc32c: string | null;
+  /** RFC 3339, UTC. */
+  archived_at: string | null;
+};
+
+/** A project's status as the bridge reports it; `active` when absent. */
+export function readStatus(value: unknown): ProjectStatus {
+  return value === "paused" || value === "archived" ? value : "active";
+}
+
+/** A project's `archive` record, defensively; null when absent. */
+export function readArchiveRecord(value: any): ArchiveRecord | null {
+  if (typeof value?.bucket !== "string" || typeof value?.object !== "string")
+    return null;
+  const text = (v: unknown) => (typeof v === "string" ? v : null);
+  return {
+    backend: typeof value.backend === "string" ? value.backend : "gcs",
+    bucket: value.bucket,
+    object: value.object,
+    size: Number.isSafeInteger(value.size) && value.size >= 0 ? value.size : null,
+    sha256: text(value.sha256),
+    crc32c: text(value.crc32c),
+    archived_at: text(value.archived_at),
+  };
+}
 
 /** Named colours a project may have (config.toml `color`), in the order
  * the dialogs offer them; `#rrggbb` is accepted too. */
@@ -75,6 +115,8 @@ export function readProjects(value: unknown): Project[] {
       path: project.path,
       color: typeof project.color === "string" ? project.color : null,
       missing: project.missing === true,
+      status: readStatus(project.status),
+      archive: readArchiveRecord(project.archive),
     }));
 }
 

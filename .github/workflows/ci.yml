@@ -208,7 +208,7 @@ jobs:
         run: |
           docker run --rm --network=none --ipc=host -v "$GITHUB_WORKSPACE:/w" -w /w/web mcr.microsoft.com/playwright:v1.64.0-noble sh -euc '
             test "$(node -p "require(\"playwright/package.json\").version")" = 1.64.0
-            for test in renderer terminal upload sidebar idle bridge files history config projects repos repo-history history-panel project-home environments github; do echo "== $test"; node "test/$test.mjs"; done
+            for test in renderer terminal upload sidebar idle bridge files history config projects repos repo-history history-panel project-home environments github archive; do echo "== $test"; node "test/$test.mjs"; done
             npm run build
             for test in app mobile errors; do echo "== $test"; node "test/$test.mjs"; done'
   dependencies:

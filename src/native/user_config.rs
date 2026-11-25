@@ -115,6 +115,10 @@ pub const SECTIONS: &[(&str, &str)] = &[
         "github",
         "GitHub in the web client: the repositories your GitHub account can see (Add repository on a project's Repos view), read-only facts about the GitHub repositories a project's checkouts come from, and cloning. The bridge reads the token this machine already has (the GitHub CLI, an environment variable or a command) and keeps it in memory only, for a few minutes; it never goes to the browser, a file or a log. Clones use your own Git credentials (SSH agent or credential helper). These keys are edited here only, never from the web client.",
     ),
+    (
+        "archive",
+        "Project archives: archiving packs a project's folder as a tar.gz, uploads it with a verified checksum, and only then removes the folder from this machine; restoring brings it back (see `kelpmux project` and ADR 0006). The machine's own Google identity is used, never a key file; the token stays in memory. These keys are edited here only, never from the web client.",
+    ),
 ];
 
 /// Every key of the file. The validator, the default file, the JSON Schema
@@ -201,6 +205,42 @@ pub const KEYS: &[Key] = &[
         doc: "The SSH agent socket Git uses to clone over SSH (`SSH_AUTH_SOCK`). Empty keeps the web bridge's own `SSH_AUTH_SOCK`, which a bridge started by the web relay's SSH connection usually lacks: point this at an agent socket that outlives your sessions for SSH clones to work from the web client.",
         applies: "Immediately: the next clone uses it.",
     },
+    Key {
+        section: "archive",
+        name: "backend",
+        kind: Kind::Text,
+        default: "\"\"",
+        example: Some("\"gcs\""),
+        doc: "Where project archives go: `\"gcs\"` is Google Cloud Storage, through its JSON API. Empty turns archiving off (restoring too); deleting a project folder still works. S3-compatible storage is not supported yet; `\"s3\"` is reserved for it.",
+        applies: "Immediately: the next archive, restore or Test uses it.",
+    },
+    Key {
+        section: "archive",
+        name: "bucket",
+        kind: Kind::Text,
+        default: "\"\"",
+        example: Some("\"my-kelpmux-archives\""),
+        doc: "The bucket archives are written to and restored from: 3–63 lowercase letters, digits, `-`, `_` and `.`, starting and ending with a letter or digit. Required with `archive.backend`. The machine's identity needs to create, read, list and delete objects in it (on GCS, the Storage Object User role on the bucket).",
+        applies: "Immediately.",
+    },
+    Key {
+        section: "archive",
+        name: "prefix",
+        kind: Kind::Text,
+        default: "\"kelpmux\"",
+        example: None,
+        doc: "The folder of the bucket archives go in: each is `<prefix>/<project id>/<UTC time>.tar.gz`, and Test writes and deletes one small object under `<prefix>/.kelpmux-test/`. Letters, digits, `-`, `_`, `.` and `/` between non-empty parts, at most 256 bytes; no `..`.",
+        applies: "Immediately: archives already made keep their names (a restore lists the current prefix).",
+    },
+    Key {
+        section: "archive",
+        name: "token_command",
+        kind: Kind::File,
+        default: "\"\"",
+        example: Some("\"~/bin/gcs-token\""),
+        doc: "A program that prints a Google OAuth access token on its first line of output, run without arguments or a shell (a script that runs `gcloud auth print-access-token`, say). Empty uses the machine's own service account through the GCE metadata server, the usual choice on a Google Cloud VM. It must finish within 30 seconds and print at most 8 KiB; its error output is never shown. The token is kept in memory only and sent to `storage.googleapis.com` only.",
+        applies: "Immediately: the next archive operation reads the token again.",
+    },
 ];
 
 fn key(path: &str) -> Option<&'static Key> {
@@ -223,6 +263,189 @@ pub struct Project {
     pub name: String,
     pub folder: Folder,
     pub color: Option<String>,
+    pub status: ProjectStatus,
+    /// The last archive made of the project (`[project.archive]`).
+    pub archive: Option<ArchiveRecord>,
+}
+
+/// A project's `status`.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum ProjectStatus {
+    #[default]
+    Active,
+    /// Shown dimmed; nothing else changes.
+    Paused,
+    /// Its folder is archived and gone from the machine; restorable.
+    Archived,
+}
+impl ProjectStatus {
+    pub const ALL: [Self; 3] = [Self::Active, Self::Paused, Self::Archived];
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Active => "active",
+            Self::Paused => "paused",
+            Self::Archived => "archived",
+        }
+    }
+    pub fn parse(text: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|status| status.as_str() == text)
+    }
+}
+
+/// Where a project's last archive is (`[project.archive]`), as the archive
+/// job wrote it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ArchiveRecord {
+    /// `gcs`.
+    pub backend: String,
+    pub bucket: String,
+    pub object: String,
+    /// Bytes of the tar.gz.
+    pub size: u64,
+    /// Lowercase hexadecimal SHA-256 of the tar.gz.
+    pub sha256: String,
+    /// CRC32C of the tar.gz as GCS gives it: base64 of four big-endian bytes.
+    pub crc32c: String,
+    /// When it was made, `YYYY-MM-DDTHH:MM:SSZ`.
+    pub archived_at: String,
+    /// Entries (folders, files, links) and bytes of regular files the
+    /// archive holds, counted when it was packed: a restore stops past
+    /// them. Absent in records written before they were recorded.
+    pub entries: Option<u64>,
+    pub unpacked_bytes: Option<u64>,
+}
+impl ArchiveRecord {
+    /// The fields of `[project.archive]`, in the order they are written.
+    pub const FIELDS: &[&str] = &[
+        "backend",
+        "bucket",
+        "object",
+        "size",
+        "sha256",
+        "crc32c",
+        "archived_at",
+        "entries",
+        "unpacked_bytes",
+    ];
+    /// The fields every record has.
+    pub const REQUIRED: &[&str] = &[
+        "backend",
+        "bucket",
+        "object",
+        "size",
+        "sha256",
+        "crc32c",
+        "archived_at",
+    ];
+    pub fn to_json(&self) -> Json {
+        json!({
+            "backend": self.backend,
+            "bucket": self.bucket,
+            "object": self.object,
+            "size": self.size,
+            "sha256": self.sha256,
+            "crc32c": self.crc32c,
+            "archived_at": self.archived_at,
+            "entries": self.entries,
+            "unpacked_bytes": self.unpacked_bytes,
+        })
+    }
+    /// Why the record is invalid, if it is.
+    fn problem(&self) -> Option<String> {
+        if self.backend != "gcs" {
+            return Some("`backend` must be \"gcs\"".into());
+        }
+        if !bucket_valid(&self.bucket) {
+            return Some("`bucket` is not a valid bucket name".into());
+        }
+        if self.object.is_empty()
+            || self.object.len() > 1024
+            || self.object.chars().any(char::is_control)
+        {
+            return Some("`object` must be 1–1024 bytes without control characters".into());
+        }
+        if self.sha256.len() != 64
+            || !self
+                .sha256
+                .bytes()
+                .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+        {
+            return Some("`sha256` must be 64 lowercase hexadecimal digits".into());
+        }
+        if self.crc32c.len() != 8
+            || !self
+                .crc32c
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'+' | b'/' | b'='))
+        {
+            return Some("`crc32c` must be the base64 of four bytes".into());
+        }
+        if self.archived_at.is_empty()
+            || self.archived_at.len() > 40
+            || self.archived_at.chars().any(char::is_control)
+        {
+            return Some("`archived_at` must be a time such as \"2026-11-24T10:00:00Z\"".into());
+        }
+        None
+    }
+}
+
+/// A Cloud Storage bucket name: 3–63 lowercase letters, digits, `-`, `_` and
+/// `.`, starting and ending with a letter or digit.
+pub fn bucket_valid(name: &str) -> bool {
+    (3..=63).contains(&name.len())
+        && name.bytes().all(|b| {
+            b.is_ascii_lowercase() || b.is_ascii_digit() || matches!(b, b'-' | b'_' | b'.')
+        })
+        && name.starts_with(|c: char| c.is_ascii_alphanumeric())
+        && name.ends_with(|c: char| c.is_ascii_alphanumeric())
+        && !name.contains("..")
+}
+
+/// An archive prefix: non-empty parts of letters, digits, `-`, `_` and `.`
+/// joined by `/`, at most 256 bytes, no `.` or `..` part.
+pub fn prefix_valid(prefix: &str) -> bool {
+    !prefix.is_empty()
+        && prefix.len() <= 256
+        && prefix.split('/').all(|part| {
+            !part.is_empty()
+                && part != "."
+                && part != ".."
+                && part
+                    .bytes()
+                    .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'.'))
+        })
+}
+
+/// Where archives go (`[archive]`), checked.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ArchiveSettings {
+    /// `None`: archiving is off. The only backend is GCS.
+    pub bucket: Option<String>,
+    pub prefix: String,
+    /// `None`: the GCE metadata server's token.
+    pub token_command: Option<PathBuf>,
+}
+impl Default for ArchiveSettings {
+    fn default() -> Self {
+        Self {
+            bucket: None,
+            prefix: "kelpmux".into(),
+            token_command: None,
+        }
+    }
+}
+impl ArchiveSettings {
+    /// What the browser is told: no token, only where it comes from.
+    pub fn to_json(&self) -> Json {
+        json!({
+            "backend": self.bucket.as_ref().map(|_| "gcs"),
+            "bucket": self.bucket,
+            "prefix": self.prefix,
+            "token_source": if self.token_command.is_some() { "command" } else { "metadata" },
+            "token_command": self.token_command,
+        })
+    }
 }
 
 /// The id of the built-in Scratch project, which no `[[project]]` may take.
@@ -275,6 +498,20 @@ pub const PROJECT_FIELDS: &[ProjectField] = &[
         example: "\"teal\"",
         doc: "Optional: the colour that marks the project in the sidebar and the file browser, one of red, orange, yellow, green, teal, blue, purple, pink, gray, or `#rrggbb`.",
     },
+    ProjectField {
+        name: "status",
+        kind: "string",
+        required: false,
+        example: "\"active\"",
+        doc: "Optional: `\"active\"` (the default), `\"paused\"` (shown dimmed in the sidebar, nothing else changes) or `\"archived\"` (its folder was archived and removed from this machine; the project stays listed so it can be restored). Archiving and restoring set it; set `\"paused\"` or `\"active\"` by hand or from the web client.",
+    },
+    ProjectField {
+        name: "archive",
+        kind: "table",
+        required: false,
+        example: "{ backend = \"gcs\", bucket = \"my-kelpmux-archives\", object = \"kelpmux/kelp/20261124T100000Z.tar.gz\", size = 1048576, sha256 = \"…\", crc32c = \"AAAAAA==\", archived_at = \"2026-11-24T10:00:00Z\", entries = 1200, unpacked_bytes = 4194304 }",
+        doc: "Written by KelpMux, not by hand: the last archive made of the project (`[project.archive]`), with its bucket, object, size, SHA-256, CRC32C and time, and the entries and bytes it unpacks to. Restoring uses it by default, never unpacks more than those counts, and keeps the record afterwards.",
+    },
 ];
 /// What `[[project]]` is, for the default file and the reference.
 const PROJECTS_DOC: &str = "Projects: one `[[project]]` table each, with a name and a folder. Every terminal belongs to one project; terminals created outside any project belong to the built-in Scratch project (`scratch.folder`), which is not listed here. The web client adds, renames and deletes projects here too.";
@@ -292,6 +529,8 @@ pub struct Config {
     pub environment_ports: (String, (u16, u16)),
     /// `[github]`.
     pub github: GitHubSettings,
+    /// `[archive]`.
+    pub archive: ArchiveSettings,
 }
 
 /// Parses `"FIRST-LAST"`: ports from 1024 to 65535, FIRST ≤ LAST.
@@ -364,10 +603,13 @@ impl Config {
                         "path": project.folder.path,
                         "color": project.color,
                         "missing": !project.folder.path.is_dir(),
+                        "status": project.status.as_str(),
+                        "archive": project.archive.as_ref().map(ArchiveRecord::to_json),
                     })
                 })
                 .collect(),
         );
+        value["archive"] = self.archive.to_json();
         value
     }
     fn values_json(&self) -> Json {
@@ -507,7 +749,7 @@ pub fn read(path: &Path) -> Result<Option<String>> {
 
 /// Expands `~` and `~/…` and checks that the result is an absolute path
 /// without `..`. `.` components and trailing slashes are dropped.
-fn expand(written: &str, home: &Path) -> std::result::Result<PathBuf, String> {
+pub(crate) fn expand(written: &str, home: &Path) -> std::result::Result<PathBuf, String> {
     if written.is_empty() {
         return Err("must not be empty".into());
     }
@@ -771,6 +1013,7 @@ pub fn validate(text: &str, env: &Env) -> std::result::Result<Config, Vec<Diagno
     }
     let projects = check_projects(&raw_projects, home, &root, &extra, &scratch, &mut error);
     let github = check_github(&strings, home, &mut error);
+    let archive = check_archive(&strings, home, &mut error);
     let Some(environment_ports) = environment_ports.filter(|_| errors.is_empty()) else {
         return Err(errors);
     };
@@ -782,6 +1025,7 @@ pub fn validate(text: &str, env: &Env) -> std::result::Result<Config, Vec<Diagno
         projects,
         environment_ports,
         github,
+        archive,
     })
 }
 
@@ -843,6 +1087,78 @@ fn check_github(
     }
 }
 
+/// Checks the `[archive]` values collected by [`check_table`].
+fn check_archive(
+    strings: &Strings,
+    home: &Path,
+    error: &mut impl FnMut(Option<Range<usize>>, &str, String),
+) -> ArchiveSettings {
+    let text = |name: &str| {
+        strings
+            .iter()
+            .find(|(key, _)| key.section == "archive" && key.name == name)
+            .and_then(|(_, values)| values.first().cloned())
+    };
+    let mut settings = ArchiveSettings::default();
+    if let Some((prefix, span)) = text("prefix") {
+        if prefix_valid(&prefix) {
+            settings.prefix = prefix;
+        } else {
+            error(
+                span,
+                "archive.prefix",
+                "`archive.prefix` must be parts of letters, digits, `-`, `_` and `.` joined by `/`, at most 256 bytes, without `..`".into(),
+            );
+        }
+    }
+    if let Some((written, span)) = text("token_command").filter(|(v, _)| !v.is_empty()) {
+        match expand(&written, home) {
+            Ok(path) => settings.token_command = Some(path),
+            Err(message) => error(
+                span,
+                "archive.token_command",
+                format!("`archive.token_command` {message}"),
+            ),
+        }
+    }
+    let bucket = text("bucket").filter(|(v, _)| !v.is_empty());
+    match text("backend").filter(|(v, _)| !v.is_empty()) {
+        None => {
+            if let Some((_, span)) = bucket {
+                error(
+                    span,
+                    "archive.bucket",
+                    "`archive.bucket` needs `archive.backend = \"gcs\"`".into(),
+                );
+            }
+        }
+        Some((backend, span)) if backend == "gcs" => match bucket {
+            Some((bucket, _)) if bucket_valid(&bucket) => settings.bucket = Some(bucket),
+            Some((_, span)) => error(
+                span,
+                "archive.bucket",
+                "`archive.bucket` must be 3–63 lowercase letters, digits, `-`, `_` and `.`, starting and ending with a letter or digit".into(),
+            ),
+            None => error(
+                span,
+                "archive.bucket",
+                "`archive.backend = \"gcs\"` needs `archive.bucket`".into(),
+            ),
+        },
+        Some((backend, span)) if backend == "s3" => error(
+            span,
+            "archive.backend",
+            "`archive.backend = \"s3\"` is not supported yet; use \"gcs\"".into(),
+        ),
+        Some((_, span)) => error(
+            span,
+            "archive.backend",
+            "`archive.backend` must be `\"gcs\"` or empty".into(),
+        ),
+    }
+    settings
+}
+
 /// The array of project tables: `[[project]]`.
 pub const PROJECT_TABLE: &str = "project";
 
@@ -856,6 +1172,109 @@ struct RawProject {
     name: Option<(String, Span)>,
     folder: Option<(String, Span)>,
     color: Option<(String, Span)>,
+    status: Option<(String, Span)>,
+    archive: Option<(Option<ArchiveRecord>, Span)>,
+}
+
+/// Reads `[project.archive]`: every field, of its type. `None` (with the
+/// problem reported) when it is not a valid record.
+fn read_archive_record(
+    item: &Item,
+    span: Span,
+    index: usize,
+    error: &mut impl FnMut(Span, Option<String>, String),
+) -> Option<ArchiveRecord> {
+    let key = project_key(index, "archive");
+    let Some(table) = item.as_table_like() else {
+        error(
+            item.span().or(span),
+            Some(key),
+            "`project.archive` must be a table".into(),
+        );
+        return None;
+    };
+    let mut ok = true;
+    for (name, _) in table.iter() {
+        if !ArchiveRecord::FIELDS.contains(&name) {
+            error(
+                table.key(name).and_then(|k| k.span()).or(span.clone()),
+                None,
+                unknown_message(&format!("{PROJECT_TABLE}.archive.{name}"), None),
+            );
+            ok = false;
+        }
+    }
+    let text = |name: &str| table.get(name).and_then(Item::as_str).map(str::to_owned);
+    let size = table
+        .get("size")
+        .and_then(Item::as_integer)
+        .and_then(|n| u64::try_from(n).ok());
+    let mut record = match (
+        text("backend"),
+        text("bucket"),
+        text("object"),
+        size,
+        text("sha256"),
+        text("crc32c"),
+        text("archived_at"),
+    ) {
+        (
+            Some(backend),
+            Some(bucket),
+            Some(object),
+            Some(size),
+            Some(sha256),
+            Some(crc32c),
+            Some(archived_at),
+        ) => ArchiveRecord {
+            backend,
+            bucket,
+            object,
+            size,
+            sha256,
+            crc32c,
+            archived_at,
+            entries: None,
+            unpacked_bytes: None,
+        },
+        _ => {
+            error(
+                item.span().or(span),
+                Some(key),
+                "`project.archive` needs `backend`, `bucket`, `object`, `sha256`, `crc32c` and `archived_at` (strings) and `size` (a non-negative integer)".into(),
+            );
+            return None;
+        }
+    };
+    // Optional counts: absent, or non-negative integers.
+    for (name, slot) in [
+        ("entries", &mut record.entries),
+        ("unpacked_bytes", &mut record.unpacked_bytes),
+    ] {
+        match table.get(name) {
+            None => {}
+            Some(value) => match value.as_integer().and_then(|n| u64::try_from(n).ok()) {
+                Some(n) => *slot = Some(n),
+                None => {
+                    error(
+                        value.span().or(span.clone()),
+                        Some(key.clone()),
+                        format!("`project.archive.{name}` must be a non-negative integer"),
+                    );
+                    return None;
+                }
+            },
+        }
+    }
+    if let Some(problem) = record.problem() {
+        error(
+            item.span().or(span),
+            Some(key),
+            format!("`project.archive`: {problem}"),
+        );
+        return None;
+    }
+    ok.then_some(record)
 }
 
 /// The diagnostic key of a project's field: `project[0].folder`.
@@ -919,6 +1338,11 @@ fn read_projects(
                 );
                 continue;
             };
+            if field.name == "archive" {
+                let record = read_archive_record(value, span.clone(), index, &mut *error);
+                project.archive = Some((record, value.span().or(span)));
+                continue;
+            }
             let Some(text) = value.as_str() else {
                 error(
                     value.span().or(span),
@@ -932,6 +1356,7 @@ fn read_projects(
                 "id" => project.id = entry,
                 "name" => project.name = entry,
                 "folder" => project.folder = entry,
+                "status" => project.status = entry,
                 _ => project.color = entry,
             }
         }
@@ -1075,6 +1500,30 @@ fn check_projects(
             );
             ok = false;
         }
+        let status = match &project.status {
+            None => ProjectStatus::Active,
+            Some((text, span)) => match ProjectStatus::parse(text) {
+                Some(status) => status,
+                None => {
+                    error(
+                        span.clone(),
+                        &project_key(index, "status"),
+                        format!("{label}: `status` must be \"active\", \"paused\" or \"archived\""),
+                    );
+                    ok = false;
+                    ProjectStatus::Active
+                }
+            },
+        };
+        let archive = match &project.archive {
+            None => None,
+            Some((Some(record), _)) => Some(record.clone()),
+            // Already reported.
+            Some((None, _)) => {
+                ok = false;
+                None
+            }
+        };
         let key = project_key(index, "folder");
         let path = match expand(written, home) {
             Ok(path) => path,
@@ -1150,6 +1599,8 @@ fn check_projects(
                         span: folder_span.clone(),
                     },
                     color: project.color.as_ref().map(|(color, _)| color.clone()),
+                    status,
+                    archive,
                 },
             ));
         }
@@ -1276,7 +1727,10 @@ pub fn template() -> String {
     }
     out.push_str("# Example:\n#\n");
     out.push_str(&format!("# [[{PROJECT_TABLE}]]\n"));
-    for field in PROJECT_FIELDS {
+    for field in PROJECT_FIELDS
+        .iter()
+        .filter(|field| field.name != "archive")
+    {
         out.push_str(&format!("# {} = {}\n", field.name, field.example));
     }
     out
@@ -1347,10 +1801,30 @@ pub fn schema() -> Json {
                 "id" => json!({ "type": "string", "pattern": "^[a-z0-9]([a-z0-9-]*[a-z0-9])?$", "maxLength": MAX_NAME, "not": { "const": SCRATCH } }),
                 "name" => json!({ "type": "string", "minLength": 1, "maxLength": MAX_NAME, "pattern": "^[^/]*$" }),
                 "folder" => json!({ "type": "string", "minLength": 1, "maxLength": MAX_PATH }),
+                "status" => json!({ "type": "string", "enum": ProjectStatus::ALL.map(ProjectStatus::as_str) }),
+                "archive" => json!({
+                    "type": "object",
+                    "additionalProperties": false,
+                    "required": ArchiveRecord::REQUIRED,
+                    "properties": {
+                        "backend": { "const": "gcs" },
+                        "bucket": { "type": "string", "minLength": 3, "maxLength": 63 },
+                        "object": { "type": "string", "minLength": 1, "maxLength": 1024 },
+                        "size": { "type": "integer", "minimum": 0 },
+                        "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+                        "crc32c": { "type": "string", "minLength": 8, "maxLength": 8 },
+                        "archived_at": { "type": "string", "maxLength": 40 },
+                        "entries": { "type": "integer", "minimum": 0 },
+                        "unpacked_bytes": { "type": "integer", "minimum": 0 },
+                    },
+                }),
                 _ => json!({ "type": "string", "anyOf": [{ "enum": COLORS }, { "pattern": "^#[0-9a-fA-F]{6}$" }] }),
             };
             value["description"] = json!(field.doc);
-            value["examples"] = json!([toml_json(field.example)]);
+            let example = toml_json(field.example);
+            if !example.is_null() {
+                value["examples"] = json!([example]);
+            }
             (field.name.to_owned(), value)
         })
         .collect();
@@ -1405,7 +1879,10 @@ pub fn reference() -> String {
     out.push_str(&format!("\n## `[[{PROJECT_TABLE}]]`\n\n{PROJECTS_DOC}\n\n"));
     out.push_str("```toml\n");
     out.push_str(&format!("[[{PROJECT_TABLE}]]\n"));
-    for field in PROJECT_FIELDS {
+    for field in PROJECT_FIELDS
+        .iter()
+        .filter(|field| field.name != "archive")
+    {
         out.push_str(&format!("{} = {}\n", field.name, field.example));
     }
     out.push_str("```\n");
@@ -1740,6 +2217,15 @@ pub enum ProjectChange {
     },
     /// Removes the project's table; its folder is left alone.
     Delete { id: String },
+    /// Sets a project's `status`; `archive` sets (`Some(Some(…))`) or
+    /// removes (`Some(None)`) its `[project.archive]`, `folder` moves it to
+    /// another folder (a restore into a new folder).
+    Status {
+        id: String,
+        status: ProjectStatus,
+        archive: Option<Option<ArchiveRecord>>,
+        folder: Option<String>,
+    },
 }
 
 /// The project tables of a document, whether `[[project]]` or an array of
@@ -1854,6 +2340,74 @@ pub fn edit_projects(
                 Some(Some(color)) => set_string(&mut **table, "color", color),
                 Some(None) => {
                     table.remove("color");
+                }
+                None => {}
+            }
+            document.to_string()
+        }
+        ProjectChange::Status {
+            id,
+            status,
+            archive,
+            folder,
+        } => {
+            let mut tables = project_tables(&mut document);
+            let table = tables
+                .iter_mut()
+                .find(|table| table.get("id").and_then(Item::as_str) == Some(id.as_str()))
+                .ok_or_else(|| missing(id))?;
+            if *status == ProjectStatus::Active && table.get("status").is_none() {
+                // Active is the default: nothing to write.
+            } else {
+                set_string(&mut **table, "status", status.as_str());
+            }
+            if let Some(folder) = folder {
+                set_string(&mut **table, "folder", folder);
+            }
+            match archive {
+                Some(Some(record)) => {
+                    let mut written = toml_edit::Table::new();
+                    for field in ArchiveRecord::FIELDS {
+                        let value = match *field {
+                            "backend" => toml_edit::value(record.backend.as_str()),
+                            "bucket" => toml_edit::value(record.bucket.as_str()),
+                            "object" => toml_edit::value(record.object.as_str()),
+                            "size" => {
+                                toml_edit::value(i64::try_from(record.size).map_err(|_| {
+                                    problem("the archive is too large to record".into())
+                                })?)
+                            }
+                            "sha256" => toml_edit::value(record.sha256.as_str()),
+                            "crc32c" => toml_edit::value(record.crc32c.as_str()),
+                            "archived_at" => toml_edit::value(record.archived_at.as_str()),
+                            count => {
+                                let value = if count == "entries" {
+                                    record.entries
+                                } else {
+                                    record.unpacked_bytes
+                                };
+                                let Some(value) = value else {
+                                    continue;
+                                };
+                                toml_edit::value(i64::try_from(value).map_err(|_| {
+                                    problem("the archive is too large to record".into())
+                                })?)
+                            }
+                        };
+                        written.insert(field, value);
+                    }
+                    // `[project.archive]` under a `[[project]]` table; an
+                    // inline project table gets an inline record.
+                    let item = Item::Table(written);
+                    match table.get_mut("archive") {
+                        Some(old) => *old = item,
+                        None => {
+                            table.insert("archive", item);
+                        }
+                    }
+                }
+                Some(None) => {
+                    table.remove("archive");
                 }
                 None => {}
             }
@@ -2830,6 +3384,146 @@ mod tests {
         let taken = ["kelp".to_owned(), "kelp-2".to_owned()];
         assert_eq!(new_project_id("Kelp", &taken), "kelp-3");
         assert!(id_problem(&new_project_id(&"x".repeat(200), &[])).is_none());
+    }
+
+    #[test]
+    fn archive_settings_are_read_and_checked() {
+        let home = Path::new("/home/u");
+        let config = validate("", &env(home)).unwrap();
+        assert_eq!(config.archive, ArchiveSettings::default());
+        assert_eq!(config.to_json()["archive"]["token_source"], "metadata");
+        let config = validate(
+            "[archive]\nbackend = \"gcs\"\nbucket = \"my-archives\"\nprefix = \"team/kelpmux\"\ntoken_command = \"~/bin/gcs-token\"\n",
+            &env(home),
+        )
+        .unwrap();
+        assert_eq!(
+            config.archive,
+            ArchiveSettings {
+                bucket: Some("my-archives".into()),
+                prefix: "team/kelpmux".into(),
+                token_command: Some("/home/u/bin/gcs-token".into()),
+            }
+        );
+        let problems =
+            messages("[archive]\nbackend = \"s3\"\nbucket = \"Bad_Bucket\"\nprefix = \"a/../b\"\n");
+        for expected in [
+            "2:11: `archive.backend = \"s3\"` is not supported yet",
+            "4:10: `archive.prefix` must be",
+        ] {
+            assert!(
+                problems.iter().any(|p| p.starts_with(expected)),
+                "{expected} in {problems:?}"
+            );
+        }
+        assert!(
+            messages("[archive]\nbackend = \"gcs\"\n")
+                .iter()
+                .any(|p| p.contains("needs `archive.bucket`"))
+        );
+        assert!(
+            messages("[archive]\nbackend = \"gcs\"\nbucket = \"-x\"\n")
+                .iter()
+                .any(|p| p.contains("lowercase letters"))
+        );
+        // Not from the browser.
+        assert!(changes(&json!({"archive.bucket": "x"})).is_err());
+    }
+
+    #[test]
+    fn project_status_and_archive_records_are_read_written_and_checked() {
+        let home = Path::new("/home/u");
+        let base = "[[project]]\nid = \"kelp\"\nname = \"Kelp\"\nfolder = \"~/p/kelp\"\n";
+        let config = validate(base, &env(home)).unwrap();
+        assert_eq!(config.projects[0].status, ProjectStatus::Active);
+        assert_eq!(config.to_json()["projects"][0]["status"], "active");
+        assert!(config.to_json()["projects"][0]["archive"].is_null());
+        let record = ArchiveRecord {
+            backend: "gcs".into(),
+            bucket: "my-archives".into(),
+            object: "kelpmux/kelp/20261124T100000Z.tar.gz".into(),
+            size: 1234,
+            sha256: "a".repeat(64),
+            crc32c: "AAAAAA==".into(),
+            archived_at: "2026-11-24T10:00:00Z".into(),
+            entries: Some(3),
+            unpacked_bytes: Some(100),
+        };
+        let archived = edit_projects(
+            base,
+            &ProjectChange::Status {
+                id: "kelp".into(),
+                status: ProjectStatus::Archived,
+                archive: Some(Some(record.clone())),
+                folder: None,
+            },
+            &env(home),
+        )
+        .unwrap();
+        assert!(archived.contains("status = \"archived\"\n"), "{archived}");
+        assert!(archived.contains("[project.archive]\n"), "{archived}");
+        let config = validate(&archived, &env(home)).unwrap();
+        assert_eq!(config.projects[0].status, ProjectStatus::Archived);
+        assert_eq!(config.projects[0].archive.as_ref(), Some(&record));
+        assert_eq!(
+            config.to_json()["projects"][0]["archive"]["object"],
+            "kelpmux/kelp/20261124T100000Z.tar.gz"
+        );
+        // Restored into another folder: active, the record kept.
+        let restored = edit_projects(
+            &archived,
+            &ProjectChange::Status {
+                id: "kelp".into(),
+                status: ProjectStatus::Active,
+                archive: None,
+                folder: Some("~/p/kelp-2".into()),
+            },
+            &env(home),
+        )
+        .unwrap();
+        let config = validate(&restored, &env(home)).unwrap();
+        assert_eq!(config.projects[0].status, ProjectStatus::Active);
+        assert_eq!(config.projects[0].folder.path, home.join("p/kelp-2"));
+        assert_eq!(config.projects[0].archive.as_ref(), Some(&record));
+        // An inline project gets an inline record.
+        let inline = "project = [{ id = \"a\", name = \"A\", folder = \"~/a\" }]\n";
+        let text = edit_projects(
+            inline,
+            &ProjectChange::Status {
+                id: "a".into(),
+                status: ProjectStatus::Paused,
+                archive: Some(Some(record.clone())),
+                folder: None,
+            },
+            &env(home),
+        )
+        .unwrap();
+        let config = validate(&text, &env(home)).unwrap();
+        assert_eq!(config.projects[0].status, ProjectStatus::Paused);
+        assert_eq!(config.projects[0].archive.as_ref(), Some(&record));
+        // Bad values.
+        let problems = messages(&format!("{base}status = \"gone\"\n"));
+        assert!(problems[0].contains("`status` must be"), "{problems:?}");
+        let problems = messages(&format!(
+            "{base}[project.archive]\nbackend = \"gcs\"\nbucket = \"b-1\"\nobject = \"o\"\nsize = -1\nsha256 = \"x\"\ncrc32c = \"x\"\narchived_at = \"t\"\n"
+        ));
+        assert!(
+            problems[0].contains("`project.archive` needs"),
+            "{problems:?}"
+        );
+        let problems = messages(&format!(
+            "{base}[project.archive]\nbackend = \"gcs\"\nbucket = \"b-1\"\nobject = \"o\"\nsize = 1\nsha256 = \"x\"\ncrc32c = \"AAAAAA==\"\narchived_at = \"t\"\nextra = 1\n"
+        ));
+        assert!(
+            problems
+                .iter()
+                .any(|p| p.contains("unknown key `project.archive.extra`")),
+            "{problems:?}"
+        );
+        assert!(
+            problems.iter().any(|p| p.contains("`sha256` must be")),
+            "{problems:?}"
+        );
     }
 
     #[test]

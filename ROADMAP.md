@@ -6,8 +6,6 @@ This file lists open work only. Done work is in the Git history and the changelo
 
 ## In progress
 
-- **Project archive**: project status (active, paused, archived), the safe-removal check, archive to GCS with the machine's own identity, restore and delete.
-- **Repository history**: branches, log, commit details and diffs, and working changes in the Repos view.
 - **Terminal server**: record when each terminal opens and detect Codex conversation ids reliably, so History never has to match by folder and time.
 
 ## Terminal server
@@ -27,6 +25,7 @@ This file lists open work only. Done work is in the Git history and the changelo
 
 ## New features
 
+- **S3-compatible archive backend**: project archives ([ADR 0006](docs/adr/0006-project-archive.md)) go to Google Cloud Storage only; add `archive.backend = "s3"` (AWS S3, Garage, MinIO) with multipart upload, checksums and credentials that never touch the browser.
 - **Runtime backends** (KelpHub ADR 0006): one interface over the Docker Engine API (Docker, Podman's socket or any compatible engine) and Kubernetes, replacing the Podman-specific tooling on the host.
 - **KelpMux in a container or a pod**: an image with sshd, the terminal server and the bridge, the home folder on a volume; SSH stays the way in. Explore a second way in through an API (token or passkey to the relay, bridge on a local socket) later.
 - **Dev and staging deployments**: environments run in containers through the runtime backend, and a KelpMux reverse proxy routes `<slug>.<domain>` to each running instance, as the wildcard domain does on jbox today.

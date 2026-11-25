@@ -22,6 +22,8 @@ import type { ProjectGit } from "./git";
 import type { EnvironmentPane } from "./environments";
 import "./styles/environments.css";
 import { GitMark } from "./Repos";
+import { splitArchived } from "./archive-state";
+import "./styles/archive.css";
 
 /** What a state shortcut in the sidebar summary opens. */
 const openStateLabel: Partial<Record<DisplayState, string>> = {
@@ -105,6 +107,16 @@ function loadFolded(): string[] {
   }
 }
 
+/** Whether this browser's sidebar shows the Archived group opened. */
+const archivedKey = "kelpmux-archived-open";
+function loadArchivedOpen(): boolean {
+  try {
+    return localStorage.getItem(archivedKey) === "1";
+  } catch {
+    return false;
+  }
+}
+
 /** The left sidebar, like the TUI's, and the only navigation: the state
  * counts, then every terminal in this browser's order with its live state
  * and a rule between terminals, the New terminal row right under them
@@ -144,6 +156,15 @@ export function Sidebar(props: SidebarProps) {
     } catch {}
   }
   const projects = props.projects || [];
+  /** Archived projects go in the Archived group, folded unless opened. */
+  const { listed, archived } = splitArchived(projects);
+  const [archivedOpen, setArchivedOpen] = useState(loadArchivedOpen);
+  function toggleArchived() {
+    setArchivedOpen(!archivedOpen);
+    try {
+      localStorage.setItem(archivedKey, archivedOpen ? "0" : "1");
+    } catch {}
+  }
   /** Grouped by project once there is a project besides Scratch. */
   const grouped = projects.length > 1 && !!props.projectOf;
   const summary = rollup(terminals.concat(parked), notifications);
@@ -314,6 +335,126 @@ export function Sidebar(props: SidebarProps) {
     icon: IconName,
     keys: string,
   ) => entry(dialog, label, short, icon, keys, () => props.onDialog(dialog));
+  /** A project's group: its header, then its terminals unless folded. A
+   * paused project's header is dimmed. */
+  const group = (project: Project) => {
+    const members = terminals.filter(
+      (p) => props.projectOf!(p.id) === project.id,
+    );
+    const open = !foldedProjects.includes(project.id);
+    const color = projectColor(project);
+    const paused = project.status === "paused";
+    return (
+      <section
+        key={project.id}
+        className={`project-group ${paused ? "paused" : ""} ${props.dropProject === project.id ? "drop-target" : ""}`}
+        data-project-group={project.id}
+        data-status={project.status || "active"}
+        aria-label={project.scratch ? "Scratch" : `Project ${project.name}`}
+        style={color ? ({ "--project": color } as React.CSSProperties) : undefined}
+      >
+        <div
+          className="project-head"
+          data-drop-project={project.id}
+          onContextMenu={(event) => {
+            event.preventDefault();
+            props.onProjectMenu?.(project, event.clientX, event.clientY);
+          }}
+        >
+          <button
+            type="button"
+            className="project-fold"
+            aria-expanded={open}
+            aria-label={`${open ? "Fold" : "Unfold"} ${project.name}`}
+            title={open ? "Fold" : "Unfold"}
+            onClick={() => toggleProject(project.id)}
+          >
+            <Icon
+              name={open ? "chevron-down" : "chevron-right"}
+              size="sm"
+              className="project-chevron"
+            />
+          </button>
+          <button
+            type="button"
+            className={`project-open ${props.homeProject === project.id ? "current" : ""}`}
+            aria-current={props.homeProject === project.id ? "page" : undefined}
+            title={`${project.name}${paused ? " (paused)" : ""}\n${project.path}`}
+            onClick={() =>
+              props.onProjectHome
+                ? props.onProjectHome(project)
+                : toggleProject(project.id)
+            }
+          >
+            <span
+              className={`project-dot ${color ? "" : "plain"}`}
+              aria-hidden="true"
+            />
+            <span className="grow project-name">{project.name}</span>
+            {paused && (
+              <span className="project-paused" aria-label="Paused">
+                <Icon name="pause" size="sm" />
+              </span>
+            )}
+            {!open && members.length > 0 && (
+              <StateCounts rollup={rollup(members, notifications)} />
+            )}
+            {props.gitOf && <GitMark git={props.gitOf(project)} />}
+            <span className="count">{members.length || ""}</span>
+          </button>
+          {project.missing && project.status !== "archived" && (
+            <Tooltip content={`The folder ${project.path} is missing`}>
+              <span
+                className="project-missing"
+                tabIndex={0}
+                aria-label={`The folder of ${project.name} is missing`}
+              >
+                <Icon name="circle-alert" size="sm" />
+              </span>
+            </Tooltip>
+          )}
+          <span className="project-actions">
+            {props.onNewIn && project.status !== "archived" && (
+              <Tooltip content={`New terminal in ${project.name}`}>
+                <button
+                  type="button"
+                  className="icon-btn"
+                  aria-label={`New terminal in ${project.name}`}
+                  disabled={project.missing}
+                  onClick={() => props.onNewIn!(project)}
+                >
+                  <Icon name="plus" size="sm" />
+                </button>
+              </Tooltip>
+            )}
+            {props.onProjectMenu && (
+              <button
+                type="button"
+                className="icon-btn"
+                aria-label={`Menu for ${project.name}`}
+                aria-haspopup="menu"
+                onClick={(event) => {
+                  const rect = event.currentTarget.getBoundingClientRect();
+                  props.onProjectMenu!(
+                    project,
+                    Math.max(8, rect.right - 220),
+                    rect.bottom,
+                  );
+                }}
+              >
+                <Icon name="ellipsis" size="sm" />
+              </button>
+            )}
+          </span>
+        </div>
+        {open && (
+          <div className="term-list" role="list" aria-label={project.name}>
+            {members.map((p) => row(p, false))}
+          </div>
+        )}
+      </section>
+    );
+  };
   return (
     <aside className={`rail ${folded ? "folded" : ""}`} aria-label="Terminals">
       <div className="rail-head">
@@ -350,123 +491,31 @@ export function Sidebar(props: SidebarProps) {
       <nav className="rail-scroll" aria-label="Terminal tabs">
         {/* The tabs, + New terminal and the parked terminals. */}
         {grouped ? (
-          projects.map((project) => {
-            const members = terminals.filter(
-              (p) => props.projectOf!(p.id) === project.id,
-            );
-            const open = !foldedProjects.includes(project.id);
-            const color = projectColor(project);
-            return (
+          <>
+            {listed.map(group)}
+            {archived.length > 0 && (
               <section
-                key={project.id}
-                className={`project-group ${props.dropProject === project.id ? "drop-target" : ""}`}
-                data-project-group={project.id}
-                aria-label={project.scratch ? "Scratch" : `Project ${project.name}`}
-                style={color ? ({ "--project": color } as React.CSSProperties) : undefined}
+                className="archived-group"
+                aria-label="Archived projects"
+                data-archived-group
               >
-                <div
-                  className="project-head"
-                  data-drop-project={project.id}
-                  onContextMenu={(event) => {
-                    event.preventDefault();
-                    props.onProjectMenu?.(project, event.clientX, event.clientY);
-                  }}
+                <button
+                  type="button"
+                  className="archived-toggle"
+                  aria-expanded={archivedOpen}
+                  onClick={toggleArchived}
                 >
-                  <button
-                    type="button"
-                    className="project-fold"
-                    aria-expanded={open}
-                    aria-label={`${open ? "Fold" : "Unfold"} ${project.name}`}
-                    title={open ? "Fold" : "Unfold"}
-                    onClick={() => toggleProject(project.id)}
-                  >
-                    <Icon
-                      name={open ? "chevron-down" : "chevron-right"}
-                      size="sm"
-                      className="project-chevron"
-                    />
-                  </button>
-                  <button
-                    type="button"
-                    className={`project-open ${props.homeProject === project.id ? "current" : ""}`}
-                    aria-current={
-                      props.homeProject === project.id ? "page" : undefined
-                    }
-                    title={`${project.name}\n${project.path}`}
-                    onClick={() =>
-                      props.onProjectHome
-                        ? props.onProjectHome(project)
-                        : toggleProject(project.id)
-                    }
-                  >
-                    <span
-                      className={`project-dot ${color ? "" : "plain"}`}
-                      aria-hidden="true"
-                    />
-                    <span className="grow project-name">{project.name}</span>
-                    {!open && members.length > 0 && (
-                      <StateCounts rollup={rollup(members, notifications)} />
-                    )}
-                    {props.gitOf && <GitMark git={props.gitOf(project)} />}
-                    <span className="count">{members.length || ""}</span>
-                  </button>
-                  {project.missing && (
-                    <Tooltip content={`The folder ${project.path} is missing`}>
-                      <span
-                        className="project-missing"
-                        tabIndex={0}
-                        aria-label={`The folder of ${project.name} is missing`}
-                      >
-                        <Icon name="circle-alert" size="sm" />
-                      </span>
-                    </Tooltip>
-                  )}
-                  <span className="project-actions">
-                    {props.onNewIn && (
-                      <Tooltip content={`New terminal in ${project.name}`}>
-                        <button
-                          type="button"
-                          className="icon-btn"
-                          aria-label={`New terminal in ${project.name}`}
-                          disabled={project.missing}
-                          onClick={() => props.onNewIn!(project)}
-                        >
-                          <Icon name="plus" size="sm" />
-                        </button>
-                      </Tooltip>
-                    )}
-                    {props.onProjectMenu && (
-                      <button
-                        type="button"
-                        className="icon-btn"
-                        aria-label={`Menu for ${project.name}`}
-                        aria-haspopup="menu"
-                        onClick={(event) => {
-                          const rect = event.currentTarget.getBoundingClientRect();
-                          props.onProjectMenu!(
-                            project,
-                            Math.max(8, rect.right - 220),
-                            rect.bottom,
-                          );
-                        }}
-                      >
-                        <Icon name="ellipsis" size="sm" />
-                      </button>
-                    )}
-                  </span>
-                </div>
-                {open && (
-                  <div
-                    className="term-list"
-                    role="list"
-                    aria-label={project.name}
-                  >
-                    {members.map((p) => row(p, false))}
-                  </div>
-                )}
+                  <Icon
+                    name={archivedOpen ? "chevron-down" : "chevron-right"}
+                    size="sm"
+                  />
+                  Archived
+                  <span className="count">{archived.length}</span>
+                </button>
+                {archivedOpen && archived.map(group)}
               </section>
-            );
-          })
+            )}
+          </>
         ) : (
           <div className="term-list" role="list" aria-label="Terminals">
             {terminals.map((p) => row(p, false))}

@@ -1,0 +1,272 @@
+/* Project status, archive, restore and delete (src/Archive.tsx and the
+   sidebar's paused and archived projects). Colours come from the theme's
+   tokens. */
+
+/* A paused project: listed as usual, dimmed. */
+.project-group.paused > .project-head {
+  opacity: 0.55;
+}
+.project-group.paused > .project-head:hover,
+.project-group.paused > .project-head:focus-within {
+  opacity: 0.85;
+}
+.project-paused {
+  display: inline-flex;
+  color: var(--text-3);
+}
+
+/* The Archived group, at the bottom of the projects, folded by default. */
+.archived-group {
+  margin-top: var(--s3);
+  padding-top: var(--s2);
+  border-top: 1px solid var(--line);
+}
+.archived-toggle {
+  display: flex;
+  align-items: center;
+  gap: var(--s2);
+  width: 100%;
+  min-height: 28px;
+  padding: 0 var(--s2) 0 2px;
+  border: 0;
+  border-radius: var(--r-sm);
+  background: transparent;
+  color: var(--text-3);
+  cursor: pointer;
+  font: inherit;
+  font-size: var(--fs-xs);
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+.archived-toggle:hover {
+  color: var(--text-2);
+}
+.archived-toggle .count {
+  margin-left: auto;
+  font-weight: 400;
+}
+.archived-group .project-group > .project-head {
+  color: var(--text-3);
+}
+.rail.folded .archived-group {
+  display: none;
+}
+
+/* The removal and restore dialogs. */
+.removal-dialog {
+  width: min(600px, 100%);
+  display: flex;
+  flex-direction: column;
+  gap: var(--s3);
+}
+.removal-dialog > p,
+.removal-dialog .notice {
+  margin: 0;
+}
+.removal-dialog .confirm-buttons {
+  margin-top: var(--s2);
+}
+.removal-check {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s2);
+  max-height: 46vh;
+  overflow: auto;
+}
+.removal-summary {
+  display: flex;
+  align-items: center;
+  gap: var(--s2);
+  margin: 0;
+  color: var(--text);
+  font-weight: 600;
+}
+.removal-summary.blocked {
+  color: var(--st-failed);
+}
+.removal-checkouts,
+.removal-items,
+.removal-problems {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.removal-checkouts {
+  border: 1px solid var(--line);
+  border-radius: var(--r-md);
+}
+.removal-checkouts > li {
+  display: flex;
+  gap: var(--s2);
+  padding: var(--s2) var(--s3);
+  min-width: 0;
+}
+.removal-checkouts > li + li {
+  border-top: 1px solid var(--line);
+}
+.removal-checkout {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.removal-problems li {
+  color: var(--st-input);
+  font-size: var(--fs-sm);
+}
+.removal-problems li::before {
+  content: "• ";
+}
+.removal-ok {
+  color: var(--text-3);
+  font-size: var(--fs-sm);
+}
+.removal-other {
+  margin: 0;
+  color: var(--text-2);
+  font-size: var(--fs-sm);
+}
+.removal-items li {
+  display: flex;
+  align-items: baseline;
+  gap: var(--s2);
+  padding: 2px 0;
+  font-size: var(--fs-sm);
+  overflow-wrap: anywhere;
+}
+.removal-badge {
+  flex: none;
+  padding: 0 6px;
+  border-radius: var(--r-sm);
+  background: var(--surface-2);
+  color: var(--text-2);
+  font-size: var(--fs-xs);
+  font-weight: 600;
+  text-transform: uppercase;
+}
+.removal-badge.blocker {
+  background: color-mix(in srgb, var(--st-failed) 18%, transparent);
+  color: var(--st-failed);
+}
+.removal-badge.warning {
+  background: color-mix(in srgb, var(--st-input) 18%, transparent);
+  color: var(--st-input);
+}
+.removal-choice,
+.restore-archives {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s2);
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+.removal-choice legend,
+.restore-archives legend {
+  margin-bottom: var(--s1);
+  color: var(--text-2);
+  font-size: var(--fs-sm);
+  font-weight: 600;
+}
+.removal-choice label,
+.restore-archives label {
+  display: flex;
+  align-items: center;
+  gap: var(--s2);
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.removal-choice .removal-sub {
+  padding-left: var(--s5);
+}
+.removal-choice .removal-confirm {
+  align-items: stretch;
+}
+.removal-checking {
+  display: flex;
+  align-items: center;
+  gap: var(--s2);
+  margin: 0;
+}
+
+/* A job's progress. */
+.archive-job {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s2);
+  padding: var(--s3);
+  border: 1px solid var(--line);
+  border-radius: var(--r-md);
+  background: var(--surface-0, transparent);
+}
+.archive-job-head {
+  display: flex;
+  align-items: center;
+  gap: var(--s2);
+}
+.archive-job[data-state="done"] .archive-job-head {
+  color: var(--st-finished, var(--text));
+}
+.archive-job[data-state="failed"] .archive-job-head,
+.archive-job[data-state="cancelled"] .archive-job-head {
+  color: var(--st-failed);
+}
+.archive-job progress {
+  width: 100%;
+}
+.archive-job-detail {
+  margin: 0;
+  color: var(--text-3);
+  font-size: var(--fs-sm);
+  overflow-wrap: anywhere;
+}
+.archive-job .spin,
+.removal-dialog .spin,
+.archived-panel .spin {
+  animation: archive-spin 1s linear infinite;
+}
+@keyframes archive-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+/* An archived project's home page. */
+.archived-body {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--s3);
+  padding: var(--s3) var(--s4) var(--s4);
+}
+.archived-body > p {
+  margin: 0;
+  color: var(--text-2);
+}
+.archived-facts {
+  margin: 0;
+}
+.archived-hash {
+  overflow-wrap: anywhere;
+  font-size: var(--fs-xs);
+}
+.home-archived {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  color: var(--text-3);
+}
+
+/* Settings → Archive. */
+.archive-test {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--s3);
+  margin: var(--s2) 0;
+}
+.archive-test .setting-hint {
+  margin: 0;
+}
