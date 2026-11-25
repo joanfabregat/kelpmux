@@ -318,3 +318,37 @@ test("a project scopes the grid, the file browser and Recently closed", () => {
     "push",
   );
 });
+
+test("a project's Repos view is a place of its own, named with its project", () => {
+  const repos = at({ view: "repos", project: "kelp" });
+  const search = locationSearch(repos);
+  assert.equal(search, "?view=repos&project=kelp");
+  assert.deepEqual(resolveLocation(parseLocation(search), terminal(1)), repos);
+  // Without a project the URL still names the view; the application
+  // falls back (main.tsx) because there is nothing to show.
+  assert.deepEqual(
+    resolveLocation(parseLocation("?view=repos"), terminal(1)),
+    at({ view: "repos" }),
+  );
+  const state = {
+    phoneHome: false,
+    view: "repos",
+    terminal: 3,
+    filesDir: "/x",
+    file: "",
+    side: "",
+    dialog: "",
+    notifyPane: 0,
+    project: "kelp",
+  };
+  assert.deepEqual(locationOf(state), repos);
+  // Settings over it keeps the project; Back returns to it.
+  assert.equal(
+    locationSearch(locationOf({ ...state, dialog: "config" })),
+    "?view=repos&dialog=settings&project=kelp",
+  );
+  // Another project's Repos view, or the grid, is another place: a push.
+  assert.equal(historyMode(repos, at({ view: "repos", project: "web" })).mode, "push");
+  assert.equal(historyMode(repos, at({ view: "grid", project: "kelp" })).mode, "push");
+  assert.equal(historyMode(repos, repos).mode, "none");
+});

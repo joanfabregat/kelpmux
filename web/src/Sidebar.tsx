@@ -18,6 +18,8 @@ import {
 import { Vitals } from "./Vitals";
 import { UnreadMark, type SessionMode } from "./Shell";
 import { projectColor, type Project } from "./projects";
+import type { ProjectGit } from "./git";
+import { GitMark } from "./Repos";
 
 /** What a state shortcut in the sidebar summary opens. */
 const openStateLabel: Partial<Record<DisplayState, string>> = {
@@ -78,6 +80,8 @@ export type SidebarProps = {
   /** A project's menu (Files, Terminals, Closed, Rename, Delete). */
   onProjectMenu?: (project: Project, x: number, y: number) => void;
   onNewProject?: () => void;
+  /** A project's Git facts (bridge `git`), for its changes mark. */
+  gitOf?: (project: Project) => ProjectGit | undefined;
 };
 
 /** Projects folded in this browser's sidebar. */
@@ -369,6 +373,7 @@ export function Sidebar(props: SidebarProps) {
                     {!open && members.length > 0 && (
                       <StateCounts rollup={rollup(members, notifications)} />
                     )}
+                    {props.gitOf && <GitMark git={props.gitOf(project)} />}
                     <span className="count">{members.length || ""}</span>
                   </button>
                   {project.missing && (

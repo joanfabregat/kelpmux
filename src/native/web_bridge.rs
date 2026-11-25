@@ -9,7 +9,10 @@
 //! operations are KelpServer's `files` stream requests, relayed unchanged
 //! like typing into a pane. It only reads, for display, which repository
 //! and branch a pane's folder is in and which program a pane runs
-//! (`web_repos`), without running `git` or any other process.
+//! (`web_repos`), without running `git` or any other process. The `git`
+//! operation, for a project's Repos view, runs read-only Git commands
+//! through the hardened runner of `web_git` (no hooks, filters, textconv,
+//! external diff, fsmonitor or network), never a write.
 //!
 //! Its operations use KelpServer's stream session API on a separate,
 //! short-lived stream connection each (`session`), never the composed UI's
@@ -21,7 +24,7 @@ use super::{
     session::{Session, request_id},
     status,
     stream::{self, ClosedSession, Event, Request},
-    user_config, web_repos,
+    user_config, web_git, web_repos,
 };
 use crate::Result;
 use serde_json::{Value, json};
@@ -59,8 +62,10 @@ pub const API_VERSION: u64 = 3;
 /// Minor 5 added `projects`: the `projects`, `project_move`,
 /// `project_create`, `project_update` and `project_delete` operations, a
 /// `project` for `new`, the `project` of each `closed` entry, and the
-/// `projects` of the `config` result.
-pub const API_MINOR: u64 = 5;
+/// `projects` of the `config` result. Minor 6 added `git`: read-only Git
+/// facts of a project's checkouts (`web_git`), computed on the bridge's
+/// own Git worker threads and answered when ready.
+pub const API_MINOR: u64 = 6;
 /// Largest accepted `Web` request, in bytes of JSON.
 const REQUEST_LIMIT: usize = 65536;
 /// Largest request identifier a browser can represent exactly.
@@ -113,6 +118,7 @@ struct Api {
     state: PathBuf,
     monitor: status::Monitor,
     config: Option<Arc<user_config::Live>>,
+    git: web_git::Worker,
 }
 
 fn pane(value: &Value) -> Result<u64> {
@@ -242,6 +248,33 @@ impl Api {
             }
             _ => Err("unsupported web operation".into()),
         }
+    }
+    /// Queues a project's Git facts (`web_git`): `{"project": id}` (or
+    /// `scratch`), with `files: true` to list changed files and `fresh:
+    /// true` to bypass the cache. The folder comes from the user
+    /// configuration, never from the browser. `reply` answers later.
+    fn git(
+        &self,
+        p: &Value,
+        reply: Box<dyn FnOnce(std::result::Result<Value, String>) + Send>,
+    ) -> Result<()> {
+        let config = self.user_config()?;
+        let folder = match p["project"].as_str() {
+            Some(user_config::SCRATCH) => config.scratch_folder.path.clone(),
+            Some(id) => config
+                .project(id)
+                .ok_or("this project no longer exists")?
+                .folder
+                .path
+                .clone(),
+            None => return Err("project required".into()),
+        };
+        let request = web_git::Request {
+            folder,
+            list: p["files"] == true,
+            fresh: p["fresh"] == true,
+        };
+        Ok(self.git.submit(request, reply)?)
     }
     fn links(&self) -> Links {
         Links::at(&self.state)
@@ -557,6 +590,7 @@ const OPERATIONS: &[&str] = &[
     "downloads",
     "config",
     "projects",
+    "git",
 ];
 
 /// The user configuration operations, while the workspace runs or not:
@@ -874,6 +908,7 @@ pub fn run(socket: &Path, state: &Path) -> Result<()> {
             state,
             monitor,
             config,
+            git: web_git::Worker::start(),
         };
         let mut initialized = greeted;
         let mut last_id = 0;
@@ -894,10 +929,28 @@ pub fn run(socket: &Path, state: &Path) -> Result<()> {
                     continue;
                 }
                 last_id = id;
-                let result = if serde_json::to_vec(web).is_ok_and(|b| b.len() <= REQUEST_LIMIT) {
-                    api.request(web["method"].as_str().unwrap_or(""), &web["params"])
-                } else {
+                let method = web["method"].as_str().unwrap_or("");
+                let result = if !serde_json::to_vec(web).is_ok_and(|b| b.len() <= REQUEST_LIMIT) {
                     Err("web request too large".into())
+                } else if method == "git" {
+                    // Answered by a Git worker thread when ready, so a slow
+                    // repository never holds up the other operations.
+                    let replies = sender.clone();
+                    match api.git(
+                        &web["params"],
+                        Box::new(move |result| {
+                            let reply = match result {
+                                Ok(result) => json!({"Web": {"id": id, "result": result}}),
+                                Err(error) => json!({"Web": {"id": id, "error": error}}),
+                            };
+                            let _ = replies.send(Outbound::Message(reply));
+                        }),
+                    ) {
+                        Ok(()) => continue,
+                        Err(error) => Err(error),
+                    }
+                } else {
+                    api.request(method, &web["params"])
                 };
                 let reply = match result {
                     Ok(result) => json!({"Web": {"id": id, "result": result}}),

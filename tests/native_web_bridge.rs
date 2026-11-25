@@ -931,6 +931,70 @@ fn projects_link_terminals_for_every_bridge_and_survive_closing() {
     assert_eq!(again["result"]["project"], "kelp-mux-2", "{again}");
 }
 
+/// `git` (API 3.6): a project's checkouts, found in its folder and direct
+/// subfolders, answered on the bridge's Git threads while other operations
+/// keep working; the folder comes from the configuration, never a path.
+#[test]
+fn git_reports_a_projects_checkouts_read_only() {
+    let server = Server::start();
+    let mut bridge = Bridge::start(&server);
+    welcome(&mut bridge);
+    let state = bridge.web(1, "state", json!({}));
+    assert!(
+        state["result"]["operations"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|op| op == "git")
+    );
+    let created = bridge.web(2, "project_create", json!({"name": "Work"}));
+    assert_eq!(created["result"]["saved"], true, "{created}");
+    let folder = server.root.join("projects/Work");
+    let git = |dir: &std::path::Path, args: &[&str]| {
+        let status = std::process::Command::new("git")
+            .args(args)
+            .current_dir(dir)
+            .env("GIT_CONFIG_NOSYSTEM", "1")
+            .env("GIT_CONFIG_GLOBAL", "/dev/null")
+            .env("GIT_AUTHOR_NAME", "T")
+            .env("GIT_AUTHOR_EMAIL", "t@example.invalid")
+            .env("GIT_COMMITTER_NAME", "T")
+            .env("GIT_COMMITTER_EMAIL", "t@example.invalid")
+            .stdout(std::process::Stdio::null())
+            .status()
+            .unwrap();
+        assert!(status.success());
+    };
+    let api = folder.join("api");
+    fs::create_dir_all(&api).unwrap();
+    git(&api, &["init", "-q", "-b", "main"]);
+    fs::write(api.join("a.txt"), "one\n").unwrap();
+    git(&api, &["add", "."]);
+    git(&api, &["commit", "-q", "-m", "First"]);
+    fs::write(api.join("a.txt"), "one\ntwo\n").unwrap();
+    fs::create_dir_all(folder.join("plain")).unwrap();
+    let reply = bridge.web(3, "git", json!({"project": "work", "files": true}));
+    let repos = reply["result"]["repos"]
+        .as_array()
+        .unwrap_or_else(|| panic!("{reply}"));
+    assert_eq!(repos.len(), 1, "{reply}");
+    assert_eq!(repos[0]["name"], "api");
+    assert_eq!(repos[0]["branch"], "main");
+    assert_eq!(repos[0]["files"], 1);
+    assert_eq!(repos[0]["added"], 1);
+    assert_eq!(repos[0]["last"]["subject"], "First");
+    assert_eq!(repos[0]["changes"][0]["path"], "a.txt");
+    // Without `files`, no list; Scratch has none; no path is accepted.
+    let summary = bridge.web(4, "git", json!({"project": "work"}));
+    assert!(summary["result"]["repos"][0].get("changes").is_none());
+    let scratch = bridge.web(5, "git", json!({"project": "scratch"}));
+    assert_eq!(scratch["result"]["repos"], json!([]), "{scratch}");
+    let unknown = bridge.web(6, "git", json!({"project": "nope"}));
+    assert_eq!(unknown["error"], "this project no longer exists");
+    let path = bridge.web(7, "git", json!({"folder": "/"}));
+    assert_eq!(path["error"], "project required");
+}
+
 #[test]
 fn the_user_configuration_is_saved_validated_and_pushed_live() {
     let server = Server::start();
@@ -1017,7 +1081,7 @@ fn repos_and_commands_report_read_only_facts_for_the_terminals_table() {
     welcome(&mut bridge);
     let state = bridge.web(1, "state", json!({}));
     assert_eq!(state["result"]["api_version"], 3);
-    assert_eq!(state["result"]["api_minor"], 5);
+    assert_eq!(state["result"]["api_minor"], 6);
     let operations = state["result"]["operations"].as_array().unwrap();
     assert!(operations.iter().any(|op| op == "repos"));
     assert!(operations.iter().any(|op| op == "commands"));
@@ -1390,7 +1454,7 @@ fn file_requests_and_replies_are_relayed_unchanged() {
     }
     assert_eq!(limits["max_read_bytes"], 8 * 1024 * 1024);
     let state = bridge.web(1, "state", json!({}));
-    assert_eq!(state["result"]["api_minor"], 5);
+    assert_eq!(state["result"]["api_minor"], 6);
     assert!(
         state["result"]["operations"]
             .as_array()

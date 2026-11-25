@@ -116,7 +116,7 @@ fn valid_path(path: &str) -> Option<PathBuf> {
 /// The Git directory of a working tree root candidate: a real `.git`
 /// directory, or the `gitdir:` a `.git` file names (worktrees, submodules).
 /// A symlinked `.git` and metadata of another user are ignored.
-fn git_dir(directory: &Path, uid: u32) -> Option<PathBuf> {
+pub(crate) fn git_dir(directory: &Path, uid: u32) -> Option<PathBuf> {
     let dot = directory.join(".git");
     let metadata = fs::symlink_metadata(&dot).ok()?;
     if metadata.uid() != uid {

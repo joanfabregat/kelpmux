@@ -30,7 +30,9 @@ const parentPath = (path: string) =>
 
 function App() {
   const [ready, setReady] = useState(false);
-  const [view, setView] = useState<"single" | "grid" | "files">("grid");
+  const [view, setView] = useState<"single" | "grid" | "files" | "repos">(
+    "grid",
+  );
   const [active, setActive] = useState(11);
   const [phoneList, setPhoneList] = useState(true);
   const [filesDir, setFilesDir] = useState("~");
@@ -46,9 +48,14 @@ function App() {
     const timer = setTimeout(() => setReady(true), 150);
     return () => clearTimeout(timer);
   }, []);
-  const shown = phone ? (view === "grid" ? "single" : view) : view;
+  const shown =
+    phone && view === "grid"
+      ? "single"
+      : view === "repos" && !project
+        ? "grid"
+        : view;
   const here = locationOf({
-    phoneHome: phone && phoneList && shown !== "files",
+    phoneHome: phone && phoneList && shown !== "files" && shown !== "repos",
     view: shown,
     terminal: active,
     filesDir,
@@ -71,6 +78,20 @@ function App() {
         navigation.automatic();
       }
       setProject(target.project === "alpha" ? "alpha" : "");
+      if (target.view === "repos") {
+        // As main.tsx: a Repos view needs a project (an unknown one has
+        // had its toast above).
+        if (target.project !== "alpha") {
+          if (!target.project) setToast("Choose a project");
+          navigation.automatic();
+          if (phone) setPhoneList(true);
+          else setView("grid");
+          return;
+        }
+        setPhoneList(false);
+        setView("repos");
+        return;
+      }
       if (target.view === "home") return void (phone && setPhoneList(true));
       if (target.view === "grid") {
         if (phone) setPhoneList(true);
@@ -209,6 +230,16 @@ function App() {
           }}
         >
           Alpha's closed terminals
+        </button>
+        <button
+          id="alpha-repos"
+          onClick={() => {
+            setProject("alpha");
+            setPhoneList(false);
+            setView("repos");
+          }}
+        >
+          Alpha's repos
         </button>
         <button
           id="grid"

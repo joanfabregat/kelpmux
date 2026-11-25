@@ -8,6 +8,7 @@
 //   ?view=files&dir=<folder>                       the file browser
 //   ?view=files&file=<path>[&line=<n>]             an open file
 //   ?view=home                                     a phone's terminal list
+//   ?view=repos&project=<project id>              a project's Repos view
 //   …&dialog=<panel>[&of=<pane id>]                a panel over that place
 //   …&project=<project id>                          the grid, the file
 //                                                  browser or Recently closed
@@ -37,7 +38,7 @@ import { useEffect, useRef, useState } from "react";
  * readHistoryState migrates older entries. */
 export const HISTORY_VERSION = 1;
 
-export type View = "terminal" | "grid" | "files" | "home";
+export type View = "terminal" | "grid" | "files" | "home" | "repos";
 
 export type AppLocation = {
   view: View;
@@ -105,7 +106,7 @@ const owned = [
   "of",
   "project",
 ];
-const views: View[] = ["terminal", "grid", "files", "home"];
+const views: View[] = ["terminal", "grid", "files", "home", "repos"];
 
 function id(value: string | null): number {
   return value && /^[1-9]\d{0,9}$/.test(value) ? Number(value) : 0;
@@ -153,9 +154,10 @@ export function parseLocation(search: string): Partial<AppLocation> {
   return result;
 }
 
-/** Views a project scopes: the grid and the file browser. */
+/** Views a project scopes: the grid, the file browser and the Repos view
+ * (which always names one). */
 function scoped(view: View | undefined) {
-  return view === "grid" || view === "files";
+  return view === "grid" || view === "files" || view === "repos";
 }
 /** Whether a location keeps its project: a scoped view, or Recently
  * closed over any place. */
@@ -227,7 +229,7 @@ export type LocationState = {
   /** The phone shows its terminal list. */
   phoneHome: boolean;
   /** The main area's view, as shown ("single" is one terminal). */
-  view: "single" | "grid" | "files";
+  view: "single" | "grid" | "files" | "repos";
   /** The terminal shown on its own (0: none). */
   terminal: number;
   filesDir: string;
@@ -268,6 +270,8 @@ function placeOf(state: LocationState): AppLocation {
       line: state.file ? state.fileLine || 0 : 0,
       ...overlay,
     };
+  if (state.view === "repos")
+    return { ...emptyLocation, view: "repos", ...overlay };
   if (state.view === "grid")
     return { ...emptyLocation, view: "grid", ...overlay };
   return {

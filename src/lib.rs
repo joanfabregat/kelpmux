@@ -108,6 +108,7 @@ pub mod native {
     pub mod vitals;
     pub mod web_assets;
     pub mod web_bridge;
+    pub mod web_git;
     pub mod web_relay;
     pub mod web_repos;
     pub mod workspace;

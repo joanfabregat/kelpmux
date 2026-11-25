@@ -1,0 +1,351 @@
+/* A project's Repos view and the Git marks of the sidebar and the file
+   browser (src/Repos.tsx). Colours come from the theme's Git tokens. */
+.git-added {
+  color: var(--git-added);
+}
+.git-removed {
+  color: var(--git-deleted);
+}
+.git-lines {
+  display: inline-flex;
+  gap: var(--s1);
+  font-family: var(--font-mono);
+  font-size: var(--fs-xs);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.git-dot {
+  display: inline-block;
+  flex: none;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--git-modified);
+}
+
+/* The sidebar's mark on a project header. */
+.git-mark {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  gap: var(--s1);
+  color: var(--text-2);
+  font-size: var(--fs-xs);
+  font-weight: 500;
+  font-variant-numeric: tabular-nums;
+}
+.git-mark-files {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+}
+.git-mark-ahead {
+  color: var(--accent-text);
+}
+.rail.folded .git-mark {
+  display: none;
+}
+.git-tooltip {
+  border-collapse: collapse;
+  font-size: var(--fs-xs);
+}
+.git-tooltip th,
+.git-tooltip td {
+  padding: 1px var(--s2) 1px 0;
+  text-align: left;
+  white-space: nowrap;
+}
+.git-tooltip th {
+  font-weight: 600;
+}
+
+/* A checkout folder's second line in the file browser. */
+.git-checkout-line {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  min-width: 0;
+  max-width: 100%;
+  overflow: hidden;
+}
+.git-checkout-line .svg-icon.git-branch-icon {
+  flex: none;
+  width: 11px;
+  height: 11px;
+}
+.git-checkout-branch {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.git-checkout-changes {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  gap: 3px;
+  margin-left: var(--s1);
+  color: var(--text-2);
+}
+
+/* The Repos view. */
+.repos-view {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  background: var(--bg);
+}
+.repos-view .project-scope .icon-btn {
+  width: 26px;
+  height: 26px;
+  min-height: 0;
+  padding: 0;
+}
+.repos-view .project-scope .grow {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.repos-sampled {
+  font-size: var(--fs-xs);
+  white-space: nowrap;
+}
+.repos-body {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  padding: var(--s3) var(--s4) var(--s5);
+}
+.git-repos {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: var(--s2);
+  max-width: 980px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.git-repo {
+  border: 1px solid var(--line);
+  border-radius: var(--r-md);
+  background: var(--surface-1);
+}
+.git-repo.changed {
+  border-color: color-mix(in srgb, var(--git-modified) 35%, var(--line));
+}
+.git-repo-head {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--s1);
+  padding: var(--s1) var(--s2) var(--s1) 0;
+}
+.git-repo-toggle {
+  display: flex;
+  flex: 1;
+  align-items: flex-start;
+  gap: var(--s2);
+  min-width: 0;
+  min-height: 0;
+  padding: var(--s2) var(--s2) var(--s2) var(--s3);
+  border: 0;
+  border-radius: var(--r-sm);
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+  font: inherit;
+  text-align: left;
+  justify-content: flex-start;
+}
+.git-repo-toggle:disabled {
+  cursor: default;
+  opacity: 1;
+}
+.git-chevron {
+  flex: none;
+  margin-top: 2px;
+  color: var(--text-3);
+}
+.git-chevron.hidden {
+  visibility: hidden;
+}
+.git-repo-names {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+}
+.git-repo-title {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--s1) var(--s2);
+  min-width: 0;
+}
+.git-repo-name {
+  color: var(--text);
+  font-weight: 600;
+}
+.git-tag {
+  padding: 0 var(--s1);
+  border-radius: var(--r-sm);
+  background: var(--surface-2);
+  color: var(--text-3);
+  font-size: var(--fs-xs);
+}
+.git-branch {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  min-width: 0;
+  max-width: 100%;
+  padding: 0 var(--s1);
+  border-radius: var(--r-sm);
+  background: var(--accent-soft);
+  color: var(--accent-text);
+  font-family: var(--font-mono);
+  font-size: var(--fs-xs);
+  overflow-wrap: anywhere;
+}
+.git-branch.detached {
+  background: var(--surface-2);
+  color: var(--text-2);
+}
+.git-branch .svg-icon {
+  flex: none;
+  width: 12px;
+  height: 12px;
+}
+.git-upstream {
+  color: var(--text-2);
+  font-family: var(--font-mono);
+  font-size: var(--fs-xs);
+}
+.git-ab {
+  color: var(--text);
+  font-weight: 600;
+}
+.git-repo-detail {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: var(--s1) var(--s3);
+  color: var(--text-2);
+  font-size: var(--fs-sm);
+}
+.git-repo.changed .git-summary {
+  color: var(--text);
+}
+.git-last {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.git-last code {
+  color: var(--text-3);
+  font-family: var(--font-mono);
+  font-size: var(--fs-xs);
+}
+.git-error {
+  color: var(--st-failed);
+}
+.git-repo-actions {
+  display: inline-flex;
+  flex: none;
+  gap: 2px;
+  margin-top: var(--s1);
+}
+.git-repo-actions .icon-btn {
+  width: 28px;
+  height: 28px;
+  min-height: 0;
+  padding: 0;
+}
+.git-changes {
+  margin: 0;
+  padding: 0 var(--s2) var(--s2) calc(var(--s3) + 22px);
+  list-style: none;
+  border-top: 1px solid var(--line);
+}
+.git-change-open {
+  display: flex;
+  align-items: center;
+  gap: var(--s2);
+  width: 100%;
+  min-height: 28px;
+  padding: 2px var(--s2);
+  border: 0;
+  border-radius: var(--r-sm);
+  background: transparent;
+  color: var(--text);
+  cursor: pointer;
+  font: inherit;
+  font-size: var(--fs-sm);
+  text-align: left;
+  justify-content: flex-start;
+}
+.git-change-open:hover:not(:disabled) {
+  background: var(--surface-2);
+}
+.git-change-open:disabled {
+  cursor: default;
+  opacity: 1;
+  color: var(--text-2);
+}
+.git-change-path {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  font-family: var(--font-mono);
+  font-size: var(--fs-xs);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.git-change-from {
+  color: var(--text-3);
+}
+.git-status {
+  display: inline-grid;
+  flex: none;
+  place-items: center;
+  width: 16px;
+  height: 16px;
+  border-radius: 3px;
+  background: color-mix(in srgb, currentColor 14%, transparent);
+  color: var(--git-modified);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-weight: 700;
+}
+.git-status-a,
+.git-status-untracked {
+  color: var(--git-added);
+}
+.git-status-d {
+  color: var(--git-deleted);
+}
+.git-status-r,
+.git-status-c {
+  color: var(--accent-text);
+}
+.git-status-u {
+  color: var(--st-failed);
+}
+.git-more {
+  padding: var(--s1) var(--s2);
+  font-size: var(--fs-xs);
+}
+.repos-note {
+  max-width: 980px;
+  margin: var(--s4) 0 0;
+  font-size: var(--fs-xs);
+}
+.phone .repos-body {
+  padding: var(--s2) var(--s2) var(--s5);
+}
+.phone .git-repo-detail .git-last {
+  flex-basis: 100%;
+}
+.phone .repos-sampled {
+  display: none;
+}
