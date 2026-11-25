@@ -248,7 +248,7 @@ jobs:
               (["MIT", "Apache-2.0", "MIT OR Apache-2.0", "Apache-2.0 OR MIT", "Unlicense OR MIT"] | index($package.license) != null)
               # Permissive licenses of the error-reporting stack (sentry, ureq,
               # rustls, ring, webpki-roots, backtrace, url/idna/ICU), and of
-              # KelpServer's gzip file downloads: the pure-Rust flate2 backend
+              # gzip file downloads of KelpServer: the pure-Rust flate2 backend
               # (miniz_oxide, adler2), each also offered under MIT and Apache-2.0.
               or (["MIT/Apache-2.0", "0BSD OR MIT OR Apache-2.0", "MIT OR Zlib OR Apache-2.0",
                    "Apache-2.0 OR ISC OR MIT", "Apache-2.0 AND ISC", "ISC", "BSD-3-Clause",
