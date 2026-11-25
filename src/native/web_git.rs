@@ -29,32 +29,47 @@
 //!   checkout's parent so discovery cannot climb out of it;
 //! - overrides on the command line, which wins over every configuration
 //!   file: `core.fsmonitor=false`, `core.hooksPath=/dev/null`,
-//!   `diff.external=`, `log.showSignature=false`, `credential.helper=`,
+//!   `diff.external=`, `diff.autoRefreshIndex=false`,
+//!   `log.showSignature=false`, `credential.helper=`,
 //!   `submodule.recurse=false`, `status.submoduleSummary=false`, and every
 //!   filter driver the configuration names (read first with `config -z
 //!   --list`, includes followed) with empty `clean`, `smudge` and `process`
 //!   commands and `required=false`;
-//! - passes `--no-ext-diff --no-textconv` to `diff` and
-//!   `--ignore-submodules=all` to `status` and `diff` (so it never starts
+//! - passes `--no-ext-diff --no-textconv` to `diff-index` and `diff-files`
+//!   and `--ignore-submodules=all` to them and `status` (so it never starts
 //!   Git inside a submodule, whose configuration it did not read);
-//! - runs only `config --list`, `status`, `diff --numstat` and `log -1`,
-//!   none of which writes or touches the network;
+//! - runs only `config --list`, `status`, the plumbing `diff-index` and
+//!   `diff-files --numstat` (which, unlike `diff`, never refresh the index)
+//!   and `log -1`, none of which writes or touches the network;
 //! - runs in its own session with standard input closed, is killed with its
-//!   process group after [`TIMEOUT`] or when the bridge dies, and has its
-//!   standard output and error read up to fixed limits;
+//!   process group after [`TIMEOUT`], at the request's deadline
+//!   ([`BUDGET`]) or when the bridge dies, and has its standard output and
+//!   error read up to fixed limits;
 //! - only in a verified checkout root: a real directory owned by the
 //!   bridge's user whose `.git` (a directory, or a file naming a worktree's
 //!   or submodule's Git directory) is not a symbolic link and is owned by
 //!   that user (see `web_repos::git_dir`). Symbolic links to subfolders are
 //!   not followed and repositories whose metadata another user owns are
-//!   skipped.
+//!   skipped;
+//! - only when nobody else can change what configures it between the
+//!   listing that names the filter drivers and a later command: every file
+//!   the repository configuration comes from or would include (local and
+//!   worktree scope, `include.path` and `includeIf` targets even when
+//!   missing or empty), `core.attributesFile`, `info/attributes`, the Git
+//!   directory, a `commondir` target and alternate object directories must
+//!   be owned by the user and not writable by group (unless it is the
+//!   user's private group) or others, under directories owned by the user
+//!   or root and not so writable unless sticky (see [`check_config`],
+//!   [`check_git_dir`]); otherwise the checkout shows "skipped: untrusted
+//!   config". The user's global configuration stays trusted.
 //!
 //! The browser never supplies a path: it names a project, whose folder
 //! comes from the user configuration. Untracked files are read directly (to
 //! count their lines) without following symbolic links or blocking, inside
-//! the checkout only and within size and count limits. Work is bounded per
-//! project ([`MAX_REPOS`], [`BUDGET`]) and per bridge ([`Worker`]: a few
-//! threads and a short queue); results are cached for a few seconds.
+//! the checkout and on its file system only, within size and count limits
+//! and the request's deadline. Work is bounded per project ([`MAX_REPOS`],
+//! [`BUDGET`]) and per bridge ([`Worker`]: a few threads and a short
+//! queue); results are cached for a few seconds.
 use serde::Serialize;
 use serde_json::{Value, json};
 use std::{
@@ -217,6 +232,9 @@ const HARDENING: &[&str] = &[
     "core.fsmonitor=false",
     "core.hooksPath=/dev/null",
     "diff.external=",
+    // Plumbing never refreshes the index; this keeps any porcelain from
+    // rewriting it (`diff` ignores `GIT_OPTIONAL_LOCKS` when it does).
+    "diff.autoRefreshIndex=false",
     "log.showSignature=false",
     "credential.helper=",
     "protocol.allow=never",
@@ -228,11 +246,290 @@ const HARDENING: &[&str] = &[
     "maintenance.auto=false",
 ];
 
-/// A verified checkout root and the overrides of the filter drivers its
-/// configuration names.
+/// A verified checkout root, the overrides of the filter drivers its
+/// configuration names, its object format's empty tree and the instant its
+/// Git commands must end by.
 pub struct Checkout {
     root: PathBuf,
     filters: Vec<String>,
+    empty_tree: &'static str,
+    deadline: Instant,
+}
+
+const EMPTY_TREE_SHA1: &str = "4b825dc642cb6eb9a060e54bf8d69288fbee4904";
+const EMPTY_TREE_SHA256: &str = "6ef19b41225c5369f1c104d45d8d85efa9b057b53b14b4b9b939dd74decc5321";
+
+/// Why a checkout is refused when a file its configuration comes from could
+/// be changed by someone else.
+pub const UNTRUSTED: &str = "skipped: untrusted config";
+
+/// The most alternate object directories followed (Git's own limit).
+const ALTERNATES_DEPTH: usize = 5;
+
+/// The bridge user's private group, when it has one (the usual umask-002
+/// setup, where checkouts are group-writable): the effective group, with
+/// no member and no primary user in the local user database but this user.
+/// Writable by that group means writable by this user only.
+fn private_group() -> Option<u32> {
+    static GROUP: std::sync::OnceLock<Option<u32>> = std::sync::OnceLock::new();
+    *GROUP.get_or_init(|| {
+        let (uid, gid) = unsafe { (libc::geteuid(), libc::getegid()) };
+        private_group_of(
+            uid,
+            gid,
+            &fs::read_to_string("/etc/passwd").ok()?,
+            &fs::read_to_string("/etc/group").ok()?,
+        )
+    })
+}
+
+/// [`private_group`] from the text of `/etc/passwd` and `/etc/group`.
+pub fn private_group_of(uid: u32, gid: u32, passwd: &str, groups: &str) -> Option<u32> {
+    {
+        let mut name = None;
+        for line in passwd.lines() {
+            let fields: Vec<&str> = line.split(':').collect();
+            let (Some(user), Some(Ok(u)), Some(Ok(g))) = (
+                fields.first(),
+                fields.get(2).map(|f| f.parse::<u32>()),
+                fields.get(3).map(|f| f.parse::<u32>()),
+            ) else {
+                continue;
+            };
+            if u == uid {
+                name = Some(*user);
+            } else if g == gid {
+                return None;
+            }
+        }
+        let name = name?;
+        let entry = groups.lines().find_map(|line| {
+            let fields: Vec<&str> = line.split(':').collect();
+            (fields.get(2)?.parse::<u32>().ok()? == gid).then(|| fields.get(3).copied())
+        })?;
+        entry
+            .unwrap_or("")
+            .split(',')
+            .all(|member| member.is_empty() || member == name)
+            .then_some(gid)
+    }
+}
+
+/// Whether a file or directory only the bridge's user can change: owned by
+/// `uid` and not writable by group (other than [`private_group`]) or
+/// others, with every ancestor directory owned by `uid` or root and not so
+/// writable unless sticky (like `/tmp`, where nobody else can rename or
+/// replace an entry). Symbolic links are resolved first.
+/// A path that does not exist is judged by its nearest existing ancestor,
+/// since whoever can write there could create it.
+fn trusted_path(path: &Path, uid: u32) -> bool {
+    let mut path = path.to_path_buf();
+    let canonical = loop {
+        match path.canonicalize() {
+            Ok(canonical) => break canonical,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                if !path.pop() || path.as_os_str().is_empty() {
+                    return false;
+                }
+            }
+            Err(_) => return false,
+        }
+    };
+    for (depth, ancestor) in canonical.ancestors().enumerate() {
+        let Ok(metadata) = fs::metadata(ancestor) else {
+            return false;
+        };
+        let writable = metadata.mode() & 0o002 != 0
+            || (metadata.mode() & 0o020 != 0 && Some(metadata.gid()) != private_group());
+        let ok = if depth == 0 {
+            metadata.uid() == uid && !writable
+        } else {
+            (metadata.uid() == uid || metadata.uid() == 0)
+                && (!writable || metadata.mode() & 0o1000 != 0)
+        };
+        if !ok {
+            return false;
+        }
+    }
+    true
+}
+
+/// One entry of `config -z --list --show-scope --show-origin`.
+#[derive(Debug, PartialEq)]
+pub struct ConfigEntry<'a> {
+    pub scope: &'a [u8],
+    pub origin: &'a [u8],
+    pub key: &'a [u8],
+    pub value: &'a [u8],
+}
+
+/// Parses `config -z --list --show-scope --show-origin` output: per entry,
+/// `scope\0origin\0key\nvalue\0`.
+pub fn parse_config(bytes: &[u8]) -> Result<Vec<ConfigEntry<'_>>> {
+    let mut fields = bytes.split(|b| *b == 0);
+    let mut entries = Vec::new();
+    while let Some(scope) = fields.next() {
+        if scope.is_empty() {
+            // The listing ends with a terminator.
+            break;
+        }
+        let (Some(origin), Some(entry)) = (fields.next(), fields.next()) else {
+            return Err("unexpected Git configuration listing".into());
+        };
+        let (key, value) = match entry.iter().position(|b| *b == b'\n') {
+            Some(newline) => (&entry[..newline], &entry[newline + 1..]),
+            None => (entry, &entry[entry.len()..]),
+        };
+        entries.push(ConfigEntry {
+            scope,
+            origin,
+            key,
+            value,
+        });
+    }
+    Ok(entries)
+}
+
+/// A path named in a configuration value, as Git resolves it: `~/` from
+/// `HOME`, relative to `base`. `None` for forms this module does not
+/// resolve (`~user/`, `%(prefix)/`), which are refused.
+fn config_path(value: &[u8], base: &Path) -> Option<PathBuf> {
+    use std::os::unix::ffi::OsStrExt;
+    if value.is_empty() || value.contains(&0) {
+        return None;
+    }
+    if let Some(rest) = value.strip_prefix(b"~/") {
+        let home = std::env::var_os("HOME")?;
+        return Some(Path::new(&home).join(std::ffi::OsStr::from_bytes(rest)));
+    }
+    if value.starts_with(b"~") || value.starts_with(b"%(") {
+        return None;
+    }
+    Some(base.join(std::ffi::OsStr::from_bytes(value)))
+}
+
+/// Refuses a checkout whose repository configuration (local and worktree
+/// scope, with everything they include or would include) or attributes
+/// come from a file someone else could change: they could otherwise name
+/// a program between the listing that [`filter_overrides`] reads and a
+/// later command. The user's global configuration stays trusted.
+pub fn check_config(entries: &[ConfigEntry], root: &Path, uid: u32) -> Result<()> {
+    use std::os::unix::ffi::OsStrExt;
+    let untrusted = || Err(UNTRUSTED.to_owned());
+    let mut checked = std::collections::HashSet::new();
+    let mut check = |path: PathBuf| -> Result<()> {
+        if checked.insert(path.clone()) && !trusted_path(&path, uid) {
+            return untrusted();
+        }
+        Ok(())
+    };
+    for entry in entries {
+        if !matches!(entry.scope, b"local" | b"worktree") {
+            continue;
+        }
+        let Some(origin) = entry.origin.strip_prefix(b"file:") else {
+            return untrusted();
+        };
+        if origin.is_empty() {
+            return untrusted();
+        }
+        // Relative origins are relative to the checkout root (Git's
+        // working directory).
+        let file = root.join(std::ffi::OsStr::from_bytes(origin));
+        check(file.clone())?;
+        let base = file.parent().unwrap_or(root).to_path_buf();
+        let include = entry.key == b"include.path"
+            || (entry.key.starts_with(b"includeif.") && entry.key.ends_with(b".path"));
+        if include {
+            // An include that is missing or empty now lists nothing, so its
+            // target is checked from the key that names it.
+            check(config_path(entry.value, &base).ok_or(UNTRUSTED)?)?;
+        } else if entry.key == b"core.attributesfile" {
+            check(config_path(entry.value, root).ok_or(UNTRUSTED)?)?;
+        }
+    }
+    Ok(())
+}
+
+/// The first line of a small Git metadata file, `None` when it is missing.
+fn metadata_line(path: &Path) -> Result<Option<String>> {
+    let mut text = String::new();
+    match fs::File::open(path) {
+        Ok(file) => {
+            file.take(4096)
+                .read_to_string(&mut text)
+                .map_err(|_| UNTRUSTED.to_owned())?;
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(_) => return Err(UNTRUSTED.into()),
+    }
+    Ok(Some(text.lines().next().unwrap_or("").trim().to_owned()))
+}
+
+/// Refuses a Git directory whose shared metadata (`commondir`), alternate
+/// object directories or `info/attributes` someone else could change.
+pub fn check_git_dir(git_dir: &Path, uid: u32) -> Result<()> {
+    let untrusted = || Err(UNTRUSTED.to_owned());
+    if !trusted_path(git_dir, uid) {
+        return untrusted();
+    }
+    let common = match metadata_line(&git_dir.join("commondir"))? {
+        Some(target) if target.is_empty() || target.contains('\0') => return untrusted(),
+        Some(target) => {
+            let common = git_dir.join(target);
+            if !trusted_path(&git_dir.join("commondir"), uid) || !trusted_path(&common, uid) {
+                return untrusted();
+            }
+            common
+        }
+        None => git_dir.to_path_buf(),
+    };
+    if !trusted_path(&common.join("info/attributes"), uid) {
+        return untrusted();
+    }
+    // Alternates, and theirs, as far as Git follows them.
+    let mut objects = vec![common.join("objects")];
+    for _ in 0..=ALTERNATES_DEPTH {
+        let mut next = Vec::new();
+        for directory in objects {
+            let file = directory.join("info/alternates");
+            let text = match fs::File::open(&file) {
+                Ok(handle) => {
+                    if !trusted_path(&file, uid) {
+                        return untrusted();
+                    }
+                    let mut text = String::new();
+                    handle
+                        .take(64 * 1024)
+                        .read_to_string(&mut text)
+                        .map_err(|_| UNTRUSTED.to_owned())?;
+                    text
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+                Err(_) => return untrusted(),
+            };
+            for line in text.lines() {
+                let line = line.trim_end();
+                if line.is_empty() || line.starts_with('#') {
+                    continue;
+                }
+                // Quoted (escaped) paths are not resolved here.
+                if line.starts_with('"') {
+                    return untrusted();
+                }
+                let target = directory.join(line);
+                if !trusted_path(&target, uid) {
+                    return untrusted();
+                }
+                next.push(target);
+            }
+        }
+        if next.is_empty() {
+            return Ok(());
+        }
+        objects = next;
+    }
+    untrusted()
 }
 
 /// Whether `path` is a checkout root Git may run in: a directory owned by
@@ -252,25 +549,47 @@ pub fn checkout_root(path: &Path, uid: u32, follow: bool) -> Option<PathBuf> {
 }
 
 impl Checkout {
-    /// Opens a checkout root after verifying it, and reads which filter
-    /// drivers its configuration names.
-    pub fn open(root: &Path, uid: u32, follow: bool) -> Result<Self> {
-        checkout_root(root, uid, follow)
+    /// Opens a checkout root after verifying it and the files its
+    /// configuration comes from (see [`check_git_dir`], [`check_config`]),
+    /// and reads which filter drivers that configuration names. Its Git
+    /// commands must end by `deadline`.
+    pub fn open(root: &Path, uid: u32, follow: bool, deadline: Instant) -> Result<Self> {
+        let git_dir = checkout_root(root, uid, follow)
             .ok_or_else(|| "not a Git checkout of this user".to_owned())?;
+        check_git_dir(&git_dir, uid)?;
         let mut checkout = Self {
             root: root.to_path_buf(),
             filters: Vec::new(),
+            empty_tree: EMPTY_TREE_SHA1,
+            deadline,
         };
-        let list = checkout.git(&["config", "-z", "--list"], SMALL_OUTPUT)?;
+        let list = checkout.git(
+            &["config", "-z", "--list", "--show-scope", "--show-origin"],
+            SMALL_OUTPUT,
+        )?;
         if list.truncated {
             return Err("the Git configuration is too large".into());
         }
-        checkout.filters = filter_overrides(&list.bytes)?;
+        let entries = parse_config(&list.bytes)?;
+        check_config(&entries, root, uid)?;
+        checkout.filters = filter_overrides(&entries)?;
+        if entries
+            .iter()
+            .any(|e| e.key == b"extensions.objectformat" && e.value == b"sha256")
+        {
+            checkout.empty_tree = EMPTY_TREE_SHA256;
+        }
         Ok(checkout)
     }
 
-    /// Runs one Git command in the checkout through the hardened runner.
+    /// Runs one Git command in the checkout through the hardened runner,
+    /// killed after [`TIMEOUT`] or at the checkout's deadline.
     fn git(&self, args: &[&str], limit: usize) -> Result<Output> {
+        let started = Instant::now();
+        if started >= self.deadline {
+            return Err(OUT_OF_TIME.into());
+        }
+        let deadline = (started + TIMEOUT).min(self.deadline);
         let mut command = Command::new(git_binary()?);
         command.env_clear();
         for key in ["HOME", "XDG_CONFIG_HOME"] {
@@ -286,6 +605,9 @@ impl Checkout {
             .env("GIT_TERMINAL_PROMPT", "0")
             .env("GIT_OPTIONAL_LOCKS", "0")
             .env("GIT_ALLOW_PROTOCOL", "")
+            // Git 2.44 and later; older Git ignores it, and the empty
+            // `GIT_ALLOW_PROTOCOL` with `protocol.allow=never` still keep a
+            // lazy fetch (like any transport) off the network.
             .env("GIT_NO_LAZY_FETCH", "1")
             .env("GIT_PAGER", "cat")
             .env("GIT_ATTR_NOSYSTEM", "1")
@@ -320,7 +642,6 @@ impl Checkout {
         let stderr = child.stderr.take().ok_or("Git output unavailable")?;
         let out = thread::spawn(move || drain(stdout, limit));
         let err = thread::spawn(move || drain(stderr, ERROR_LIMIT));
-        let deadline = Instant::now() + TIMEOUT;
         let status = loop {
             match child.try_wait() {
                 Ok(Some(status)) => break Some(status),
@@ -338,6 +659,7 @@ impl Checkout {
         let output = out.join().map_err(|_| "Git output reader failed")?;
         let error = err.join().map_err(|_| "Git output reader failed")?;
         match status {
+            None if deadline == self.deadline => Err(OUT_OF_TIME.into()),
             None => Err(format!("Git took longer than {}s", TIMEOUT.as_secs())),
             Some(status) if !status.success() => Err(failure(&error.bytes, status.code())),
             Some(_) => Ok(output),
@@ -361,15 +683,14 @@ fn failure(stderr: &[u8], code: Option<i32>) -> String {
     }
 }
 
-/// `-c` settings that neutralize every filter driver named in `config -z
-/// --list` output: empty clean, smudge and process commands, not required.
-pub fn filter_overrides(list: &[u8]) -> Result<Vec<String>> {
+/// `-c` settings that neutralize every filter driver named in the
+/// configuration: empty clean, smudge and process commands, not required.
+pub fn filter_overrides(entries: &[ConfigEntry]) -> Result<Vec<String>> {
     let mut drivers = std::collections::BTreeSet::new();
-    for entry in list.split(|b| *b == 0) {
-        // Each entry is `key\nvalue`; keys are case-insensitive in their
-        // first and last parts, and Git lowercases them in this listing.
-        let key = entry.split(|b| *b == b'\n').next().unwrap_or_default();
-        let Some(rest) = key.strip_prefix(b"filter.") else {
+    for entry in entries {
+        // Keys are case-insensitive in their first and last parts, and Git
+        // lowercases them in this listing.
+        let Some(rest) = entry.key.strip_prefix(b"filter.") else {
             continue;
         };
         let Some(dot) = rest.iter().rposition(|b| *b == b'.') else {
@@ -519,8 +840,9 @@ pub fn text_lines(bytes: &[u8]) -> Option<u64> {
 
 /// Lines of an untracked file, or `None` when not counted: not a regular
 /// file inside `root` (no symbolic link on the way), too large, binary or
-/// unreadable. Never blocks on a FIFO.
-fn untracked_lines(root: &Path, relative: &str) -> Option<u64> {
+/// unreadable, or on another file system than the checkout root (`device`),
+/// such as a mount that could hang. Never blocks on a FIFO.
+fn untracked_lines(root: &Path, device: u64, relative: &str) -> Option<u64> {
     let relative = Path::new(relative);
     if relative
         .components()
@@ -530,7 +852,8 @@ fn untracked_lines(root: &Path, relative: &str) -> Option<u64> {
     }
     let path = root.join(relative);
     let parent = path.parent()?.canonicalize().ok()?;
-    if !parent.starts_with(root.canonicalize().ok()?) {
+    if !parent.starts_with(root.canonicalize().ok()?) || fs::metadata(&parent).ok()?.dev() != device
+    {
         return None;
     }
     let file = fs::OpenOptions::new()
@@ -539,7 +862,7 @@ fn untracked_lines(root: &Path, relative: &str) -> Option<u64> {
         .open(parent.join(path.file_name()?))
         .ok()?;
     let metadata = file.metadata().ok()?;
-    if !metadata.is_file() || metadata.len() > UNTRACKED_SIZE {
+    if !metadata.is_file() || metadata.dev() != device || metadata.len() > UNTRACKED_SIZE {
         return None;
     }
     let mut bytes = Vec::new();
@@ -578,16 +901,21 @@ pub fn inspect(checkout: &Checkout, list: bool) -> Result<Repo> {
     let tracked = changes.iter().any(|c| c.status != "?");
     // Lines per path against HEAD (before the first commit: the index
     // against the empty tree, then the worktree against the index).
+    // Plumbing only: unlike `diff`, `diff-index` and `diff-files` never
+    // refresh (rewrite) the index when stat data changed.
     let mut lines: HashMap<String, Option<(u64, u64)>> = HashMap::new();
     if tracked {
         let parts: &[&[&str]] = if repo.head.is_some() {
-            &[&["HEAD"]]
+            &[&["diff-index", "HEAD"]]
         } else {
-            &[&["--cached"], &[]]
+            &[
+                &["diff-index", "--cached", checkout.empty_tree],
+                &["diff-files"],
+            ]
         };
-        for extra in parts {
+        for part in parts {
             let mut args = vec![
-                "diff",
+                part[0],
                 "--numstat",
                 "-z",
                 "--no-renames",
@@ -595,7 +923,7 @@ pub fn inspect(checkout: &Checkout, list: bool) -> Result<Repo> {
                 "--no-textconv",
                 "--ignore-submodules=all",
             ];
-            args.extend_from_slice(extra);
+            args.extend_from_slice(&part[1..]);
             args.push("--");
             let out = checkout.git(&args, OUTPUT_LIMIT)?;
             repo.truncated |= out.truncated;
@@ -619,6 +947,7 @@ pub fn inspect(checkout: &Checkout, list: bool) -> Result<Repo> {
         }
     }
     let mut scanned = 0;
+    let device = fs::metadata(&checkout.root).map(|m| m.dev()).ok();
     for change in &mut changes {
         repo.files += 1;
         match change.status.as_str() {
@@ -630,9 +959,10 @@ pub fn inspect(checkout: &Checkout, list: bool) -> Result<Repo> {
         repo.unstaged += u64::from(change.unstaged);
         let counted = if change.status == "?" {
             scanned += 1;
-            (scanned <= UNTRACKED_SCAN)
-                .then(|| untracked_lines(&checkout.root, &change.path))
+            (scanned <= UNTRACKED_SCAN && Instant::now() < checkout.deadline)
+                .then_some(device)
                 .flatten()
+                .and_then(|device| untracked_lines(&checkout.root, device, &change.path))
                 .map(|added| (added, 0))
         } else {
             lines.get(&change.path).copied().flatten()
@@ -747,7 +1077,15 @@ pub struct Cache(Arc<Mutex<HashMap<PathBuf, Cached>>>);
 impl Cache {
     /// One checkout's facts: cached when fresh enough and `HEAD` and the
     /// index have not changed since, else inspected now.
-    fn repo(&self, root: &Path, uid: u32, follow: bool, list: bool, fresh: bool) -> Repo {
+    fn repo(
+        &self,
+        root: &Path,
+        uid: u32,
+        follow: bool,
+        request: &Request,
+        deadline: Instant,
+    ) -> Repo {
+        let (list, fresh) = (request.list, request.fresh);
         let name = root
             .file_name()
             .map(|n| n.to_string_lossy().into_owned())
@@ -769,7 +1107,7 @@ impl Cache {
             }
             return repo;
         }
-        let mut repo = Checkout::open(root, uid, follow)
+        let mut repo = Checkout::open(root, uid, follow, deadline)
             .and_then(|checkout| inspect(&checkout, list))
             .unwrap_or_else(|error| Repo {
                 error: Some(error),
@@ -777,7 +1115,8 @@ impl Cache {
             });
         repo.name = name;
         repo.path = path;
-        if let (Some(current), Ok(mut cache)) = (current, self.0.lock()) {
+        let complete = repo.error.as_deref() != Some(OUT_OF_TIME);
+        if let (true, Some(current), Ok(mut cache)) = (complete, current, self.0.lock()) {
             if cache.len() >= CACHE_ENTRIES {
                 cache.retain(|_, cached| cached.at.elapsed() < CACHE_TTL);
                 if cache.len() >= CACHE_ENTRIES {
@@ -807,27 +1146,31 @@ pub struct Request {
     pub fresh: bool,
 }
 
-/// The checkouts of a project folder, inspected within [`BUDGET`].
+/// The error of a checkout the project's [`BUDGET`] left no time for.
+const OUT_OF_TIME: &str = "not inspected: this project's time budget ran out";
+
+/// The checkouts of a project folder, inspected within [`BUDGET`]: every
+/// Git command ends by the request's deadline.
 pub fn project(cache: &Cache, request: &Request) -> Value {
     let uid = unsafe { libc::geteuid() };
-    let started = Instant::now();
+    let deadline = Instant::now() + BUDGET;
     let (roots, truncated) = discover(&request.folder, uid);
     let repos: Vec<Repo> = roots
         .iter()
         .map(|root| {
             let follow = root == &request.folder;
-            if started.elapsed() >= BUDGET {
+            if Instant::now() >= deadline {
                 return Repo {
                     path: root.to_string_lossy().into_owned(),
                     name: root
                         .file_name()
                         .map(|n| n.to_string_lossy().into_owned())
                         .unwrap_or_default(),
-                    error: Some("not inspected: this project's time budget ran out".into()),
+                    error: Some(OUT_OF_TIME.into()),
                     ..Repo::default()
                 };
             }
-            cache.repo(root, uid, follow, request.list, request.fresh)
+            cache.repo(root, uid, follow, request, deadline)
         })
         .collect();
     let sampled_at = SystemTime::now()
@@ -946,8 +1289,28 @@ mod tests {
     fn uid() -> u32 {
         unsafe { libc::geteuid() }
     }
+    /// What a group-writable file's checkout opens to.
+    fn group_writable() -> Result<()> {
+        if private_group() == Some(unsafe { libc::getegid() }) {
+            Ok(())
+        } else {
+            Err(UNTRUSTED.to_owned())
+        }
+    }
+    fn later() -> Instant {
+        Instant::now() + BUDGET
+    }
+    fn mode(path: &Path, mode: u32) {
+        fs::set_permissions(path, std::os::unix::fs::PermissionsExt::from_mode(mode)).unwrap();
+    }
+    fn append_config(repo: &Path, text: &str) {
+        let config = repo.join(".git/config");
+        let mut existing = fs::read_to_string(&config).unwrap();
+        existing.push_str(text);
+        fs::write(config, existing).unwrap();
+    }
     fn repo_at(path: &Path) -> Repo {
-        let checkout = Checkout::open(path, uid(), true).unwrap();
+        let checkout = Checkout::open(path, uid(), true, later()).unwrap();
         inspect(&checkout, true).unwrap()
     }
     fn init(path: &Path) {
@@ -1083,6 +1446,175 @@ mod tests {
         assert_eq!(fs::read(path.join(".git/index")).unwrap(), index_before);
     }
 
+    /// Files whose stat data changed but whose content did not: inspecting
+    /// must not refresh (rewrite) the index, split or not, nor leave a lock.
+    #[test]
+    fn inspecting_never_writes_the_index() {
+        for split in [false, true] {
+            let temp = Temp::new();
+            let path = temp.0.join("repo");
+            init(&path);
+            if split {
+                setup(&path, &["config", "core.splitIndex", "true"]);
+            }
+            for name in ["a.txt", "b.txt", "c.txt"] {
+                fs::write(path.join(name), "same\n").unwrap();
+            }
+            setup(&path, &["add", "."]);
+            setup(&path, &["commit", "-q", "-m", "c"]);
+            // A tracked change, so the line counts run too.
+            fs::write(path.join("c.txt"), "changed\n").unwrap();
+            let listing = |path: &Path| {
+                let mut names: Vec<_> = fs::read_dir(path.join(".git"))
+                    .unwrap()
+                    .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+                    .collect();
+                names.sort();
+                names
+            };
+            let index_before = fs::read(path.join(".git/index")).unwrap();
+            let names_before = listing(&path);
+            std::thread::sleep(Duration::from_millis(1100));
+            for name in ["a.txt", "b.txt"] {
+                // New modification time, same content.
+                fs::write(path.join(name), "same\n").unwrap();
+            }
+            let repo = repo_at(&path);
+            assert_eq!(repo.error, None);
+            assert_eq!((repo.files, repo.added, repo.removed), (1, 1, 1));
+            assert_eq!(
+                fs::read(path.join(".git/index")).unwrap(),
+                index_before,
+                "split index: {split}"
+            );
+            let names = listing(&path);
+            assert_eq!(names, names_before, "split index: {split}");
+            assert!(!path.join(".git/index.lock").exists());
+        }
+    }
+
+    /// Configuration included from a file, or Git metadata in a directory,
+    /// that someone else could write is refused before any command reads it.
+    #[test]
+    fn untrusted_config_is_refused() {
+        let temp = Temp::new();
+        let path = temp.0.join("repo");
+        init(&path);
+        let shared = temp.0.join("shared");
+        fs::create_dir_all(&shared).unwrap();
+        let included = shared.join("shared.cfg");
+        fs::write(&included, "").unwrap();
+        append_config(
+            &path,
+            &format!("[include]\n\tpath = {}\n", included.display()),
+        );
+        let open = |path: &Path| Checkout::open(path, uid(), true, later()).map(|_| ());
+        assert_eq!(open(&path), Ok(()));
+        // A group- or other-writable include, existing or not yet (group
+        // write is the user's own in a private group).
+        mode(&included, 0o666);
+        assert_eq!(open(&path), Err(UNTRUSTED.to_owned()));
+        mode(&included, 0o620);
+        assert_eq!(open(&path), group_writable());
+        fs::remove_file(&included).unwrap();
+        mode(&shared, 0o777);
+        assert_eq!(open(&path), Err(UNTRUSTED.to_owned()));
+        mode(&shared, 0o755);
+        assert_eq!(open(&path), Ok(()));
+        // Relative to the including file, through `includeIf` too.
+        let other = temp.0.join("other");
+        init(&other);
+        fs::create_dir_all(temp.0.join("open")).unwrap();
+        mode(&temp.0.join("open"), 0o777);
+        append_config(
+            &other,
+            "[includeIf \"gitdir:/\"]\n\tpath = ../../open/x.cfg\n",
+        );
+        assert_eq!(open(&other), Err(UNTRUSTED.to_owned()));
+        // An attributes file the configuration names.
+        let attributes = temp.0.join("attrs");
+        init(&attributes);
+        append_config(
+            &attributes,
+            "[core]\n\tattributesFile = ../open/attributes\n",
+        );
+        assert_eq!(open(&attributes), Err(UNTRUSTED.to_owned()));
+        let info = temp.0.join("info");
+        init(&info);
+        fs::create_dir_all(info.join(".git/info")).unwrap();
+        fs::write(info.join(".git/info/attributes"), "").unwrap();
+        mode(&info.join(".git/info/attributes"), 0o646);
+        assert_eq!(open(&info), Err(UNTRUSTED.to_owned()));
+        // The refusal reaches the view as the checkout's error.
+        let value = project(
+            &Cache::default(),
+            &Request {
+                folder: other.clone(),
+                list: false,
+                fresh: true,
+            },
+        );
+        assert_eq!(value["repos"][0]["error"], UNTRUSTED);
+    }
+
+    /// A `commondir` (even in a plain `.git` directory) or alternate object
+    /// directory someone else owns or can write is refused.
+    #[test]
+    fn untrusted_common_dir_and_alternates_are_refused() {
+        let temp = Temp::new();
+        let open = |path: &Path| Checkout::open(path, uid(), true, later()).map(|_| ());
+        let path = temp.0.join("repo");
+        init(&path);
+        let common = temp.0.join("common");
+        fs::create_dir_all(&common).unwrap();
+        fs::write(
+            path.join(".git/commondir"),
+            format!("{}\n", common.display()),
+        )
+        .unwrap();
+        mode(&common, 0o777);
+        assert_eq!(open(&path), Err(UNTRUSTED.to_owned()));
+        mode(&common, 0o775);
+        assert_eq!(open(&path), group_writable());
+        if uid() != 0 {
+            // Owned by root, not by the user.
+            fs::write(path.join(".git/commondir"), "/usr\n").unwrap();
+            assert_eq!(open(&path), Err(UNTRUSTED.to_owned()));
+        }
+        fs::remove_file(path.join(".git/commondir")).unwrap();
+        assert_eq!(open(&path), Ok(()));
+        let objects = temp.0.join("objects");
+        fs::create_dir_all(&objects).unwrap();
+        fs::create_dir_all(path.join(".git/objects/info")).unwrap();
+        fs::write(
+            path.join(".git/objects/info/alternates"),
+            format!("{}\n", objects.display()),
+        )
+        .unwrap();
+        assert_eq!(open(&path), Ok(()));
+        mode(&objects, 0o777);
+        assert_eq!(open(&path), Err(UNTRUSTED.to_owned()));
+        mode(&objects, 0o755);
+        // An alternate's own alternates are followed.
+        fs::create_dir_all(objects.join("info")).unwrap();
+        fs::write(objects.join("info/alternates"), "/tmp\n").unwrap();
+        assert_eq!(open(&path), Err(UNTRUSTED.to_owned()));
+    }
+
+    /// The request's deadline bounds every Git command, not only the gaps
+    /// between checkouts.
+    #[test]
+    fn a_passed_deadline_runs_no_git() {
+        let temp = Temp::new();
+        let path = temp.0.join("repo");
+        init(&path);
+        let past = Instant::now();
+        assert_eq!(
+            Checkout::open(&path, uid(), true, past).map(|_| ()),
+            Err(OUT_OF_TIME.to_owned())
+        );
+    }
+
     #[test]
     fn discovery_takes_the_folder_and_its_direct_children_only() {
         let temp = Temp::new();
@@ -1123,7 +1655,7 @@ mod tests {
         let odd = temp.0.join("odd");
         fs::create_dir_all(&odd).unwrap();
         std::os::unix::fs::symlink(elsewhere.join(".git"), odd.join(".git")).unwrap();
-        assert!(Checkout::open(&odd, uid(), true).is_err());
+        assert!(Checkout::open(&odd, uid(), true, later()).is_err());
     }
 
     #[test]
@@ -1160,8 +1692,24 @@ mod tests {
                 ("img.png".to_owned(), None)
             ]
         );
+        const LISTING: &[u8] =
+            b"global\0file:/home/u/.gitconfig\0filter.lfs.clean\ngit-lfs clean\0\
+              local\0file:.git/config\0core.bare\nfalse\0command\0command line:\0flag\0";
+        let entries = parse_config(LISTING).unwrap();
+        assert_eq!(entries.len(), 3);
         assert_eq!(
-            filter_overrides(b"filter.lfs.clean\ngit-lfs clean\0core.bare\nfalse\0").unwrap(),
+            entries[1],
+            ConfigEntry {
+                scope: b"local",
+                origin: b"file:.git/config",
+                key: b"core.bare",
+                value: b"false"
+            }
+        );
+        assert_eq!(entries[2].value, b"");
+        assert!(parse_config(b"local\0file:x").is_err());
+        assert_eq!(
+            filter_overrides(&entries).unwrap(),
             [
                 "filter.lfs.clean=",
                 "filter.lfs.smudge=",
@@ -1169,7 +1717,20 @@ mod tests {
                 "filter.lfs.required=false"
             ]
         );
-        assert!(filter_overrides(b"filter.a=b.clean\nx\0").is_err());
+        assert!(
+            filter_overrides(
+                &parse_config(b"local\0file:.git/config\0filter.a=b.clean\nx\0").unwrap()
+            )
+            .is_err()
+        );
+        let passwd = "root:x:0:0::/root:/bin/sh\njoan:x:1001:1002::/home/joan:/bin/zsh\n";
+        let groups = "root:x:0:\njoan:x:1002:\nadm:x:4:syslog,joan\n";
+        assert_eq!(private_group_of(1001, 1002, passwd, groups), Some(1002));
+        let shared = "joan:x:1002:joan,eve\n";
+        assert_eq!(private_group_of(1001, 1002, passwd, shared), None);
+        let primary = format!("{passwd}eve:x:1003:1002::/home/eve:/bin/sh\n");
+        assert_eq!(private_group_of(1001, 1002, &primary, groups), None);
+        assert_eq!(private_group_of(1001, 4, passwd, groups), None);
         assert_eq!(text_lines(b"a\nb"), Some(2));
         assert_eq!(text_lines(b"a\0b"), None);
     }
