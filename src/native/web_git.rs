@@ -322,7 +322,7 @@ pub fn private_group_of(uid: u32, gid: u32, passwd: &str, groups: &str) -> Optio
 /// replace an entry). Symbolic links are resolved first.
 /// A path that does not exist is judged by its nearest existing ancestor,
 /// since whoever can write there could create it.
-fn trusted_path(path: &Path, uid: u32) -> bool {
+pub(super) fn trusted_path(path: &Path, uid: u32) -> bool {
     let mut path = path.to_path_buf();
     let canonical = loop {
         match path.canonicalize() {

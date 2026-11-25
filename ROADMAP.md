@@ -22,7 +22,7 @@ This file lists open work only. Done work is in the Git history and the changelo
 - **Worktrees**: discover a repository's worktrees and start an agent in a checkout or a new worktree, one per agent.
 - **Safe removal**: before deleting a checkout or folder, list everything not safely on a remote; re-check before deleting.
 - **Agent marks**: a finished turn stays highlighted until seen in any browser; per-project roll-ups (check what KelpMux already has first).
-- **Environments** (KelpHub ADR 0004): `process` and `deploy` environments declared in a repository, started and stopped explicitly from the UI or by agents with `kelpmux env up|down|status|logs`, each instance with a slug, a stable port and a state folder.
+- **Environments, what remains** ([ADR 0005](docs/adr/0005-environments.md) shipped `process` and `deploy` environments in panes): reclaiming ports, health history, dependencies between environments; containers and routing are under Runtime backends and Dev and staging deployments below.
 - **Project instructions**: `.kelp/AGENTS.md` in a configuration repository, with `AGENTS.md` and a `CLAUDE.md` pointer generated at the project root.
 - **Permanent web deployment**: channels, exact HTTPS origin, SSH host-key verification, pinned artifacts and supervision, as the base of a managed VM.
 

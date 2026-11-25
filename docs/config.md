@@ -122,6 +122,20 @@ The folder of the built-in Scratch project: terminals created outside any projec
 | Default | `"~/scratch"` |
 | Applies | Immediately: the next terminal created outside a project starts there (the web client creates the folder when it is missing). |
 
+## `[environments]`
+
+Project environments: dev servers and deployments declared in a project's repositories (`.kelp/environments/`), started only on request from the web client or `kelpmux env`.
+
+### `environments.ports`
+
+The TCP ports given to environments as `KELP_PORT`: each (project, environment) gets the lowest port of this range that no other one holds and nothing listens on, and keeps it across restarts while it stays in the range. Two port numbers from 1024 to 65535, the first not above the second.
+
+| | |
+| --- | --- |
+| Type | port range (string, `FIRST-LAST`) |
+| Default | `"41000-41999"` |
+| Applies | On the next start of an environment: one whose port falls outside a new range gets a new port. |
+
 ## `[[project]]`
 
 Projects: one `[[project]]` table each, with a name and a folder. Every terminal belongs to one project; terminals created outside any project belong to the built-in Scratch project (`scratch.folder`), which is not listed here. The web client adds, renames and deletes projects here too.

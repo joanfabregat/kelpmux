@@ -9,6 +9,7 @@ export type TitlePlace =
   | { view: "grid" }
   | { view: "repos"; project: string }
   | { view: "project"; project: string }
+  | { view: "envs"; project: string }
   | { view: "terminal"; title?: string }
   | { view: "files"; dir: string; file?: string; home?: string };
 
@@ -38,6 +39,8 @@ export function titleLocation(place: TitlePlace): string {
       return `Repos — ${place.project}`;
     case "project":
       return place.project;
+    case "envs":
+      return `Environments — ${place.project}`;
     case "terminal":
       return place.title === undefined ? "" : place.title || "shell";
     case "files":

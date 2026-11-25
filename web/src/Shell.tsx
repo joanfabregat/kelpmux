@@ -5,8 +5,9 @@ import { stateLabel, type DisplayState } from "./state/model";
 import { Icon } from "./status";
 
 /** One terminal at a time, all of them live in a grid, the file browser
- * (and the files open from it), a project's Repos view or its home page. */
-export type SessionMode = "single" | "grid" | "files" | "repos" | "project";
+ * (and the files open from it), a project's Repos view, its home page or
+ * its Environments view. */
+export type SessionMode = "single" | "grid" | "files" | "repos" | "project" | "envs";
 
 /** Number, state, provider and title of a pane, shared by the grid tiles
  * and the focused terminal's header. */
