@@ -128,6 +128,7 @@ fn run() -> Result<()> {
                 | "web-relay"
                 | "config"
                 | "env"
+                | "project"
                 | "stream-inspect"
         )
     }) {

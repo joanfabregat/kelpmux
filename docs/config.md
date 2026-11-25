@@ -37,7 +37,8 @@ color = "teal"       # optional
 
 - Choose an `id` no other project uses and keep it when renaming: terminals are linked to their project by it (in the workspace's `terminal-projects.json`), so changing it moves them to Scratch. Do not reuse the id of a deleted project.
 - The folder must lie inside `files.root` or `files.extra_roots`, and may not be inside or contain another project's folder or `scratch.folder`. Create it if it does not exist (a project whose folder is missing shows as missing).
-- To delete a project, remove its table. Its folder and files stay; its terminals move to Scratch.
+- To delete a project, remove its table. Its folder and files stay; its terminals move to Scratch. To delete or archive its folder too, use `kelpmux project` (below).
+- Never set `status = "archived"` or write `[project.archive]` by hand: `kelpmux project archive` does, once the archive is verified.
 - Scratch is built in: it is not a `[[project]]`, and its folder is `scratch.folder`.
 - Run `kelpmux config check` afterwards; open web clients show the change within a few seconds.
 
@@ -50,6 +51,36 @@ The web client lists the repositories your GitHub account can see (a project's R
 - **The token** for GitHub's API comes from one source, set in `[github]` (reference below): `auth = "gh"` runs `gh auth token`; `auth = "env"` reads `GH_TOKEN`, then `GITHUB_TOKEN`, from the web bridge's environment; `token_command = "~/bin/github-token"` runs that program, without a shell or arguments, and takes the first line it prints. The web bridge reads it when it needs it and keeps it in memory for five minutes at most. It is sent to `api.github.com` only: never to the browser, a file, a log or Git. A program's error output is discarded, and a failure says only how it ended. The web bridge is started by the web relay's SSH connection, with a login environment: `auth = "env"` needs the variable set there (in `~/.zshenv` or `~/.profile`, say), and `gh` needs `gh auth login` done once on the server. Without a source, or when it fails, Settings, **GitHub** says why and how to fix it; the rest of the web client is unaffected and cloning a URL still works.
 - **Scopes**: listing repositories needs `repo` (private repositories) or `public_repo` for a classic token, or Metadata read for a fine-grained one; open pull request counts need Pull requests read on fine-grained tokens. Settings, **GitHub** shows the signed-in login, the token's scopes (classic tokens only: GitHub does not report a fine-grained token's permissions) and the rate limit left, and **Test** reads the token again and checks it.
 - **Cloning** runs `git clone` as you, with your own Git configuration and credentials: an SSH agent for `git@github.com:owner/name.git` (the default the picker offers) or your credential helper for `https://github.com/owner/name.git`. KelpMux injects no credential and writes none; the remote stays the URL you chose. Git runs without hooks, templates, fsmonitor, submodules or Git LFS downloads (run `git lfs pull` in the checkout afterwards to fetch LFS content), only over the URL's own transport (HTTPS or SSH, never `file://` or `ext::`), cannot prompt, and is stopped after 15 minutes or when you cancel. It does not get `GH_TOKEN`, `GITHUB_TOKEN`, `GH_ENTERPRISE_TOKEN` or `GITHUB_ENTERPRISE_TOKEN` from the web bridge's environment: a `gh auth git-credential` credential helper then uses gh's stored login (`gh auth login`), so with `auth = "env"` alone, HTTPS clones need another credential helper or SSH. The checkout goes in `<project folder>/<name>`, and an existing folder of that name is never replaced. Repositories GitHub reports larger than 5 GiB are refused (clone them in a terminal). A web bridge started over SSH usually has no `SSH_AUTH_SOCK`: set `ssh_auth_sock` to an agent socket that outlives your sessions (one started by a systemd user unit, say) for SSH clones to work.
+
+## Project status, archive, restore and delete
+
+A project's `status` is `active`, `paused` or `archived` (reference below). Pausing only dims the project in the sidebar. Archiving moves a project's folder off the machine into a Cloud Storage bucket and keeps the project listed, under a folded **Archived** group, so it can be restored. Deleting removes the folder without an archive. The design and its reasons are in [ADR 0006](adr/0006-project-archive.md).
+
+- **The safe-removal check** runs before archiving or deleting, and again just before the folder goes. For every Git checkout it finds (as the Repos view does), it reports uncommitted changes, untracked files that are not ignored, stashes, local branches with commits on no remote branch, branches without an upstream, a detached HEAD with commits on no branch, commits reachable only from tags, notes or other refs, and linked worktrees outside the folder (whose repository the folder holds). Checkouts found inside a checkout are inspected the same way: checked-out submodules (a submodule repository in `.git/modules` that is not checked out is reported as unchecked), repositories inside ignored or untracked folders (`vendor/` holding a clone, say) and linked worktrees inside the folder. It also counts the files outside any checkout and their size, ignored files, special files (sockets, FIFOs, devices) and nested repositories it could not inspect. Git runs with the same hardened runner as the Repos view: no hooks, filters, fsmonitor or network. For a deletion, Git findings are blockers: commit and push, or remove them yourself first. For an archive they are warnings, because the archive keeps each checkout's `.git`, but those commits then live only in the archive, on no remote. The check's `fingerprint` changes whenever what it found changes; an archive or a deletion needs the fingerprint of the check you confirmed, and stops if the folder changed since.
+- **Archiving** (`[archive]`, reference below) packs the folder into a tar.gz in a private temporary file (`$XDG_CACHE_HOME/kelpmux/archive`): symbolic links are stored as links and never followed, sockets, FIFOs and devices are skipped, modes and modification times are kept, and a mount point inside the folder stops it. The archive is uploaded as a new object `<prefix>/<project id>/<UTC time>.tar.gz` (never over an existing one) with the project's id, name, folder, KelpMux's version, the entries and bytes it unpacks to and the archive's SHA-256 as metadata. Cloud Storage checks the CRC32C KelpMux computed; KelpMux then reads the object's size, CRC32C and metadata back and compares them with its own, runs the check again (same fingerprint, and no file in the folder changed since packing began), records `status = "archived"` and the archive in `[project.archive]`, and only then removes the folder: renamed to a hidden `.kelpmux-removing-…` folder beside it, then deleted without following links. Nothing is removed if any step fails. The folder is never the files root, the projects folder, the Scratch folder, the home folder, a folder that holds another project, or outside `files.root` and `files.extra_roots`.
+- **Restoring** lists the project's archives in the bucket, downloads the chosen one (the recorded one by default) to a private temporary file, checks its CRC32C against Cloud Storage's and its SHA-256 against the object's metadata (and the record's), and unpacks it into a fresh hidden folder beside the destination, never past the entries and bytes counted when it was packed (recorded in `[project.archive]` and the object's metadata; an archive without them gets at most 64 times its size plus 1 GiB) and never leaving less than 256 MiB free on that disk, refusing absolute paths, `..`, hard links, special files and anything through a symbolic link; the folder is then renamed into place. The destination is the original folder, which must not exist, or a new folder inside `projects.base`, which then becomes the project's folder. The project becomes active again and keeps its archive record. The archive stays in the bucket.
+- **Deleting** removes the folder after the check, once you type the project's name, and optionally removes the project from the configuration. **Remove from KelpMux** removes only the project's table and keeps the folder (as removing the table by hand does).
+- **Jobs**: archive, restore and delete run as `kelpmux project` processes of their own, so closing the browser does not stop them; the web client shows their progress and can cancel them until the folder starts being removed. At most one job per project runs at a time (`$XDG_STATE_HOME/kelpmux/archive/<id>.lock`); its state is `<id>.json` in the same folder. The web client refuses to archive or delete a project that still has open terminals.
+- **Credentials**: the token for Cloud Storage comes from the GCE metadata server (the VM's service account), or from `archive.token_command`. It is kept in memory only, sent to `storage.googleapis.com` only, never through a proxy, and never shown, logged or sent to the browser. Settings, **Archive** shows where archives go and where the token comes from; **Test** writes and deletes a small object under `<prefix>/.kelpmux-test/`.
+- Only Google Cloud Storage is supported. The storage code sits behind the archive module so that an S3-compatible backend (`backend = "s3"`, reserved) can be added later; see the roadmap.
+
+### For agents
+
+`kelpmux project` prints JSON (an object with `error` and exit status 1 on failure):
+
+| Command | Does |
+| --- | --- |
+| `kelpmux project status ID [active\|paused]` | Prints the project's status, folder and archive record; with a status, sets it first. |
+| `kelpmux project check-removal ID [--mode archive\|delete]` | Runs the safe-removal check (default mode: delete) and prints it, with its `fingerprint`. |
+| `kelpmux project archive ID --fingerprint F` | Archives the project (the check must still give `F`), then removes its folder. |
+| `kelpmux project archives ID` | Lists the project's archives in the bucket, newest first. |
+| `kelpmux project restore ID [--object OBJECT] [--folder FOLDER]` | Restores the recorded archive (or `OBJECT`) into the original folder (or `FOLDER`, inside `projects.base`). |
+| `kelpmux project delete ID --fingerprint F --name NAME [--remove]` | Deletes the folder after the check; `--remove` also removes the project. |
+| `kelpmux project delete ID --keep-folder` | Removes the project from the configuration and keeps its folder. |
+| `kelpmux project jobs` / `cancel ID` | Lists every project's last job / asks a running one to stop. |
+| `kelpmux project archive-test` | Writes and deletes a small object in the bucket. |
+
+Never archive or delete a project without the user's go-ahead: show them the check first.
 
 ## Commands
 
@@ -181,6 +212,53 @@ The SSH agent socket Git uses to clone over SSH (`SSH_AUTH_SOCK`). Empty keeps t
 | Example | `ssh_auth_sock = "~/.ssh/agent.sock"` |
 | Applies | Immediately: the next clone uses it. |
 
+## `[archive]`
+
+Project archives: archiving packs a project's folder as a tar.gz, uploads it with a verified checksum, and only then removes the folder from this machine; restoring brings it back (see `kelpmux project` and ADR 0006). The machine's own Google identity is used, never a key file; the token stays in memory. These keys are edited here only, never from the web client.
+
+### `archive.backend`
+
+Where project archives go: `"gcs"` is Google Cloud Storage, through its JSON API. Empty turns archiving off (restoring too); deleting a project folder still works. S3-compatible storage is not supported yet; `"s3"` is reserved for it.
+
+| | |
+| --- | --- |
+| Type | string |
+| Default | `""` |
+| Example | `backend = "gcs"` |
+| Applies | Immediately: the next archive, restore or Test uses it. |
+
+### `archive.bucket`
+
+The bucket archives are written to and restored from: 3–63 lowercase letters, digits, `-`, `_` and `.`, starting and ending with a letter or digit. Required with `archive.backend`. The machine's identity needs to create, read, list and delete objects in it (on GCS, the Storage Object User role on the bucket).
+
+| | |
+| --- | --- |
+| Type | string |
+| Default | `""` |
+| Example | `bucket = "my-kelpmux-archives"` |
+| Applies | Immediately. |
+
+### `archive.prefix`
+
+The folder of the bucket archives go in: each is `<prefix>/<project id>/<UTC time>.tar.gz`, and Test writes and deletes one small object under `<prefix>/.kelpmux-test/`. Letters, digits, `-`, `_`, `.` and `/` between non-empty parts, at most 256 bytes; no `..`.
+
+| | |
+| --- | --- |
+| Type | string |
+| Default | `"kelpmux"` |
+| Applies | Immediately: archives already made keep their names (a restore lists the current prefix). |
+
+### `archive.token_command`
+
+A program that prints a Google OAuth access token on its first line of output, run without arguments or a shell (a script that runs `gcloud auth print-access-token`, say). Empty uses the machine's own service account through the GCE metadata server, the usual choice on a Google Cloud VM. It must finish within 30 seconds and print at most 8 KiB; its error output is never shown. The token is kept in memory only and sent to `storage.googleapis.com` only.
+
+| | |
+| --- | --- |
+| Type | file path (string) |
+| Default | `""` |
+| Example | `token_command = "~/bin/gcs-token"` |
+| Applies | Immediately: the next archive operation reads the token again. |
+
 ## `[[project]]`
 
 Projects: one `[[project]]` table each, with a name and a folder. Every terminal belongs to one project; terminals created outside any project belong to the built-in Scratch project (`scratch.folder`), which is not listed here. The web client adds, renames and deletes projects here too.
@@ -191,6 +269,7 @@ id = "kelp"
 name = "Kelp"
 folder = "~/projects/Kelp"
 color = "teal"
+status = "active"
 ```
 
 ### `project.id`
@@ -235,6 +314,28 @@ Optional: the colour that marks the project in the sidebar and the file browser,
 | Type | string |
 | Required | no |
 | Example | `color = "teal"` |
+| Applies | Immediately. |
+
+### `project.status`
+
+Optional: `"active"` (the default), `"paused"` (shown dimmed in the sidebar, nothing else changes) or `"archived"` (its folder was archived and removed from this machine; the project stays listed so it can be restored). Archiving and restoring set it; set `"paused"` or `"active"` by hand or from the web client.
+
+| | |
+| --- | --- |
+| Type | string |
+| Required | no |
+| Example | `status = "active"` |
+| Applies | Immediately. |
+
+### `project.archive`
+
+Written by KelpMux, not by hand: the last archive made of the project (`[project.archive]`), with its bucket, object, size, SHA-256, CRC32C and time, and the entries and bytes it unpacks to. Restoring uses it by default, never unpacks more than those counts, and keeps the record afterwards.
+
+| | |
+| --- | --- |
+| Type | table |
+| Required | no |
+| Example | `archive = { backend = "gcs", bucket = "my-kelpmux-archives", object = "kelpmux/kelp/20261124T100000Z.tar.gz", size = 1048576, sha256 = "…", crc32c = "AAAAAA==", archived_at = "2026-11-24T10:00:00Z", entries = 1200, unpacked_bytes = 4194304 }` |
 | Applies | Immediately. |
 
 <!-- END kelpmux config docs -->

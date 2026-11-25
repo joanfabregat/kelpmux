@@ -25,6 +25,13 @@ tungstenite = { version = "=0.30.0", default-features = false, features = ["hand
 sentry = { version = "0.49.6", default-features = false, features = ["backtrace", "panic", "ureq"] }
 ureq = { version = "3.5.2", default-features = false, features = ["rustls"] }
 toml_edit = { version = "0.25.21", default-features = false, features = ["parse", "display"] }
+# Project archives (src/native/archive): tar.gz written and read in process,
+# streaming. flate2 (pure Rust backend) and ring (SHA-256) were already in
+# the graph through sentry and rustls; tar adds itself and filetime, without
+# extended attributes (default features off).
+flate2 = { version = "1.1.11", default-features = false, features = ["rust_backend"] }
+ring = "0.17.14"
+tar = { version = "0.4.46", default-features = false }
 
 [workspace]
 resolver = "2"

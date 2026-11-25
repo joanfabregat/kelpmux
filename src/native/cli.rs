@@ -21,6 +21,8 @@ pub const HELP: &str = "Owned native terminal workspaces (Linux):
   kelpmux config path|check [FILE]|schema|docs   (~/.config/kelpmux/config.toml; see docs/config.md)
   kelpmux env list|up NAME [--wait]|down NAME [--wait]|status NAME|logs NAME [--lines N] [--project ID] [--workspace NAME]
       (a project's environments, .kelp/environments/NAME/environment.toml; see docs/adr/0005-environments.md)
+  kelpmux project status|check-removal|archive|archives|restore|delete|jobs|cancel|archive-test ...
+      (project status, safe-removal check, archive to Cloud Storage, restore, delete; JSON; see docs/config.md)
   kelpmux stream-inspect [--workspace NAME] [PANE_ID ...]
   kelpmux server [--socket PATH] [--state-dir PATH] [--shell PATH] [--cwd PATH] [--size CxR] [--config PATH] [--upload-dir PATH] [--upload-retention-days DAYS]
   kelpmux attach [--workspace NAME] [--socket PATH] [--takeover] [--current-client]
@@ -408,6 +410,9 @@ pub fn run(args: &[String]) -> Result<()> {
     }
     if args.first().is_some_and(|arg| arg == "config") {
         return super::user_config::cli(&args[1..]);
+    }
+    if args.first().is_some_and(|arg| arg == "project") {
+        return super::archive::cli(&args[1..]);
     }
     if args.first().is_some_and(|arg| arg == "env") {
         return super::environments::cli(&args[1..]);
