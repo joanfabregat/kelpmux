@@ -838,6 +838,14 @@ function App() {
         : Promise.reject(Error("Not connected")),
     onStarted: () => void loadEnvironmentPanes(),
   });
+  /** The bridge's GitHub operations (API minor 9), when offered. */
+  const github =
+    online && operations.has("github")
+      ? (method: string, params?: any) =>
+          store.session
+            ? store.session.rpc(method, params)
+            : Promise.reject(Error("Not connected"))
+      : null;
   /** The project a terminal belongs to; a dragged row already shows in
    * the group under it. */
   const projectOfPane = (pane: number) =>
@@ -3379,6 +3387,7 @@ function App() {
                     : undefined
                 }
                 onNewTerminal={(path) => void newTab(scopeProject, path)}
+                github={github}
                 onBack={phone ? () => setPhoneList(true) : undefined}
               />
             ) : view === "envs" && scopeProject ? (
@@ -3679,6 +3688,7 @@ function App() {
                   uploadRoot={filesRoot}
                   userConfig={userConfig}
                   saveUserConfig={saveUserConfig}
+                  github={github}
                   touch={touch}
                 />
               )}

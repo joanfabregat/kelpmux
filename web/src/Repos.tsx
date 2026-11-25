@@ -8,7 +8,12 @@
 // - ReposView: one row per checkout of the project (its folder itself and
 //   its direct subfolders that are checkouts) with the branch, upstream,
 //   ahead/behind, changed files and last commit; a row expands to its
-//   changed files, which open in the Files editor.
+//   changed files, which open in the Files editor. With the bridge's GitHub
+//   operations (API minor 9) it also offers Add repository (GitHub.tsx's
+//   picker), shows this project's clones while they run, and GitHub's
+//   facts (visibility, default branch, open pull requests, last push) on
+//   the rows of checkouts whose origin is on github.com. Cloning is the
+//   only write, and the bridge makes it.
 import React, { useEffect, useRef, useState } from "react";
 import { Icon } from "./status";
 import { Tooltip } from "./Tooltip";
@@ -28,6 +33,13 @@ import {
   type ProjectGit,
 } from "./git";
 import { projectColor, type Project } from "./projects";
+import {
+  GitHubPicker,
+  RepoFacts,
+  useGitHubFacts,
+  type Rpc,
+} from "./GitHub";
+import { readGitHubStatus, type GitHubClone, type GitHubFacts } from "./github-state";
 import "./styles/repos.css";
 
 /** `+12 −3`, with each side coloured. */
@@ -172,8 +184,11 @@ function RepoRow({
   onShowInFiles,
   onNewTerminal,
   isRoot,
+  facts,
 }: {
   repo: GitRepo;
+  /** GitHub's facts about its origin repository, when known. */
+  facts?: GitHubFacts;
   open: boolean;
   onToggle: () => void;
   onOpenFile?: (path: string) => void;
@@ -249,9 +264,27 @@ function RepoRow({
                 </>
               )}
             </span>
+            {repo.github && facts?.visible && (
+              <span className="git-repo-detail">
+                <RepoFacts slug={repo.github} facts={facts} />
+              </span>
+            )}
           </span>
         </button>
         <span className="git-repo-actions">
+          {repo.github && facts?.visible && (
+            <Tooltip content="Open on GitHub">
+              <a
+                className="icon-link"
+                href={`https://github.com/${repo.github}`}
+                target="_blank"
+                rel="noopener noreferrer"
+                aria-label={`Open ${repo.github} on GitHub`}
+              >
+                <Icon name="external-link" size="sm" />
+              </a>
+            </Tooltip>
+          )}
           {onShowInFiles && (
             <Tooltip content="Show in Files">
               <button
@@ -300,6 +333,113 @@ function RepoRow({
   );
 }
 
+/** This bridge's clones into `project` (bridge `github_status`), followed
+ * every second while one runs; `onDone` runs when one completes. */
+function useProjectClones(rpc: Rpc | null | undefined, project: string, onDone: () => void) {
+  const [clones, setClones] = useState<GitHubClone[]>([]);
+  const [follow, setFollow] = useState(0);
+  const done = useRef(onDone);
+  done.current = onDone;
+  const latest = useRef(rpc);
+  latest.current = rpc;
+  const offered = !!rpc;
+  const running = useRef(new Set<number>());
+  useEffect(() => {
+    if (!offered) return;
+    let alive = true,
+      timer: ReturnType<typeof setTimeout>;
+    async function poll() {
+      try {
+        const status = readGitHubStatus(await latest.current!("github_status"));
+        if (!alive || !status) return;
+        const mine = status.clones.filter((c) => c.project === project);
+        setClones(mine);
+        let finished = false;
+        for (const clone of mine) {
+          if (clone.state === "running") running.current.add(clone.id);
+          else if (running.current.delete(clone.id) && clone.state === "done")
+            finished = true;
+        }
+        if (finished) done.current();
+        if (mine.some((c) => c.state === "running"))
+          timer = setTimeout(() => void poll(), 1000);
+      } catch {
+        // Not offered or not connected: nothing to follow.
+      }
+    }
+    void poll();
+    return () => {
+      alive = false;
+      clearTimeout(timer);
+    };
+  }, [offered, project, follow]);
+  return {
+    clones,
+    follow: () => setFollow((n) => n + 1),
+    cancel: async (id: number) => {
+      try {
+        await latest.current?.("github_clone_cancel", { clone: id });
+      } finally {
+        setFollow((n) => n + 1);
+      }
+    },
+    dismiss: (id: number) => setClones((all) => all.filter((c) => c.id !== id)),
+  };
+}
+
+/** The clones into this project: running ones with their progress, failed
+ * ones with their error. */
+function CloneRows({
+  clones,
+  onCancel,
+  onDismiss,
+}: {
+  clones: GitHubClone[];
+  onCancel: (id: number) => void;
+  onDismiss: (id: number) => void;
+}) {
+  const shown = clones.filter((c) => c.state === "running" || c.state === "failed");
+  if (!shown.length) return null;
+  return (
+    <ul className="repos-clones" aria-label="Clones">
+      {shown.map((clone) => (
+        <li
+          key={clone.id}
+          className={`repos-clone ${clone.state}`}
+          data-clone={clone.full_name}
+          role={clone.state === "failed" ? "alert" : "status"}
+        >
+          <Icon
+            name={clone.state === "running" ? "loader-circle" : "circle-alert"}
+            size="sm"
+            className={clone.state === "running" ? "spin" : ""}
+          />
+          <span className="grow">
+            <b>{clone.full_name}</b>{" "}
+            {clone.state === "running"
+              ? `· ${clone.progress || "Cloning…"}`
+              : `· ${clone.error || "Clone failed"}`}
+          </span>
+          {clone.state === "running" ? (
+            <button type="button" className="subtle small" onClick={() => onCancel(clone.id)}>
+              Cancel
+            </button>
+          ) : (
+            <button
+              type="button"
+              className="icon-btn"
+              aria-label={`Dismiss ${clone.full_name}`}
+              onClick={() => onDismiss(clone.id)}
+            >
+              <Icon name="x" size="sm" />
+            </button>
+          )}
+        </li>
+      ))}
+    </ul>
+  );
+}
+
 export function ReposView({
   project,
   git,
@@ -311,12 +451,16 @@ export function ReposView({
   onNewTerminal,
   onBack,
   expanded,
+  github,
 }: {
   project: Project;
   git?: ProjectGit;
   loading: boolean;
   error?: string;
   onRefresh: () => void;
+  /** The bridge's GitHub operations (API minor 9), when offered: Add
+   * repository, clones and GitHub facts on the rows. */
+  github?: Rpc | null;
   /** Opens a changed file in the Files editor (when files are offered). */
   onOpenFile?: (path: string) => void;
   /** Shows a checkout in the file browser (when files are offered). */
@@ -341,8 +485,21 @@ export function ReposView({
       .querySelector(`.git-repo[data-path="${CSS.escape(expanded)}"]`)
       ?.scrollIntoView({ block: "nearest" });
   }, [expanded, git]);
+  const [picking, setPicking] = useState(false);
   const color = projectColor(project);
   const repos = git?.repos || [];
+  const clones = useProjectClones(github, project.id, onRefresh);
+  const facts = useGitHubFacts(
+    github || null,
+    repos.flatMap((repo) => (repo.github ? [repo.github] : [])),
+  );
+  const canAdd = !!github && !project.missing;
+  const addButton = canAdd && (
+    <button type="button" className="subtle small" onClick={() => setPicking(true)}>
+      <Icon name="plus" size="sm" />
+      Add repository
+    </button>
+  );
   const toggle = (path: string) =>
     setOpen((current) => {
       const next = new Set(current);
@@ -376,6 +533,7 @@ export function ReposView({
             {loading ? "Refreshing…" : `Updated ${new Date(git.sampled_at * 1000).toLocaleTimeString()}`}
           </span>
         )}
+        {addButton}
         <Tooltip content="Refresh">
           <button
             type="button"
@@ -394,6 +552,11 @@ export function ReposView({
             {error}
           </div>
         )}
+        <CloneRows
+          clones={clones.clones}
+          onCancel={(id) => void clones.cancel(id)}
+          onDismiss={clones.dismiss}
+        />
         {!git ? (
           !error && (
             <div className="empty-state">
@@ -410,6 +573,7 @@ export function ReposView({
                 ? `Neither ${project.path} nor its subfolders are Git checkouts.`
                 : `The folder ${project.path} is missing.`}
             </p>
+            {addButton}
           </div>
         ) : (
           <>
@@ -418,6 +582,7 @@ export function ReposView({
                 <RepoRow
                   key={repo.path}
                   repo={repo}
+                  facts={repo.github ? facts[repo.github] : undefined}
                   isRoot={repo.path === git.folder && repos.length > 1}
                   open={open.has(repo.path)}
                   onToggle={() => toggle(repo.path)}
@@ -436,10 +601,22 @@ export function ReposView({
               Read-only: the folder itself and its direct subfolders that are
               Git checkouts. Upstream counts compare with the last fetch;
               KelpMux never fetches.
+              {github ? " GitHub facts come from GitHub through the server and refresh every few minutes." : ""}
             </p>
           </>
         )}
       </div>
+      {picking && github && (
+        <GitHubPicker
+          rpc={github}
+          project={project}
+          existing={(git?.repos || [])
+            .filter((repo) => repo.path !== git?.folder)
+            .map((repo) => repo.name)}
+          onStarted={clones.follow}
+          onClose={() => setPicking(false)}
+        />
+      )}
     </section>
   );
 }

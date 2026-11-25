@@ -43,6 +43,8 @@ export type GitRepo = {
   last: GitCommit | null;
   /** The changed files, when asked for (at most 200). */
   changes?: GitChange[];
+  /** `owner/name` when the `origin` remote is on github.com (API minor 9). */
+  github?: string | null;
   /** Some output reached its limit: the counts are lower bounds. */
   truncated: boolean;
   error: string | null;
@@ -124,6 +126,13 @@ function readRepo(value: any): GitRepo | null {
       : {}),
     truncated: value?.truncated === true,
     error: text(value?.error, 1024),
+    github:
+      typeof value?.github === "string" &&
+      value.github.length <= 201 &&
+      /^[A-Za-z0-9._-]+\/[A-Za-z0-9._-]+$/.test(value.github) &&
+      !value.github.split("/").some((part: string) => part === "." || part === "..")
+      ? value.github
+      : null,
   };
 }
 

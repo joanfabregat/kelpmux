@@ -16,7 +16,10 @@
 //! operations (`environments`) start and stop a project's declared
 //! environments in panes of their own, only on the browser's explicit
 //! request, and run deploy environments' `status` scripts on threads of
-//! their own.
+//! their own. The `github_*` operations (`web_github`) are the one place
+//! it reaches the network: as this user, to GitHub's API and to clone a
+//! repository the user picked into a project's folder; the browser gets
+//! public metadata only.
 //!
 //! Its operations use KelpServer's stream session API on a separate,
 //! short-lived stream connection each (`session`), never the composed UI's
@@ -28,7 +31,7 @@ use super::{
     session::{Session, request_id},
     status,
     stream::{self, ClosedSession, Event, Request},
-    user_config, web_git, web_history, web_repos,
+    user_config, web_git, web_github, web_history, web_repos,
 };
 use crate::Result;
 use serde_json::{Value, json};
@@ -77,8 +80,13 @@ pub const API_VERSION: u64 = 3;
 /// picker). Minor 8 added `environments`: the `environments`,
 /// `environment_start`, `environment_stop`, `environment_check` and
 /// `environment_panes` operations on a project's environments
-/// (`environments`, ADR 0005), run on their own threads.
-pub const API_MINOR: u64 = 8;
+/// (`environments`, ADR 0005), run on their own threads. Minor 9 added
+/// `github`: the GitHub operations with the token this machine already
+/// has (`github_status`, `github_test`, `github_repositories`,
+/// `github_clone`, `github_clone_cancel` and `github_state`, which the
+/// bridge answers from its own thread; `web_github`) and the `github`
+/// (`owner/name`) of each `git` checkout.
+pub const API_MINOR: u64 = 9;
 /// Largest accepted `Web` request, in bytes of JSON.
 const REQUEST_LIMIT: usize = 65536;
 /// Largest request identifier a browser can represent exactly.
@@ -173,6 +181,7 @@ struct Api {
     config: Option<Arc<user_config::Live>>,
     git: web_git::Worker,
     history: web_history::Worker,
+    github: Option<web_github::GitHub>,
 }
 
 fn pane(value: &Value) -> Result<u64> {
@@ -362,8 +371,69 @@ impl Api {
             "project_create" | "project_update" | "project_delete" => {
                 self.project_change(method, p)
             }
+            method if method.starts_with("github_") => self.github(method, p),
             _ => Err("unsupported web operation".into()),
         }
+    }
+    fn github_service(&self) -> Result<&web_github::GitHub> {
+        self.github
+            .as_ref()
+            .ok_or_else(|| "GitHub is unavailable".into())
+    }
+    /// The GitHub operations (`web_github`). Network work runs on the
+    /// service's own threads; these answer at once with its status.
+    fn github(&self, method: &str, p: &Value) -> Result<Value> {
+        let github = self.github_service()?;
+        match method {
+            "github_status" => github.status(),
+            "github_test" => github.test(),
+            "github_repositories" => github.repositories(p["refresh"] == true),
+            "github_clone" => {
+                // The folder comes from the user configuration, never the
+                // browser; the checkout's name comes from the URL.
+                let config = self.user_config()?;
+                let (project, folder) = match p["project"].as_str() {
+                    Some(user_config::SCRATCH) => {
+                        (user_config::SCRATCH, config.scratch_folder.path.clone())
+                    }
+                    Some(id) => (
+                        id,
+                        config
+                            .project(id)
+                            .ok_or("this project no longer exists")?
+                            .folder
+                            .path
+                            .clone(),
+                    ),
+                    None => return Err("project required".into()),
+                };
+                let url = p["url"].as_str().ok_or("url required")?;
+                github.clone_repository(project, &folder, url)
+            }
+            "github_clone_cancel" => github.cancel_clone(
+                p["clone"]
+                    .as_u64()
+                    .filter(|n| *n > 0)
+                    .ok_or("clone must be a positive number")?,
+            ),
+            _ => Err("unsupported web operation".into()),
+        }
+    }
+    /// Queues GitHub facts about repositories (`{"repos": ["owner/name"]}`,
+    /// the `github` of the `git` checkouts); `reply` answers.
+    fn github_state(
+        &self,
+        p: &Value,
+        reply: Box<dyn FnOnce(std::result::Result<Value, String>) + Send>,
+    ) -> Result<()> {
+        let repos = p["repos"]
+            .as_array()
+            .ok_or("repos takes a list of owner/name")?
+            .iter()
+            .map(|r| r.as_str().map(str::to_owned))
+            .collect::<Option<Vec<_>>>()
+            .ok_or("each repository must be a string")?;
+        self.github_service()?.state_request(repos, reply)
     }
     /// Queues a project's Git facts (`web_git`): `{"project": id}` (or
     /// `scratch`), with `files: true` to list changed files and `fresh:
@@ -785,7 +855,19 @@ const OPERATIONS: &[&str] = &[
     "git",
     "conversations",
     "environments",
+    "github",
 ];
+
+/// The GitHub integration of this bridge, reading `[github]` from the live
+/// user configuration.
+fn github_service(config: Option<Arc<user_config::Live>>) -> web_github::GitHub {
+    web_github::GitHub::new(Arc::new(move || {
+        config
+            .as_deref()
+            .and_then(user_config::Live::config)
+            .map(|c| c.github)
+    }))
+}
 
 /// The user configuration operations, while the workspace runs or not:
 /// `config` returns the file's state (the configuration in effect, its
@@ -1119,6 +1201,7 @@ pub fn run(socket: &Path, state: &Path) -> Result<()> {
     });
     let socket = socket.to_owned();
     let state = state.to_owned();
+    let github = Some(github_service(config.clone()));
     std::thread::spawn(move || {
         let mut monitor = status::Monitor::default();
         // Prime one bounded sample so opening the status view need not wait
@@ -1136,6 +1219,7 @@ pub fn run(socket: &Path, state: &Path) -> Result<()> {
             config,
             git: web_git::Worker::start(),
             history: web_history::Worker::start(),
+            github,
         };
         let mut initialized = greeted;
         let mut last_id = 0;
@@ -1178,15 +1262,16 @@ pub fn run(socket: &Path, state: &Path) -> Result<()> {
                         Ok(()) => continue,
                         Err(error) => Err(error),
                     }
-                } else if method == "git" || method == "conversations" {
+                } else if matches!(method, "git" | "conversations" | "github_state") {
                     // Answered by a Git or the History worker thread when
                     // ready, so a slow repository or a large transcript
-                    // folder never holds up the other operations.
+                    // folder never holds up the other operations; GitHub's
+                    // repository facts likewise, from their own thread.
                     let replies = sender.clone();
-                    let submit = if method == "git" {
-                        Api::git
-                    } else {
-                        Api::conversations
+                    let submit = match method {
+                        "git" => Api::git,
+                        "conversations" => Api::conversations,
+                        _ => Api::github_state,
                     };
                     match submit(
                         &api,

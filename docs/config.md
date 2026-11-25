@@ -43,6 +43,14 @@ color = "teal"       # optional
 
 `kelpmux config schema` prints a JSON Schema of the file for editors and tools; `kelpmux config check` also enforces the rules a schema cannot express (folders that must exist, folders that must lie inside the roots).
 
+## GitHub
+
+The web client lists the repositories your GitHub account can see (a project's Repos view, **Add repository**), shows read-only facts about the GitHub repositories a project's checkouts come from (visibility, default branch, open pull requests, last push) and clones a repository into a project's folder. It uses the GitHub access the server already has; there is no GitHub App to register.
+
+- **The token** for GitHub's API comes from one source, set in `[github]` (reference below): `auth = "gh"` runs `gh auth token`; `auth = "env"` reads `GH_TOKEN`, then `GITHUB_TOKEN`, from the web bridge's environment; `token_command = "~/bin/github-token"` runs that program, without a shell or arguments, and takes the first line it prints. The web bridge reads it when it needs it and keeps it in memory for five minutes at most. It is sent to `api.github.com` only: never to the browser, a file, a log or Git. A program's error output is discarded, and a failure says only how it ended. The web bridge is started by the web relay's SSH connection, with a login environment: `auth = "env"` needs the variable set there (in `~/.zshenv` or `~/.profile`, say), and `gh` needs `gh auth login` done once on the server. Without a source, or when it fails, Settings, **GitHub** says why and how to fix it; the rest of the web client is unaffected and cloning a URL still works.
+- **Scopes**: listing repositories needs `repo` (private repositories) or `public_repo` for a classic token, or Metadata read for a fine-grained one; open pull request counts need Pull requests read on fine-grained tokens. Settings, **GitHub** shows the signed-in login, the token's scopes (classic tokens only: GitHub does not report a fine-grained token's permissions) and the rate limit left, and **Test** reads the token again and checks it.
+- **Cloning** runs `git clone` as you, with your own Git configuration and credentials: an SSH agent for `git@github.com:owner/name.git` (the default the picker offers) or your credential helper for `https://github.com/owner/name.git`. KelpMux injects no credential and writes none; the remote stays the URL you chose. Git runs without hooks, templates, fsmonitor, submodules or Git LFS downloads (run `git lfs pull` in the checkout afterwards to fetch LFS content), only over the URL's own transport (HTTPS or SSH, never `file://` or `ext::`), cannot prompt, and is stopped after 15 minutes or when you cancel. It does not get `GH_TOKEN`, `GITHUB_TOKEN`, `GH_ENTERPRISE_TOKEN` or `GITHUB_ENTERPRISE_TOKEN` from the web bridge's environment: a `gh auth git-credential` credential helper then uses gh's stored login (`gh auth login`), so with `auth = "env"` alone, HTTPS clones need another credential helper or SSH. The checkout goes in `<project folder>/<name>`, and an existing folder of that name is never replaced. Repositories GitHub reports larger than 5 GiB are refused (clone them in a terminal). A web bridge started over SSH usually has no `SSH_AUTH_SOCK`: set `ssh_auth_sock` to an agent socket that outlives your sessions (one started by a systemd user unit, say) for SSH clones to work.
+
 ## Commands
 
 | Command | Does |
@@ -135,6 +143,43 @@ The TCP ports given to environments as `KELP_PORT`: each (project, environment) 
 | Type | port range (string, `FIRST-LAST`) |
 | Default | `"41000-41999"` |
 | Applies | On the next start of an environment: one whose port falls outside a new range gets a new port. |
+
+## `[github]`
+
+GitHub in the web client: the repositories your GitHub account can see (Add repository on a project's Repos view), read-only facts about the GitHub repositories a project's checkouts come from, and cloning. The bridge reads the token this machine already has (the GitHub CLI, an environment variable or a command) and keeps it in memory only, for a few minutes; it never goes to the browser, a file or a log. Clones use your own Git credentials (SSH agent or credential helper). These keys are edited here only, never from the web client.
+
+### `github.auth`
+
+Where the GitHub token comes from: `"gh"` runs `gh auth token` (the GitHub CLI's sign-in), `"env"` reads `GH_TOKEN`, then `GITHUB_TOKEN`, from the web bridge's environment. Empty, with `github.token_command` empty too, leaves GitHub signed out: the repository list and the facts on the Repos view are off, cloning a URL still works. Set this or `github.token_command`, not both.
+
+| | |
+| --- | --- |
+| Type | string |
+| Default | `""` |
+| Example | `auth = "gh"` |
+| Applies | Immediately: the next GitHub request reads the token again. |
+
+### `github.token_command`
+
+A program that prints the GitHub token on its first line of output, run without arguments or a shell (for example a script that decrypts a SOPS-encrypted token). It must finish within 30 seconds and print at most 8 KiB; what it writes to its error output is never shown. Set this or `github.auth`, not both.
+
+| | |
+| --- | --- |
+| Type | file path (string) |
+| Default | `""` |
+| Example | `token_command = "~/bin/github-token"` |
+| Applies | Immediately: the next GitHub request runs it again. |
+
+### `github.ssh_auth_sock`
+
+The SSH agent socket Git uses to clone over SSH (`SSH_AUTH_SOCK`). Empty keeps the web bridge's own `SSH_AUTH_SOCK`, which a bridge started by the web relay's SSH connection usually lacks: point this at an agent socket that outlives your sessions for SSH clones to work from the web client.
+
+| | |
+| --- | --- |
+| Type | file path (string) |
+| Default | `""` |
+| Example | `ssh_auth_sock = "~/.ssh/agent.sock"` |
+| Applies | Immediately: the next clone uses it. |
 
 ## `[[project]]`
 
